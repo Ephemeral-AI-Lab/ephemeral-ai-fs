@@ -87,3 +87,5 @@ The latest user clarification accepts a sound result around400–450ms for this 
 Step1 is complete on `c6683078c`: equivalence/error checks pass and `issue47-complete-file-create100` records710.826ms Commit,413.860ms pipeline and291.501ms nested consumer service. The296.966ms outside the pipeline includes60.862ms physical retirement. Reuse this matching sample; do not rerun step1 unchanged. Delete's retained304.405ms is sufficient for the revised Commit milestone and receives no timing-only tuning.
 
 Next: add only the missing shared consumer authentication/sort attribution, then choose one follow-up from that measured split. No producer framework, worker-count increase, tier changes, #49 prerequisite, or independent proof campaign is authorized by this focused plan. After the evidenced follow-up, reassess explicitly rather than continuing a marginal campaign.
+
+The missing attribution is now measured in attempt11: authentication130.870ms, sorting4.620ms, Commit644.928ms. Follow-upA is selected; other follow-ups and workers are not automatically added. The exact result, rather than favorable retirement subtraction, will decide the milestone.

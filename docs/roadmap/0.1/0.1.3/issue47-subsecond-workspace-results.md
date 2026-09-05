@@ -510,3 +510,59 @@ Producing identities:
 - input_identity: `d675b23abbb5b11449f11c0d6e4e843d26ae69b47c458f502eed1ef603dd6f07`
 
 Cleanup PASS, protected preparation/master unchanged, validated host SQLite/no-data-mount topology and existing resource/timing bounds, no OOM/swap. Linux container lifetime peak41,443,328 bytes. No sibling messages or Exec-owned source edits were made during these slices.
+
+## Attempt 11 — narrow consumer attribution for the sub400 plan
+
+Original create-100 / seed1 on `32b24ccd1`, instrumenting the unchanged checked consumer: Commit `644927625 ns`, full lifecycle **TARGET_MISS** `15351515333 ns`. This is attribution, not an optimization claim for adding timers. Receipt: `benchmark-results/host-store/results/issue47-consumer-attribution-create100/`.
+
+- create: 9981833 ns
+- exec: 14663940125 ns
+- commit: 644927625 ns
+- visibility: 94250 ns
+- end: 32571500 ns
+
+- content_ns: 495834333
+- namespace_ns: 39965250
+- deletion_cursor_ns: 0
+- deletion_records_ns: 0
+- candidate_finish_ns: 21515375
+- object_admission_ns: 63269750
+- object_admission_authentication_ns: 130870335
+- object_admission_sort_ns: 4620210
+- object_admission_begin_ns: 508544
+- object_admission_insert_ns: 137456333
+- object_admission_commit_ns: 33823247
+- checkpoint_ns: 20390083
+- spool_retirement_ns: 5776709
+- spool_retirement_scan_ns: 3751
+- spool_retired_segments: 101
+- snapshot_database_calls: 6
+- object_admission_spill_readback_bytes: 4256258
+- object_admission_memory_owned_bytes: 109178189
+- object_admission_borrowed_copy_bytes: 0
+- output_pipeline_ns: 411530458
+- output_admission_ns: 286477125
+- output_blocked_ns: 201266541
+- output_consumer_idle_ns: 131874958
+- output_queue_peak_bytes: 1048576
+- spool_write_open_count: 101
+- spool_write_ns: 201624107
+- workspace_fence_ns: 185334
+- candidate_objects: 82762
+- candidate_bytes: 113434447
+- inserted_objects: 81931
+- inserted_bytes: 112321855
+- reused_objects: 831
+- reused_bytes: 1112592
+
+Authentication130,870,335 ns is material; sorting4,620,210 ns is small. Choose exactly follow-upA from the approved sub400 plan: carry complete identity+framing validation in immutable owned output so memory delivery does not repeat the pass. Construction must still compute identity and validate framing; spill/durable reads still authenticate; collisions remain exact. No trust toggle, provisional admission, producer framework or memory-limit increase. After this follow-up and one selected sample, reassess against the practical400–450ms milestone, not the superseded300ms ambition.
+
+All canonical totals/readback and physical retirement checks remain unchanged; cleanup PASS, no OOM/swap, protected preparation/master unchanged and topology/resource limits validated. No independent proof. Delete304.405ms is retained without a timing-only rerun.
+
+Producing identities:
+
+- source_identity: `e4f4b99df56401bf882e471d55af3e6315c9de64b68147eb69fb86368635efff`
+- product_identity: `48022cae098aa049299cf727fdedaebf98946f6a4cb3dec08408a1591b77d858`
+- image: `sha256:f96306930d3930dd83e7c75813de9ac95db2187b2dbbc0c7dc48d8ecf4aa6f68`
+- harness_identity: `c3610164231c40bfa3e77c27e5c1526b5e9656c046c9e382d095b0d6c75d1abc`
+- input_identity: `fbb9fc021c7dbfb46f202932b8eb3ba2bfdc98b5d8c139a5c9c7416c39687422`
