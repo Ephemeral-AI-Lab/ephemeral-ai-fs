@@ -807,21 +807,27 @@ impl Workspace {
 
     pub(crate) fn retire_spool_segments(&mut self) {
         let started = std::time::Instant::now();
+        let mut scan_ns = 0_u64;
+        let mut retired = 0_u64;
         self.spool_segments.retain(|id, segment| {
-            if Arc::strong_count(segment) != 1 {
-                return true;
+            let scan_started = std::time::Instant::now();
+            let keep = Arc::strong_count(segment) != 1;
+            if !keep {
+                self.segment_bytes = self
+                    .segment_bytes
+                    .saturating_sub(segment.len.load(Ordering::Relaxed));
+                if self.current_spool == Some(*id) {
+                    self.current_spool = None;
+                }
+                retired += 1;
             }
-            self.segment_bytes = self
-                .segment_bytes
-                .saturating_sub(segment.len.load(Ordering::Relaxed));
-            if self.current_spool == Some(*id) {
-                self.current_spool = None;
-            }
-            false
+            scan_ns = scan_ns.saturating_add(elapsed_ns(scan_started));
+            keep
         });
-        layerfs_layerstack_store::note_workspace_commit_phase(
-            layerfs_layerstack_store::WorkspaceCommitPhase::SpoolRetirement,
+        layerfs_layerstack_store::note_workspace_spool_retirement(
             elapsed_ns(started),
+            scan_ns,
+            retired,
         );
     }
     fn note_spool_open(&mut self, ns: u64) {

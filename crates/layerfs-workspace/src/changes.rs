@@ -25,7 +25,7 @@ use layerfs_layerstack_store::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::FileExt;
 use std::time::Instant;
 
@@ -53,6 +53,10 @@ fn anonymous_journal(directory: &std::path::Path) -> Result<File> {
     Ok(file)
 }
 
+fn journal_io_bytes(budget: u64) -> usize {
+    (budget.saturating_sub(1024) / 64).clamp(256, 64 * 1024) as usize
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum CandidatePurpose {
     Commit,
@@ -71,6 +75,7 @@ pub(crate) struct Checkpoint {
     pub(crate) generation: u64,
     file: File,
     count: u64,
+    io_bytes: usize,
 }
 
 struct CheckpointJournal {
@@ -83,7 +88,10 @@ impl CheckpointJournal {
     fn new(workspace: &Workspace) -> Result<Self> {
         let file = anonymous_journal(&workspace.spool)?;
         Ok(Self {
-            writer: std::io::BufWriter::with_capacity(256, file),
+            writer: BufWriter::with_capacity(
+                journal_io_bytes(workspace.policy.max_final_delta_memory_bytes),
+                file,
+            ),
             count: 0,
             // Metadata facts are candidate scratch, not payload spool bytes.
             byte_limit: (workspace.nodes.len() as u64).saturating_mul(104),
@@ -125,6 +133,7 @@ impl CheckpointJournal {
         Ok(())
     }
 
+    #[cfg(test)]
     fn validate(
         &mut self,
         objects: &ObjectBuffer<'_>,
@@ -135,45 +144,54 @@ impl CheckpointJournal {
         Checkpoint::visit_file(
             self.writer.get_ref(),
             self.count,
+            self.writer.capacity(),
             |_, inode, content, attr| {
                 let final_record = record(inode)?;
-                let metadata = match metadata_cache
-                    .get_by_root(final_record.kind, final_record.metadata_root)
-                {
-                    Some(metadata) => metadata,
-                    None => {
-                        portable_metadata(objects, final_record.metadata_root, final_record.kind)?
-                    }
-                };
-                let size = match final_record.kind {
-                    InodeKind::RegularFile => attr.size, // checked at the completed-file handoff
-                    InodeKind::Directory => 0,
-                    InodeKind::Symlink => ObjectRead::with_authenticated_canonical(
-                        objects,
-                        content,
-                        layerfs_content::tree::directory::codec::decode_symlink,
-                    )?
-                    .target
-                    .len() as u64,
-                };
-                if final_record.content_root != content
-                    || kind(final_record.kind) != attr.kind
-                    || size != attr.size
-                    || metadata.permission_mode != attr.mode
-                    || metadata.mtime_seconds != attr.mtime_seconds
-                    || metadata.mtime_nanoseconds != attr.mtime_nanoseconds
-                    || (attr.kind != Kind::Directory
-                        && final_record.namespace_ref_count != u64::from(attr.links))
-                {
-                    return Err(StorageError::Integrity("candidate checkpoint record"));
-                }
-                Ok(())
+                Self::validate_record(objects, metadata_cache, final_record, content, attr)
             },
         )
     }
 
+    fn validate_record(
+        objects: &ObjectBuffer<'_>,
+        metadata_cache: &PortableMetadataCache,
+        final_record: InodeRecordV1,
+        content: ObjectId,
+        attr: Attr,
+    ) -> Result<()> {
+        let metadata =
+            match metadata_cache.get_by_root(final_record.kind, final_record.metadata_root) {
+                Some(metadata) => metadata,
+                None => portable_metadata(objects, final_record.metadata_root, final_record.kind)?,
+            };
+        let size = match final_record.kind {
+            InodeKind::RegularFile => attr.size, // checked at the completed-file handoff
+            InodeKind::Directory => 0,
+            InodeKind::Symlink => ObjectRead::with_authenticated_canonical(
+                objects,
+                content,
+                layerfs_content::tree::directory::codec::decode_symlink,
+            )?
+            .target
+            .len() as u64,
+        };
+        if final_record.content_root != content
+            || kind(final_record.kind) != attr.kind
+            || size != attr.size
+            || metadata.permission_mode != attr.mode
+            || metadata.mtime_seconds != attr.mtime_seconds
+            || metadata.mtime_nanoseconds != attr.mtime_nanoseconds
+            || (attr.kind != Kind::Directory
+                && final_record.namespace_ref_count != u64::from(attr.links))
+        {
+            return Err(StorageError::Integrity("candidate checkpoint record"));
+        }
+        Ok(())
+    }
+
     fn finish(mut self, built: BuiltRoot, generation: u64) -> Result<PreparedCommit> {
         self.writer.flush()?;
+        let io_bytes = self.writer.capacity();
         let file = self
             .writer
             .into_inner()
@@ -185,6 +203,7 @@ impl CheckpointJournal {
                 generation,
                 file,
                 count: self.count,
+                io_bytes,
             },
             built,
         })
@@ -196,16 +215,16 @@ impl Checkpoint {
         &self,
         mut visitor: impl FnMut(NodeId, InodeId, ObjectId, Attr) -> Result<()>,
     ) -> Result<()> {
-        Self::visit_file(&self.file, self.count, &mut visitor)
+        Self::visit_file(&self.file, self.count, self.io_bytes, &mut visitor)
     }
 
     fn visit_file(
         file: &File,
         count: u64,
+        io_bytes: usize,
         mut visitor: impl FnMut(NodeId, InodeId, ObjectId, Attr) -> Result<()>,
     ) -> Result<()> {
-        use std::io::{Seek, SeekFrom};
-        let mut reader = std::io::BufReader::with_capacity(256, file);
+        let mut reader = BufReader::with_capacity(io_bytes, file);
         reader.seek(SeekFrom::Start(0))?;
         for _ in 0..count {
             let mut bytes = [0; 104];
@@ -257,14 +276,15 @@ impl Workspace {
         let started = Instant::now();
         self.policy.check_final_delta(1024)?;
         let batch_size = (self.policy.max_final_delta_memory_bytes / 4096).clamp(1, 128) as usize;
-        let tree_scratch = usize::try_from(
-            self.policy
-                .max_final_delta_memory_bytes
-                .saturating_sub(1024)
-                / 2,
-        )
-        .unwrap_or(usize::MAX)
-        .min(SORTED_TREE_UPDATE_SCRATCH_BYTES);
+        let io_bytes = journal_io_bytes(self.policy.max_final_delta_memory_bytes);
+        // Four live journal buffers share the existing final-delta allowance.
+        let frontier_budget = self
+            .policy
+            .max_final_delta_memory_bytes
+            .saturating_sub(4 * io_bytes.saturating_sub(256) as u64);
+        let tree_scratch = usize::try_from(frontier_budget.saturating_sub(1024) / 2)
+            .unwrap_or(usize::MAX)
+            .min(SORTED_TREE_UPDATE_SCRATCH_BYTES);
         let captured = self.take_capture();
         if let Some(captured) = &captured {
             layerfs_layerstack_store::note_workspace_capture(1, captured.len);
@@ -276,6 +296,7 @@ impl Workspace {
             base_inodes: self.base_inodes,
             generation: self.mutation_generation,
             spool: &self.spool,
+            io_bytes,
             captured: std::sync::Mutex::new(captured),
         };
         note_commit_phase(WorkspaceCommitPhase::CandidatePlan, started);
@@ -307,11 +328,7 @@ impl Workspace {
         let mut inodes = FrontierInodes::new(
             self.base_root,
             // The fixed 1 KiB allowance includes the first 256-byte map entry.
-            1 + (self
-                .policy
-                .max_final_delta_memory_bytes
-                .saturating_sub(1024)
-                / 512) as usize,
+            1 + (frontier_budget.saturating_sub(1024) / 512) as usize,
             tree_scratch,
             &self.spool,
         );
@@ -417,16 +434,7 @@ impl Workspace {
                 u64::from(before == Some(record)),
                 0,
             );
-            checkpoint.push(
-                node,
-                inode,
-                content_root,
-                attr,
-                file_result.map(|_| attr.size),
-            )?;
-            if before != Some(record) {
-                inodes.set(inode, Some(record))?;
-            }
+            inodes.set_checkpoint(inode, record, node, content_root)?;
         }
         files.finish_read()?;
         note_commit_phase(WorkspaceCommitPhase::Content, started);
@@ -491,16 +499,23 @@ impl Workspace {
                             &objects,
                             &CoreReader(&self.reader),
                             inode,
-                            self.policy.max_final_delta_memory_bytes,
+                            frontier_budget,
                         )?;
                     }
                 }
             }
         }
-        checkpoint.validate(&objects, &metadata_cache, |inode| {
-            inodes.record(&objects, inode)
+        inodes.finish(&mut objects, |objects, inode, node, content, record| {
+            let attr = self.attr(node)?;
+            CheckpointJournal::validate_record(objects, &metadata_cache, record, content, attr)?;
+            checkpoint.push(
+                node,
+                inode,
+                content,
+                attr,
+                (attr.kind == Kind::File).then_some(attr.size),
+            )
         })?;
-        inodes.finish(&mut objects)?;
         note_commit_phase(WorkspaceCommitPhase::Namespace, started);
         let started = Instant::now();
         let mut built = objects.finish(inodes.root, 0)?;
@@ -744,6 +759,7 @@ struct StableFileInputs<'a> {
     base_inodes: InodeTableRoot,
     generation: u64,
     spool: &'a std::path::Path,
+    io_bytes: usize,
     captured: std::sync::Mutex<Option<crate::capture::CapturedFile>>,
 }
 
@@ -781,7 +797,7 @@ impl StableFileInputs<'_> {
         emit: &mut dyn FnMut(layerfs_layerstack_store::DeferredObjectStore) -> Result<()>,
     ) -> Result<FileResults> {
         use std::io::{Seek, SeekFrom};
-        let mut journal = std::io::BufWriter::with_capacity(256, anonymous_journal(self.spool)?);
+        let mut journal = BufWriter::with_capacity(self.io_bytes, anonymous_journal(self.spool)?);
         let mut counters = layerfs_layerstack_store::BuildCounters::default();
         let mut count = 0_u64;
         for &id in self.dirty {
@@ -842,7 +858,7 @@ impl StableFileInputs<'_> {
         let mut file = journal.into_inner().map_err(|error| error.into_error())?;
         file.seek(SeekFrom::Start(0))?;
         Ok(FileResults {
-            file: std::io::BufReader::with_capacity(256, file),
+            file: BufReader::with_capacity(self.io_bytes, file),
             remaining: count,
             generation: self.generation,
             counters,
@@ -1159,11 +1175,17 @@ thread_local! {
     static INJECT_INODE_MERGE_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+#[derive(Clone, Copy)]
+struct FrontierValue {
+    record: Option<InodeRecordV1>,
+    checkpoint: Option<(NodeId, ObjectId)>,
+}
+
 // Final inode changes are coalesced before touching the immutable base table.
 // The bounded map spills ordered fixed records; tombstones never fall through to base.
 struct FrontierInodes {
     root: ObjectId,
-    pending: BTreeMap<InodeId, Option<InodeRecordV1>>,
+    pending: BTreeMap<InodeId, FrontierValue>,
     batch_size: usize,
     scratch_limit: usize,
     directory: std::path::PathBuf,
@@ -1189,47 +1211,81 @@ impl FrontierInodes {
         }
     }
 
-    fn read(file: &File, index: u64) -> Result<(InodeId, Option<InodeRecordV1>)> {
-        let mut bytes = [0; 144];
-        file.read_exact_at(&mut bytes, index * 144)?;
+    fn read(file: &File, index: u64) -> Result<(InodeId, FrontierValue)> {
+        let mut bytes = [0; 192];
+        file.read_exact_at(&mut bytes, index * 192)?;
+        Self::decode(&bytes)
+    }
+
+    fn decode(bytes: &[u8; 192]) -> Result<(InodeId, FrontierValue)> {
         Ok((
             InodeId(bytes[..32].try_into().unwrap()),
-            if bytes[32] == 0 {
-                None
-            } else {
-                Some(InodeRecordV1 {
-                    kind: InodeKind::try_from(bytes[32])?,
-                    namespace_ref_count: u64::from_le_bytes(bytes[40..48].try_into().unwrap()),
-                    content_root: ObjectId::from_bytes(&bytes[48..80])?,
-                    metadata_root: ObjectId::from_bytes(&bytes[80..112])?,
-                })
+            FrontierValue {
+                record: if bytes[32] == 0 {
+                    None
+                } else {
+                    Some(InodeRecordV1 {
+                        kind: InodeKind::try_from(bytes[32])?,
+                        namespace_ref_count: u64::from_le_bytes(bytes[40..48].try_into().unwrap()),
+                        content_root: ObjectId::from_bytes(&bytes[48..80])?,
+                        metadata_root: ObjectId::from_bytes(&bytes[80..112])?,
+                    })
+                },
+                checkpoint: if bytes[112] == 0 {
+                    None
+                } else {
+                    Some((
+                        NodeId(u64::from_le_bytes(bytes[120..128].try_into().unwrap())),
+                        ObjectId::from_bytes(&bytes[128..160])?,
+                    ))
+                },
             },
         ))
     }
 
-    fn write(file: &File, index: u64, inode: InodeId, record: Option<InodeRecordV1>) -> Result<()> {
-        let mut bytes = [0; 144];
+    fn write(file: &File, index: u64, inode: InodeId, value: FrontierValue) -> Result<()> {
+        file.write_all_at(&Self::encode(inode, value), index * 192)?;
+        Ok(())
+    }
+
+    fn encode(inode: InodeId, value: FrontierValue) -> [u8; 192] {
+        let mut bytes = [0; 192];
         bytes[..32].copy_from_slice(inode.as_bytes());
-        if let Some(record) = record {
+        if let Some(record) = value.record {
             bytes[32] = record.kind as u8;
             bytes[40..48].copy_from_slice(&record.namespace_ref_count.to_le_bytes());
             bytes[48..80].copy_from_slice(record.content_root.as_bytes());
             bytes[80..112].copy_from_slice(record.metadata_root.as_bytes());
         }
-        file.write_all_at(&bytes, index * 144)?;
-        Ok(())
+        if let Some((node, content)) = value.checkpoint {
+            bytes[112] = 1;
+            bytes[120..128].copy_from_slice(&node.0.to_le_bytes());
+            bytes[128..160].copy_from_slice(content.as_bytes());
+        }
+        bytes
     }
 
-    fn spilled(&self, inode: InodeId) -> Result<Option<(u64, Option<InodeRecordV1>)>> {
+    fn io_bytes(&self) -> usize {
+        // The unused half of each pending-entry reservation funds run I/O.
+        self.batch_size
+            .saturating_sub(1)
+            .saturating_mul(128)
+            .clamp(128, 64 * 1024)
+    }
+
+    fn spilled(&self, inode: InodeId) -> Result<Option<(u64, FrontierValue)>> {
         let Some(file) = &self.spill else {
             return Ok(None);
         };
         let (mut start, mut end) = (0, self.count);
         while start < end {
             let middle = start + (end - start) / 2;
-            let (key, record) = Self::read(file, middle)?;
-            match key.cmp(&inode) {
-                std::cmp::Ordering::Equal => return Ok(Some((middle, record))),
+            let mut key = [0; 32];
+            file.read_exact_at(&mut key, middle * 192)?;
+            match InodeId(key).cmp(&inode) {
+                std::cmp::Ordering::Equal => {
+                    return Ok(Some((middle, Self::read(file, middle)?.1)))
+                }
                 std::cmp::Ordering::Less => start = middle + 1,
                 std::cmp::Ordering::Greater => end = middle,
             }
@@ -1248,10 +1304,14 @@ impl FrontierInodes {
         base: Option<InodeRecordV1>,
     ) -> Result<InodeRecordV1> {
         if let Some(record) = self.pending.get(&inode) {
-            return record.ok_or(StorageError::Integrity("released frontier inode"));
+            return record
+                .record
+                .ok_or(StorageError::Integrity("released frontier inode"));
         }
         if let Some((_, record)) = self.spilled(inode)? {
-            return record.ok_or(StorageError::Integrity("released frontier inode"));
+            return record
+                .record
+                .ok_or(StorageError::Integrity("released frontier inode"));
         }
         if let Some(record) = base {
             return Ok(record);
@@ -1272,15 +1332,38 @@ impl FrontierInodes {
     }
 
     fn set(&mut self, inode: InodeId, record: Option<InodeRecordV1>) -> Result<()> {
+        self.set_value(inode, record, None)
+    }
+
+    fn set_checkpoint(
+        &mut self,
+        inode: InodeId,
+        record: InodeRecordV1,
+        node: NodeId,
+        content: ObjectId,
+    ) -> Result<()> {
+        self.set_value(inode, Some(record), Some((node, content)))
+    }
+
+    fn set_value(
+        &mut self,
+        inode: InodeId,
+        record: Option<InodeRecordV1>,
+        checkpoint: Option<(NodeId, ObjectId)>,
+    ) -> Result<()> {
         if let Some(pending) = self.pending.get_mut(&inode) {
-            *pending = record;
-        } else if let Some((index, _)) = self.spilled(inode)? {
-            Self::write(self.spill.as_ref().unwrap(), index, inode, record)?;
+            pending.record = record;
+            pending.checkpoint = checkpoint.or(pending.checkpoint);
+        } else if let Some((index, mut value)) = self.spilled(inode)? {
+            value.record = record;
+            value.checkpoint = checkpoint.or(value.checkpoint);
+            Self::write(self.spill.as_ref().unwrap(), index, inode, value)?;
         } else {
             if self.pending.len() == self.batch_size {
                 self.merge_pending()?;
             }
-            self.pending.insert(inode, record);
+            self.pending
+                .insert(inode, FrontierValue { record, checkpoint });
         }
         Ok(())
     }
@@ -1290,51 +1373,56 @@ impl FrontierInodes {
             return Ok(());
         }
         let file = anonymous_journal(&self.directory)?;
-        let mut pending = self.pending.iter().peekable();
-        let (mut cursor, mut count) = (0, 0);
-        let mut old = if cursor < self.count {
-            Some(Self::read(self.spill.as_ref().unwrap(), cursor)?)
-        } else {
-            None
+        let mut writer = BufWriter::with_capacity(self.io_bytes(), file);
+        let mut reader = self
+            .spill
+            .as_ref()
+            .map(|file| BufReader::with_capacity(self.io_bytes(), file));
+        if let Some(reader) = &mut reader {
+            reader.seek(SeekFrom::Start(0))?;
+        }
+        let mut remaining = self.count;
+        let mut next_old = || -> Result<Option<(InodeId, FrontierValue)>> {
+            if remaining == 0 {
+                return Ok(None);
+            }
+            let mut bytes = [0; 192];
+            reader
+                .as_mut()
+                .ok_or(StorageError::Integrity("frontier spill"))?
+                .read_exact(&mut bytes)?;
+            remaining -= 1;
+            Self::decode(&bytes).map(Some)
         };
-        // ponytail: new-key merges cost O(N² / buffer capacity) beyond the budget;
-        // use tiered runs if substantially larger changes make spill IO dominant.
+        let mut pending = self.pending.iter().peekable();
+        let mut count = 0;
+        let mut old = next_old()?;
+        // ponytail: bounded sorted runs still merge O(N² / buffer capacity) new keys;
+        // use tiered runs only if substantially larger deltas make this dominant.
         while old.is_some() || pending.peek().is_some() {
             let delta = match (old, pending.peek()) {
                 (Some(previous), Some((&key, _))) if previous.0 < key => {
-                    cursor += 1;
-                    old = if cursor < self.count {
-                        Some(Self::read(self.spill.as_ref().unwrap(), cursor)?)
-                    } else {
-                        None
-                    };
+                    old = next_old()?;
                     previous
                 }
                 (Some(previous), None) => {
-                    cursor += 1;
-                    old = if cursor < self.count {
-                        Some(Self::read(self.spill.as_ref().unwrap(), cursor)?)
-                    } else {
-                        None
-                    };
+                    old = next_old()?;
                     previous
                 }
                 _ => {
                     let (&key, &record) = pending.next().unwrap();
                     if old.is_some_and(|entry| entry.0 == key) {
-                        cursor += 1;
-                        old = if cursor < self.count {
-                            Some(Self::read(self.spill.as_ref().unwrap(), cursor)?)
-                        } else {
-                            None
-                        };
+                        old = next_old()?;
                     }
                     (key, record)
                 }
             };
-            Self::write(&file, count, delta.0, delta.1)?;
+            writer.write_all(&Self::encode(delta.0, delta.1))?;
             count += 1;
         }
+        writer.flush()?;
+        let file = writer.into_inner().map_err(|error| error.into_error())?;
+        drop(reader);
         #[cfg(test)]
         if INJECT_INODE_MERGE_FAILURE.with(|inject| inject.replace(false)) {
             return Err(StorageError::Integrity("injected inode merge failure"));
@@ -1346,33 +1434,90 @@ impl FrontierInodes {
         Ok(())
     }
 
-    fn finish(&mut self, objects: &mut ObjectBuffer<'_>) -> Result<()> {
-        self.merge_pending()?;
-        let Some(file) = &self.spill else {
-            return Ok(());
+    fn finish(
+        &mut self,
+        objects: &mut ObjectBuffer<'_>,
+        mut checkpoint: impl FnMut(
+            &ObjectBuffer<'_>,
+            InodeId,
+            NodeId,
+            ObjectId,
+            InodeRecordV1,
+        ) -> Result<()>,
+    ) -> Result<()> {
+        let mut encode = |objects: &mut ObjectBuffer<'_>,
+                          inode: InodeId,
+                          value: FrontierValue|
+         -> Result<Option<ObjectId>> {
+            if let Some((node, content)) = value.checkpoint {
+                checkpoint(
+                    objects,
+                    inode,
+                    node,
+                    content,
+                    value
+                        .record
+                        .ok_or(StorageError::Integrity("released checkpoint inode"))?,
+                )?;
+            }
+            value
+                .record
+                .map(|record| {
+                    objects
+                        .put_owned(encode_inode_record(record)?)
+                        .map_err(Into::into)
+                })
+                .transpose()
         };
-        // Encode each final record once, before lending the object writer to the
-        // sorted builder. The same journal retains raw records for bounded fallback.
-        for index in 0..self.count {
-            if let (_, Some(record)) = Self::read(file, index)? {
-                let id = objects.put_owned(encode_inode_record(record)?)?;
-                file.write_all_at(id.as_bytes(), index * 144 + 112)?;
+        let mut memory = Vec::new();
+        if self.spill.is_none() {
+            // Consume the bounded map: memory-resident final changes need no journal.
+            memory.reserve_exact(self.pending.len());
+            while let Some((inode, record)) = self.pending.pop_first() {
+                let id = encode(objects, inode, record)?;
+                memory.push((inode, id));
+            }
+        } else {
+            self.merge_pending()?;
+            let file = self.spill.as_ref().unwrap();
+            // Encode once and attach IDs in sequential blocks, preserving raw
+            // records for diagnostics and the same sorted-run representation.
+            let rows_per_block = (self.io_bytes() / 192).max(1);
+            let mut bytes = vec![0; rows_per_block * 192];
+            let mut first = 0;
+            while first < self.count {
+                let rows = (self.count - first).min(rows_per_block as u64) as usize;
+                let block = &mut bytes[..rows * 192];
+                file.read_exact_at(block, first * 192)?;
+                for row in block.chunks_exact_mut(192) {
+                    let (inode, value) = Self::decode((&*row).try_into().unwrap())?;
+                    if let Some(id) = encode(objects, inode, value)? {
+                        row[160..192].copy_from_slice(id.as_bytes());
+                    }
+                }
+                file.write_all_at(block, first * 192)?;
+                first += rows as u64;
             }
         }
+        let count = if self.spill.is_some() {
+            self.count
+        } else {
+            memory.len() as u64
+        };
+        if count == 0 {
+            return Ok(());
+        }
         let namespace = filesystem::namespace(objects, self.root)?;
+        let mut reader = self
+            .spill
+            .as_ref()
+            .map(|file| BufReader::with_capacity(self.io_bytes(), file));
+        if let Some(reader) = &mut reader {
+            reader.seek(SeekFrom::Start(0))?;
+        }
         let mut source_error = None;
-        let deltas = (0..self.count).map(|index| {
-            let result: Result<_> = (|| {
-                let (inode, record) = Self::read(file, index)?;
-                let id = if record.is_some() {
-                    let mut id = [0; 32];
-                    file.read_exact_at(&mut id, index * 144 + 112)?;
-                    Some(ObjectId::from_bytes(&id)?)
-                } else {
-                    None
-                };
-                Ok((inode, id))
-            })();
+        let deltas = (0..count).map(|index| {
+            let result = Self::final_delta(&mut reader, &memory, index);
             result.map_err(|error| {
                 source_error = Some(error);
                 layerfs_content::CoreError::InvalidRecord("Workspace inode delta")
@@ -1397,11 +1542,21 @@ impl FrontierInodes {
                 layerfs_content::CoreError::ObjectLimitExceeded
                 | layerfs_content::CoreError::Unsupported,
             ) => {
+                if let Some(reader) = &mut reader {
+                    reader.seek(SeekFrom::Start(0))?;
+                }
                 let mut root = self.root;
-                for index in 0..self.count {
-                    let (inode, record) = Self::read(file, index)?;
-                    let mutation = match record {
-                        Some(record) => InodeMutation::Upsert { inode, record },
+                for index in 0..count {
+                    let (inode, id) = Self::final_delta(&mut reader, &memory, index)?;
+                    let mutation = match id {
+                        Some(id) => InodeMutation::Upsert {
+                            inode,
+                            record: ObjectStore::with_authenticated_canonical(
+                                objects,
+                                id,
+                                decode_inode_record,
+                            )?,
+                        },
                         None => InodeMutation::Remove { inode },
                     };
                     root = filesystem::apply_inode_mutations(objects, root, [mutation])?.root();
@@ -1411,6 +1566,27 @@ impl FrontierInodes {
             Err(error) => return Err(error.into()),
         };
         Ok(())
+    }
+
+    fn final_delta(
+        reader: &mut Option<BufReader<&File>>,
+        memory: &[(InodeId, Option<ObjectId>)],
+        index: u64,
+    ) -> Result<(InodeId, Option<ObjectId>)> {
+        if let Some(reader) = reader {
+            let mut bytes = [0; 192];
+            reader.read_exact(&mut bytes)?;
+            Ok((
+                InodeId(bytes[..32].try_into().unwrap()),
+                if bytes[32] == 0 {
+                    None
+                } else {
+                    Some(ObjectId::from_bytes(&bytes[160..192])?)
+                },
+            ))
+        } else {
+            Ok(memory[index as usize])
+        }
     }
 
     fn release(
@@ -1793,6 +1969,62 @@ mod tests {
         let moved = workspace.lookup(ROOT, b"moved").unwrap();
         assert_eq!(moved.links, 1);
         assert_eq!(workspace.read(moved.node, 0, 4).unwrap(), b"f001");
+        drop(workspace);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn final_records_match_in_memory_spill_and_small_budget_builders() {
+        assert!(std::mem::size_of::<(InodeId, FrontierValue)>() + 64 <= 256);
+        let (root, mut workspace) = empty_workspace("final-records");
+        let mut nodes = Vec::new();
+        for index in 0..12 {
+            let node = workspace
+                .create_file(ROOT, format!("f{index}").as_bytes(), 0o600)
+                .unwrap()
+                .node;
+            workspace.write(node, 0, &[index]).unwrap();
+            nodes.push(node);
+        }
+        workspace.commit().unwrap();
+        let mut roots = Vec::new();
+        for (capacity, scratch) in [(32, 16384), (2, 16384), (2, 0)] {
+            let mut objects = ObjectBuffer::new(&workspace.reader).unwrap();
+            let mut inodes =
+                FrontierInodes::new(workspace.base_root, capacity, scratch, &workspace.spool);
+            let first = inodes
+                .record(&objects, workspace.nodes[&nodes[0]].canonical.unwrap())
+                .unwrap();
+            let first_inode = workspace.nodes[&nodes[0]].canonical.unwrap();
+            inodes
+                .set_checkpoint(first_inode, first, nodes[0], first.content_root)
+                .unwrap();
+            let discarded = workspace.nodes[nodes.last().unwrap()].canonical.unwrap();
+            inodes.set(discarded, Some(first)).unwrap();
+            for node in &nodes {
+                let inode = workspace.nodes[node].canonical.unwrap();
+                let mut record = inodes.record(&objects, inode).unwrap();
+                record.content_root = first.content_root;
+                inodes.set(inode, Some(record)).unwrap();
+            }
+            inodes.set(discarded, None).unwrap();
+            let mut checked = 0;
+            inodes
+                .finish(&mut objects, |_, inode, node, content, record| {
+                    assert_eq!(
+                        (inode, node, content),
+                        (first_inode, nodes[0], first.content_root)
+                    );
+                    assert_eq!(record.content_root, content);
+                    checked += 1;
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(checked, 1);
+            assert_eq!(inodes.spill.is_none(), capacity == 32);
+            roots.push(inodes.root);
+        }
+        assert!(roots.windows(2).all(|pair| pair[0] == pair[1]));
         drop(workspace);
         std::fs::remove_dir_all(root).unwrap();
     }

@@ -194,9 +194,11 @@ fn commit(store: &LayerStackStore, branch_id: layerfs_layerstack_store::BranchId
 }
 
 fn temp() -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     std::env::temp_dir().join(format!(
-        "layerfs-v4-workspace-reconciliation-{}-{}",
+        "layerfs-v4-workspace-reconciliation-{}-{}-{}",
         std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()

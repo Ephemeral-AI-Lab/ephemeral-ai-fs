@@ -130,6 +130,9 @@ pub struct WorkspaceCommitReceipt {
     /// Includes spool_retirement_ns; retirement is a nested subphase.
     pub checkpoint_ns: u64,
     pub spool_retirement_ns: u64,
+    /// Nested retain-predicate time; remaining retirement includes owner drop/close and map iteration.
+    pub spool_retirement_scan_ns: u64,
+    pub spool_retired_segments: u64,
     pub resume_ns: u64,
     pub unattributed_ns: u64,
     pub snapshot_database_calls: u64,
@@ -444,6 +447,18 @@ pub fn note_workspace_commit_phase(phase: WorkspaceCommitPhase, elapsed_ns: u64)
             WorkspaceCommitPhase::Resume => &mut receipt.resume_ns,
         };
         *target = target.saturating_add(elapsed_ns);
+    });
+}
+
+pub fn note_workspace_spool_retirement(total_ns: u64, scan_ns: u64, segments: u64) {
+    WORKSPACE_COMMIT.with(|current| {
+        if let Some(receipt) = current.borrow_mut().as_mut() {
+            receipt.spool_retirement_ns = receipt.spool_retirement_ns.saturating_add(total_ns);
+            receipt.spool_retirement_scan_ns =
+                receipt.spool_retirement_scan_ns.saturating_add(scan_ns);
+            receipt.spool_retired_segments =
+                receipt.spool_retired_segments.saturating_add(segments);
+        }
     });
 }
 
