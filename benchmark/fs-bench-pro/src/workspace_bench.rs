@@ -789,12 +789,23 @@ pub(crate) fn fixture_info(case: &Case, seed: u8, branch: Option<BranchId>) -> A
         let (total_bytes, total_files, _) = entry_info(&populated)?;
         let manifest = common::manifest(&populated)?;
         let manifest_sha256 = workload_source::sdk_edit_common::sha256_hex(manifest.as_bytes());
-        plan = workload_source::sdk_edit_common::sha256_hex(format!("tiny-bulk-mixed-v3\n{plan}\n{manifest_sha256}").as_bytes());
-        Some((total_bytes, total_files, populated.len() - total_files, manifest_sha256))
-    } else { None };
+        plan = workload_source::sdk_edit_common::sha256_hex(
+            format!("tiny-bulk-mixed-v3\n{plan}\n{manifest_sha256}").as_bytes(),
+        );
+        Some((
+            total_bytes,
+            total_files,
+            populated.len() - total_files,
+            manifest_sha256,
+        ))
+    } else {
+        None
+    };
     let profile = if workload_source::ordinary_workloads::mixed_bulk(case) {
         workload_source::ordinary_workloads::MIXED_BULK_PROFILE
-    } else { "workspace-input-v1" };
+    } else {
+        "workspace-input-v1"
+    };
     print!("{{\"fixture_profile\":\"{profile}\",\"fixture_bytes\":{bytes},\"regular_files\":{files},\"input_plan_sha256\":{},\"input_mode\":{}", quote(&plan),quote(if registry::is_import(case) { "directory" } else { "store" }));
     if let Some((total_bytes, total_files, directories, manifest)) = populated_info {
         print!(",\"populated_bytes\":{total_bytes},\"populated_regular_files\":{total_files},\"populated_directories\":{directories},\"populated_manifest_sha256\":{}", quote(&manifest));
@@ -1245,7 +1256,11 @@ fn run_case(
     let orchestration_start = Instant::now();
     let mut pure_call_sum_ns = 0u64;
     let limit_ns = match std::env::var("LAYERFS_BENCH_PRODUCT_TIMEOUT_SECONDS") {
-        Ok(seconds) => seconds.parse::<u64>()?.checked_mul(1_000_000_000).filter(|ns| *ns > 0).ok_or("invalid product timeout")?,
+        Ok(seconds) => seconds
+            .parse::<u64>()?
+            .checked_mul(1_000_000_000)
+            .filter(|ns| *ns > 0)
+            .ok_or("invalid product timeout")?,
         Err(std::env::VarError::NotPresent) => PRODUCT_EXECUTION_LIMIT_NS,
         Err(error) => return Err(error.into()),
     };
@@ -2467,9 +2482,13 @@ mod product_budget_tests {
         budget.end("visibility", 1, None).unwrap();
         assert!(budget.begin("next-step").is_err());
         let mut extended = ProductBudget::new(true, 600_000_000_000);
-        extended.end("exec", PRODUCT_EXECUTION_LIMIT_NS + 1, None).unwrap();
+        extended
+            .end("exec", PRODUCT_EXECUTION_LIMIT_NS + 1, None)
+            .unwrap();
         assert!(extended.check().is_ok());
-        extended.end("commit", 600_000_000_000 - PRODUCT_EXECUTION_LIMIT_NS, None).unwrap();
+        extended
+            .end("commit", 600_000_000_000 - PRODUCT_EXECUTION_LIMIT_NS, None)
+            .unwrap();
         assert!(extended.check().is_err());
         // Verification/proof mode keeps accounting but cannot arm a deadline.
         let mut disabled = ProductBudget::new(false, PRODUCT_EXECUTION_LIMIT_NS);

@@ -1847,13 +1847,23 @@ mod sampled_tests {
         assert!(common::verify_native_sample(&native, &sample).is_err());
         // A non-prefix range must be checked by both readers.
         sample.entries = entries.clone();
-        sample.ranges.insert("payload".into(), vec![(65536, 64), (131008, 64)]);
+        sample
+            .ranges
+            .insert("payload".into(), vec![(65536, 64), (131008, 64)]);
         verify_sample(&pinned.reader, pinned.root, &sample)?;
         common::verify_native_sample(&native, &sample)?;
-        sample.entries[1] = Entry::file("payload", Content::Xor {
-            source: std::sync::Arc::new(Content::Seed { seed: 71, len: 131072 }),
-            offset: 65536, len: 1, mask: 1,
-        });
+        sample.entries[1] = Entry::file(
+            "payload",
+            Content::Xor {
+                source: std::sync::Arc::new(Content::Seed {
+                    seed: 71,
+                    len: 131072,
+                }),
+                offset: 65536,
+                len: 1,
+                mask: 1,
+            },
+        );
         assert!(verify_sample(&pinned.reader, pinned.root, &sample).is_err());
         assert!(common::verify_native_sample(&native, &sample).is_err());
         sample.ranges.clear();
