@@ -674,3 +674,26 @@ Each launch initially encountered the occupied shared measurement lock and start
 Create performed exactly1,000filewrites/104,857,600B,1,049workload pwrite calls and1,139metadata normalizations. Delete performed exactly1,000unlinks and138rmdirs. Create Commit: pipeline264.614459ms, nested consumer73.407908ms, consumer idle191.688968ms; checkpoint92.428458ms including physical retirement91.601959ms of103segments. Selected canonical data is53,065,971B memory-owned and52,595,430B spill-readback (the new50MiB file exceeds the existing bounded per-file private buffer); required spill authentication47.951924ms. Candidate9,600objects/105,661,401B, inserted9,586/105,660,222B, reused14/1,179B. No cleanup is moved outside Commit. Delete Commit namespace12.107084ms, deletion records10.106586ms, cursor0.798833ms, checkpoint0.157459ms.
 
 The remaining complete-create gap is342.121417ms. Exec metadata normalization alone is548.364209ms in this new sample. This identifies remaining work for reassessment; this migration does not begin another original-workload Commit tuning campaign or claim those nested timers are additive recoverable savings.
+
+## Attempts 15–16: authorized complete tier500 mixed-v3 pair
+
+The user's request to increase the limit and obtain full tier500 runs supersedes the earlier tier500 deferral. Specification amendment `6fea9d2b5` precedes harness change `459eefaa0`. The explicit `--product-timeout` defaults to120seconds; the selected tier500 runs use600seconds product/630seconds outer/600seconds preparation. The existing watchdog, cumulative checks and phase receipts all use the configured limit. No pass threshold, product engine, workload size, resource cap or independent proof deadline changes. Two focused watchdog/boundary checks and16 runner checks passed, including live600second-budget enforcement using a bounded10ms remaining allowance. Host and image builds were serial under the shared lock. Two initial lock rejections started no tests.
+
+One seed1 sample per operation, on source `459eefaa01db3fc08c7b40c930da5981d8b04bc1` / seal `b6159377eadfc07806aaba102525a8b5d7b10c8ef2c0b48c834f3b2fb60731ca`, host binary SHA-256 `ba22f2936ef28e07a74fc6a5a6dc5abc822b36da59c52958e1c16ae4290e20cf`, image `layerfs-bench-infra:b6159377eadfc078` / `sha256:ff14c13a66f1224fe5879d682b0345015e52a626eab381a5f9f27995ce985002`. Product seal remains `4d1f3e9348a516fa4815defe8f6279c9ada45f20d76285b5d56e14a629bf74c8`. The fixture recipes and exact populated manifest are unchanged from attempts13–14's tier500 definition checks.
+
+| Revised tier500 case | Create session ns | Exec ns | Commit ns | Visibility ns | End ns | Complete lifecycle ns | Family15s performance |
+|---|---:|---:|---:|---:|---:|---:|---|
+|create|10,247,667|4,307,807,708|1,862,498,042|96,875|19,426,417|6,200,076,709|PASS|
+|delete|9,871,667|874,646,083|50,838,875|70,291|4,588,333|940,015,249|PASS|
+
+Every phase receipt confirms `limit_ns=600000000000`. Each row is n=1, median=min=max; no distribution, simple cross-tier scaling or cross-profile product-speedup claim. No tier500 subsecond or400ms Commit gate is introduced. This does not qualify the full20-case family or close the tier100 #47 target, whose retained create lifecycle is1,342.121417ms. No unchanged tier100 rerun or independent proof was performed after the allowance-only harness change.
+
+Full target work is retained: create5,000files/524,288,000B via5,297workload pwrite calls,5,159metadata normalizations and required root sync; delete5,000unlinks/158rmdirs and required sync. The separate200-file/1MiB witness remains in the fixture/oracle contract. Both runs report0benchmark verifier/reopen/injection work in performance, cleanupPASS, unchanged prepared masters, OOM/swap0 and0physical spoolfiles/bytes after Commit. Container lifetime peaks18,952,192B create and5,255,168B delete; host resources are retained separately. Host SQLite/no data mounts and2CPU/2GiB/256PID container constraints hold.
+
+Create Commit: output pipeline1,500.741917ms, nested consumer452.420386ms, consumer idle1,051.685092ms; checkpoint306.409708ms including299.854334ms physical retirement of516segments. Selected spill/readback316,687,246B and memory-owned211,344,309B; required fresh-spill authentication291.970257ms. Exec metadata normalization2,558.220918ms. These identify remaining costs without starting a new tuning campaign or treating nested times as additive savings. Delete Commit namespace48.105875ms, deletion records41.410426ms, cursor3.544041ms.
+
+Raw receipts and exact identities:
+
+- `benchmark-results/host-store/results/issue47-mixed-v3-create500/perf.jsonl`, SHA-256 `fc19ed12c45fe6f1a6cb3f6bd0f07c519578aa5b918072782105117410411394`, selected input `f9524311661812fd26332de47f379b053121602ab33a059043b4b1d5522acce3`.
+- `benchmark-results/host-store/results/issue47-mixed-v3-delete500/perf.jsonl`, SHA-256 `1832a640eefa649fcb515b11d20771ce9954d00187a9532a9a7456f59d8b0965`, selected input `2a752bda5e8a7022f2f7e97a4a1bf4ffb12399a52d74df8187cf3a1b67a791a5`.
+- `benchmark-results/host-store/results/issue47-mixed-v3-definition/tier500-pair-assessment.json` balances all lifecycle phases, verifies configured limits, exact operation counts, shared source/binary/image identities, physical retirement and cleanup. Independent proofs remain NOT_RUN; #49 remains unstarted.
