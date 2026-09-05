@@ -33,6 +33,16 @@ def performance_target_status(elapsed_ns):
     return "PASS" if elapsed_ns <= PRODUCT_TARGET_NS else "TARGET_MISS"
 
 
+def issue47_assessment(selection, elapsed_ns):
+    if selection.get("family") != "tiny_file_churn" or selection.get("case") not in (
+            "tiny-bulk-create-100-mixed-v3", "tiny-bulk-delete-100-mixed-v3"):
+        return None
+    return {"contract": "issue47-mixed-v3", "target_ns": 1_000_000_000,
+            "strict_less_than": True, "timer": "pure_call_sum_ns", "elapsed_ns": elapsed_ns,
+            "status": "PASS" if elapsed_ns < 1_000_000_000 else "TARGET_MISS",
+            "qualification": "performance-only; final independent proofs pending"}
+
+
 TIMERS = {"workspace": "pure_call_sum_ns", "sdk": "edit_commit_ns",
           "namespace": "layerstack_init_ns", "store-footprint": "product_call_sum_ns"}
 
@@ -138,6 +148,33 @@ def image_info(image, deadline):
     return value
 
 
+def mixed_fixture_info(args, host_identity, seed, deadline):
+    # Cache only the untimed immutable oracle identity, never product/output state.
+    key = {"binary_sha256": host_identity["binary_sha256"], "family": args.family,
+           "case": args.case, "seed": seed, "profile": "tiny-bulk-mixed-v3"}
+    path = HOST_ROOT / "fixture-identities" / (digest(key) + ".json")
+    if path.exists():
+        saved = json.loads(path.read_text())
+        if saved.get("key") != key or saved.get("sha256") != digest(saved.get("fixture")):
+            raise ValueError("mixed-v3 fixture identity cache mismatch")
+        fixture = saved["fixture"]
+    else:
+        if getattr(args, "verification", False):
+            raise ValueError("mixed-v3 proof requires the matching performance fixture identity cache")
+        fixture = records(_command([args.host_binary, "infra-fixture-info", args.family, args.case, str(seed)], deadline).stdout)[-1]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        staging = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+        try:
+            staging.write_text(json.dumps({"key": key, "fixture": fixture, "sha256": digest(fixture)}, sort_keys=True))
+            staging.chmod(0o444)
+            staging.replace(path)
+        finally:
+            staging.unlink(missing_ok=True)
+    if fixture.get("fixture_profile") != "tiny-bulk-mixed-v3" or not fixture.get("populated_manifest_sha256"):
+        raise ValueError("mixed-v3 fixture custody missing")
+    return fixture
+
+
 def resolve_selection(args, deadline):
     if args.topology != "host-store":
         raise ValueError("Docker-owned SQLite is prohibited; use host-store")
@@ -202,8 +239,13 @@ def resolve_selection(args, deadline):
     if fresh and args.setup == "clone":
         raise ValueError("initialization requires a fresh output Store; clone is not applicable")
     setup = "fresh-output" if fresh else (args.setup or "clone")
-    input_identity = digest({"family": args.family, "case": args.case, "seed": 1 if inherited else seed,
-                             "source": source, "recipe": row})
+    input_recipe = {"family": args.family, "case": args.case, "seed": 1 if inherited else seed,
+                    "source": source, "recipe": row}
+    fixture_info = None
+    if row.get("fixture_profile") == "tiny-bulk-mixed-v3":
+        fixture_info = mixed_fixture_info(args, host_identity, seed, deadline)
+        input_recipe["fixture"] = fixture_info
+    input_identity = digest(input_recipe)
     if args.source and args.source != source:
         raise ValueError("selected source identity does not match image")
     if args.input and args.input != input_identity:
@@ -217,6 +259,8 @@ def resolve_selection(args, deadline):
                      "container_cpus": args.cpus, "container_memory_mib": args.memory_mib,
                      "topology": args.topology, "host_cpu_capped": False},
                  "verification_supported": row.get("verification_supported", True)}
+    if fixture_info is not None:
+        selection["fixture_info"] = fixture_info
     selection["source_arm"] = args.source_arm
     selection["timer"] = TIMERS.get(row.get("route"))
     selection["topology"] = args.topology
@@ -232,7 +276,7 @@ HOST_ROOT = REPO / "benchmark-results/host-store"
 def _host_acquire(args, selection, deadline):
     sdk = selection.get("route") == "sdk"
     fixture_command = [args.host_binary, "infra-fixture-info", selection["family"], selection["case"], str(selection["seed"])]
-    fixture = records(_command(fixture_command, deadline).stdout)[-1]
+    fixture = selection.get("fixture_info") or records(_command(fixture_command, deadline).stdout)[-1]
     native = selection["setup_identity"] == "fresh-output"
     compatibility = {"contract": "sdk-edit-prepared-store-cache-v1" if sdk else "layerfs-canonical-v5-workspace-fixture-v1",
         "fixture": fixture, "schema_sha256": selection["host_executor"]["schema_sha256"]}
@@ -438,6 +482,9 @@ def execute_selected(args, *, deadline, verification=False):
                 result["completion_status"] = "COMPLETE"
                 result["product_target_ns"] = PRODUCT_TARGET_NS
                 result["status"] = performance_target_status(elapsed)
+                assessment = issue47_assessment(selection, elapsed)
+                if assessment is not None:
+                    result["issue47_assessment"] = assessment
                 if result["status"] == "TARGET_MISS":
                     result["error"] = f"complete product-call sum {elapsed} ns exceeds the 15-second target"
     except Exception as error:

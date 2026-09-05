@@ -368,8 +368,12 @@ impl Entry {
 pub(crate) struct TreeSample {
     pub entries: Vec<Entry>,
     pub absent: Vec<String>,
+    pub ranges: BTreeMap<String, Vec<(u64, usize)>>,
 }
 impl TreeSample {
+    pub fn file_ranges(&self, entry: &Entry, content: &Content) -> Vec<(u64, usize)> {
+        self.ranges.get(&entry.path).cloned().unwrap_or_else(|| vec![(0, content.len().min(65536) as usize)])
+    }
     pub fn validate(&self) -> Result<()> {
         let files = self.entries.iter().filter(|entry| matches!(entry.kind, EntryKind::File(_))).count();
         if files > 11 || self.entries.len() - files > 11 || self.absent.len() > 11 {
@@ -379,6 +383,14 @@ impl TreeSample {
         for path in self.entries.iter().map(|entry| &entry.path).chain(&self.absent) {
             validate_path(path)?;
             if path.split('/').count() > 132 || !paths.insert(path) { return Err("Workspace sample path bounds".into()); }
+        }
+        for (path, ranges) in &self.ranges {
+            let Some(Entry { kind: EntryKind::File(content), .. }) = self.entries.iter().find(|entry| &entry.path == path) else {
+                return Err("sample range path is not a selected file".into());
+            };
+            if ranges.is_empty() || ranges.len() > 3 || ranges.iter().any(|&(offset, len)| len > 65536 || offset.checked_add(len as u64).is_none_or(|end| end > content.len())) {
+                return Err("sample range bounds".into());
+            }
         }
         for entry in &self.entries {
             match &entry.kind {
@@ -392,8 +404,8 @@ impl TreeSample {
     pub fn receipt(&self) -> Receipt {
         Receipt::from([
             ("sampled_paths".into(), self.entries.iter().map(|entry| entry.path.clone()).collect::<Vec<_>>().join("\n")),
-            ("sampled_ranges".into(), self.entries.iter().filter_map(|entry| match &entry.kind {
-                EntryKind::File(content) => Some(format!("{}:0..{}", entry.path, content.len().min(65536))), _ => None,
+            ("sampled_ranges".into(), self.entries.iter().flat_map(|entry| match &entry.kind {
+                EntryKind::File(content) => self.file_ranges(entry, content).into_iter().map(|(offset, len)| format!("{}:{}..{}", entry.path, offset, offset + len as u64)).collect::<Vec<_>>(), _ => Vec::new(),
             }).collect::<Vec<_>>().join("\n")),
             ("absent_paths".into(), self.absent.join("\n")),
             ("full_namespace_verified".into(), "false".into()),
@@ -416,12 +428,14 @@ pub(crate) fn verify_native_sample(root: &Path, sample: &TreeSample) -> Result<R
         match &entry.kind {
             EntryKind::Directory if metadata.is_dir() => (),
             EntryKind::File(content) if metadata.is_file() && metadata.len() == content.len() => {
-                let mut expected = vec![0; content.len().min(65536) as usize];
-                let len = expected.len();
-                if content.read_at(0, &mut expected)? != len { return Err("sampled oracle length".into()); }
-                let mut actual = vec![0; len];
-                File::open(path)?.read_exact_at(&mut actual, 0)?;
-                if actual != expected { return Err(format!("sampled native bytes: {}", entry.path).into()); }
+                let file = File::open(path)?;
+                for (offset, len) in sample.file_ranges(entry, content) {
+                    let mut expected = vec![0; len];
+                    if content.read_at(offset, &mut expected)? != len { return Err("sampled oracle length".into()); }
+                    let mut actual = vec![0; len];
+                    file.read_exact_at(&mut actual, offset)?;
+                    if actual != expected { return Err(format!("sampled native bytes: {}", entry.path).into()); }
+                }
             }
             _ => return Err(format!("sampled native kind/length: {}", entry.path).into()),
         }

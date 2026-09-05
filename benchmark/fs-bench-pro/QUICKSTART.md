@@ -53,3 +53,15 @@ Nine families: `payload_create_read`, `dedup_workspace_reuse`, `dedup_cross_file
 **118/118 performance cases and 27/27 selected proofs passed.** One performance sample per case establishes a baseline, not a statistical distribution. The proofs use their explicitly recorded coverage; they do not establish exhaustive byte/namespace verification. Other families are deferred to **#39**.
 
 See the [baseline report and exact verification coverage](../../docs/roadmap/0.1/0.1.3/nine-family-fast-baseline.md). During normal iteration, rerun the affected case rather than replaying the whole baseline.
+
+## Tiny-file churn mixed bulk v3
+
+The approved [mixed-v3 contract](../../docs/roadmap/0.1/0.1.3/tiny-file-churn-mixed-v3.md) replaces only the high-tier bulk rows with `tiny-bulk-create-100-mixed-v3`, `tiny-bulk-delete-100-mixed-v3`, `tiny-bulk-create-500-mixed-v3`, and `tiny-bulk-delete-500-mixed-v3`. Family membership remains 20. Tier 100 affects 1,000 files / 100 MiB; tier 500 affects 5,000 files / 500 MiB. Both retain the separate 200-file / 1 MiB witness. Low-tier compact and individual create/stat/unlink cases are unchanged. Old IDs and receipts are historical; fewer operations do not establish a product speedup.
+
+After building the host binary and workload image, select one revised case:
+
+```bash
+python3 benchmark/fs-bench-pro/shared/runner.py --topology host-store --family tiny_file_churn --case tiny-bulk-create-100-mixed-v3 --seed 1 --setup clone --perf-fast
+```
+
+Use `tiny-bulk-delete-100-mixed-v3` for the separate serial delete sample on the same source. The broader family target remains 15 seconds; the sample also records the separate strict #47 assessment (`pure_call_sum_ns < 1,000,000,000`) for the revised tier-100 pair. Tier-500 performance and independent final proofs are deferred. Proof selection includes every large file with three 64 KiB ranges (beginning, midpoint, end), declared small/medium paths, and the witness; delete checks corresponding absence. Report omissions explicitly.

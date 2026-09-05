@@ -156,3 +156,15 @@ The host owns the SDK, Workspace manager/capture/spool and local SQLite Store. T
 Prepared cache and samples are local to the ignored project `benchmark-results/host-store/`: `prepared/`, `fixtures/`, `samples/`, `results/`. Workspace masters are closed, self-contained and protected; every invocation byte-copies to an absent independent writable Store, fsyncs, quick-checks and verifies equal hashes/distinct inodes before timing. WAL/SHM/journal sidecars are rejected: this helper is deliberately not a live-database snapshot API. Native imports reuse source fixtures with original modes and always create a fresh output Store. Masters are checked again after samples. Cache compatibility uses schema/format/fixture/seed/initial-state identity, separately from producing and executing code/image provenance. Bump the versioned compatibility contract if canonical format or byte-generation semantics change outside the fixture descriptors. Reuse is bounded to 8 prepared/fixture entries and 10 GiB; only marked benchmark-owned data can be evicted. Completed sample data is removed.
 
 Prepared cache entries are evictable, and samples are disposable. Git ignore is not a backup mechanism. Durable backups require separate storage and retention; ordinary product Store locations remain caller-selected and are outside these cleanup paths. Docker-only results remain evidence for their original topology and must never be relabeled as host qualification.
+
+## Tiny-file churn mixed bulk v3
+
+The approved [mixed-v3 contract](../../docs/roadmap/0.1/0.1.3/tiny-file-churn-mixed-v3.md) replaces only the high-tier bulk rows with `tiny-bulk-create-100-mixed-v3`, `tiny-bulk-delete-100-mixed-v3`, `tiny-bulk-create-500-mixed-v3`, and `tiny-bulk-delete-500-mixed-v3`. Family membership remains 20. Tier 100 affects 1,000 files / 100 MiB; tier 500 affects 5,000 files / 500 MiB. Both retain the separate 200-file / 1 MiB witness. Low-tier compact and individual create/stat/unlink cases are unchanged. Old IDs and receipts are historical; fewer operations do not establish a product speedup.
+
+After building the host binary and workload image, select one revised case:
+
+```bash
+python3 benchmark/fs-bench-pro/shared/runner.py --topology host-store --family tiny_file_churn --case tiny-bulk-create-100-mixed-v3 --seed 1 --setup clone --perf-fast
+```
+
+Use `tiny-bulk-delete-100-mixed-v3` for the separate serial delete sample on the same source. The broader family target remains 15 seconds; the sample also records the separate strict #47 assessment (`pure_call_sum_ns < 1,000,000,000`) for the revised tier-100 pair. Tier-500 performance and independent final proofs are deferred. Proof selection includes every large file with three 64 KiB ranges (beginning, midpoint, end), declared small/medium paths, and the witness; delete checks corresponding absence. Report omissions explicitly.

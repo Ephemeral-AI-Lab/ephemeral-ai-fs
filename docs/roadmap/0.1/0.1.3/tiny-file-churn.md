@@ -105,3 +105,7 @@ Completion requires all 20 case identities and seed samples, exact full-tree
 and transient-size proofs, no resource/cleanup failure, and retained evidence.
 Bulk create/delete are distinct from directory-only construction and from
 prepared-tree import; their timings must remain separately attributable.
+
+## Approved mixed bulk v3 migration
+
+The [mixed-v3 amendment](tiny-file-churn-mixed-v3.md) supersedes the high-tier bulk rows and their original shared-shard byte distributions above. The four active IDs now end in `-mixed-v3`; other definitions remain unchanged. Original-workload evidence remains historical and must not be relabeled.

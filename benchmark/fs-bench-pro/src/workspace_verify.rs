@@ -37,15 +37,16 @@ pub(crate) fn verify_sample(
                 if state.logical_len != content.len() {
                     return Err(format!("sampled canonical length: {}", entry.path).into());
                 }
-                let mut expected = vec![0; content.len().min(65536) as usize];
-                let len = expected.len();
-                if content.read_at(0, &mut expected)? != len {
-                    return Err("sampled oracle length".into());
-                }
-                let mut actual = Vec::with_capacity(len);
-                rope::read_range(&reader, file, 0..len as u64, &mut actual)?;
-                if actual != expected {
-                    return Err(format!("sampled canonical bytes: {}", entry.path).into());
+                for (offset, len) in sample.file_ranges(entry, content) {
+                    let mut expected = vec![0; len];
+                    if content.read_at(offset, &mut expected)? != len {
+                        return Err("sampled oracle length".into());
+                    }
+                    let mut actual = Vec::with_capacity(len);
+                    rope::read_range(&reader, file, offset..offset + len as u64, &mut actual)?;
+                    if actual != expected {
+                        return Err(format!("sampled canonical bytes: {}", entry.path).into());
+                    }
                 }
             }
             _ => return Err(format!("sampled canonical kind: {}", entry.path).into()),
@@ -1824,6 +1825,7 @@ mod sampled_tests {
         let mut sample = common::TreeSample {
             entries: entries.clone(),
             absent: vec!["missing/child".into()],
+            ranges: BTreeMap::new(),
         };
         verify_sample(&pinned.reader, pinned.root, &sample)?;
         common::verify_native_sample(&native, &sample)?;
@@ -1843,6 +1845,18 @@ mod sampled_tests {
         );
         assert!(verify_sample(&pinned.reader, pinned.root, &sample).is_err());
         assert!(common::verify_native_sample(&native, &sample).is_err());
+        // A non-prefix range must be checked by both readers.
+        sample.entries = entries.clone();
+        sample.ranges.insert("payload".into(), vec![(65536, 64), (131008, 64)]);
+        verify_sample(&pinned.reader, pinned.root, &sample)?;
+        common::verify_native_sample(&native, &sample)?;
+        sample.entries[1] = Entry::file("payload", Content::Xor {
+            source: std::sync::Arc::new(Content::Seed { seed: 71, len: 131072 }),
+            offset: 65536, len: 1, mask: 1,
+        });
+        assert!(verify_sample(&pinned.reader, pinned.root, &sample).is_err());
+        assert!(common::verify_native_sample(&native, &sample).is_err());
+        sample.ranges.clear();
         sample.entries = vec![entries[0].clone()];
         sample.absent = vec!["payload".into()];
         assert!(verify_sample(&pinned.reader, pinned.root, &sample).is_err());

@@ -780,7 +780,23 @@ pub(crate) fn fixture_info(case: &Case, seed: u8, branch: Option<BranchId>) -> A
             .as_bytes(),
         );
     }
-    print!("{{\"fixture_profile\":\"workspace-input-v1\",\"fixture_bytes\":{bytes},\"regular_files\":{files},\"input_plan_sha256\":{},\"input_mode\":{}", quote(&plan),quote(if registry::is_import(case) { "directory" } else { "store" }));
+    let populated_info = if workload_source::ordinary_workloads::mixed_bulk(case) {
+        let mut create = case.clone();
+        create.kind = "tiny-bulk-create";
+        let populated = registry::expected(&create, seed, 1)?;
+        let (total_bytes, total_files, _) = entry_info(&populated)?;
+        let manifest = common::manifest(&populated)?;
+        let manifest_sha256 = workload_source::sdk_edit_common::sha256_hex(manifest.as_bytes());
+        plan = workload_source::sdk_edit_common::sha256_hex(format!("tiny-bulk-mixed-v3\n{plan}\n{manifest_sha256}").as_bytes());
+        Some((total_bytes, total_files, populated.len() - total_files, manifest_sha256))
+    } else { None };
+    let profile = if workload_source::ordinary_workloads::mixed_bulk(case) {
+        workload_source::ordinary_workloads::MIXED_BULK_PROFILE
+    } else { "workspace-input-v1" };
+    print!("{{\"fixture_profile\":\"{profile}\",\"fixture_bytes\":{bytes},\"regular_files\":{files},\"input_plan_sha256\":{},\"input_mode\":{}", quote(&plan),quote(if registry::is_import(case) { "directory" } else { "store" }));
+    if let Some((total_bytes, total_files, directories, manifest)) = populated_info {
+        print!(",\"populated_bytes\":{total_bytes},\"populated_regular_files\":{total_files},\"populated_directories\":{directories},\"populated_manifest_sha256\":{}", quote(&manifest));
+    }
     if let Some(branch) = branch {
         print!(",\"branch_id\":{}", quote(&branch.to_string()));
     }

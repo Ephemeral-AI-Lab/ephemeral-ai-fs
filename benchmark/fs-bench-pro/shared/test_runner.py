@@ -63,6 +63,42 @@ class RunnerTests(unittest.TestCase):
                 third = runner._host_acquire(args, selection, time.monotonic() + 5)
                 self.assertFalse(third["cache_hit"])
                 self.assertNotEqual(first["cache_key"], third["cache_key"])
+                fixture["fixture_profile"] = "tiny-bulk-mixed-v3"
+                fixture["populated_manifest_sha256"] = "mixed-target-full-digests"
+                fourth = runner._host_acquire(args, selection, time.monotonic() + 5)
+                self.assertFalse(fourth["cache_hit"])
+                self.assertNotEqual(third["cache_key"], fourth["cache_key"])
+
+    def test_mixed_v3_strict_classifier_and_cache_invalidation(self):
+        for operation in ("create", "delete"):
+            selection = {"family": "tiny_file_churn", "case": f"tiny-bulk-{operation}-100-mixed-v3"}
+            self.assertEqual(runner.issue47_assessment(selection, 999_999_999)["status"], "PASS")
+            self.assertEqual(runner.issue47_assessment(selection, 1_000_000_000)["status"], "TARGET_MISS")
+            for case in (f"tiny-bulk-{operation}-100", f"tiny-bulk-{operation}-500-mixed-v3"):
+                self.assertIsNone(runner.issue47_assessment({**selection, "case": case}, 1))
+        old = {"fixture_profile": "workspace-input-v1", "input_plan_sha256": "old-target"}
+        new = {"fixture_profile": "tiny-bulk-mixed-v3", "input_plan_sha256": "new-target", "populated_manifest_sha256": "full-digests"}
+        self.assertNotEqual(runner.digest(old), runner.digest(new))
+
+    def test_mixed_oracle_identity_reuse_keeps_proof_bounded(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(runner, "HOST_ROOT", Path(directory)):
+            args = SimpleNamespace(host_binary="host", family="tiny_file_churn", case="tiny-bulk-create-100-mixed-v3", verification=False)
+            identity = {"binary_sha256": "binary"}
+            fixture = {"fixture_profile": "tiny-bulk-mixed-v3", "populated_manifest_sha256": "full-digests"}
+            with patch.object(runner, "_command", return_value=SimpleNamespace(stdout=json.dumps(fixture))) as command:
+                self.assertEqual(runner.mixed_fixture_info(args, identity, 1, 10), fixture)
+                args.verification = True
+                self.assertEqual(runner.mixed_fixture_info(args, identity, 1, 10), fixture)
+                command.assert_called_once()
+                with self.assertRaisesRegex(ValueError, "matching performance"):
+                    runner.mixed_fixture_info(args, identity, 2, 10)
+                path = next((Path(directory) / "fixture-identities").glob("*.json"))
+                saved = json.loads(path.read_text())
+                saved["fixture"]["populated_manifest_sha256"] = "corrupt"
+                path.chmod(0o644)
+                path.write_text(json.dumps(saved))
+                with self.assertRaisesRegex(ValueError, "cache mismatch"):
+                    runner.mixed_fixture_info(args, identity, 1, 10)
 
     def test_deadline_units(self):
         remaining = runner._deadline(time.monotonic() + 5).remaining()

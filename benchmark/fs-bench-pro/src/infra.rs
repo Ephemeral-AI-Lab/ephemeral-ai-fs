@@ -57,7 +57,9 @@ fn row(
     let inherited = SDK.contains(&family) || family == "edit_length_changing_capped";
     let low_tier = matches!(family, "init_namespace" | "store_footprint") || tier <= 10;
     let smoke_supported = low_tier && bytes <= 50_000_000 && files <= 1_000 && !proof;
-    let profile = if id.contains("compact-") || id.contains("low-v") {
+    let profile = if family == "tiny_file_churn" && id.ends_with("-mixed-v3") {
+        workload_source::ordinary_workloads::MIXED_BULK_PROFILE
+    } else if id.contains("compact-") || id.contains("low-v") {
         "compact-low-tier-v2"
     } else {
         "registered-fixture"

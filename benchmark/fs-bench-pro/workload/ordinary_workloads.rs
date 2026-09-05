@@ -39,6 +39,49 @@ fn case_shards(case:&Case,seed:u8,n:usize,prefix:&str)->Result<Vec<Entry>> {
     parents(&mut entries,&destination);dir(&mut entries,&destination);
     Ok(entries.into_values().collect())
 }
+pub(crate) const MIXED_BULK_PROFILE: &str = "tiny-bulk-mixed-v3";
+
+pub(crate) fn mixed_bulk(case: &Case) -> bool {
+    case.family == "tiny_file_churn" && case.kind.starts_with("tiny-bulk-")
+        && matches!(case.tier, 100 | 500) && case.id.ends_with("-mixed-v3")
+}
+
+fn bulk_shard_count(case: &Case) -> usize {
+    if mixed_bulk(case) { case.tier / 20 } else { case.tier }
+}
+
+fn bulk_content(case: &Case, seed: u8, shard: usize, file: usize) -> Result<Content> {
+    if !mixed_bulk(case) { return case_shard_content(case, seed, shard, file); }
+    let ordinal = shard * 200 + file;
+    let count = case.tier * 10;
+    if file >= 200 || ordinal >= count { return Err("mixed bulk ordinal".into()); }
+    let (large_count, large_size) = if case.tier == 100 { (1, 50 * MIB) } else { (3, 100 * MIB) };
+    let small_count = count * 4 / 5;
+    let medium_count = count - large_count - small_count;
+    let medium_bytes = case.tier as u64 * MIB - large_count as u64 * large_size - small_count as u64 * 4096;
+    let len = if ordinal < large_count { large_size }
+        else if ordinal < large_count + small_count { 4096 }
+        else { medium_bytes / medium_count as u64 + u64::from((ordinal - large_count - small_count) < (medium_bytes % medium_count as u64) as usize) };
+    let path = format!("bulk/{}", shard_path(shard, file));
+    Ok(Content::Seed {
+        seed: common::frame_seed(&[MIXED_BULK_PROFILE, &seed_label(seed)?, &path], &[ordinal as u64]), len,
+    })
+}
+
+fn bulk_entries(case: &Case, seed: u8) -> Result<Vec<Entry>> {
+    if !mixed_bulk(case) { return case_shards(case, seed, case.tier, "bulk"); }
+    let mut entries = BTreeMap::new();
+    dir(&mut entries, ".");
+    for shard in 0..bulk_shard_count(case) {
+        for ordinal in 0..200 {
+            file(&mut entries, format!("bulk/{}", shard_path(shard, ordinal)), bulk_content(case, seed, shard, ordinal)?);
+        }
+    }
+    parents(&mut entries, "bulk/dest");
+    dir(&mut entries, "bulk/dest");
+    Ok(entries.into_values().collect())
+}
+
 fn require_compact_bounds(case:&Case,entries:&[Entry])->Result<()> {
     if compact(case) {
         let bytes=common::validate_entries(entries)?;
@@ -146,22 +189,38 @@ fn tiny_targets(seed: u8) -> Result<Vec<(String, Content)>> {
 /// Select descriptors directly from the recipe; never construct the expected tree.
 pub(crate) fn tiny_sample(case: &Case, seed: u8) -> Result<common::TreeSample> {
     if case.family != "tiny_file_churn" { return Err("tiny sample family".into()); }
-    let mut sample = common::TreeSample { entries: vec![Entry::directory(".")], absent: vec![] };
+    let mut sample = common::TreeSample { entries: vec![Entry::directory(".")], absent: vec![], ranges: BTreeMap::new() };
     let bulk = case.kind.starts_with("tiny-bulk-");
     let witness = if bulk { format!("witness/{}", shard_path(0, 0)) } else { shard_path(0, 0) };
     sample.entries.push(Entry::file(witness, case_shard_content(case, seed, 0, 0)?));
     if bulk {
         sample.entries.push(Entry::directory("witness"));
-        let mut selected = BTreeSet::from([(0, 128)]);
-        for shard in [0, case.tier / 2, case.tier - 1] {
-            for ordinal in [0, 64, 199] { selected.insert((shard, ordinal)); }
+        let mut selected = BTreeSet::new();
+        if mixed_bulk(case) {
+            let large_count = if case.tier == 100 { 1 } else { 3 };
+            let small_end = large_count + case.tier * 8;
+            // Every large file plus small/medium boundaries and a deep path.
+            for index in (0..large_count).chain([large_count, 199, small_end - 1, small_end, case.tier * 10 - 1]) {
+                selected.insert((index / 200, index % 200));
+            }
+        } else {
+            selected.insert((0, 128));
+            for shard in [0, case.tier / 2, case.tier - 1] {
+                for ordinal in [0, 64, 199] { selected.insert((shard, ordinal)); }
+            }
         }
         if case.kind == "tiny-bulk-delete" { sample.absent.push("bulk".into()); }
         else { sample.entries.push(Entry::directory("bulk")); }
         for (shard, ordinal) in selected {
             let path = format!("bulk/{}", shard_path(shard, ordinal));
             if case.kind == "tiny-bulk-delete" { sample.absent.push(path); }
-            else { sample.entries.push(Entry::file(path, case_shard_content(case, seed, shard, ordinal)?)); }
+            else {
+                let content = bulk_content(case, seed, shard, ordinal)?;
+                if mixed_bulk(case) && content.len() >= 50 * MIB {
+                    sample.ranges.insert(path.clone(), vec![(0, 65536), (content.len() / 2, 65536), (content.len() - 65536, 65536)]);
+                }
+                sample.entries.push(Entry::file(path, content));
+            }
         }
     } else {
         sample.entries.push(Entry::directory("tiny"));
@@ -230,7 +289,7 @@ pub(crate) fn fixture(case: &Case, seed: u8) -> Result<Vec<Entry>> {
         "tiny-bulk-create" | "tiny-bulk-delete" => {
             merge(&mut entries, case_shards(case,seed, 1, "witness")?);
             if case.kind == "tiny-bulk-delete" {
-                merge(&mut entries, case_shards(case,seed, case.tier, "bulk")?);
+                merge(&mut entries, bulk_entries(case, seed)?);
             }
         }
         "directory-construct" => {
@@ -428,7 +487,7 @@ pub(crate) fn expected(case: &Case, seed: u8, step: usize) -> Result<Vec<Entry>>
                 entries.remove(&p);
             }
         }
-        "tiny-bulk-create" => merge(&mut entries, case_shards(case,seed, case.tier, "bulk")?),
+        "tiny-bulk-create" => merge(&mut entries, bulk_entries(case, seed)?),
         "tiny-bulk-delete" => remove_tree(&mut entries, "bulk"),
         "directory-construct" => {
             for (k, i) in case_rank(case,seed, "directory-construction")?
@@ -553,9 +612,11 @@ pub(crate) fn check_cases(rows: &[Case], expected: usize) -> Result<()> {
     }
     for row in rows {
         let versioned=row.id.ends_with("-compact-v2");
-        let identity=row.id.strip_suffix("-compact-v2").unwrap_or(&row.id);
+        let identity=row.id.strip_suffix("-compact-v2").or_else(|| row.id.strip_suffix("-mixed-v3")).unwrap_or(&row.id);
         if ![1, 10, 100, 500].contains(&row.tier)
             || versioned!=(row.tier<=10)
+            || row.id.ends_with("-mixed-v3") != mixed_bulk(row)
+            || (row.family == "tiny_file_churn" && row.kind.starts_with("tiny-bulk-") && row.tier >= 100 && !mixed_bulk(row))
             || !identity.ends_with(&row.tier.to_string())
                 && identity != format!("payload-create-{}m", row.tier)
         {
@@ -1712,7 +1773,7 @@ pub(crate) fn apply(case: &Case, seed: u8, step: usize, verify: bool) -> Result<
         Vec::new()
     };
     let bulk = if case.kind == "tiny-bulk-create" {
-        case_shards(case,seed, case.tier, "bulk")?
+        bulk_entries(case, seed)?
     } else {
         Vec::new()
     };
