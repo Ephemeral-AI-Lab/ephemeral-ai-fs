@@ -215,6 +215,11 @@ impl Workspace {
         let mut retained_spool_bytes = 0_u64;
         let mut retained_inline_bytes = 0_u64;
         let mut retained_piece_allocation_bytes = 0_u64;
+        // Parents already materialized in this immutable published snapshot stay
+        // alive throughout rebase. Borrow paths from the old view, retaining only
+        // a bounded index rather than resolving every ancestor for every file.
+        let mut parents = std::collections::BTreeMap::new();
+        let parent_limit = (self.policy.max_final_delta_memory_bytes / 128).min(128) as usize;
         // Keep the original Workspace intact until every fallible validation
         // succeeds, without cloning its entire node/path/spool graph up front.
         for (&id, old) in &self.nodes {
@@ -246,10 +251,17 @@ impl Workspace {
             let fresh_id = if id == crate::ROOT {
                 crate::ROOT
             } else {
-                lookup_path(&mut committed, old.paths.first().expect("nonempty paths"))?
+                lookup_committed_path(
+                    &mut committed,
+                    old.paths.first().expect("nonempty paths"),
+                    &mut parents,
+                    parent_limit,
+                )?
             };
             for path in old.paths.iter().skip(1) {
-                if lookup_path(&mut committed, path)? != fresh_id {
+                if lookup_committed_path(&mut committed, path, &mut parents, parent_limit)?
+                    != fresh_id
+                {
                     return Err(StorageError::Integrity("committed hard-link identity"));
                 }
             }
@@ -309,6 +321,7 @@ impl Workspace {
             }
             nodes.insert(id, rebased);
         }
+        drop(parents);
         for (node, spool) in obsolete_spools {
             self.remove_spool_if_exists(node, &spool)?;
         }
@@ -1034,6 +1047,32 @@ impl Workspaces {
             }),
         }
     }
+}
+
+fn lookup_committed_path<'a>(
+    workspace: &mut Workspace,
+    path: &'a str,
+    parents: &mut std::collections::BTreeMap<&'a str, crate::NodeId>,
+    limit: usize,
+) -> Result<crate::NodeId> {
+    let (parent, name) = path.rsplit_once('/').unwrap_or(("", path));
+    let node = if parent.is_empty() {
+        crate::ROOT
+    } else if let Some(&node) = parents.get(parent) {
+        node
+    } else {
+        let node = lookup_path(workspace, parent)?;
+        if limit != 0 {
+            // ponytail: clear the bounded index when full; add eviction only if
+            // wider materialized parent sets make these misses significant.
+            if parents.len() == limit {
+                parents.clear();
+            }
+            parents.insert(parent, node);
+        }
+        node
+    };
+    workspace.lookup_node(node, name.as_bytes())
 }
 
 fn lookup_path(workspace: &mut Workspace, path: &str) -> Result<crate::NodeId> {

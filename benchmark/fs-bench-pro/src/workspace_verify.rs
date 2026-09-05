@@ -12,6 +12,86 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::process::Stdio;
 
+pub(crate) fn verify_sample(
+    source: &dyn ObjectSource,
+    root: ObjectId,
+    sample: &common::TreeSample,
+) -> AnyResult<Receipt> {
+    sample.validate()?;
+    let reader = CoreReader(source);
+    for entry in &sample.entries {
+        let path = if entry.path == "." {
+            CanonicalPath::root()
+        } else {
+            CanonicalPath::new(&entry.path)?
+        };
+        let resolved =
+            layerfs_content::filesystem::resolve(&reader, root, &path, &mut Default::default())?;
+        resolved.record.validate(entry.path == ".")?;
+        verify_metadata(&reader, resolved.record.metadata_root, entry)?;
+        match &entry.kind {
+            EntryKind::Directory if resolved.record.kind == inode::InodeKind::Directory => (),
+            EntryKind::File(content) if resolved.record.kind == inode::InodeKind::RegularFile => {
+                let file = rope::FileStateRoot(resolved.record.content_root);
+                let state = rope::state(&reader, file, &mut Default::default())?;
+                if state.logical_len != content.len() {
+                    return Err(format!("sampled canonical length: {}", entry.path).into());
+                }
+                let mut expected = vec![0; content.len().min(65536) as usize];
+                let len = expected.len();
+                if content.read_at(0, &mut expected)? != len {
+                    return Err("sampled oracle length".into());
+                }
+                let mut actual = Vec::with_capacity(len);
+                rope::read_range(&reader, file, 0..len as u64, &mut actual)?;
+                if actual != expected {
+                    return Err(format!("sampled canonical bytes: {}", entry.path).into());
+                }
+            }
+            _ => return Err(format!("sampled canonical kind: {}", entry.path).into()),
+        }
+    }
+    for path in &sample.absent {
+        let mut prefix = String::new();
+        let mut missing = false;
+        for component in path.split('/') {
+            let parent = if prefix.is_empty() {
+                CanonicalPath::root()
+            } else {
+                CanonicalPath::new(&prefix)?
+            };
+            let resolved = layerfs_content::filesystem::resolve(
+                &reader,
+                root,
+                &parent,
+                &mut Default::default(),
+            )?;
+            if resolved.record.kind != inode::InodeKind::Directory {
+                return Err("sampled absent parent kind".into());
+            }
+            if directory::directory_lookup(
+                &reader,
+                directory::DirectoryStateRoot(resolved.record.content_root),
+                &layerfs_content::CanonicalName::from_bytes(component.as_bytes())?,
+                &mut Default::default(),
+            )?
+            .is_none()
+            {
+                missing = true;
+                break;
+            }
+            if !prefix.is_empty() {
+                prefix.push('/');
+            }
+            prefix.push_str(component);
+        }
+        if !missing {
+            return Err(format!("sampled canonical absence: {path}").into());
+        }
+    }
+    Ok(sample.receipt())
+}
+
 pub(crate) fn write_gzip(
     path: &Path,
     write: impl FnOnce(&mut dyn Write) -> AnyResult<()>,
@@ -1683,4 +1763,94 @@ pub(crate) fn digest_qualification(root: &Path) -> AnyResult<Receipt> {
         writeln!(output, "{key}={value}")?;
     }
     Ok(receipt)
+}
+
+#[cfg(test)]
+mod sampled_tests {
+    use super::*;
+
+    #[test]
+    fn bounded_workspace_samples_match_recipes_and_reject_observed_corruption() -> AnyResult<()> {
+        for case in workload_source::tiny_file_churn::cases() {
+            let sample = workload_source::ordinary_workloads::tiny_sample(&case, 1)?;
+            sample.validate()?;
+            if case.tier <= 10 {
+                let expected = workload_source::tiny_file_churn::expected(&case, 1, 1)?;
+                for entry in &sample.entries {
+                    let matching = expected
+                        .iter()
+                        .find(|candidate| candidate.path == entry.path)
+                        .ok_or("sample not in oracle")?;
+                    assert_eq!(format!("{entry:?}"), format!("{matching:?}"));
+                }
+                for absent in &sample.absent {
+                    assert!(!expected.iter().any(|entry| &entry.path == absent));
+                }
+            }
+        }
+        let root = std::env::temp_dir().join(format!(
+            "layerfs-sampled-check-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root)?;
+        let entries = vec![
+            Entry::directory("."),
+            Entry::file(
+                "payload",
+                Content::Seed {
+                    seed: 71,
+                    len: 131072,
+                },
+            ),
+        ];
+        let native = root.join("native");
+        common::create_fixture(&native, &entries)?;
+        let store = Arc::new(LayerStackStore::create(root.join("store.sqlite"))?);
+        let client = Client::connect(store.clone())?;
+        let initialized = client.initialize_layerstack(
+            EntityName::new("sample-check")?,
+            LayerStackInitialization::Directory(native.clone()),
+        )?;
+        let branch = client.fork_branch(
+            EntityName::new("main")?,
+            LocalForkSource::Layer {
+                layer_id: initialized.genesis_layer_id,
+            },
+        )?;
+        let pinned = store.pin_branch(branch)?;
+        let mut sample = common::TreeSample {
+            entries: entries.clone(),
+            absent: vec!["missing/child".into()],
+        };
+        verify_sample(&pinned.reader, pinned.root, &sample)?;
+        common::verify_native_sample(&native, &sample)?;
+        // Untouched native state is neither enumerated nor read by selection.
+        std::fs::File::create(native.join("untouched"))?.set_len(500 * common::MIB)?;
+        common::set_metadata(&native, &entries[0])?;
+        common::verify_native_sample(&native, &sample)?;
+        sample.entries[1].mode ^= 1;
+        assert!(verify_sample(&pinned.reader, pinned.root, &sample).is_err());
+        assert!(common::verify_native_sample(&native, &sample).is_err());
+        sample.entries[1] = Entry::file(
+            "payload",
+            Content::Seed {
+                seed: 72,
+                len: 131072,
+            },
+        );
+        assert!(verify_sample(&pinned.reader, pinned.root, &sample).is_err());
+        assert!(common::verify_native_sample(&native, &sample).is_err());
+        sample.entries = vec![entries[0].clone()];
+        sample.absent = vec!["payload".into()];
+        assert!(verify_sample(&pinned.reader, pinned.root, &sample).is_err());
+        assert!(common::verify_native_sample(&native, &sample).is_err());
+        drop(pinned);
+        drop(client);
+        drop(store);
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
 }

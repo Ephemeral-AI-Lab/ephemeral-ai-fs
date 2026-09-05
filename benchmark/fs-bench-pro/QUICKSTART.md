@@ -3,7 +3,8 @@
 - **Permanent policy:** Docker-owned SQLite and container-side benchmark coordinators are prohibited. Use host-owned Stores for preparation, performance, and verification; migrate unsupported families to the host instead of restoring a Docker fallback.
 - **Environment:** macOS runs the SDK, Workspace processing, and embedded SQLite. Docker Linux runs the daemon, workload helper, and real FUSE.
 - **Limits:** container **2 CPUs / 2 GiB RAM / no swap / 256 PIDs**. Host CPU is uncapped. No Docker data mounts.
-- **Iteration:** reuse preparation, run **one performance sample**, then the selected fast proof. Run serially.
+- **Iteration:** reuse preparation and run **one explicit performance sample** per experiment. Collect selected independent proofs only after performance collection and the candidate are stable. Keep builds, samples, and proofs serial.
+- **Performance allowance:** Workspace calls may execute for **120 seconds** to expose complete timings; the outer command defaults to 130 seconds. The complete product-call pass target stays **15 seconds**. Completed slower runs are `TARGET_MISS`; timeouts are incomplete. Optimize the lowest failing tier before advancing.
 - **Timing:** SDK edit results measure **edit + Commit in milliseconds**. Setup and verification are separate.
 - **Verification:** bounded SDK edit checks, sampled namespace checks, and storage accounting with bounded edit-region checks. **No SDK full-byte option.**
 
@@ -32,7 +33,7 @@ python3 benchmark/fs-bench-pro/shared/runner.py \
 
 Use `--repetition 1` for the three SDK edit families; use `--seed 1` for the other families. Results go to a new directory under `benchmark-results/host-store/results/` by default. Use `--output PATH` to choose a new output directory; existing evidence is not overwritten.
 
-Run separate verification through `verify-selected.py`, using the exact family, case, source, input, image, and seed/repetition identities from `perf.jsonl`. For SDK proofs, also bind the performance record's `row_id` with `--performance-rows`. Run it immediately after the performance sample to reuse warm preparation. Verification writes `verification.json` to its own new output directory.
+After performance collection, run separate verification through `verify-selected.py`, using the exact family, case, source, input, image, and seed/repetition identities from `perf.jsonl`. For SDK proofs, also bind the performance record's `row_id` with `--performance-rows`. Reuse compatible protected preparation; each proof has a 45-second work allowance and 59-second hard end-to-end deadline. Verification writes `verification.json` to its own new output directory.
 
 ## Rebuild after source changes
 

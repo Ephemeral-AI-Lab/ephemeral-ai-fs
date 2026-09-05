@@ -183,9 +183,7 @@ pub(crate) fn write_request_measured(
         header[21..25].copy_from_slice(&u32::try_from(value.len()).map_err(invalid)?.to_be_bytes());
         let encode_ns = elapsed_ns(started);
         let started = std::time::Instant::now();
-        output.write_all(&header)?;
-        output.write_all(value)?;
-        output.flush()?;
+        write_parts(output, &header, value)?;
         return Ok(RequestWriteMeasurement {
             frame_bytes: (header.len() as u64).saturating_add(value.len() as u64),
             logical_bytes: value.len() as u64,
@@ -586,9 +584,7 @@ pub(crate) fn write_response_measured(
         header[5..].copy_from_slice(&u32::try_from(value.len()).map_err(invalid)?.to_be_bytes());
         let encode_ns = elapsed_ns(started);
         let started = std::time::Instant::now();
-        output.write_all(&header)?;
-        output.write_all(value)?;
-        output.flush()?;
+        write_parts(output, &header, value)?;
         return Ok(ResponseWriteMeasurement {
             frame_count: 1,
             frame_bytes: (header.len() as u64).saturating_add(value.len() as u64),
@@ -881,8 +877,20 @@ fn write_frame(output: &mut impl Write, bytes: &[u8]) -> std::io::Result<()> {
     if bytes.len() > MAX_FRAME {
         return Err(invalid("frame length"));
     }
-    output.write_all(&(bytes.len() as u32).to_be_bytes())?;
-    output.write_all(bytes)?;
+    write_parts(output, &(bytes.len() as u32).to_be_bytes(), bytes)
+}
+
+fn write_parts(output: &mut impl Write, header: &[u8], body: &[u8]) -> std::io::Result<()> {
+    let mut slices = [std::io::IoSlice::new(header), std::io::IoSlice::new(body)];
+    let mut remaining = &mut slices[..];
+    while !remaining.is_empty() {
+        match output.write_vectored(remaining) {
+            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+            Ok(written) => std::io::IoSlice::advance_slices(&mut remaining, written),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
     output.flush()
 }
 
@@ -1050,6 +1058,62 @@ fn invalid(_: impl std::fmt::Debug) -> std::io::Error {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn framing_uses_one_write_and_handles_partial_and_interrupted_output() {
+        struct Output {
+            bytes: Vec<u8>,
+            limit: usize,
+            calls: usize,
+            interrupted: bool,
+        }
+        impl std::io::Write for Output {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.calls += 1;
+                let len = bytes.len().min(self.limit);
+                self.bytes.extend_from_slice(&bytes[..len]);
+                Ok(len)
+            }
+            fn write_vectored(
+                &mut self,
+                slices: &[std::io::IoSlice<'_>],
+            ) -> std::io::Result<usize> {
+                if std::mem::take(&mut self.interrupted) {
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                self.calls += 1;
+                let mut remaining = self.limit;
+                let mut written = 0;
+                for slice in slices {
+                    let len = slice.len().min(remaining);
+                    self.bytes.extend_from_slice(&slice[..len]);
+                    remaining -= len;
+                    written += len;
+                }
+                Ok(written)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        for limit in [usize::MAX, 1, 3, 0] {
+            let mut output = Output {
+                bytes: vec![],
+                limit,
+                calls: 0,
+                interrupted: true,
+            };
+            let result = super::write_frame(&mut output, b"frame");
+            if limit == 0 {
+                assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::WriteZero);
+            } else {
+                result.unwrap();
+                assert_eq!(output.bytes, b"\0\0\0\x05frame");
+                if limit == usize::MAX {
+                    assert_eq!(output.calls, 1);
+                }
+            }
+        }
+    }
     use super::*;
 
     #[test]

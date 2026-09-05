@@ -5,7 +5,7 @@ use layerfs_content::filesystem::{self as logical, LogicalCounters};
 use layerfs_content::object::access::ObjectRead;
 use layerfs_content::tree::directory::codec::decode_symlink;
 use layerfs_content::tree::directory::{
-    directory_lookup, directory_page_after, DirectoryStateRoot, NamespaceCounters,
+    directory_page_after, DirectoryStateRoot, NamespaceCounters,
 };
 use layerfs_content::tree::inode::codec::decode_inode_record;
 use layerfs_content::tree::inode::{
@@ -160,6 +160,7 @@ pub struct Workspace {
     pub(crate) expected_base: LayerId,
     pub(crate) base_root: layerfs_content::ObjectId,
     pub(crate) base_inodes: InodeTableRoot,
+    directory_lookup_cache: layerfs_content::tree::directory::DirectoryLookupCache,
     pub(crate) spool: PathBuf,
     pub(crate) spool_bytes: u64,
     pub(crate) spool_bytes_peak: u64,
@@ -295,6 +296,7 @@ impl Workspace {
             expected_base,
             base_root,
             base_inodes: InodeTableRoot(namespace.inode_table_root),
+            directory_lookup_cache: Default::default(),
             spool,
             spool_bytes: 0,
             spool_bytes_peak: 0,
@@ -441,13 +443,15 @@ impl Workspace {
         let Some(base) = self.directory(parent)?.base else {
             return Err(StorageError::NotFound("name"));
         };
-        let inode = directory_lookup(
-            &CoreReader(&self.reader),
-            base,
-            &CanonicalName::from_bytes(name)?,
-            &mut NamespaceCounters::default(),
-        )?
-        .ok_or(StorageError::NotFound("name"))?;
+        let inode = self
+            .directory_lookup_cache
+            .lookup(
+                &CoreReader(&self.reader),
+                base,
+                &CanonicalName::from_bytes(name)?,
+                &mut NamespaceCounters::default(),
+            )?
+            .ok_or(StorageError::NotFound("name"))?;
         let path = self.child_path(parent, name)?;
         let node = self.materialize(inode, path)?;
         self.remember_directory_parent(node, parent)?;

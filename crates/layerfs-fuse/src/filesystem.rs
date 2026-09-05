@@ -453,17 +453,15 @@ impl Filesystem for LayerFs {
             .note_kernel_operation(crate::KernelOperation::Readdir);
         let result = self
             .handle(handle)
-            .and_then(|node| self.port.readdir(node).map_err(errno));
+            .and_then(|node| self.port.readdir_page(node, offset as usize).map_err(errno));
         match result {
             Ok(entries) => {
                 let mut returned_entries = 0;
-                for (index, (node, kind, name)) in
-                    entries.into_iter().enumerate().skip(offset as usize)
-                {
+                for (index, (node, kind, name)) in entries.into_iter().enumerate() {
                     let ino = self.inodes.kernel(node);
                     if reply.add(
                         INodeNo(ino),
-                        (index + 1) as u64,
+                        offset + (index + 1) as u64,
                         file_type(kind),
                         OsStr::from_bytes(&name),
                     ) {
@@ -488,13 +486,15 @@ impl Filesystem for LayerFs {
     ) {
         self.port
             .note_kernel_operation(crate::KernelOperation::Readdirplus);
-        let result = self
-            .handle(handle)
-            .and_then(|node| self.port.readdirplus(node).map_err(errno));
+        let result = self.handle(handle).and_then(|node| {
+            self.port
+                .readdirplus_page(node, offset as usize)
+                .map_err(errno)
+        });
         match result {
             Ok(entries) => {
                 let mut returned_entries = 0;
-                for (index, (attr, name)) in entries.into_iter().enumerate().skip(offset as usize) {
+                for (index, (attr, name)) in entries.into_iter().enumerate() {
                     let attr = match self.attr(attr) {
                         Ok(attr) => attr,
                         Err(error) => {
@@ -504,7 +504,7 @@ impl Filesystem for LayerFs {
                     };
                     if reply.add(
                         attr.ino,
-                        (index + 1) as u64,
+                        offset + (index + 1) as u64,
                         OsStr::from_bytes(&name),
                         &TTL,
                         &attr,

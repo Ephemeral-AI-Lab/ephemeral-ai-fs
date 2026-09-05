@@ -4,6 +4,7 @@ use layerfs_fuse::{
 };
 use std::sync::{Arc, Mutex};
 
+#[derive(Default)]
 struct Fixture {
     bytes: Mutex<Vec<u8>>,
     created: Mutex<Vec<Vec<u8>>>,
@@ -484,6 +485,24 @@ fn capability_scopes_a_bounded_typed_proxy_session() {
     assert_eq!(&bytes[5..8], b"a\0c");
     drop(bytes);
 
+    fixture.bytes.lock().unwrap().clear();
+    let batched = client
+        .create_file_open(NodeId(1), b"nonempty-batched", 0o600)
+        .unwrap();
+    client.write(batched.node, 0, b"closed ").unwrap();
+    client.write(batched.node, 7, b"bytes").unwrap();
+    client.unpin(batched.node, true).unwrap();
+    client.barrier().unwrap();
+    assert_eq!(&*fixture.bytes.lock().unwrap(), b"closed bytes");
+
+    let large = client
+        .create_file_open(NodeId(1), b"direct-large", 0o600)
+        .unwrap();
+    client.write(large.node, 0, &vec![9; 1024 * 1024]).unwrap();
+    client.unpin(large.node, true).unwrap();
+    client.barrier().unwrap();
+    assert_eq!(*fixture.bytes.lock().unwrap(), vec![9; 1024 * 1024]);
+
     let pending = client
         .create_file_open(NodeId(1), b"pending", 0o600)
         .unwrap();
@@ -735,4 +754,39 @@ fn deferred_mutation_errors_surface_at_the_next_synchronization_point() {
 
     assert!(!host.healthy());
     assert_eq!(host.failure(), Some(("Write", PortError::NoSpace)));
+}
+
+#[test]
+fn cached_directory_pages_are_bounded_and_keep_first_and_later_offsets_consistent() {
+    let fixture = Arc::new(Fixture {
+        root_entries: 1000,
+        ..Fixture::default()
+    });
+    let host = ProxyHost::start(fixture.clone()).unwrap();
+    let client = ProxyClient::connect(("127.0.0.1", host.port()), host.capability()).unwrap();
+    let first = client.readdirplus_page(NodeId(1), 0).unwrap();
+    assert_eq!(first.len(), 128);
+    let all = client.readdirplus(NodeId(1)).unwrap();
+    assert_eq!(first, all[..128]);
+    for offset in [0, 127, 128, 500, 999, 1000, usize::MAX] {
+        let expected = all
+            .iter()
+            .skip(offset)
+            .take(128)
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            client.readdirplus_page(NodeId(1), offset).unwrap(),
+            expected
+        );
+        let plain = expected
+            .into_iter()
+            .map(|(attr, name)| (attr.node, attr.kind, name))
+            .collect::<Vec<_>>();
+        assert_eq!(client.readdir_page(NodeId(1), offset).unwrap(), plain);
+    }
+    assert_eq!(
+        fixture.readdirs.load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
 }

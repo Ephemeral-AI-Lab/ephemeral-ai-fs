@@ -31,29 +31,67 @@ pub fn directory_lookup<S: ObjectRead>(
     name: &CanonicalName,
     counters: &mut NamespaceCounters,
 ) -> CoreResult<Option<InodeId>> {
-    let state = load_directory_state(store, root, counters)?;
-    let mut current = load_directory_root_shallow(store, &state, counters)?;
-    loop {
-        match current.node {
-            DirectoryNodeV1::Leaf { entries, .. } => {
+    DirectoryLookupCache::default().lookup(store, root, name, counters)
+}
+
+/// One validated canonical leaf (at most an 8 KiB encoded page), shared by
+/// successive lookups. Immutable root identity keeps overlays and roots distinct.
+#[derive(Default)]
+pub struct DirectoryLookupCache {
+    leaf: Option<(DirectoryStateRoot, Vec<(CanonicalName, InodeId)>)>,
+}
+
+impl DirectoryLookupCache {
+    pub fn lookup<S: ObjectRead>(
+        &mut self,
+        store: &S,
+        root: DirectoryStateRoot,
+        name: &CanonicalName,
+        counters: &mut NamespaceCounters,
+    ) -> CoreResult<Option<InodeId>> {
+        if let Some((cached_root, entries)) = &self.leaf {
+            if *cached_root == root
+                && entries.first().is_some_and(|(first, _)| first <= name)
+                && entries.last().is_some_and(|(last, _)| name <= last)
+            {
                 return Ok(entries
                     .binary_search_by(|(candidate, _)| candidate.cmp(name))
                     .ok()
-                    .map(|index| entries[index].1))
+                    .map(|index| entries[index].1));
             }
-            DirectoryNodeV1::Branch { children, .. } => {
-                let index = children
-                    .partition_point(|(maximum, _)| maximum < name)
-                    .min(children.len().saturating_sub(1));
-                let expected_max = children[index].0.clone();
-                let child =
-                    load_directory_node_shallow(store, children[index].1, false, None, counters)?;
-                if child.summary.max.as_ref() != Some(&expected_max)
-                    || child.summary.level.checked_add(1) != Some(current.summary.level)
-                {
-                    return Err(CoreError::InvalidRecord("directory child summary"));
+        }
+        self.leaf = None;
+        let state = load_directory_state(store, root, counters)?;
+        let mut current = load_directory_root_shallow(store, &state, counters)?;
+        loop {
+            match current.node {
+                DirectoryNodeV1::Leaf { entries, .. } => {
+                    let found = entries
+                        .binary_search_by(|(candidate, _)| candidate.cmp(name))
+                        .ok()
+                        .map(|index| entries[index].1);
+                    self.leaf = Some((root, entries));
+                    return Ok(found);
                 }
-                current = child;
+                DirectoryNodeV1::Branch { children, .. } => {
+                    let index = children
+                        .partition_point(|(maximum, _)| maximum < name)
+                        .min(children.len().saturating_sub(1));
+                    let expected_max = children[index].0.clone();
+                    let child = load_directory_node_shallow(
+                        store,
+                        children[index].1,
+                        false,
+                        None,
+                        counters,
+                    )?;
+                    if child.summary.max.as_ref() != Some(&expected_max)
+                        || child.summary.level.checked_add(1) != Some(current.summary.level)
+                    {
+                        return Err(CoreError::InvalidRecord("directory child summary"));
+                    }
+                    current = child;
+                }
             }
         }
     }

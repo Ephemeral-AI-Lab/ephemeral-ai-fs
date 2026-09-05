@@ -24,7 +24,15 @@ import runtime
 
 HOST_FAMILIES = ("payload_create_read", "dedup_workspace_reuse", "dedup_cross_file", "dedup_cdc_locality",
                  "edit_length_preserving", "edit_length_changing", "edit_canonical_chunk_count",
-                 "init_namespace", "store_footprint")
+                 "init_namespace", "store_footprint", "tiny_file_churn",
+                 "namespace_mutation", "directory_construction_traversal")
+PRODUCT_TARGET_NS = 15_000_000_000
+
+
+def performance_target_status(elapsed_ns):
+    return "PASS" if elapsed_ns <= PRODUCT_TARGET_NS else "TARGET_MISS"
+
+
 TIMERS = {"workspace": "pure_call_sum_ns", "sdk": "edit_commit_ns",
           "namespace": "layerstack_init_ns", "store-footprint": "product_call_sum_ns"}
 
@@ -61,7 +69,7 @@ def build_parser(include_modes=True):
     p.add_argument("--source", "--source-identity", dest="source")
     p.add_argument("--input", "--input-identity", dest="input")
     p.add_argument("--output", default=str(REPO / "benchmark-results" / "infra" / ("run-" + uuid.uuid4().hex[:12])))
-    p.add_argument("--timeout", type=float, default=15, help="Selected product command budget in seconds; slow cases stop, not scale up")
+    p.add_argument("--timeout", type=float, default=130, help="Outer performance command allowance; Workspace watchdog is 120 seconds and the pass target remains 15 seconds")
     p.add_argument("--setup-timeout", type=float, default=120)
     p.add_argument("--cpus", type=int, default=2)
     p.add_argument("--memory-mib", type=int, default=2048)
@@ -402,12 +410,14 @@ def execute_selected(args, *, deadline, verification=False):
         result["command_wall_ns"] = time.monotonic_ns() - run_started
         result["records"] = records(command.stdout)
         result["records"].extend(initialization_diagnostics(command.stderr))
+        for record in result["records"]:
+            if record.get("kind") == "sampled-canonical-verification":
+                result["sampled_paths_or_ranges"].extend(record["sampled_paths_or_ranges"])
+                result["omissions"].append("sampled Workspace proof: no exhaustive namespace, full-file bytes, object census, aliases, or failure injection")
         if not verification:
             timer, elapsed = _timer(result)
             if elapsed is None:
                 raise RuntimeError(f"missing declared product timer: {timer}")
-            if elapsed > 15_000_000_000:
-                raise RuntimeError("product time exceeded the shared 15-second limit")
         if command.truncated:
             raise RuntimeError("selected command output exceeded compact receipt limit")
         result["phase"] = "resource-finalization"
@@ -424,6 +434,12 @@ def execute_selected(args, *, deadline, verification=False):
             result["error"] = _text(command.stderr)[-8192:]
         else:
             result["phase"] = "complete"
+            if not verification:
+                result["completion_status"] = "COMPLETE"
+                result["product_target_ns"] = PRODUCT_TARGET_NS
+                result["status"] = performance_target_status(elapsed)
+                if result["status"] == "TARGET_MISS":
+                    result["error"] = f"complete product-call sum {elapsed} ns exceeds the 15-second target"
     except Exception as error:
         result["status"] = "TIMEOUT" if isinstance(error, TimeoutError) or "timeout" in str(error).lower() or "deadline" in str(error).lower() else "FAIL"
         failed_command = getattr(error, "result", None)
@@ -433,6 +449,9 @@ def execute_selected(args, *, deadline, verification=False):
             result.setdefault("records", records(failed_command.stdout))
             if result["phase"] == "product-command":
                 result["command_wall_ns"] = failed_command.wall_ns
+        if any(record.get("kind") == "product-time-budget-exceeded" for record in result.get("records", [])):
+            result["status"] = "TIMEOUT"
+        result["completion_status"] = "INCOMPLETE"
         result["slow"] = result["status"] == "TIMEOUT"
     finally:
         cleanup_started = time.monotonic_ns()
@@ -543,6 +562,7 @@ def main(argv=None):
                 stream.flush()
             emit({"kind": "header", "schema": "layerfs-perf-v1", "identities": selection,
                   "requested_samples": count, "full_workload": True, "cpus": args.cpus,
+                  "product_target_ns": PRODUCT_TARGET_NS, "command_allowance_seconds": args.timeout,
                   "memory_mib": args.memory_mib, "resource_limit_scope": "Linux container only; host CPU not capped", "verification_status": "NOT_RUN"})
             for index in range(1, count + 1):
                 row = execute_selected(args, deadline=time.monotonic() + args.setup_timeout + args.timeout + 10)
@@ -555,10 +575,12 @@ def main(argv=None):
                     (output / "failure.log").write_text(str(row.get("error", row.get("cleanup")))[:1024**2])
                     break
             valid = [row for row in samples if row["status"] == "PASS"]
-            times = [value for row in valid if (value := _timer(row)[1]) is not None]
+            completed = [row for row in samples if row["status"] in ("PASS", "TARGET_MISS")]
+            times = [value for row in completed if (value := _timer(row)[1]) is not None]
             summary = {"kind": "summary", "requested": count, "attempted": len(samples), "valid": len(valid),
-                       "status": "PASS" if len(valid) == count else "INCOMPLETE", "verification_status": "NOT_RUN",
-                       "timer": _timer(valid[0])[0] if valid else None,
+                       "completed": len(completed), "product_target_ns": PRODUCT_TARGET_NS,
+                       "status": "PASS" if len(valid) == count else ("TARGET_MISS" if len(completed) == count else "INCOMPLETE"), "verification_status": "NOT_RUN",
+                       "timer": _timer(completed[0])[0] if completed else None,
                        "median_ns": statistics.median(times) if times else None,
                        "min_ns": min(times) if times else None, "max_ns": max(times) if times else None}
             emit(summary)

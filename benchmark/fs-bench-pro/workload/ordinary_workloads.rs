@@ -143,6 +143,47 @@ fn tiny_targets(seed: u8) -> Result<Vec<(String, Content)>> {
         .collect()
 }
 
+/// Select descriptors directly from the recipe; never construct the expected tree.
+pub(crate) fn tiny_sample(case: &Case, seed: u8) -> Result<common::TreeSample> {
+    if case.family != "tiny_file_churn" { return Err("tiny sample family".into()); }
+    let mut sample = common::TreeSample { entries: vec![Entry::directory(".")], absent: vec![] };
+    let bulk = case.kind.starts_with("tiny-bulk-");
+    let witness = if bulk { format!("witness/{}", shard_path(0, 0)) } else { shard_path(0, 0) };
+    sample.entries.push(Entry::file(witness, case_shard_content(case, seed, 0, 0)?));
+    if bulk {
+        sample.entries.push(Entry::directory("witness"));
+        let mut selected = BTreeSet::from([(0, 128)]);
+        for shard in [0, case.tier / 2, case.tier - 1] {
+            for ordinal in [0, 64, 199] { selected.insert((shard, ordinal)); }
+        }
+        if case.kind == "tiny-bulk-delete" { sample.absent.push("bulk".into()); }
+        else { sample.entries.push(Entry::directory("bulk")); }
+        for (shard, ordinal) in selected {
+            let path = format!("bulk/{}", shard_path(shard, ordinal));
+            if case.kind == "tiny-bulk-delete" { sample.absent.push(path); }
+            else { sample.entries.push(Entry::file(path, case_shard_content(case, seed, shard, ordinal)?)); }
+        }
+    } else {
+        sample.entries.push(Entry::directory("tiny"));
+        let order = rank(seed, "tiny-file-churn")?;
+        let target = |k: usize| -> Result<Entry> {
+            let path = format!("tiny/p{}/f{:03}.dat", k % 10, order[k]);
+            Ok(Entry::file(path.clone(), content(seed, "tiny-file-churn", &path, TINY_LENGTHS[k % 10])?))
+        };
+        let selected = (0..case.tier.min(8)).chain([case.tier / 2, case.tier - 1]).collect::<BTreeSet<_>>();
+        for k in selected {
+            let entry = target(k)?;
+            if case.kind == "tiny-unlink" { sample.absent.push(entry.path); }
+            else { sample.entries.push(entry); }
+        }
+        if case.kind == "tiny-unlink" && !compact(case) && case.tier < 500 {
+            sample.entries.push(target(case.tier)?);
+        }
+    }
+    sample.validate()?;
+    Ok(sample)
+}
+
 pub(crate) fn git_targets(seed: u8) -> Result<Vec<(&'static str, String, Content)>> {
     rank(seed, "git-tool-workflow")?
         .into_iter()

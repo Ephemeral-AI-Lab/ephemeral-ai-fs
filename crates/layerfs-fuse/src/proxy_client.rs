@@ -213,10 +213,11 @@ impl ProxyClient {
             }
             if value.len() >= WRITE_COALESCE_BYTES {
                 self.metrics.note_client_copy(value.len() as u64);
-                return self.raw_send_at(
-                    self.node_stream(node),
-                    Request::Write(node, offset, value.to_vec()),
-                );
+                return self.send_buffer_locked(BufferedWrite {
+                    node,
+                    offset,
+                    bytes: value.to_vec(),
+                });
             }
             *slot = Some(BufferedWrite {
                 node,
@@ -456,34 +457,17 @@ impl FilesystemPort for ProxyClient {
         bytes(self.exchange_at(self.node_stream(node), Request::Readlink(node))?)
     }
 
-    fn readdir(&self, node: NodeId) -> PortResult<Vec<(NodeId, Kind, Vec<u8>)>> {
-        let _callback = self.enter_callback()?;
-        self.barrier()?;
-        if let Some(entries) = self.cached_readdir(node)? {
-            return Ok(entries);
-        }
-        match self.exchange(Request::Readdir(node))? {
-            Response::Entries(entries) => {
-                self.remember_directory(node, &entries)?;
-                Ok(entries)
-            }
-            _ => Err(PortError::Io),
-        }
+    fn readdir(&self, node: NodeId) -> PortResult<DirectoryEntries> {
+        self.directory_entries(node, 0, usize::MAX)
     }
-
-    fn readdirplus(&self, node: NodeId) -> PortResult<Vec<(Attr, Vec<u8>)>> {
-        let _callback = self.enter_callback()?;
-        self.barrier()?;
-        if let Some(entries) = self.cached_readdirplus(node)? {
-            return Ok(entries);
-        }
-        match self.exchange(Request::ReaddirPlus(node))? {
-            Response::EntriesPlus(entries) => {
-                self.remember_directory_plus(node, &entries)?;
-                Ok(entries)
-            }
-            _ => Err(PortError::Io),
-        }
+    fn readdirplus(&self, node: NodeId) -> PortResult<DirectoryEntriesPlus> {
+        self.directory_entries_plus(node, 0, usize::MAX)
+    }
+    fn readdir_page(&self, node: NodeId, offset: usize) -> PortResult<DirectoryEntries> {
+        self.directory_entries(node, offset, crate::port::DIRECTORY_PAGE_ENTRIES)
+    }
+    fn readdirplus_page(&self, node: NodeId, offset: usize) -> PortResult<DirectoryEntriesPlus> {
+        self.directory_entries_plus(node, offset, crate::port::DIRECTORY_PAGE_ENTRIES)
     }
 
     fn create_file(&self, parent: NodeId, name: &[u8], mode: u32) -> PortResult<Attr> {
@@ -786,6 +770,22 @@ impl FilesystemPort for ProxyClient {
         // Releases remain permitted while paused so owner quiescence can drain handles.
         let _callback = self.callbacks.read().map_err(|_| PortError::Io)?;
         let _gate = self.gate.write().map_err(|_| PortError::Io)?;
+        {
+            // Transfer the one global buffered write at close. Earlier ordering
+            // boundaries still publish the pending create through the live path.
+            let mut slot = self.write_buffer.lock().map_err(|_| PortError::Io)?;
+            let mut cache = self.cache.lock().map_err(|_| PortError::Io)?;
+            if slot.as_ref().is_some_and(|buffer| buffer.node == node) {
+                if let Some(pending) = cache.pending_creates.get_mut(&node) {
+                    if pending.zero_len == 0 {
+                        let mut buffer = slot.take().expect("matching write buffer");
+                        buffer.bytes.shrink_to_fit();
+                        pending.bytes += buffer.bytes.len();
+                        pending.writes.push((buffer.offset, buffer.bytes));
+                    }
+                }
+            }
+        }
         self.flush_write_locked()?;
         self.invalidate_read_ahead(node)?;
         let pending = self
@@ -1074,34 +1074,104 @@ impl ProxyClient {
         Ok(())
     }
 
-    fn cached_readdir(&self, node: NodeId) -> PortResult<Option<DirectoryEntries>> {
-        let cache = self.cache.lock().map_err(|_| PortError::Io)?;
-        let Some(directory) = cache.directories.get(&node) else {
-            return Ok(None);
-        };
-        let mut output = directory.special.clone();
-        output.extend(
-            directory
-                .entries
-                .iter()
-                .map(|(name, (node, kind))| (*node, *kind, name.clone())),
-        );
-        Ok(Some(output))
+    fn directory_entries(
+        &self,
+        node: NodeId,
+        offset: usize,
+        limit: usize,
+    ) -> PortResult<Vec<(NodeId, Kind, Vec<u8>)>> {
+        let _callback = self.enter_callback()?;
+        self.barrier()?;
+        if let Some(entries) = self.cached_readdir(node, offset, limit)? {
+            return Ok(entries);
+        }
+        match self.exchange(Request::Readdir(node))? {
+            Response::Entries(entries) => {
+                self.remember_directory(node, &entries)?;
+                drop(entries);
+                self.cached_readdir(node, offset, limit)?
+                    .ok_or(PortError::Io)
+            }
+            _ => Err(PortError::Io),
+        }
     }
 
-    fn cached_readdirplus(&self, node: NodeId) -> PortResult<Option<DirectoryEntriesPlus>> {
+    fn directory_entries_plus(
+        &self,
+        node: NodeId,
+        offset: usize,
+        limit: usize,
+    ) -> PortResult<Vec<(Attr, Vec<u8>)>> {
+        let _callback = self.enter_callback()?;
+        self.barrier()?;
+        if let Some(entries) = self.cached_readdirplus(node, offset, limit)? {
+            return Ok(entries);
+        }
+        match self.exchange(Request::ReaddirPlus(node))? {
+            Response::EntriesPlus(entries) => {
+                self.remember_directory_plus(node, &entries)?;
+                drop(entries);
+                self.cached_readdirplus(node, offset, limit)?
+                    .ok_or(PortError::Io)
+            }
+            _ => Err(PortError::Io),
+        }
+    }
+
+    fn cached_readdir(
+        &self,
+        node: NodeId,
+        offset: usize,
+        limit: usize,
+    ) -> PortResult<Option<DirectoryEntries>> {
         let cache = self.cache.lock().map_err(|_| PortError::Io)?;
         let Some(directory) = cache.directories.get(&node) else {
             return Ok(None);
         };
-        let mut output = Vec::with_capacity(directory.special.len() + directory.entries.len());
-        for (node, _, name) in &directory.special {
-            let Some(attr) = cache.attrs.get(node).copied() else {
-                return Ok(None);
-            };
-            output.push((attr, name.clone()));
-        }
-        for (name, (node, _)) in &directory.entries {
+        // ponytail: offset seeking still walks keys; add a cursor only if that
+        // becomes material. Names and attributes are copied for this page only.
+        Ok(Some(
+            directory
+                .special
+                .iter()
+                .map(|(node, kind, name)| (*node, *kind, name))
+                .chain(
+                    directory
+                        .entries
+                        .iter()
+                        .map(|(name, (node, kind))| (*node, *kind, name)),
+                )
+                .skip(offset)
+                .take(limit)
+                .map(|(node, kind, name)| (node, kind, name.clone()))
+                .collect(),
+        ))
+    }
+
+    fn cached_readdirplus(
+        &self,
+        node: NodeId,
+        offset: usize,
+        limit: usize,
+    ) -> PortResult<Option<DirectoryEntriesPlus>> {
+        let cache = self.cache.lock().map_err(|_| PortError::Io)?;
+        let Some(directory) = cache.directories.get(&node) else {
+            return Ok(None);
+        };
+        let mut output = Vec::new();
+        for (node, name) in directory
+            .special
+            .iter()
+            .map(|(node, _, name)| (node, name))
+            .chain(
+                directory
+                    .entries
+                    .iter()
+                    .map(|(name, (node, _))| (node, name)),
+            )
+            .skip(offset)
+            .take(limit)
+        {
             let Some(attr) = cache.attrs.get(node).copied() else {
                 return Ok(None);
             };

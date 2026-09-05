@@ -108,14 +108,21 @@ class RunnerTests(unittest.TestCase):
         for family in runner.HOST_FAMILIES:
             args = runner.build_parser().parse_args(["--family", family])
             self.assertEqual((args.topology, args.cpus, args.memory_mib, args.timeout),
-                             ("host-store", 2, 2048, 15))
+                             ("host-store", 2, 2048, 130))
             self.assertIsNone(args.perf_samples)
-        self.assertEqual(len(runner.HOST_FAMILIES), 9)
+        self.assertEqual(len(runner.HOST_FAMILIES), 12)
+        self.assertIn("tiny_file_churn", runner.HOST_FAMILIES)
         row = {"identities": {"timer": "product_call_sum_ns"}, "command_wall_ns": 999,
                "records": [{"complete_ns": 888}, {"product_call_sum_ns": 123}]}
         self.assertEqual(runner._timer(row), ("product_call_sum_ns", 123))
         row["records"] = [{"complete_ns": 888}]
         self.assertEqual(runner._timer(row), ("product_call_sum_ns", None))
+
+    def test_execution_allowance_does_not_relax_product_target(self):
+        self.assertEqual(runner.PRODUCT_TARGET_NS, 15_000_000_000)
+        self.assertEqual(runner.performance_target_status(15_000_000_000), "PASS")
+        self.assertEqual(runner.performance_target_status(15_000_000_001), "TARGET_MISS")
+        self.assertEqual(runner.performance_target_status(119_000_000_000), "TARGET_MISS")
 
     def test_sdk_repetitions_share_input_identity(self):
         _, one = self.resolve(["--repetition", "1"], {"route": "sdk", "inherited": True, "seed_max": 5})

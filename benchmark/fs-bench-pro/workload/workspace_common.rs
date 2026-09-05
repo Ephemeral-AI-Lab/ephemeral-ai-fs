@@ -364,6 +364,77 @@ impl Entry {
     }
 }
 
+/// Bounded verification input shared by canonical and reopened native readers.
+pub(crate) struct TreeSample {
+    pub entries: Vec<Entry>,
+    pub absent: Vec<String>,
+}
+impl TreeSample {
+    pub fn validate(&self) -> Result<()> {
+        let files = self.entries.iter().filter(|entry| matches!(entry.kind, EntryKind::File(_))).count();
+        if files > 11 || self.entries.len() - files > 11 || self.absent.len() > 11 {
+            return Err("Workspace sample bounds".into());
+        }
+        let mut paths = BTreeSet::new();
+        for path in self.entries.iter().map(|entry| &entry.path).chain(&self.absent) {
+            validate_path(path)?;
+            if path.split('/').count() > 132 || !paths.insert(path) { return Err("Workspace sample path bounds".into()); }
+        }
+        for entry in &self.entries {
+            match &entry.kind {
+                EntryKind::File(content) => content.validate()?,
+                EntryKind::Directory => (),
+                _ => return Err("unsupported sampled kind".into()),
+            }
+        }
+        Ok(())
+    }
+    pub fn receipt(&self) -> Receipt {
+        Receipt::from([
+            ("sampled_paths".into(), self.entries.iter().map(|entry| entry.path.clone()).collect::<Vec<_>>().join("\n")),
+            ("sampled_ranges".into(), self.entries.iter().filter_map(|entry| match &entry.kind {
+                EntryKind::File(content) => Some(format!("{}:0..{}", entry.path, content.len().min(65536))), _ => None,
+            }).collect::<Vec<_>>().join("\n")),
+            ("absent_paths".into(), self.absent.join("\n")),
+            ("full_namespace_verified".into(), "false".into()),
+            ("full_file_bytes_verified".into(), "false".into()),
+            ("omissions".into(), "unselected paths, bytes beyond selected ranges, exhaustive inode/object/reference census, alias and failure injection semantics".into()),
+        ])
+    }
+}
+
+pub(crate) fn verify_native_sample(root: &Path, sample: &TreeSample) -> Result<Receipt> {
+    use std::os::unix::fs::FileExt;
+    sample.validate()?;
+    for entry in &sample.entries {
+        let path = root.join(&entry.path);
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.mode() & 0o7777 != entry.mode || metadata.mtime() != entry.mtime_seconds
+            || metadata.mtime_nsec() != i64::from(entry.mtime_nanoseconds) {
+            return Err(format!("sampled native metadata: {}", entry.path).into());
+        }
+        match &entry.kind {
+            EntryKind::Directory if metadata.is_dir() => (),
+            EntryKind::File(content) if metadata.is_file() && metadata.len() == content.len() => {
+                let mut expected = vec![0; content.len().min(65536) as usize];
+                let len = expected.len();
+                if content.read_at(0, &mut expected)? != len { return Err("sampled oracle length".into()); }
+                let mut actual = vec![0; len];
+                File::open(path)?.read_exact_at(&mut actual, 0)?;
+                if actual != expected { return Err(format!("sampled native bytes: {}", entry.path).into()); }
+            }
+            _ => return Err(format!("sampled native kind/length: {}", entry.path).into()),
+        }
+    }
+    for path in &sample.absent {
+        match fs::symlink_metadata(root.join(path)) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            other => return Err(format!("sampled native absence: {path}: {other:?}").into()),
+        }
+    }
+    Ok(sample.receipt())
+}
+
 pub(crate) fn seed_label(seed: u8) -> Result<String> {
     if !(1..=3).contains(&seed) {
         return Err("seed must be 1, 2 or 3".into());

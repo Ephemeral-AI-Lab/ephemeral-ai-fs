@@ -525,7 +525,11 @@ impl Workspace {
                 kind: inode_kind,
                 content_root,
                 metadata_root,
-                namespace_ref_count: before.map_or(0, |record| record.namespace_ref_count),
+                // New inodes have every final binding materialized. Existing
+                // inodes can have unseen aliases and retain their stored count.
+                namespace_ref_count: before.map_or(value.paths.len() as u64, |record| {
+                    record.namespace_ref_count
+                }),
             };
             layerfs_layerstack_store::note_workspace_namespace_visits(
                 0,
@@ -549,6 +553,17 @@ impl Workspace {
                     continue;
                 };
                 for (name, desired) in &directory.changes {
+                    if additions
+                        && desired.is_some_and(|node| {
+                            self.nodes
+                                .get(&node)
+                                .is_some_and(|value| value.canonical.is_none())
+                        })
+                    {
+                        // Its final references were emitted with the new record.
+                        // The removal pass still releases replaced old bindings.
+                        continue;
+                    }
                     let name = CanonicalName::from_bytes(name)?;
                     let before = match directory.base {
                         Some(base) => directory_lookup(
@@ -1798,7 +1813,9 @@ mod tests {
         let added = workspace.create_file(ROOT, b"added", 0o640).unwrap();
         workspace.write(added.node, 0, b"linked payload").unwrap();
         workspace.link(added.node, ROOT, b"added-alias").unwrap();
+        workspace.link(added.node, ROOT, b"second-alias").unwrap();
         workspace.unlink(ROOT, b"added", false).unwrap();
+        workspace.mkdir(ROOT, b"new-directory", 0o750).unwrap();
         for index in 0..120 {
             workspace
                 .create_file(ROOT, format!("new-{index:03}").as_bytes(), 0o600)
@@ -1825,6 +1842,9 @@ mod tests {
         assert_ne!(resolve("shared").inode, old_shared.inode);
         assert_eq!(resolve("outside").inode, old_child.inode);
         assert_eq!(resolve("outside").record.namespace_ref_count, 1);
+        assert_eq!(resolve("added-alias").record.namespace_ref_count, 2);
+        assert_eq!(resolve("added-alias").inode, resolve("second-alias").inode);
+        assert_eq!(resolve("new-directory").record.namespace_ref_count, 1);
         for (path, expected) in [
             ("hidden", b"original alias".as_slice()),
             ("shared", b"replacement"),
@@ -1867,8 +1887,8 @@ mod tests {
         )
         .unwrap();
         // root + background directory/files + kept directory/file + outside +
-        // hidden + replacement + added-alias + 120 new files; no orphan inodes.
-        assert_eq!(entries.len(), 328);
+        // hidden + replacement + aliased new file + new directory + 120 files.
+        assert_eq!(entries.len(), 329);
         // A valid long path still must fit the transient planner allocation,
         // together with its pending inode batch, under a custom small policy.
         workspace.policy.max_final_delta_memory_bytes = 4096;

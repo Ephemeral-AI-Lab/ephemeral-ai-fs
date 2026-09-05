@@ -1,3 +1,5 @@
+pub(crate) const DIRECTORY_PAGE_ENTRIES: usize = 128;
+
 use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -81,6 +83,26 @@ pub trait FilesystemPort: Send + Sync {
             .into_iter()
             .map(|(node, _, name)| self.attr(node).map(|attr| (attr, name)))
             .collect()
+    }
+    fn readdir_page(
+        &self,
+        node: NodeId,
+        offset: usize,
+    ) -> PortResult<Vec<(NodeId, Kind, Vec<u8>)>> {
+        Ok(self
+            .readdir(node)?
+            .into_iter()
+            .skip(offset)
+            .take(DIRECTORY_PAGE_ENTRIES)
+            .collect())
+    }
+    fn readdirplus_page(&self, node: NodeId, offset: usize) -> PortResult<Vec<(Attr, Vec<u8>)>> {
+        Ok(self
+            .readdirplus(node)?
+            .into_iter()
+            .skip(offset)
+            .take(DIRECTORY_PAGE_ENTRIES)
+            .collect())
     }
     fn create_file(&self, parent: NodeId, name: &[u8], mode: u32) -> PortResult<Attr>;
     fn create_file_open(&self, parent: NodeId, name: &[u8], mode: u32) -> PortResult<Attr> {

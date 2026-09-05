@@ -90,7 +90,7 @@ const ORCHESTRATION_SCOPE:&str="post-Store-open orchestration through timed call
 // watchdog shares exact timestamp transitions; the runner owns stop/cleanup.
 // Lock acquisition precedes each start timestamp; finish reads time and disarms
 // under the same lock, preventing a completed phase from timing out later.
-const PRODUCT_TIME_LIMIT_NS: u64 = 15_000_000_000;
+const PRODUCT_EXECUTION_LIMIT_NS: u64 = 120_000_000_000;
 
 pub(crate) struct ProductBudget {
     enabled: bool,
@@ -187,8 +187,8 @@ impl ProductBudget {
         Ok(end)
     }
     fn check(&self) -> AnyResult<()> {
-        if self.enabled && self.cumulative_ns > PRODUCT_TIME_LIMIT_NS {
-            return Err("suppressed_phase1_time_budget".into());
+        if self.enabled && self.cumulative_ns > PRODUCT_EXECUTION_LIMIT_NS {
+            return Err("product execution allowance exceeded".into());
         }
         Ok(())
     }
@@ -206,11 +206,11 @@ impl ProductBudget {
             .ok_or("product budget phase sum overflow")?;
         if self.enabled {
             self.event("end", phase, elapsed_ns, error);
-            if self.cumulative_ns > PRODUCT_TIME_LIMIT_NS {
+            if self.cumulative_ns > PRODUCT_EXECUTION_LIMIT_NS {
                 emit(
                     "product-time-budget-exceeded",
                     &[
-                        ("limit_ns", PRODUCT_TIME_LIMIT_NS.to_string()),
+                        ("limit_ns", PRODUCT_EXECUTION_LIMIT_NS.to_string()),
                         ("cumulative_ns", self.cumulative_ns.to_string()),
                         ("phase", quote(phase)),
                         ("measurement", quote("completed-pure-call-sum")),
@@ -227,7 +227,7 @@ impl ProductBudget {
                 ("state", quote(state)),
                 ("phase", quote(phase)),
                 ("cumulative_ns", self.cumulative_ns.to_string()),
-                ("limit_ns", PRODUCT_TIME_LIMIT_NS.to_string()),
+                ("limit_ns", PRODUCT_EXECUTION_LIMIT_NS.to_string()),
                 ("elapsed_ns", elapsed_ns.to_string()),
                 (
                     "phase_error",
@@ -279,7 +279,7 @@ impl PhaseDeadline {
                 },
             };
             let total = state.total_at(elapsed);
-            if total <= PRODUCT_TIME_LIMIT_NS {
+            if total <= PRODUCT_EXECUTION_LIMIT_NS {
                 continue;
             }
             let completed = state.completed_ns;
@@ -287,7 +287,7 @@ impl PhaseDeadline {
             emit(
                 "product-time-budget-exceeded",
                 &[
-                    ("limit_ns", PRODUCT_TIME_LIMIT_NS.to_string()),
+                    ("limit_ns", PRODUCT_EXECUTION_LIMIT_NS.to_string()),
                     ("cumulative_ns", total.to_string()),
                     ("completed_product_ns", completed.to_string()),
                     ("active_phase_ns", elapsed.to_string()),
@@ -1145,6 +1145,7 @@ fn run_case(
 ) -> AnyResult<()> {
     let fast = mode == "fast-verify";
     let verification = mode == "verify" || fast;
+    let sampled = verification && case.family == "tiny_file_churn";
     if fast
         && (case.kind == "git-tool"
             || case.kind == "boundaries"
@@ -1179,11 +1180,13 @@ fn run_case(
     store_metrics(&store, "before", 0)?;
     let mut last_operation = 0;
     let mut final_head = None;
+    let mut final_root = None;
     let branch;
     let mut history = Vec::new();
     let mut genesis_root = None;
+    let mut genesis_head = None;
     let mut fast_certificate = None;
-    let fast_fixture = if fast {
+    let fast_fixture = if fast && !sampled {
         Some(registry::fixture(case, seed)?)
     } else {
         None
@@ -1309,7 +1312,7 @@ fn run_case(
                 layer_id: initialized.genesis_layer_id,
             },
         )?;
-        if fast {
+        if fast && !sampled {
             fast_certificate = Some(fast_reference(
                 case,
                 seed,
@@ -1321,8 +1324,12 @@ fn run_case(
         branch = std::fs::read_to_string(root.join("branch-id"))?
             .trim()
             .parse()?;
-        genesis_root = Some(store.pin_branch(branch)?.root);
-        if fast {
+        {
+            let pristine = store.pin_branch(branch)?;
+            genesis_root = Some(pristine.root);
+            genesis_head = pristine.branch.head_commit_id;
+        }
+        if fast && !sampled {
             fast_certificate = Some(fast_reference(
                 case,
                 seed,
@@ -1562,6 +1569,7 @@ fn run_case(
                 }
                 {
                     let pinned = store.pin_branch(branch)?;
+                    final_root = Some(pinned.root);
                     emit(
                         "published-root",
                         &[
@@ -1680,7 +1688,76 @@ fn run_case(
         )?;
         let client = sample_client(reopened.clone(), &binding)?;
         let mut verifier_operation = 0;
-        if fast && case.family != "dedup_branch_history" {
+        if sampled {
+            let pinned = reopened.pin_branch(branch)?;
+            if Some(pinned.root) != final_root
+                || pinned.branch.head_commit_id != final_head
+                || (case.kind == "tiny-stat"
+                    && (Some(pinned.root) != genesis_root
+                        || pinned.branch.head_commit_id != genesis_head))
+            {
+                return Err("sampled publication/reconnect identity".into());
+            }
+            let sample = workload_source::ordinary_workloads::tiny_sample(case, seed)?;
+            let receipt =
+                super::workspace_verify::verify_sample(&pinned.reader, pinned.root, &sample)?;
+            emit(
+                "sampled-canonical-verification",
+                &[
+                    ("root", quote(&pinned.root.to_string())),
+                    (
+                        "head",
+                        quote(&format!("{:?}", pinned.branch.head_commit_id)),
+                    ),
+                    (
+                        "sampled_paths_or_ranges",
+                        format!(
+                            "[{}]",
+                            receipt
+                                .iter()
+                                .map(|(key, value)| quote(&format!("{key}={value}")))
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        ),
+                    ),
+                    ("full_namespace_verified", "false".into()),
+                    ("full_file_bytes_verified", "false".into()),
+                ],
+            );
+            let session = client.create_workspace_session(CreateWorkspaceSession {
+                branch_id: branch,
+                placement: case_placement(
+                    &Some(container.clone()),
+                    root,
+                    seed as usize,
+                    &format!("{}-sample-reopen", case.id),
+                ),
+                projection: Some(WorkspaceProjection::Fuse),
+            })?;
+            let result = execute(
+                &client,
+                session.id,
+                vec![
+                    "/usr/local/bin/fs-benchmark-workload".into(),
+                    "workspace-verify-sample".into(),
+                    case.id.clone().into(),
+                    seed.to_string().into(),
+                ],
+            );
+            let ended = client.end_workspace_session(session.id, EndWorkspaceMode::Clean);
+            let output = result?;
+            ended?;
+            emit(
+                "sampled-native-verification",
+                &[
+                    ("receipt", quote(&output_text(&output)?)),
+                    ("store_reconnected", "true".into()),
+                    ("fresh_fuse_reopened", "true".into()),
+                ],
+            );
+            observed(&client, &mut verifier_operation)?;
+        }
+        if fast && !sampled && case.family != "dedup_branch_history" {
             fast_verify_branch(
                 &reopened,
                 &client,
@@ -1698,7 +1775,7 @@ fn run_case(
                 host_continuation_proof(&client, &reopened, root, &container)?;
             }
         }
-        if !fast && case.family != "dedup_branch_history" {
+        if !fast && !sampled && case.family != "dedup_branch_history" {
             let mut expected = registry::expected(case, seed, registry::steps(case))?;
             if case.kind == "git-tool" {
                 let manifest = std::fs::read_to_string(
@@ -2307,7 +2384,7 @@ mod product_budget_tests {
         const CHILD: &str = "LAYERFS_BUDGET_WATCHDOG_TEST_CHILD";
         if std::env::var_os(CHILD).is_some() {
             let mut budget = ProductBudget::new(true);
-            budget.cumulative_ns = PRODUCT_TIME_LIMIT_NS - 10_000_000;
+            budget.cumulative_ns = PRODUCT_EXECUTION_LIMIT_NS - 10_000_000;
             budget.state.lock().unwrap().completed_ns = budget.cumulative_ns;
             budget.begin("watchdog-test").unwrap();
             let _start = budget.start_clock("watchdog-test").unwrap();
@@ -2328,38 +2405,42 @@ mod product_budget_tests {
         );
         assert!(stdout.contains("\"kind\":\"product-time-budget-exceeded\""));
         assert!(stdout.contains("\"measurement\":\"active-pure-call-sum\""));
-        assert!(stdout.contains("\"completed_product_ns\":14990000000"));
+        assert!(stdout.contains(&format!(
+            "\"completed_product_ns\":{}",
+            PRODUCT_EXECUTION_LIMIT_NS - 10_000_000
+        )));
     }
 
     #[test]
     fn cumulative_budget_keeps_prior_phases_and_exact_boundary() {
+        assert_eq!(PRODUCT_EXECUTION_LIMIT_NS, 120_000_000_000);
         // Fake phase durations: no product work, sleeping, preparation or verifier.
         let mut budget = ProductBudget::new(true);
         for (phase, duration) in [
             ("create", 2_000_000_000),
             ("exec", 7_000_000_000),
-            ("commit", 5_000_000_000),
+            ("commit", PRODUCT_EXECUTION_LIMIT_NS - 10_000_000_000),
             ("end", 1_000_000_000),
         ] {
             budget.begin(phase).unwrap();
             budget.end(phase, duration, None).unwrap();
         }
-        assert_eq!(budget.cumulative_ns, PRODUCT_TIME_LIMIT_NS);
+        assert_eq!(budget.cumulative_ns, PRODUCT_EXECUTION_LIMIT_NS);
         assert!(budget.check().is_ok());
         // The active phase's remaining allowance includes all previous calls.
         let state = ProductBudgetState {
-            completed_ns: 14_000_000_000,
+            completed_ns: PRODUCT_EXECUTION_LIMIT_NS - 1_000_000_000,
             active: None,
         };
-        assert_eq!(state.total_at(1_000_000_000), PRODUCT_TIME_LIMIT_NS);
-        assert!(state.total_at(1_000_000_001) > PRODUCT_TIME_LIMIT_NS);
+        assert_eq!(state.total_at(1_000_000_000), PRODUCT_EXECUTION_LIMIT_NS);
+        assert!(state.total_at(1_000_000_001) > PRODUCT_EXECUTION_LIMIT_NS);
         budget.end("visibility", 1, None).unwrap();
         assert!(budget.begin("next-step").is_err());
         // Verification/proof mode keeps accounting but cannot arm a deadline.
         let mut disabled = ProductBudget::new(false);
         assert!(disabled._deadline.is_none());
         disabled
-            .end("verify", PRODUCT_TIME_LIMIT_NS + 1, None)
+            .end("verify", PRODUCT_EXECUTION_LIMIT_NS + 1, None)
             .unwrap();
         assert!(disabled.begin("cleanup").is_ok());
     }

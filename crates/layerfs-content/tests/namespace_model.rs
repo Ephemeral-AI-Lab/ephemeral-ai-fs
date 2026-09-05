@@ -1568,3 +1568,55 @@ fn inode_remove_merges_collapses_and_preserves_retained_root() {
         Some(ObjectId::for_bytes(&500_u64.to_be_bytes()))
     );
 }
+
+#[test]
+fn directory_lookup_cache_reuses_one_leaf_without_crossing_roots_or_name_gaps() {
+    use layerfs_content::tree::directory::DirectoryLookupCache;
+    let mut store = MemoryStore::default();
+    let mut root = empty_directory(&mut store).unwrap();
+    for serial in (2..=800_u64).step_by(2) {
+        root = directory_insert(
+            &mut store,
+            root,
+            CanonicalName::new(&format!("n-{serial:04}")).unwrap(),
+            InodeId::allocate([71; 32], serial),
+        )
+        .unwrap()
+        .0;
+    }
+    let mut cache = DirectoryLookupCache::default();
+    let mut cached = NamespaceCounters::default();
+    let mut uncached = NamespaceCounters::default();
+    for serial in 0..=801_u64 {
+        let name = CanonicalName::new(&format!("n-{serial:04}")).unwrap();
+        let expected = (serial > 0 && serial <= 800 && serial % 2 == 0)
+            .then(|| InodeId::allocate([71; 32], serial));
+        assert_eq!(
+            cache.lookup(&store, root, &name, &mut cached).unwrap(),
+            expected
+        );
+        assert_eq!(
+            directory_lookup(&store, root, &name, &mut uncached).unwrap(),
+            expected
+        );
+    }
+    assert!(
+        cached.nodes_read < uncached.nodes_read / 10,
+        "{cached:?} / {uncached:?}"
+    );
+    let name = CanonicalName::new("n-0800").unwrap();
+    let changed = directory_remove(&mut store, root, &name).unwrap().0;
+    assert_eq!(
+        cache.lookup(&store, changed, &name, &mut cached).unwrap(),
+        None
+    );
+    assert_eq!(
+        cache.lookup(&store, root, &name, &mut cached).unwrap(),
+        Some(InodeId::allocate([71; 32], 800))
+    );
+    let empty = empty_directory(&mut store).unwrap();
+    assert_eq!(
+        cache.lookup(&store, empty, &name, &mut cached).unwrap(),
+        None
+    );
+}

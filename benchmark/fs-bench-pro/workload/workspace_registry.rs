@@ -118,6 +118,11 @@ pub(crate) fn dispatch(args: &[String]) -> Result<()> {
         return super::reliability_workloads::dispatch(&args[1..]);
     }
     match args {
+        [command,id,seed] if command == "workspace-verify-sample" => {
+            let sample = super::ordinary_workloads::tiny_sample(&resolve(id)?, seed.parse()?)?;
+            let receipt = super::workspace_common::verify_native_sample(Path::new("."), &sample)?;
+            for (key,value) in receipt { println!("{key}={value}"); }
+        }
         [command,id,seed,step,profile,binding,covered_path,covered_sha] if command=="workspace-verify-fast-v2" => {
             if !matches!(profile.as_str(),"fully_verified"|"canonical_input_qualified"|"qualified_content_components"|"independent_current_content") {return Err("unknown fast reference assurance".into());}
             let case=resolve(id)?; let seed=seed.parse::<u8>()?; let step=step.parse::<usize>()?;
