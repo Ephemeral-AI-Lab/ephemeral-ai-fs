@@ -1375,6 +1375,15 @@ impl FrontierInodes {
                 .record
                 .ok_or(StorageError::Integrity("released frontier inode"));
         }
+        self.base_record(objects, inode, base)
+    }
+
+    fn base_record(
+        &self,
+        objects: &ObjectBuffer<'_>,
+        inode: InodeId,
+        base: Option<InodeRecordV1>,
+    ) -> Result<InodeRecordV1> {
         if let Some(record) = base {
             return Ok(record);
         }
@@ -1393,6 +1402,7 @@ impl FrontierInodes {
         )?)
     }
 
+    #[cfg(test)]
     fn set(&mut self, inode: InodeId, record: Option<InodeRecordV1>) -> Result<()> {
         self.set_value(inode, record, None)
     }
@@ -1421,13 +1431,60 @@ impl FrontierInodes {
             value.checkpoint = checkpoint.or(value.checkpoint);
             Self::write(self.spill.as_ref().unwrap(), index, inode, value)?;
         } else {
-            if self.pending.len() == self.batch_size {
-                self.merge_pending()?;
-            }
-            self.pending
-                .insert(inode, FrontierValue { record, checkpoint });
+            self.insert_new(inode, FrontierValue { record, checkpoint })?;
         }
         Ok(())
+    }
+
+    fn insert_new(&mut self, inode: InodeId, value: FrontierValue) -> Result<()> {
+        if self.pending.len() == self.batch_size {
+            self.merge_pending()?;
+        }
+        self.pending.insert(inode, value);
+        Ok(())
+    }
+
+    fn change_references(
+        &mut self,
+        objects: &ObjectBuffer<'_>,
+        inode: InodeId,
+        base: Option<InodeRecordV1>,
+        amount: u64,
+        additions: bool,
+    ) -> Result<InodeRecordV1> {
+        let adjust = |value: &mut FrontierValue| -> Result<InodeRecordV1> {
+            let mut record = value
+                .record
+                .ok_or(StorageError::Integrity("released frontier inode"))?;
+            record.namespace_ref_count = if additions {
+                record
+                    .namespace_ref_count
+                    .checked_add(amount)
+                    .ok_or(StorageError::Integrity("namespace reference overflow"))?
+            } else {
+                record
+                    .namespace_ref_count
+                    .checked_sub(amount)
+                    .ok_or(StorageError::Integrity("namespace reference underflow"))?
+            };
+            value.record = (record.namespace_ref_count != 0).then_some(record);
+            Ok(record)
+        };
+        if let Some(value) = self.pending.get_mut(&inode) {
+            return adjust(value);
+        }
+        if let Some((index, mut value)) = self.spilled(inode)? {
+            let record = adjust(&mut value)?;
+            Self::write(self.spill.as_ref().unwrap(), index, inode, value)?;
+            return Ok(record);
+        }
+        let mut value = FrontierValue {
+            record: Some(self.base_record(objects, inode, base)?),
+            checkpoint: None,
+        };
+        let record = adjust(&mut value)?;
+        self.insert_new(inode, value)?;
+        Ok(record)
     }
 
     fn merge_pending(&mut self) -> Result<()> {
@@ -1734,12 +1791,7 @@ impl FrontierInodes {
                 drop(keys);
                 for ((inode, amount), record) in changes.into_iter().zip(records) {
                     if additions {
-                        let mut record = self.record_with_base(objects, inode, Some(record))?;
-                        record.namespace_ref_count = record
-                            .namespace_ref_count
-                            .checked_add(amount)
-                            .ok_or(StorageError::Integrity("namespace reference overflow"))?;
-                        self.set(inode, Some(record))?;
+                        self.change_references(objects, inode, Some(record), amount, true)?;
                     } else {
                         self.release(
                             objects,
@@ -1781,12 +1833,7 @@ impl FrontierInodes {
             if let Some((inode, prefetched, amount)) = next.take() {
                 let started = Instant::now();
                 // Earlier additions/releases override authenticated page prefetch.
-                let mut record = self.record_with_base(objects, inode, prefetched)?;
-                record.namespace_ref_count = record
-                    .namespace_ref_count
-                    .checked_sub(amount)
-                    .ok_or(StorageError::Integrity("namespace reference underflow"))?;
-                self.set(inode, (record.namespace_ref_count != 0).then_some(record))?;
+                let record = self.change_references(objects, inode, prefetched, amount, false)?;
                 note_commit_phase(WorkspaceCommitPhase::DeletionRecords, started);
                 if record.namespace_ref_count == 0 && record.kind == InodeKind::Directory {
                     directories.push(Cursor {
@@ -2151,7 +2198,7 @@ mod tests {
         journal.push(None, Some(ids[2])).unwrap();
         journal.push(Some(ids[2]), None).unwrap();
         let objects = ObjectBuffer::new(&workspace.reader).unwrap();
-        let mut inodes = FrontierInodes::new(workspace.base_root, 2, 0, &workspace.spool);
+        let mut inodes = FrontierInodes::new(workspace.base_root, 1, 0, &workspace.spool);
         inodes
             .apply_references(
                 &objects,

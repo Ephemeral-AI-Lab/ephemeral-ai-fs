@@ -172,3 +172,9 @@ The reference journal is lazy (no physical file when no existing references chan
 Validation so far:55 existing Workspace tests and8 sorted-tree tests pass. Added observer tests check exact original/final pairs, canonical-root equivalence and error propagation with old-root readability. A new Workspace regression verifies reference-journal prefix rollback, coalesced alias precedence and a regular-file deletion at the existing1KiB final-delta budget. Full file-edit/reconciliation checks and one original delete-100 performance sample follow serially. No independent proof has run.
 
 The reference-journal regression and all14 file-edit/reconciliation integration tests pass. The next performance selection is original delete-100; create gains are not extrapolated to it. The historical delete assessment was regenerated from its unchanged raw receipt while checking the reference counters; no historical performance was rerun or relabeled.
+
+## Located reference update — implementation, measurement pending
+
+`change_references` now locates the current pending/spilled/base record once, checks the addition/removal, and updates that exact owned location. It preserves attached checkpoint facts and current-over-prefetched precedence. The ordinary release algorithm and recursive traversal are unchanged. The former general `set` wrapper is test-only; production reference changes no longer compose a read lookup with a second update lookup.
+
+All56 Workspace library tests and the targeted hardlink/rename/replacement integration tests pass. The reference-journal test now forces a one-entry pending map so later alias removal exercises a previously spilled current count. One original delete-100 measurement follows; no independent proof.
