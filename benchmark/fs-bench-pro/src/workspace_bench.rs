@@ -1042,7 +1042,7 @@ pub(crate) fn spool_observation(phase: &str) -> AnyResult<()> {
         }
     }
     let observer_ns = elapsed_ns(started);
-    emit("workspace-spool-observation",&[("phase",quote(phase)),("roots",format!("[{}]",roots.iter().map(|path|quote(&path.to_string_lossy())).collect::<Vec<_>>().join(","))),("scope",quote("owned process Workspace spool/capture/rebase regular files; excludes output logs and directory allocation")),("precision",quote("boundary-observation")),("logical_bytes",logical.to_string()),("allocated_bytes",allocated.to_string()),("file_count",files.to_string()),("observer_ns",observer_ns.to_string())]);
+    emit("workspace-spool-observation",&[("phase",quote(phase)),("roots",format!("[{}]",roots.iter().map(|path|quote(&path.to_string_lossy())).collect::<Vec<_>>().join(","))),("scope",quote("owned process Workspace spool/capture/checkpoint regular files; excludes output logs and directory allocation")),("precision",quote("boundary-observation")),("logical_bytes",logical.to_string()),("allocated_bytes",allocated.to_string()),("file_count",files.to_string()),("observer_ns",observer_ns.to_string())]);
     if logical > 2 * 1024 * 1024 * 1024 || allocated > 2 * 1024 * 1024 * 1024 {
         return Err("owned Workspace spool exceeds frozen 2 GiB bound".into());
     }

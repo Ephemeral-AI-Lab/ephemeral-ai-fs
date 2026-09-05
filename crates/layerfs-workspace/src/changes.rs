@@ -2,9 +2,7 @@ use crate::cow_tree::{portable_metadata, Attr, Data, FileData, Kind, NodeId, Wor
 use layerfs_content::file::rope::{
     self, FileMutationBatch, FileStateRoot, ObjectStore, RopeCounters,
 };
-use layerfs_content::filesystem::{
-    self, ContentChange, InodeMutation, LogicalCounters, PortableMetadataCache,
-};
+use layerfs_content::filesystem::{self, InodeMutation, LogicalCounters, PortableMetadataCache};
 use layerfs_content::object::access::ObjectRead;
 use layerfs_content::object::{ContentDigestWriter, ObjectId};
 use layerfs_content::tree::batch::{
@@ -44,8 +42,187 @@ struct FinalEntry {
     attr: Attr,
 }
 
+// Mutable identities stay with Workspace; Store receives only the canonical candidate.
+pub(crate) struct PreparedCommit {
+    pub(crate) built: BuiltRoot,
+    pub(crate) checkpoint: Checkpoint,
+}
+
+pub(crate) struct Checkpoint {
+    pub(crate) root: ObjectId,
+    pub(crate) generation: u64,
+    file: File,
+    count: u64,
+}
+
+struct CheckpointJournal {
+    writer: std::io::BufWriter<File>,
+    count: u64,
+    byte_limit: u64,
+}
+
+impl CheckpointJournal {
+    fn new(workspace: &Workspace) -> Result<Self> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let path = workspace
+            .spool
+            .join(format!("checkpoint-{}", crate::WorkspaceId::new()));
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)?;
+        // An exclusively owned, anonymous journal needs no path cleanup on retry/drop.
+        std::fs::remove_file(path)?;
+        Ok(Self {
+            writer: std::io::BufWriter::with_capacity(256, file),
+            count: 0,
+            // Metadata facts are candidate scratch, not payload spool bytes.
+            byte_limit: (workspace.nodes.len() as u64).saturating_mul(104),
+        })
+    }
+
+    fn push(&mut self, node: NodeId, inode: InodeId, content: ObjectId, attr: Attr) -> Result<()> {
+        if self.count.saturating_add(1).saturating_mul(104) > self.byte_limit {
+            return Err(StorageError::InvalidInput(
+                "workspace checkpoint journal limit",
+            ));
+        }
+        let mut bytes = [0; 104];
+        bytes[..8].copy_from_slice(&node.0.to_le_bytes());
+        bytes[8..40].copy_from_slice(inode.as_bytes());
+        bytes[40..72].copy_from_slice(content.as_bytes());
+        bytes[72..80].copy_from_slice(&attr.size.to_le_bytes());
+        bytes[80..84].copy_from_slice(&attr.mode.to_le_bytes());
+        bytes[84..88].copy_from_slice(&attr.links.to_le_bytes());
+        bytes[88..96].copy_from_slice(&attr.mtime_seconds.to_le_bytes());
+        bytes[96..100].copy_from_slice(&attr.mtime_nanoseconds.to_le_bytes());
+        bytes[100] = match attr.kind {
+            Kind::File => 1,
+            Kind::Directory => 2,
+            Kind::Symlink => 3,
+        };
+        self.writer.write_all(&bytes)?;
+        self.count += 1;
+        Ok(())
+    }
+
+    fn validate(
+        &mut self,
+        objects: &ObjectBuffer<'_>,
+        mut record: impl FnMut(InodeId) -> Result<InodeRecordV1>,
+    ) -> Result<()> {
+        self.writer.flush()?;
+        Checkpoint::visit_file(
+            self.writer.get_ref(),
+            self.count,
+            |_, inode, content, attr| {
+                let final_record = record(inode)?;
+                let metadata =
+                    portable_metadata(objects, final_record.metadata_root, final_record.kind)?;
+                let size = match final_record.kind {
+                    InodeKind::RegularFile => {
+                        rope::state(
+                            objects,
+                            FileStateRoot(content),
+                            &mut RopeCounters::default(),
+                        )?
+                        .logical_len
+                    }
+                    InodeKind::Directory => 0,
+                    InodeKind::Symlink => ObjectRead::with_authenticated_canonical(
+                        objects,
+                        content,
+                        layerfs_content::tree::directory::codec::decode_symlink,
+                    )?
+                    .target
+                    .len() as u64,
+                };
+                if final_record.content_root != content
+                    || kind(final_record.kind) != attr.kind
+                    || size != attr.size
+                    || metadata.permission_mode != attr.mode
+                    || metadata.mtime_seconds != attr.mtime_seconds
+                    || metadata.mtime_nanoseconds != attr.mtime_nanoseconds
+                    || (attr.kind != Kind::Directory
+                        && final_record.namespace_ref_count != u64::from(attr.links))
+                {
+                    return Err(StorageError::Integrity("candidate checkpoint record"));
+                }
+                Ok(())
+            },
+        )
+    }
+
+    fn finish(mut self, built: BuiltRoot, generation: u64) -> Result<PreparedCommit> {
+        self.writer.flush()?;
+        let file = self
+            .writer
+            .into_inner()
+            .map_err(|error| error.into_error())?;
+        Ok(PreparedCommit {
+            checkpoint: Checkpoint {
+                root: built.root_id,
+                generation,
+                file,
+                count: self.count,
+            },
+            built,
+        })
+    }
+}
+
+impl Checkpoint {
+    pub(crate) fn visit(
+        &self,
+        mut visitor: impl FnMut(NodeId, InodeId, ObjectId, Attr) -> Result<()>,
+    ) -> Result<()> {
+        Self::visit_file(&self.file, self.count, &mut visitor)
+    }
+
+    fn visit_file(
+        file: &File,
+        count: u64,
+        mut visitor: impl FnMut(NodeId, InodeId, ObjectId, Attr) -> Result<()>,
+    ) -> Result<()> {
+        use std::io::{Seek, SeekFrom};
+        let mut reader = std::io::BufReader::with_capacity(256, file);
+        reader.seek(SeekFrom::Start(0))?;
+        for _ in 0..count {
+            let mut bytes = [0; 104];
+            reader.read_exact(&mut bytes)?;
+            let node = NodeId(u64::from_le_bytes(bytes[..8].try_into().unwrap()));
+            let attr = Attr {
+                node,
+                size: u64::from_le_bytes(bytes[72..80].try_into().unwrap()),
+                mode: u32::from_le_bytes(bytes[80..84].try_into().unwrap()),
+                links: u32::from_le_bytes(bytes[84..88].try_into().unwrap()),
+                mtime_seconds: i64::from_le_bytes(bytes[88..96].try_into().unwrap()),
+                mtime_nanoseconds: u32::from_le_bytes(bytes[96..100].try_into().unwrap()),
+                kind: match bytes[100] {
+                    1 => Kind::File,
+                    2 => Kind::Directory,
+                    3 => Kind::Symlink,
+                    _ => return Err(StorageError::Integrity("checkpoint kind")),
+                },
+            };
+            visitor(
+                node,
+                InodeId(bytes[8..40].try_into().unwrap()),
+                ObjectId::from_bytes(&bytes[40..72])?,
+                attr,
+            )?;
+        }
+        if reader.read(&mut [0; 1])? != 0 {
+            return Err(StorageError::Integrity("checkpoint journal length"));
+        }
+        Ok(())
+    }
+}
+
 impl Workspace {
-    pub(crate) fn build_candidate(&mut self) -> Result<BuiltRoot> {
+    pub(crate) fn build_candidate(&mut self) -> Result<PreparedCommit> {
         #[cfg(any(debug_assertions, feature = "test-instrumentation"))]
         if INJECT_CANDIDATE_FAILURE.with(|inject| inject.replace(false)) {
             return Err(StorageError::Integrity(
@@ -55,318 +232,13 @@ impl Workspace {
         if let Some(candidate) = self.build_localized_candidate()? {
             return Ok(candidate);
         }
-        let captured = self.take_capture();
-        if let Some(captured) = &captured {
-            layerfs_layerstack_store::note_workspace_capture(1, captured.len);
-        }
-        let started = Instant::now();
-        let base = self.base_manifest()?;
-        let final_view = self.final_manifest(manifest_charge(&base))?;
-        let base_groups = groups_by_inode(&base);
-        let final_groups = groups_by_node(&final_view);
-        let mut recreate = BTreeSet::new();
-        let mut rewrite = BTreeSet::new();
-        let mut renames = BTreeMap::new();
-        note_commit_phase(WorkspaceCommitPhase::CandidatePlan, started);
-
-        let started = Instant::now();
-        for (node, paths) in &final_groups {
-            let entry = final_view
-                .get(&paths[0])
-                .ok_or(StorageError::Integrity("final manifest"))?;
-            if let Some(inode) = self.nodes.get(node).and_then(|node| node.canonical) {
-                if let Some(before_paths) = base_groups.get(&inode) {
-                    let removed = before_paths
-                        .iter()
-                        .filter(|path| !paths.contains(path))
-                        .collect::<Vec<_>>();
-                    let added = paths
-                        .iter()
-                        .filter(|path| !before_paths.contains(path))
-                        .collect::<Vec<_>>();
-                    if before_paths.len() == paths.len() && removed.len() == 1 && added.len() == 1 {
-                        let before = base
-                            .get(removed[0])
-                            .ok_or(StorageError::Integrity("rename source"))?;
-                        let content_matches = match entry.attr.kind {
-                            Kind::File => {
-                                !self.file_may_differ(entry.node, before.record.content_root)?
-                            }
-                            Kind::Symlink => {
-                                self.readlink(entry.node)?
-                                    == self.base_symlink(before.record.content_root)?
-                            }
-                            Kind::Directory => false,
-                        };
-                        if kind(before.record.kind) == entry.attr.kind
-                            && before.mode == entry.attr.mode
-                            && before.mtime_seconds == entry.attr.mtime_seconds
-                            && before.mtime_nanoseconds == entry.attr.mtime_nanoseconds
-                            && content_matches
-                        {
-                            renames.insert(*node, (removed[0].clone(), added[0].clone()));
-                            continue;
-                        }
-                    }
-                }
-            }
-            let exact_base = paths
-                .first()
-                .and_then(|path| base.get(path))
-                .filter(|first| {
-                    paths.iter().all(|path| {
-                        base.get(path).is_some_and(|candidate| {
-                            candidate.inode == first.inode
-                                && kind(candidate.record.kind) == entry.attr.kind
-                        })
-                    })
-                })
-                .filter(|first| {
-                    self.nodes.get(node).and_then(|node| node.canonical) == Some(first.inode)
-                })
-                .filter(|first| base_groups.get(&first.inode) == Some(paths));
-            let Some(base_entry) = exact_base else {
-                recreate.insert(*node);
-                continue;
-            };
-            match entry.attr.kind {
-                Kind::File
-                    if self.file_may_differ(entry.node, base_entry.record.content_root)? =>
-                {
-                    rewrite.insert(*node);
-                }
-                Kind::Symlink
-                    if self.readlink(entry.node)?
-                        != self.base_symlink(base_entry.record.content_root)? =>
-                {
-                    recreate.insert(*node);
-                }
-                _ => {}
-            }
-        }
-        note_commit_phase(WorkspaceCommitPhase::DirtyCompare, started);
-
-        let started = Instant::now();
-        let seed = *filesystem::namespace(&CoreReader(&self.reader), self.base_root)?
-            .root_directory_inode
-            .as_bytes();
-        let (mut objects, captured) = match captured {
-            Some(crate::capture::CapturedFile {
-                node,
-                len,
-                root,
-                counters,
-                objects,
-            }) => (
-                ObjectBuffer::resume_prevalidated(&self.reader, objects),
-                Some((node, len, root, counters)),
-            ),
-            None => (ObjectBuffer::new(&self.reader)?, None),
-        };
-        let mut root = self.base_root;
-        let mut cdc_bytes_scanned = 0_u64;
-        let renamed_sources = renames
-            .values()
-            .map(|(source, _)| source.as_str())
-            .collect::<BTreeSet<_>>();
-        let mut removals = base
-            .iter()
-            .filter_map(|(path, before)| match final_view.get(path) {
-                None if !renamed_sources.contains(path.as_str()) => Some(path.clone()),
-                None => None,
-                Some(after)
-                    if kind(before.record.kind) != after.attr.kind
-                        || recreate.contains(&after.node)
-                        || (renames.contains_key(&after.node)
-                            && self.nodes[&after.node].canonical != Some(before.inode)) =>
-                {
-                    Some(path.clone())
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        removals
-            .sort_by(|left, right| depth(right).cmp(&depth(left)).then_with(|| right.cmp(left)));
-        for path in removals {
-            root = apply_one(
-                &mut objects,
-                root,
-                ContentChange::Remove { path },
-                seed,
-                &mut cdc_bytes_scanned,
-            )?;
-        }
-
-        for (source, target) in renames.values() {
-            let source = CanonicalPath::new(source)?;
-            let target = CanonicalPath::new(target)?;
-            let mut counters = LogicalCounters::default();
-            let (source_parent, _) =
-                filesystem::resolve_parent(&objects, root, &source, &mut counters)?;
-            let (target_parent, _) =
-                filesystem::resolve_parent(&objects, root, &target, &mut counters)?;
-            root = filesystem::rename(
-                &mut objects,
-                root,
-                &source,
-                &target,
-                source_parent.record.metadata_root,
-                target_parent.record.metadata_root,
-            )?
-            .root();
-        }
-
-        let mut directories = final_view
-            .iter()
-            .filter(|(path, entry)| {
-                entry.attr.kind == Kind::Directory
-                    && !base
-                        .get(*path)
-                        .is_some_and(|before| kind(before.record.kind) == Kind::Directory)
-            })
-            .map(|(path, entry)| (path.clone(), *entry))
-            .collect::<Vec<_>>();
-        directories.sort_by(|left, right| {
-            depth(&left.0)
-                .cmp(&depth(&right.0))
-                .then_with(|| left.0.cmp(&right.0))
-        });
-        for (path, entry) in directories {
-            root = apply_one(
-                &mut objects,
-                root,
-                ContentChange::Mkdir {
-                    path: path.clone(),
-                    mode: entry.attr.mode,
-                },
-                seed,
-                &mut cdc_bytes_scanned,
-            )?;
-            root = set_metadata(&mut objects, root, &path, entry.attr)?;
-        }
-        note_commit_phase(WorkspaceCommitPhase::Namespace, started);
-
-        let groups = final_groups
-            .iter()
-            .map(|(node, paths)| (paths[0].clone(), (*node, paths)))
-            .collect::<BTreeMap<_, _>>();
-        for (representative, (node, paths)) in groups {
-            let entry = *final_view
-                .get(&representative)
-                .ok_or(StorageError::Integrity("final manifest"))?;
-            if recreate.contains(&node) {
-                let started = Instant::now();
-                root = self.create_group(
-                    &mut objects,
-                    root,
-                    &representative,
-                    paths,
-                    entry,
-                    captured,
-                    seed,
-                    &mut cdc_bytes_scanned,
-                )?;
-                note_commit_phase(WorkspaceCommitPhase::Content, started);
-            } else {
-                if rewrite.contains(&node) {
-                    let before = base
-                        .get(&representative)
-                        .ok_or(StorageError::Integrity("base hard-link group"))?;
-                    let started = Instant::now();
-                    match self.mutate_existing_file(&mut objects, node, *before)? {
-                        Some((content, counters)) => {
-                            cdc_bytes_scanned = cdc_bytes_scanned
-                                .checked_add(counters.cdc_bytes_scanned)
-                                .ok_or(StorageError::Integrity("CDC counter"))?;
-                            root = filesystem::apply_inode_mutations(
-                                &mut objects,
-                                root,
-                                [InodeMutation::Upsert {
-                                    inode: before.inode,
-                                    record: InodeRecordV1 {
-                                        content_root: content.0,
-                                        ..before.record
-                                    },
-                                }],
-                            )?
-                            .root();
-                        }
-                        None if self
-                            .incremental_file_supported(node, before.record.content_root) => {}
-                        None => {
-                            let candidate = filesystem::write_file(
-                                &mut objects,
-                                root,
-                                &CanonicalPath::new(&representative)?,
-                                WorkspaceFileReader::new(self, node)?,
-                                entry.attr.mode,
-                                seed,
-                            )?;
-                            cdc_bytes_scanned = cdc_bytes_scanned
-                                .checked_add(candidate.counters().rope.cdc_bytes_scanned)
-                                .ok_or(StorageError::Integrity("CDC counter"))?;
-                            root = candidate.root();
-                        }
-                    }
-                    note_commit_phase(WorkspaceCommitPhase::Content, started);
-                }
-                let before_path = renames
-                    .get(&node)
-                    .map_or(representative.as_str(), |(source, _)| source.as_str());
-                let before = base
-                    .get(before_path)
-                    .ok_or(StorageError::Integrity("base hard-link group"))?;
-                if before.mode != entry.attr.mode
-                    || before.mtime_seconds != entry.attr.mtime_seconds
-                    || before.mtime_nanoseconds != entry.attr.mtime_nanoseconds
-                {
-                    let started = Instant::now();
-                    root = set_metadata(&mut objects, root, &representative, entry.attr)?;
-                    note_commit_phase(WorkspaceCommitPhase::Namespace, started);
-                }
-            }
-        }
-
-        let started = Instant::now();
-        let base_root = filesystem::resolve(
-            &CoreReader(&self.reader),
-            self.base_root,
-            &CanonicalPath::root(),
-            &mut LogicalCounters::default(),
-        )?;
-        let base_root_metadata = portable_metadata(
-            &CoreReader(&self.reader),
-            base_root.record.metadata_root,
-            base_root.record.kind,
-        )?;
-        let final_root = self.attr(ROOT)?;
-        if base_root_metadata.permission_mode != final_root.mode
-            || base_root_metadata.mtime_seconds != final_root.mtime_seconds
-            || base_root_metadata.mtime_nanoseconds != final_root.mtime_nanoseconds
-        {
-            let path = CanonicalPath::root();
-            root = filesystem::set_mode(&mut objects, root, &path, final_root.mode)?.root();
-            root = filesystem::set_mtime(
-                &mut objects,
-                root,
-                &path,
-                final_root.mtime_seconds,
-                final_root.mtime_nanoseconds,
-            )?
-            .root();
-        }
-        note_commit_phase(WorkspaceCommitPhase::Namespace, started);
-
-        let started = Instant::now();
-        let built = objects.finish(root, cdc_bytes_scanned);
-        note_commit_phase(WorkspaceCommitPhase::CandidateFinish, started);
-        built
+        self.build_frontier_candidate()
     }
 
     // Directory overlays already are the final binding delta. Applying their inode
     // edges directly preserves untouched subtrees, including a renamed directory,
     // without building either complete namespace manifest.
-    fn build_frontier_candidate(&mut self) -> Result<BuiltRoot> {
+    fn build_frontier_candidate(&mut self) -> Result<PreparedCommit> {
         let started = Instant::now();
         self.policy.check_final_delta(4096)?;
         let batch_size = (self.policy.max_final_delta_memory_bytes / 4096).min(128) as usize;
@@ -397,6 +269,7 @@ impl Workspace {
         let mut inodes = FrontierInodes::new(self.base_root, batch_size, tree_scratch);
         let mut metadata_cache = PortableMetadataCache::default();
         let mut cdc_bytes_scanned = 0_u64;
+        let mut checkpoint = CheckpointJournal::new(self)?;
         note_commit_phase(WorkspaceCommitPhase::CandidatePlan, started);
         let started = Instant::now();
         for (&node, value) in &self.nodes {
@@ -538,6 +411,7 @@ impl Workspace {
                 u64::from(before == Some(record)),
                 0,
             );
+            checkpoint.push(node, inode, content_root, attr)?;
             if before != Some(record) {
                 inodes.set(&mut objects, inode, Some(record))?;
             }
@@ -604,10 +478,12 @@ impl Workspace {
                 }
             }
         }
+        checkpoint.validate(&objects, |inode| inodes.record(&objects, inode))?;
         inodes.flush(&mut objects)?;
         note_commit_phase(WorkspaceCommitPhase::Namespace, started);
         let started = Instant::now();
-        let built = objects.finish(inodes.root, cdc_bytes_scanned);
+        let built = objects.finish(inodes.root, cdc_bytes_scanned)?;
+        let built = checkpoint.finish(built, self.mutation_generation);
         note_commit_phase(WorkspaceCommitPhase::CandidateFinish, started);
         built
     }
@@ -697,7 +573,7 @@ impl Workspace {
         ))
     }
 
-    fn build_localized_candidate(&mut self) -> Result<Option<BuiltRoot>> {
+    fn build_localized_candidate(&mut self) -> Result<Option<PreparedCommit>> {
         let started = Instant::now();
         if self.nodes.values().inspect(|_| layerfs_layerstack_store::note_workspace_namespace_visits(0, 0, 0, 0, 1)).any(|node| {
             matches!(&node.data, Data::Directory(directory) if !directory.changes.is_empty())
@@ -787,6 +663,7 @@ impl Workspace {
         let mut mutations = Vec::new();
         let mut metadata_cache = PortableMetadataCache::default();
         let mut cdc_bytes_scanned = 0_u64;
+        let mut checkpoint = CheckpointJournal::new(self)?;
         for (node, attr, base) in entries {
             let mut record = base.record;
             if attr.kind == Kind::File && self.file_may_differ(node, record.content_root)? {
@@ -822,6 +699,7 @@ impl Workspace {
                     )?
                     .0;
             }
+            checkpoint.push(node, base.inode, record.content_root, attr)?;
             if record != base.record {
                 mutations.push(InodeMutation::Upsert {
                     inode: base.inode,
@@ -839,14 +717,18 @@ impl Workspace {
                 &mut objects,
                 self.base_root,
                 mutations,
-                usize::try_from(self.policy.max_final_delta_memory_bytes)
+                usize::try_from(self.policy.max_final_delta_memory_bytes.saturating_sub(512))
                     .unwrap_or(usize::MAX)
                     .min(SORTED_TREE_UPDATE_SCRATCH_BYTES),
             )?
         };
+        checkpoint.validate(&objects, |inode| {
+            FrontierInodes::new(root, 1, 0).record(&objects, inode)
+        })?;
         note_commit_phase(WorkspaceCommitPhase::Namespace, started);
         let started = Instant::now();
-        let built = objects.finish(root, cdc_bytes_scanned);
+        let built = objects.finish(root, cdc_bytes_scanned)?;
+        let built = checkpoint.finish(built, self.mutation_generation);
         note_commit_phase(WorkspaceCommitPhase::CandidateFinish, started);
         built.map(Some)
     }
@@ -900,94 +782,6 @@ impl Workspace {
             digest.write_all(b"Z")?;
         }
         Ok(digest.finish())
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn create_group(
-        &self,
-        objects: &mut ObjectBuffer<'_>,
-        mut root: ObjectId,
-        representative: &str,
-        paths: &[String],
-        entry: FinalEntry,
-        captured: Option<(NodeId, u64, FileStateRoot, RopeCounters)>,
-        seed: [u8; 32],
-        cdc_bytes_scanned: &mut u64,
-    ) -> Result<ObjectId> {
-        match entry.attr.kind {
-            Kind::File => {
-                let path = CanonicalPath::new(representative)?;
-                if let Some((_, _, content, counters)) = captured
-                    .filter(|(node, len, _, _)| *node == entry.node && *len == entry.attr.size)
-                {
-                    root = filesystem::write_file(
-                        objects,
-                        root,
-                        &path,
-                        std::io::empty(),
-                        entry.attr.mode,
-                        seed,
-                    )?
-                    .root();
-                    let resolved =
-                        filesystem::resolve(objects, root, &path, &mut LogicalCounters::default())?;
-                    root = filesystem::apply_inode_mutations(
-                        objects,
-                        root,
-                        [InodeMutation::Upsert {
-                            inode: resolved.inode,
-                            record: InodeRecordV1 {
-                                content_root: content.0,
-                                ..resolved.record
-                            },
-                        }],
-                    )?
-                    .root();
-                    *cdc_bytes_scanned = cdc_bytes_scanned
-                        .checked_add(counters.cdc_bytes_scanned)
-                        .ok_or(StorageError::Integrity("CDC counter"))?;
-                } else {
-                    let candidate = filesystem::write_file(
-                        objects,
-                        root,
-                        &path,
-                        WorkspaceFileReader::new(self, entry.node)?,
-                        entry.attr.mode,
-                        seed,
-                    )?;
-                    *cdc_bytes_scanned = cdc_bytes_scanned
-                        .checked_add(candidate.counters().rope.cdc_bytes_scanned)
-                        .ok_or(StorageError::Integrity("CDC counter"))?;
-                    root = candidate.root();
-                }
-            }
-            Kind::Symlink => {
-                root = apply_one(
-                    objects,
-                    root,
-                    ContentChange::Symlink {
-                        path: representative.to_owned(),
-                        target: self.readlink(entry.node)?,
-                    },
-                    seed,
-                    cdc_bytes_scanned,
-                )?;
-            }
-            Kind::Directory => return Err(StorageError::Integrity("directory hard link")),
-        }
-        for path in &paths[1..] {
-            root = apply_one(
-                objects,
-                root,
-                ContentChange::HardLink {
-                    source: representative.to_owned(),
-                    target: path.clone(),
-                },
-                seed,
-                cdc_bytes_scanned,
-            )?;
-        }
-        set_metadata(objects, root, representative, entry.attr)
     }
 
     fn base_manifest(&self) -> Result<BTreeMap<String, BaseEntry>> {
@@ -1266,15 +1060,6 @@ impl Workspace {
             &mut base_digest,
         )?;
         Ok(final_digest.finish() == base_digest.finish())
-    }
-
-    fn base_symlink(&self, root: ObjectId) -> Result<Vec<u8>> {
-        Ok(CoreReader(&self.reader)
-            .with_authenticated_canonical(
-                root,
-                layerfs_content::tree::directory::codec::decode_symlink,
-            )?
-            .target)
     }
 }
 
@@ -1569,58 +1354,6 @@ impl Read for WorkspaceFileReader<'_> {
     }
 }
 
-fn apply_one(
-    objects: &mut ObjectBuffer<'_>,
-    root: ObjectId,
-    change: ContentChange,
-    seed: [u8; 32],
-    cdc_bytes_scanned: &mut u64,
-) -> Result<ObjectId> {
-    let applied = filesystem::apply_changes(objects, root, &[change], seed)?;
-    *cdc_bytes_scanned = cdc_bytes_scanned
-        .checked_add(applied.counters.cdc_bytes_scanned)
-        .ok_or(StorageError::Integrity("CDC counter"))?;
-    Ok(applied.root_id)
-}
-
-fn set_metadata(
-    objects: &mut ObjectBuffer<'_>,
-    root: ObjectId,
-    path: &str,
-    attr: Attr,
-) -> Result<ObjectId> {
-    let path = CanonicalPath::new(path)?;
-    let root = filesystem::set_mode(objects, root, &path, attr.mode)?.root();
-    Ok(filesystem::set_mtime(
-        objects,
-        root,
-        &path,
-        attr.mtime_seconds,
-        attr.mtime_nanoseconds,
-    )?
-    .root())
-}
-
-fn groups_by_inode(base: &BTreeMap<String, BaseEntry>) -> BTreeMap<InodeId, Vec<String>> {
-    let mut groups = BTreeMap::<_, Vec<_>>::new();
-    for (path, entry) in base {
-        if entry.record.kind != InodeKind::Directory {
-            groups.entry(entry.inode).or_default().push(path.clone());
-        }
-    }
-    groups
-}
-
-fn groups_by_node(final_view: &BTreeMap<String, FinalEntry>) -> BTreeMap<NodeId, Vec<String>> {
-    let mut groups = BTreeMap::<_, Vec<_>>::new();
-    for (path, entry) in final_view {
-        if entry.attr.kind != Kind::Directory {
-            groups.entry(entry.node).or_default().push(path.clone());
-        }
-    }
-    groups
-}
-
 fn kind(kind: InodeKind) -> Kind {
     match kind {
         InodeKind::RegularFile => Kind::File,
@@ -1636,10 +1369,6 @@ fn join(parent: &CanonicalPath, name: &str) -> Result<CanonicalPath> {
         format!("{}/{name}", parent.as_str())
     };
     CanonicalPath::new(&value).map_err(Into::into)
-}
-
-fn depth(path: &str) -> usize {
-    path.bytes().filter(|byte| *byte == b'/').count()
 }
 
 fn apply_sorted_inode_mutations(
@@ -1726,6 +1455,37 @@ mod tests {
             .unwrap();
         let workspace = Workspace::open(store, branch, root.join("spool")).unwrap();
         (root, workspace)
+    }
+
+    #[test]
+    fn checkpoint_checks_final_references_and_preserves_payload_limit() {
+        let (root, mut workspace) = empty_workspace("checkpoint-checks");
+        workspace.policy.max_spool_bytes = 3;
+        let file = workspace.create_file(ROOT, b"file", 0o640).unwrap().node;
+        workspace.write(file, 0, b"abc").unwrap();
+        workspace.commit().unwrap();
+        workspace.policy.max_spool_bytes = 0;
+        workspace.set_mtime(file, 17, 3).unwrap();
+        workspace.commit().unwrap();
+        let mut journal = CheckpointJournal::new(&workspace).unwrap();
+        let attr = workspace.attr(file).unwrap();
+        let inode = workspace.nodes[&file].canonical.unwrap();
+        let objects = ObjectBuffer::new(&workspace.reader).unwrap();
+        let mut record = FrontierInodes::new(workspace.base_root, 1, 0)
+            .record(&objects, inode)
+            .unwrap();
+        journal
+            .push(file, inode, record.content_root, attr)
+            .unwrap();
+        journal.validate(&objects, |_| Ok(record)).unwrap();
+        record.namespace_ref_count += 1;
+        assert!(matches!(
+            journal.validate(&objects, |_| Ok(record)),
+            Err(StorageError::Integrity("candidate checkpoint record"))
+        ));
+        drop(objects);
+        drop(workspace);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -2016,7 +1776,7 @@ mod tests {
             outcome,
             CommitOutcome::UpToDate { root_id } if root_id == base_root
         ));
-        assert_eq!(transition, crate::lifecycle::CommitTransition::Rebased);
+        assert_eq!(transition, crate::lifecycle::CommitTransition::Checkpointed);
         drop(workspace);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -2088,7 +1848,12 @@ mod tests {
         let branch = store.branch(workspace.branch_id).unwrap().unwrap();
         let built = workspace.build_candidate().unwrap();
         let outcome = store
-            .commit_candidate(&branch, workspace.base_root, workspace.expected_base, built)
+            .commit_candidate(
+                &branch,
+                workspace.base_root,
+                workspace.expected_base,
+                built.built,
+            )
             .unwrap();
         let CommitOutcome::Committed { root_id, .. } = outcome else {
             panic!("capture Commit was not created")
@@ -2134,7 +1899,12 @@ mod tests {
         let branch = store.branch(workspace.branch_id).unwrap().unwrap();
         let built = workspace.build_candidate().unwrap();
         let outcome = store
-            .commit_candidate(&branch, workspace.base_root, workspace.expected_base, built)
+            .commit_candidate(
+                &branch,
+                workspace.base_root,
+                workspace.expected_base,
+                built.built,
+            )
             .unwrap();
         let CommitOutcome::Committed { root_id, .. } = outcome else {
             panic!("fallback Commit was not created")
@@ -2240,16 +2010,24 @@ mod tests {
                 _ => unreachable!(),
             };
             let built = workspace.build_candidate().unwrap();
-            assert_eq!(built.counters.cdc_bytes_scanned, expected_cdc, "{case}");
-            assert!(built.objects.encoded_bytes() < 256 * 1024, "{case}");
+            assert_eq!(
+                built.built.counters.cdc_bytes_scanned, expected_cdc,
+                "{case}"
+            );
+            assert!(built.built.objects.encoded_bytes() < 256 * 1024, "{case}");
             if case == "noop" {
-                assert_eq!(built.root_id, workspace.base_root);
-                assert!(built.objects.is_empty());
+                assert_eq!(built.built.root_id, workspace.base_root);
+                assert!(built.built.objects.is_empty());
             }
-            let candidate_root = built.root_id;
+            let candidate_root = built.built.root_id;
             let record = store.branch(branch).unwrap().unwrap();
             let outcome = store
-                .commit_candidate(&record, workspace.base_root, workspace.expected_base, built)
+                .commit_candidate(
+                    &record,
+                    workspace.base_root,
+                    workspace.expected_base,
+                    built.built,
+                )
                 .unwrap();
             assert_eq!(
                 matches!(outcome, CommitOutcome::UpToDate { .. }),
@@ -2341,14 +2119,19 @@ mod tests {
         let reads_before = workspace.reader.read_metrics_snapshot().unwrap();
         let built = workspace.build_candidate().unwrap();
         let reads_after = workspace.reader.read_metrics_snapshot().unwrap();
-        assert_eq!(built.counters.cdc_bytes_scanned, 10);
+        assert_eq!(built.built.counters.cdc_bytes_scanned, 10);
         assert_eq!(
             reads_after.payload_bytes_read - reads_before.payload_bytes_read,
             0
         );
         let record = store.branch(branch).unwrap().unwrap();
         let outcome = store
-            .commit_candidate(&record, workspace.base_root, workspace.expected_base, built)
+            .commit_candidate(
+                &record,
+                workspace.base_root,
+                workspace.expected_base,
+                built.built,
+            )
             .unwrap();
         let CommitOutcome::Committed { root_id, .. } = outcome else {
             panic!("prepend commit")

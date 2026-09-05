@@ -42,7 +42,7 @@ pub enum Kind {
     Symlink,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Attr {
     pub node: NodeId,
     pub size: u64,
@@ -160,7 +160,7 @@ pub struct Workspace {
     pub(crate) expected_base: LayerId,
     pub(crate) base_root: layerfs_content::ObjectId,
     pub(crate) base_inodes: InodeTableRoot,
-    directory_lookup_cache: layerfs_content::tree::directory::DirectoryLookupCache,
+    pub(crate) directory_lookup_cache: layerfs_content::tree::directory::DirectoryLookupCache,
     pub(crate) spool: PathBuf,
     pub(crate) spool_bytes: u64,
     pub(crate) spool_bytes_peak: u64,
@@ -182,6 +182,7 @@ pub struct Workspace {
     pub(crate) state: WorkspaceState,
     pub(crate) presentation_failed: bool,
     pub(crate) resolution: Option<crate::reconcile::ResolutionState>,
+    pub(crate) pending_checkpoint: Option<crate::changes::Checkpoint>,
     pub(crate) pending_stage: Option<layerfs_content::ObjectId>,
     pub(crate) pending_publication:
         Option<(layerfs_layerstack_store::CommitOutcome, LayerId, bool)>,
@@ -318,6 +319,7 @@ impl Workspace {
             state: WorkspaceState::Active,
             presentation_failed: false,
             resolution: None,
+            pending_checkpoint: None,
             pending_stage: None,
             pending_publication: None,
         })
@@ -729,8 +731,8 @@ impl Workspace {
     }
 }
 
-pub(crate) fn portable_metadata(
-    store: &CoreReader<'_>,
+pub(crate) fn portable_metadata<S: ObjectRead>(
+    store: &S,
     root: layerfs_content::ObjectId,
     kind: InodeKind,
 ) -> Result<PortableMetadataV1> {

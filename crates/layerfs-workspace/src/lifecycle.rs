@@ -12,8 +12,8 @@ use std::time::{Instant, SystemTime};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CommitTransition {
-    Rebased,
-    RebasedRefresh,
+    Checkpointed,
+    Refreshed,
     InstallationFailed,
 }
 
@@ -29,6 +29,7 @@ pub enum WorkspaceState {
 #[cfg(test)]
 thread_local! {
     static INJECT_INSTALL_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static INJECT_PARTIAL_INSTALL_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 impl Workspace {
@@ -66,11 +67,11 @@ impl Workspace {
                     return Err(error);
                 }
             };
-            let root = candidate.root_id;
+            let root = candidate.built.root_id;
             let outcome = self.store.commit_workspace_reconciliation(
                 self.workspace_id,
                 &resolution.prepared,
-                candidate,
+                candidate.built,
                 &choices,
             );
             if outcome.is_err() {
@@ -102,7 +103,9 @@ impl Workspace {
         let candidate = if self.mutation_generation == 0 {
             ObjectBuffer::new(&self.reader)?.finish(self.base_root, 0)?
         } else {
-            self.build_candidate()?
+            let prepared = self.build_candidate()?;
+            self.pending_checkpoint = Some(prepared.checkpoint);
+            prepared.built
         };
         let expected_base = self.expected_base;
         let root = candidate.root_id;
@@ -130,6 +133,9 @@ impl Workspace {
             // freezing mutation until explicit discard can resolve uncertainty.
             Err(_) => Some(candidate_root),
         };
+        if self.pending_stage.is_none() {
+            self.pending_checkpoint = None;
+        }
     }
 
     fn transition_committed(
@@ -141,9 +147,9 @@ impl Workspace {
         if matches!(outcome, CommitOutcome::UpToDate { .. }) && self.mutation_generation == 0 {
             self.pending_stage = None;
             return Ok(if refresh {
-                CommitTransition::RebasedRefresh
+                CommitTransition::Refreshed
             } else {
-                CommitTransition::Rebased
+                CommitTransition::Checkpointed
             });
         }
         // Publication already succeeded. Retain its immutable identity until
@@ -155,28 +161,31 @@ impl Workspace {
             self.presentation_failed = true;
             return Ok(CommitTransition::InstallationFailed);
         }
-        let rebased = self.rebase_committed(outcome, expected_base, refresh);
+        let installed = if refresh {
+            self.refresh_reconciled(outcome, expected_base)
+        } else {
+            self.install_checkpoint(outcome, expected_base)
+        };
         layerfs_layerstack_store::note_workspace_commit_phase(
-            WorkspaceCommitPhase::InPlaceRebase,
+            WorkspaceCommitPhase::Checkpoint,
             elapsed_ns(started),
         );
-        if rebased.is_err() {
+        if installed.is_err() {
             self.presentation_failed = true;
             return Ok(CommitTransition::InstallationFailed);
         }
         self.pending_publication = None;
         Ok(if refresh {
-            CommitTransition::RebasedRefresh
+            CommitTransition::Refreshed
         } else {
-            CommitTransition::Rebased
+            CommitTransition::Checkpointed
         })
     }
 
-    fn rebase_committed(
+    fn refresh_reconciled(
         &mut self,
         outcome: CommitOutcome,
         expected_base: layerfs_layerstack_store::LayerId,
-        refresh: bool,
     ) -> Result<()> {
         let (expected_head, root) = match outcome {
             CommitOutcome::Committed {
@@ -200,151 +209,148 @@ impl Workspace {
             &self.spool,
             self.policy,
         )?;
-        if refresh {
-            // Reconciliation can change inode identity, kind, and content. Its
-            // projection is rebuilt from the exact published snapshot.
-            self.clear_spool()?;
-            committed.physical_spool = std::mem::take(&mut self.physical_spool);
-            *self = committed;
-            return Ok(());
-        }
-        let mut nodes = std::collections::HashMap::new();
-        let mut canonical_nodes = std::collections::HashMap::new();
-        let mut obsolete_spools = Vec::new();
-        let mut retained_spool_nodes = std::collections::BTreeSet::new();
-        let mut retained_spool_bytes = 0_u64;
-        let mut retained_inline_bytes = 0_u64;
-        let mut retained_piece_allocation_bytes = 0_u64;
-        // Parents already materialized in this immutable published snapshot stay
-        // alive throughout rebase. Borrow paths from the old view, retaining only
-        // a bounded index rather than resolving every ancestor for every file.
-        let mut parents = std::collections::BTreeMap::new();
-        let parent_limit = (self.policy.max_final_delta_memory_bytes / 128).min(128) as usize;
-        // Keep the original Workspace intact until every fallible validation
-        // succeeds, without cloning its entire node/path/spool graph up front.
-        for (&id, old) in &self.nodes {
-            if old.paths.is_empty() {
-                if old.pins != 0 {
-                    let mut retained = old.clone();
-                    retained.canonical = None;
-                    if let crate::cow_tree::Data::File(crate::cow_tree::FileData::Edited {
-                        spool_high_water,
-                        pieces,
-                        ..
-                    }) = &retained.data
-                    {
-                        if !self.open_spools.contains_key(&id) {
-                            return Err(StorageError::Integrity("spool descriptor"));
-                        }
-                        retained_spool_nodes.insert(id);
-                        retained_spool_bytes =
-                            retained_spool_bytes.saturating_add(*spool_high_water);
-                        retained_inline_bytes =
-                            retained_inline_bytes.saturating_add(pieces.inline_len());
-                        retained_piece_allocation_bytes = retained_piece_allocation_bytes
-                            .saturating_add(pieces.logical_allocation_charge()?);
-                    }
-                    nodes.insert(id, retained);
-                }
-                continue;
+        // Reconciliation can publish a different visible state; its projection is refreshed.
+        self.clear_spool()?;
+        committed.physical_spool = std::mem::take(&mut self.physical_spool);
+        *self = committed;
+        Ok(())
+    }
+
+    fn install_checkpoint(
+        &mut self,
+        outcome: CommitOutcome,
+        expected_base: layerfs_layerstack_store::LayerId,
+    ) -> Result<()> {
+        use crate::cow_tree::{Data, FileData};
+        let (head, root) = match outcome {
+            CommitOutcome::Committed {
+                commit_id, root_id, ..
+            } => (Some(commit_id), root_id),
+            CommitOutcome::UpToDate { root_id } => (self.expected_head, root_id),
+        };
+        let checkpoint = self
+            .pending_checkpoint
+            .take()
+            .ok_or(StorageError::Integrity("missing published checkpoint"))?;
+        let result = (|| {
+            if checkpoint.root != root || checkpoint.generation != self.mutation_generation {
+                return Err(StorageError::Integrity("checkpoint publication identity"));
             }
-            let fresh_id = if id == crate::ROOT {
-                crate::ROOT
-            } else {
-                lookup_committed_path(
-                    &mut committed,
-                    old.paths.first().expect("nonempty paths"),
-                    &mut parents,
-                    parent_limit,
-                )?
-            };
-            for path in old.paths.iter().skip(1) {
-                if lookup_committed_path(&mut committed, path, &mut parents, parent_limit)?
-                    != fresh_id
+            // Validate every handoff before changing any live backing. Retry also
+            // accepts already installed nodes because paths, attributes and IDs stay stable.
+            checkpoint.visit(|id, inode, _, attr| {
+                let node = self
+                    .nodes
+                    .get(&id)
+                    .ok_or(StorageError::Integrity("checkpoint node"))?;
+                if node.paths.is_empty()
+                    || self.attr(id)? != attr
+                    || node.canonical.is_some_and(|old| old != inode)
+                    || self
+                        .canonical_nodes
+                        .get(&inode)
+                        .is_some_and(|old| *old != id)
                 {
-                    return Err(StorageError::Integrity("committed hard-link identity"));
+                    return Err(StorageError::Integrity("checkpoint presentation"));
                 }
-            }
-            let old_attr = self.attr(id)?;
-            let fresh_attr = committed.attr(fresh_id)?;
-            if old_attr.kind != fresh_attr.kind
-                || old_attr.size != fresh_attr.size
-                || old_attr.mode != fresh_attr.mode
-                || old_attr.links != fresh_attr.links
-                || old_attr.mtime_seconds != fresh_attr.mtime_seconds
-                || old_attr.mtime_nanoseconds != fresh_attr.mtime_nanoseconds
-            {
-                return Err(StorageError::Integrity("committed Workspace presentation"));
-            }
-            #[cfg(test)]
-            assert!(
-                committed
-                    .nodes
-                    .values()
-                    .filter(|node| !matches!(node.data, crate::cow_tree::Data::Directory(_)))
-                    .count()
-                    <= 1,
-                "rebase must stage at most one non-directory node"
-            );
-            let mut rebased = if fresh_attr.kind == crate::cow_tree::Kind::Directory {
-                // Ancestors remain available for subsequent path resolution.
-                committed
-                    .nodes
-                    .get(&fresh_id)
-                    .ok_or(StorageError::Integrity("committed Workspace node"))?
-                    .clone()
-            } else {
-                let node = committed
-                    .nodes
-                    .remove(&fresh_id)
-                    .ok_or(StorageError::Integrity("committed Workspace node"))?;
-                if let Some(inode) = node.canonical {
-                    committed.canonical_nodes.remove(&inode);
-                }
-                node
-            };
-            rebased.paths = old.paths.clone();
-            rebased.pins = old.pins;
-            if let Some(inode) = rebased.canonical {
-                if canonical_nodes.insert(inode, id).is_some() {
-                    return Err(StorageError::Integrity("committed Workspace inode"));
-                }
-            }
-            if let crate::cow_tree::Data::File(crate::cow_tree::FileData::Edited {
-                spool, ..
-            }) = &old.data
-            {
-                if !self.open_spools.contains_key(&id) {
+                if matches!(&node.data, Data::File(FileData::Edited { .. }))
+                    && !self.open_spools.contains_key(&id)
+                {
                     return Err(StorageError::Integrity("spool descriptor"));
                 }
-                obsolete_spools.push((id, spool.clone()));
+                Ok(())
+            })?;
+            let reader = self
+                .store
+                .snapshot_reader(root)
+                .with_read_metrics_from(&self.reader);
+            let namespace = layerfs_content::filesystem::namespace(
+                &layerfs_layerstack_store::CoreReader(&reader),
+                root,
+            )?;
+            // The descriptor remains readable if unlink succeeds but a later step
+            // fails. Each installed node then owns canonical backing; retries skip its spool.
+            checkpoint.visit(|id, inode, content, attr| {
+                if let Data::File(FileData::Edited { spool, .. }) = &self.nodes[&id].data {
+                    let started = Instant::now();
+                    let retired = self.remove_spool_if_exists(id, spool);
+                    if retired.is_ok() {
+                        self.open_spools.remove(&id);
+                    }
+                    layerfs_layerstack_store::note_workspace_commit_phase(
+                        WorkspaceCommitPhase::SpoolRetirement,
+                        elapsed_ns(started),
+                    );
+                    retired?;
+                }
+                let node = self.nodes.get_mut(&id).expect("validated checkpoint node");
+                match &mut node.data {
+                    Data::File(data) => {
+                        *data = FileData::Base {
+                            root: layerfs_content::file::rope::FileStateRoot(content),
+                            len: attr.size,
+                        }
+                    }
+                    Data::Directory(directory) => {
+                        directory.base = Some(
+                            layerfs_content::tree::directory::DirectoryStateRoot(content),
+                        );
+                        directory.changes.clear();
+                    }
+                    Data::Symlink(_) => {}
+                }
+                node.canonical = Some(inode);
+                self.canonical_nodes.insert(inode, id);
+                #[cfg(test)]
+                if INJECT_PARTIAL_INSTALL_FAILURE.with(|inject| inject.replace(false)) {
+                    return Err(StorageError::Integrity(
+                        "injected partial checkpoint installation",
+                    ));
+                }
+                Ok(())
+            })?;
+            self.spool_bytes = 0;
+            self.inline_bytes = 0;
+            self.piece_allocation_bytes = 0;
+            for node in self.nodes.values_mut().filter(|node| node.paths.is_empty()) {
+                if let Some(inode) = node.canonical.take() {
+                    self.canonical_nodes.remove(&inode);
+                }
+                if let Data::File(FileData::Edited {
+                    spool_high_water,
+                    pieces,
+                    ..
+                }) = &node.data
+                {
+                    self.spool_bytes = self.spool_bytes.saturating_add(*spool_high_water);
+                    self.inline_bytes = self.inline_bytes.saturating_add(pieces.inline_len());
+                    self.piece_allocation_bytes = self
+                        .piece_allocation_bytes
+                        .saturating_add(pieces.logical_allocation_charge()?);
+                }
             }
-            nodes.insert(id, rebased);
+            self.nodes
+                .retain(|_, node| !node.paths.is_empty() || node.pins != 0);
+            self.reader = reader;
+            self.expected_head = head;
+            self.expected_base = expected_base;
+            self.base_root = root;
+            self.base_inodes =
+                layerfs_content::tree::inode::InodeTableRoot(namespace.inode_table_root);
+            self.directory_lookup_cache = Default::default();
+            self.spool_bytes_peak = self.spool_bytes;
+            self.mutation_generation = 0;
+            self.mutation_paths.clear();
+            self.dirty.clear();
+            self.capture = crate::capture::CaptureState::default();
+            self.resolution = None;
+            self.state = WorkspaceState::Active;
+            Ok(())
+        })();
+        if result.is_err() {
+            self.pending_checkpoint = Some(checkpoint);
         }
-        drop(parents);
-        for (node, spool) in obsolete_spools {
-            self.remove_spool_if_exists(node, &spool)?;
-        }
-        self.open_spools
-            .retain(|node, _| retained_spool_nodes.contains(node));
-        self.reader = committed.reader.clone();
-        self.expected_head = expected_head;
-        self.expected_base = committed.expected_base;
-        self.base_root = committed.base_root;
-        self.base_inodes = committed.base_inodes;
-        self.nodes = nodes;
-        self.canonical_nodes = canonical_nodes;
-        self.spool_bytes = retained_spool_bytes;
-        self.spool_bytes_peak = retained_spool_bytes;
-        self.inline_bytes = retained_inline_bytes;
-        self.piece_allocation_bytes = retained_piece_allocation_bytes;
-        self.mutation_generation = 0;
-        self.mutation_paths.clear();
-        self.dirty.clear();
-        self.capture = crate::capture::CaptureState::default();
-        self.resolution = None;
-        self.state = WorkspaceState::Active;
-        Ok(())
+        result
     }
 
     #[doc(hidden)]
@@ -358,6 +364,7 @@ impl Workspace {
         self.pending_stage = None;
         self.clear_spool()?;
         self.pending_publication = None;
+        self.pending_checkpoint = None;
         self.state = WorkspaceState::Discarded;
         Ok(())
     }
@@ -372,7 +379,10 @@ impl Workspace {
     }
 
     pub(crate) fn ensure_active(&self) -> Result<()> {
-        if self.state == WorkspaceState::Active && self.pending_stage.is_none() {
+        if self.state == WorkspaceState::Active
+            && self.pending_stage.is_none()
+            && self.pending_publication.is_none()
+        {
             Ok(())
         } else {
             Err(StorageError::InvalidInput("workspace inactive"))
@@ -599,7 +609,7 @@ impl Workspaces {
                     transition,
                 )),
                 Err(error) => WorkspaceError::from_commit(error)
-                    .map(|result| (result, CommitTransition::Rebased)),
+                    .map(|result| (result, CommitTransition::Checkpointed)),
             };
             let observations = workspace.reader.read_metrics_snapshot().and_then(|after| {
                 layerfs_layerstack_store::note_workspace_commit_reads(commit_read_before, after)
@@ -629,7 +639,7 @@ impl Workspaces {
                 WorkspaceCommitResult::Created { .. } | WorkspaceCommitResult::UpToDate { .. },
                 transition,
             )) => match transition {
-                CommitTransition::Rebased => {
+                CommitTransition::Checkpointed => {
                     let started = Instant::now();
                     let resumed = crate::projection::resume(&worker);
                     layerfs_layerstack_store::note_workspace_commit_phase(
@@ -639,7 +649,7 @@ impl Workspaces {
                     resumed
                 }
                 CommitTransition::InstallationFailed => Err(WorkspaceError::InvalidExecution),
-                CommitTransition::RebasedRefresh => {
+                CommitTransition::Refreshed => {
                     let started = Instant::now();
                     let refreshed = crate::projection::refresh(&worker, self.daemon_mount_owner()?);
                     layerfs_layerstack_store::note_workspace_commit_phase(
@@ -1049,32 +1059,6 @@ impl Workspaces {
     }
 }
 
-fn lookup_committed_path<'a>(
-    workspace: &mut Workspace,
-    path: &'a str,
-    parents: &mut std::collections::BTreeMap<&'a str, crate::NodeId>,
-    limit: usize,
-) -> Result<crate::NodeId> {
-    let (parent, name) = path.rsplit_once('/').unwrap_or(("", path));
-    let node = if parent.is_empty() {
-        crate::ROOT
-    } else if let Some(&node) = parents.get(parent) {
-        node
-    } else {
-        let node = lookup_path(workspace, parent)?;
-        if limit != 0 {
-            // ponytail: clear the bounded index when full; add eviction only if
-            // wider materialized parent sets make these misses significant.
-            if parents.len() == limit {
-                parents.clear();
-            }
-            parents.insert(parent, node);
-        }
-        node
-    };
-    workspace.lookup_node(node, name.as_bytes())
-}
-
 fn lookup_path(workspace: &mut Workspace, path: &str) -> Result<crate::NodeId> {
     let mut node = crate::ROOT;
     for component in path
@@ -1294,7 +1278,9 @@ mod tests {
         let first_file = lookup_path(&mut first, "file").unwrap();
         first.write(first_file, 0, b"first").unwrap();
         let expected = store.branch(branch_id).unwrap().unwrap();
-        let candidate = first.build_candidate().unwrap();
+        let prepared = first.build_candidate().unwrap();
+        first.pending_checkpoint = Some(prepared.checkpoint);
+        let candidate = prepared.built;
         let first_outcome = store
             .commit_workspace_candidate(
                 first.workspace_id,
@@ -1321,7 +1307,7 @@ mod tests {
             first
                 .transition_committed(first_outcome, first_base, false)
                 .unwrap(),
-            CommitTransition::Rebased
+            CommitTransition::Checkpointed
         );
         assert_eq!(first.base_root, first_root);
         assert_eq!(first.read(first_file, 0, 16).unwrap(), b"firstf");
@@ -1361,8 +1347,8 @@ mod tests {
     }
 
     #[test]
-    fn rebase_streams_nodes_preserving_identity_aliases_and_pinned_spools() {
-        let (root, workspaces, branch, store) = fixture("streamed-rebase");
+    fn partial_checkpoint_retry_preserves_identity_aliases_and_pinned_spools() {
+        let (root, workspaces, branch, store) = fixture("checkpoint-identities");
         drop(workspaces);
         let mut workspace = Workspace::open(store.clone(), branch, root.join("spool")).unwrap();
         let directory = workspace.mkdir(crate::ROOT, b"group", 0o750).unwrap().node;
@@ -1395,9 +1381,18 @@ mod tests {
         workspace.write(orphan, 0, b"pinned-data").unwrap();
         workspace.pin(orphan, false).unwrap();
         workspace.unlink(directory, b"held", false).unwrap();
+        let commits_before = store.store_counts().unwrap().commits;
+        INJECT_PARTIAL_INSTALL_FAILURE.with(|inject| inject.set(true));
+        let (published, failed) = workspace.commit().unwrap();
+        assert_eq!(failed, CommitTransition::InstallationFailed);
+        assert!(workspace.pending_checkpoint.is_some());
+        assert!(workspace.write(files[0].1, 0, b"blocked").is_err());
         let (outcome, transition) = workspace.commit().unwrap();
+        assert_eq!(outcome, published);
+        assert_eq!(store.store_counts().unwrap().commits, commits_before + 1);
+        assert!(workspace.pending_checkpoint.is_none());
         assert!(matches!(outcome, CommitOutcome::Committed { .. }));
-        assert_eq!(transition, CommitTransition::Rebased);
+        assert_eq!(transition, CommitTransition::Checkpointed);
         assert_eq!(
             workspace.lookup(crate::ROOT, b"group").unwrap().node,
             directory

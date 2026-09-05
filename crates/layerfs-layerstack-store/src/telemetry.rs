@@ -119,7 +119,9 @@ pub struct WorkspaceCommitReceipt {
     pub publication_insert_ns: u64,
     pub publication_metadata_ns: u64,
     pub publication_commit_ns: u64,
-    pub in_place_rebase_ns: u64,
+    /// Includes spool_retirement_ns; retirement is a nested subphase.
+    pub checkpoint_ns: u64,
+    pub spool_retirement_ns: u64,
     pub resume_ns: u64,
     pub unattributed_ns: u64,
     pub snapshot_database_calls: u64,
@@ -169,7 +171,7 @@ impl WorkspaceCommitReceipt {
             self.local_admission_ns,
             self.object_admission_ns,
             self.publication_ns,
-            self.in_place_rebase_ns,
+            self.checkpoint_ns,
             self.resume_ns,
         ]
         .into_iter()
@@ -190,7 +192,8 @@ pub enum WorkspaceCommitPhase {
     LocalAdmission,
     ObjectAdmission,
     Publication,
-    InPlaceRebase,
+    Checkpoint,
+    SpoolRetirement,
     Resume,
 }
 
@@ -424,7 +427,8 @@ pub fn note_workspace_commit_phase(phase: WorkspaceCommitPhase, elapsed_ns: u64)
             WorkspaceCommitPhase::LocalAdmission => &mut receipt.local_admission_ns,
             WorkspaceCommitPhase::ObjectAdmission => &mut receipt.object_admission_ns,
             WorkspaceCommitPhase::Publication => &mut receipt.publication_ns,
-            WorkspaceCommitPhase::InPlaceRebase => &mut receipt.in_place_rebase_ns,
+            WorkspaceCommitPhase::Checkpoint => &mut receipt.checkpoint_ns,
+            WorkspaceCommitPhase::SpoolRetirement => &mut receipt.spool_retirement_ns,
             WorkspaceCommitPhase::Resume => &mut receipt.resume_ns,
         };
         *target = target.saturating_add(elapsed_ns);

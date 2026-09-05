@@ -3652,10 +3652,10 @@ fn sdk_edit_worker(
         sdk_edit_lifecycle_json(&lifecycle)
     ));
     result.push_str(&format!(
-        ",\"commit_pause_fence_ns\":{},\"commit_content_ns\":{},\"commit_local_admission_ns\":{},\"commit_publication_ns\":{},\"commit_publication_insert_ns\":{},\"commit_publication_metadata_ns\":{},\"commit_publication_commit_ns\":{},\"commit_rebase_ns\":{}",
+        ",\"commit_pause_fence_ns\":{},\"commit_content_ns\":{},\"commit_local_admission_ns\":{},\"commit_publication_ns\":{},\"commit_publication_insert_ns\":{},\"commit_publication_metadata_ns\":{},\"commit_publication_commit_ns\":{},\"commit_checkpoint_ns\":{}",
         commit.pause_fence_ns, commit.content_ns, commit.local_admission_ns,
         commit.publication_ns, commit.publication_insert_ns, commit.publication_metadata_ns,
-        commit.publication_commit_ns, commit.in_place_rebase_ns,
+        commit.publication_commit_ns, commit.checkpoint_ns,
     ));
     result.push('}');
     println!("{result}");

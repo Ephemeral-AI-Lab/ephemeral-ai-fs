@@ -1,8 +1,10 @@
 # Issue 47: subsecond bulk create/delete through shared Workspace redesign
 
-Status: reviewed implementation proposal, 2026-09-06. No implementation or subsecond qualification is claimed by this plan.
+Status: implementation in progress, 2026-09-06. Ordinary checkpoint migration implemented and component-tested in the isolated worktree; performance qualification remains pending. See [implementation results](issue47-subsecond-workspace-results.md).
 
 Tracking: [#47](https://github.com/Ephemeral-AI-Lab/layerfs/issues/47), a GitHub sub-issue of [#46](https://github.com/Ephemeral-AI-Lab/layerfs/issues/46), under [#39](https://github.com/Ephemeral-AI-Lab/layerfs/issues/39).
+
+Execution-order amendment, 2026-09-06: **optimize Commit first, starting by replacing reconstructed ordinary rebase with in-place checkpointing; then optimize Exec.** This supersedes the earlier Exec-ownership-first sequence. Full-lifecycle targets and final-only proof requirements are unchanged. A Commit-phase checkpoint is progress, not child completion.
 
 Starting checkpoint: **`3faaf3839`**, local `main`, not pushed. This preserves the work from Codex task `01a071c0-4365-73f0-9a8f-9acd114a5a55`, including the [#46 guide and attempt ledger](issue46-tiny-file-churn-implementation-plan.md). The source task was idle/interrupted before the commit. Thirteen offline runner checks, nine lifecycle regressions, and diff checks passed at checkpoint time; independent benchmark proofs had not run. Earlier focused tests retain their recorded scope.
 
@@ -53,6 +55,147 @@ Delete publishes only nine objects / 22,318 bytes, while Commit performs 27,546 
 These are current implementation costs, not immutable floors. Removing only rebase, only metadata, or increasing a cache/batch cannot explain a complete subsecond design. Historical initializer numbers are context only.
 
 ## 4. Recommended architecture: one live state, one compilation, one checkpoint
+
+### Commit mental model: reuse the trees, repair the handoffs
+
+**Read this before implementing the Commit refactor. The existing optimized extent/piece trees are already used by Commit.** The task is to carry their results through the operation more efficiently, not replace them with a new content algorithm. Most builder, validation and persistence boxes already exist; missing or inefficient connections are the main target.
+
+| Representation | Current responsibility | Optimization boundary |
+|---|---|---|
+| Workspace `PieceTree` | Mutable logical composition of `Base`, `Inline`, `Zero` and `Spool` ranges | Preserve its edit/extent reuse; a later shared-segment design changes the backing of written ranges |
+| Canonical V3 extent tree | Immutable `FileStateV3` / `ExtentNodeV3` content representation with CAS payload references | Already produced by `rope::build` and updated through `FileMutationBatch`; retain these algorithms |
+| Proposed shared spool segments | Bounded physical storage for written extents across logical files | Not implemented at the checkpoint; this is distinct from both existing trees and belongs to the later data-ownership work |
+
+Current file construction is already incremental where its semantic input permits:
+
+```text
+CURRENT FILE CONTENT -- ALREADY IMPLEMENTED
+
+Live file and its PieceTree
+    |
+    +-- Unchanged existing file ------> Reuse existing canonical root
+    |
+    +-- Edited existing file ---------> Base/replacement pieces
+    |                                      |
+    |                                      v
+    |                                  FileMutationBatch
+    |                                      |
+    |                                      v
+    |                                  Updated V3 extent tree
+    |                                  retaining unchanged content
+    |
+    +-- Valid completed capture ------> Reuse root and canonical objects
+    |
+    `-- New file without capture -----> Read final Workspace bytes
+                                           |
+                                           v
+                                       rope::build
+                                           |
+                                           v
+                                       New V3 extent tree
+```
+
+The matching existing-file path is `changes.rs::mutate_existing_file`: it consumes the pieces, preserves base ranges, and uses `FileMutationBatch::replace` / `finish`. The frontier uses a valid captured root directly where available; otherwise a new file goes through `WorkspaceFileReader` and `rope::build`. Preserve existing supported-domain fallback semantics while transferring callers.
+
+For bulk creation, all file bytes are new: there is no previous per-file canonical tree to retain. Canonical processing must happen at least once; the opportunity is avoiding duplicate reads/construction and retaining completed results. For bulk deletion, changing namespace references does not require rewriting every removed file's content tree; immutable history keeps those content objects.
+
+```text
+CURRENT ORDINARY COMMIT -- WHAT THE CHECKPOINT ACTUALLY DOES
+
+Stable live Workspace / piece trees / directory changes
+    |
+    v
+Existing content, metadata and sorted tree builders
+    |   - inode updates can revisit pages across bounded groups
+    |   - final live-node installation facts are not carried forward
+    v
+ObjectBuffer: candidate plus provisional intermediate structure
+    |
+    v
+Finish / select reachable objects
+    |
+    v
+Read selected candidate objects, including spill readback
+    |
+    v
+Owned bounded pages -> checked admission -> stage / publish
+    |
+    v
+Open published snapshot and resolve materialized paths AGAIN
+    |
+    v
+Reload records / rebuild node maps / retire old spools
+    |
+    v
+Continue Workspace
+```
+
+The desired handoffs are explicit below. `KEEP` means existing machinery; `IMPROVE` means change its input/order/lifetime, not write another algorithm; `ADD` marks the missing Workspace-owned result handoff.
+
+```text
+TARGET ORDINARY COMMIT -- BRIDGE THE EXISTING COMPONENTS
+
+Stable live Workspace
+    |
+    v
+[IMPROVE] Final changed bindings, content and reference accounting
+    |
+    v
+[KEEP] PieceTree + FileMutationBatch / rope builders
+[KEEP] Exact metadata cache + sorted directory/inode builders
+    |                 ^
+    |                 `-- [IMPROVE] Ordered/coalesced final inode deltas
+    |
+    +--------------------------------------+
+    |                                      |
+    v                                      v
+Canonical object output             [ADD] Candidate-bound facts
+    |                               NodeId -> final inode/content/
+    v                               directory backing and lifetime
+[KEEP] Required finality/selection          |
+    |                                      | retain through rejection,
+    v                                      | publication and install retry
+[IMPROVE] Owned final-output delivery       |
+    |       reduce avoidable spill/replay   |
+    v                                      |
+[KEEP] Shared checked insertion,            |
+       bounded transactions and receipts   |
+    |                                      |
+    v                                      |
+[KEEP] Stage + conditional publication      |
+    |                                      |
+    +-------------------+------------------+
+                        |
+                        v
+              [ADD] Checkpoint existing nodes
+              preserve paths / NodeIds / handles
+              install exact final backing identities
+              advance returned head / base
+              clear only published changes
+                        |
+                        v
+              Same Workspace continues
+              NO reconstructed ordinary Workspace
+              NO repeated all-path rediscovery
+```
+
+| Component | Status at checkpoint / required change |
+|---|---|
+| Pause/quiesce and stable Commit boundary | Already present; do not silently remove execution/writer guards |
+| Content/extent and exact metadata algorithms | Already used; carry valid content/record results instead of redoing them |
+| Sorted directory updates | Already consume the full ordered directory delta stream |
+| Sorted inode updates | Already used; improve final accounting and operation-wide ordering to reduce intermediate table versions |
+| Reachability/finality and owned candidate pages | Already present; preserve selection for provisional objects |
+| Checked insertion and bounded admission | Already present; unify useful owned-output delivery without importing native empty-Store assumptions |
+| Stage and conditional publication | Already present; keep failure and history semantics |
+| Construction-to-continuation facts | Missing as a complete handoff; keep mutable NodeIds with Workspace rather than Store's generic `BuiltRoot` |
+| In-place checkpoint without reconstruction | Missing at the checkpoint; replaces ordinary `rebase_committed`, not its required guarantees |
+
+**Do not interpret the target drawing as permission to stream every generated object into permanent storage.** Intermediate tree pages may be superseded. Establish final reachability before bypassing candidate retention; retain readable provisional state where builders need it. Early admission must preserve failed-construction/publication object-retention and receipt semantics. Native initialization's empty-Store guard and destructive failed-initialization cleanup cannot become Workspace behavior.
+
+Measure success through work removed across the complete lifecycle: fewer inode/table re-encodes and page visits, fewer candidate payload writes/readbacks, fewer repeated content passes, and fewer post-publication lookups. A shared consumer refactor without a changed delivery path is code reuse, not a demonstrated speedup. Moving work from Commit to Exec or End does not remove it. Spool retirement must remain separately attributable even when reconstructed rebase disappears.
+
+The following broader architecture is the later destination; follow section 6's **Commit-first** order rather than implementing its Exec/segment changes ahead of the checkpoint work.
 
 The design should eliminate repeated representation changes. Keep existing crate responsibilities and canonical encodings unless an explicit measured need and compatibility plan justify a change. Do not introduce another Store, universal backend interface, actor framework, or family-selected engine.
 
@@ -145,27 +288,33 @@ If a new ownership design needs a generation boundary, define it explicitly: fre
 
 ### Step 0 — establish the remaining work, without another broad campaign
 
-Use retained results wherever sufficient. Add narrow phase deltas only for unanswered decisions: metadata local/remote dependencies, generation versus spool work, rebase lookup/materialization versus installation/cleanup, deletion directory reads versus record/flush work. Snapshot-read counters must have matching scope; an End lifetime total is not a rebase-only measurement.
+Use retained results wherever sufficient. First attribute Commit's construction, candidate/readback/admission, rebase lookup/materialization versus installation/cleanup, and deletion directory reads versus record/flush work. Snapshot-read counters must have matching scope; an End lifetime total is not a rebase-only measurement. Defer deeper metadata/remote-dependency investigation to the Exec phase rather than delaying the first Commit implementation.
 
 If useful, time the existing host initializer on the exact independently prepared final create tree (equivalent to delete's initial bulk tree plus witness after recipe equality is checked). Preparation already creates such trees; time the initialization call separately from generation/manifest work. Do not register a new family or substitute native import for Exec. Native and callback controls are nonqualifying comparisons, not mathematical floors.
 
-Measure whether required callback/dependency work leaves a plausible budget before committing to broad storage changes. A control omitting product work must remain explicitly nonqualifying; it cannot grant permission to omit that work in the real case.
+During the later Exec phase, measure whether required callback/dependency work leaves a plausible budget before committing to broad storage changes. A control omitting product work must remain explicitly nonqualifying; it cannot grant permission to omit that work in the real case.
 
-### Step 1 — prove one coherent live-state slice
-
-Choose the dominant metadata or deletion binding sequence, reuse acquisition/reservation/invalidation primitives, and establish where success is authoritatively decided. Predict reduced remote dependencies and repeated host materialization. Validate ordering, errors and host-observer visibility before expanding the same mechanism.
-
-### Step 2 — ordinary checkpoint using produced final facts
+### Step 1 — remove reconstructed ordinary rebase
 
 Implement candidate-bound installation into existing nodes with rejection and partial-install recovery. Predict near-elimination of post-publication path/inode rediscovery, not merely higher cache hit rate. Split spool retirement so its remaining cost is visible.
 
-### Step 3 — shared extent ownership
+Retain required head/base advancement, canonical identities, dirty-state checkpointing, handles/aliases and recovery. Do not merely bypass the existing function or replace it with another reconstruction cache. Same-session continuation remains correct; current active-execution guards are not silently removed.
 
-Replace per-file host spool lifecycle with bounded segments. Predict fewer host creates/opens/unlinks/closes and physical-observation calls while bytes, sparse behavior and durability remain unchanged. This step can move earlier if measured creation cost dominates; avoid parallel edits to shared Workspace state.
-
-### Step 4 — final-state compilation and deletion accounting
+### Step 2 — complete the substantive shared Commit improvements
 
 Use bounded cursors, ordered updates and authenticated lookup batches; preserve reference effects and untouched children. Measure whether work moved or disappeared. Revisit canonical readback/admission only if it remains necessary for the subsecond target.
+
+Reuse final construction results and existing owned admission; distinguish final reachable output from provisional structural objects. For create-100, remove repeated inode construction and avoidable candidate payload replay where safe. For delete-100, prioritize repeated release traversal/record lookup over its already small admission cost. Preserve failure/footprint semantics when changing admission timing.
+
+After the identified major Commit work is removed and focused regressions pass, record a source-bound Commit-phase checkpoint and proceed to Exec. Do not impose a new standalone Commit millisecond gate or spend time on marginal gains. Complete performance samples remain necessary to show costs were removed rather than shifted into Exec or End; full-lifecycle misses at this intermediate stage are expected and remain misses.
+
+### Step 3 — optimize coherent Exec state and remote dependencies
+
+Choose the dominant metadata or deletion binding sequence, reuse acquisition/reservation/invalidation primitives, and establish where success is authoritatively decided. Predict reduced remote dependencies and repeated host materialization. Validate ordering, errors and host-observer visibility before expanding the same mechanism. Use the improved common checkpoint instead of creating a separate Commit path for this live-state design.
+
+### Step 4 — shared extent ownership and remaining data work
+
+Replace per-file host spool lifecycle with bounded segments where the measured create/write/retirement cost requires it. Predict fewer host creates/opens/unlinks/closes and physical-observation calls while bytes, sparse behavior and durability remain unchanged. If Step 1 reveals storage retirement is inseparable from its principal Commit change, integrate only that necessary ownership slice earlier and record the dependency; do not launch a broader Exec redesign ahead of the Commit checkpoint. Avoid parallel edits to shared Workspace state.
 
 ### Step 5 — same-source final pair, then proofs
 
@@ -173,19 +322,19 @@ Run each original case once, seed 1, serial and unprofiled, on the final product
 
 ```mermaid
 flowchart TD
-    A[Checkpoint 3faaf3839 and inspect live source] --> B[Two-case work and dependency ledger]
-    B --> C[Smallest coherent shared architectural slice]
-    C --> D[Focused semantic regression and rebuild]
-    D --> E[One explicit performance measurement]
-    E --> F{Predicted work removed?}
-    F -->|No| B
-    F -->|Yes, target remains unmet| C
-    F -->|Candidate ready| G[Final unprofiled create-100 and delete-100]
+    A[Checkpoint 3faaf3839 and inspect live source] --> B[Attribute Commit work]
+    B --> C[Replace reconstructed rebase with checkpoint]
+    C --> D[Reuse final construction and efficient deletion accounting]
+    D --> E{Major work removed and focused checks pass?}
+    E -->|No: replan and measure| B
+    E -->|Yes| F[Record Commit checkpoint; optimize Exec and data ownership]
+    F --> G[Unprofiled create-100 and delete-100]
     G --> H{Each complete lifecycle below 1000 ms?}
-    H -->|No| B
+    H -->|No| R[Attribute remaining cause and revise shared mechanism]
+    R --> F
     H -->|Yes| I[Final bounded independent proofs]
     I --> J{Correct and each under 59 seconds?}
-    J -->|Product defect| C
+    J -->|Product defect| R
     J -->|Verifier-only issue| I
     J -->|Pass| K[Report and close child only]
 ```
@@ -211,6 +360,27 @@ Proof setup/replay/cleanup remaining in the invocation count toward its wall. No
 
 Reuse in both directions is mandatory: map existing #38/#40/#46 code consumed and sibling callers inheriting each change. Keep shared validation, lifetime and construction implementations; do not copy optimized bodies into families. Audit all applicable #39 siblings read-only, and use only selected affected performance/semantic controls before final proofs.
 
+### Concrete Commit file changes and retirement contract
+
+Method/type names below describe intended changes, not implemented new APIs. Keep the first Commit changes in existing files; no new crate, selectable old/new Commit implementation, or generic backend facade.
+
+| File | Required change | Superseded code to remove after caller transfer |
+|---|---|---|
+| `layerfs-workspace/src/changes.rs` | One Workspace-owned prepared result containing the generic `BuiltRoot` plus bounded candidate-bound checkpoint facts; coalesce/order final inode deltas and reuse existing builders | Competing ordinary-Commit construction bodies once their supported cases transfer; the repeated `FrontierInodes::flush` intermediate-table update loop and one-child-at-a-time release implementation |
+| `layerfs-workspace/src/lifecycle.rs` | `commit`/`transition_committed` consume the prepared result; install a checkpoint into current nodes; retain pending installation facts with exact publication identity | `rebase_committed` reconstruction, `lookup_committed_path`, the rebase-only parent cache, temporary reconstructed Workspace/maps, and rebase transition names after all consumers migrate |
+| `layerfs-workspace/src/cow_tree.rs` | Keep checkpoint/installation facts with Workspace ownership; update node backing/dirty/lifetime state safely in place | State or helpers used solely by the removed reconstruction, after checking all callers |
+| `layerfs-layerstack-store/src/objects.rs` | Extract one checked owned-page admission consumer from existing code; retain candidate selection/readability where required; native and Workspace delivery use the shared consumer where their contracts fit | Duplicate per-batch accumulation/insertion bodies once native and Workspace callers transfer; no retained legacy consumer behind a switch |
+| `layerfs-layerstack-store/src/workspace.rs` | Keep stage/conditional publication; accept the appropriate prepared/checked admission result without rebuilding or readmitting it | Superseded ordinary candidate-delivery adapter after full transfer; keep distinct reconciliation/planned admission until its semantics also transfer |
+| `layerfs-layerstack-store/src/layerstack.rs` | Migrate applicable native delivery to the shared owned consumer, retaining native discovery and initialization publication/cleanup semantics | Duplicated shared delivery logic, not native-specific discovery or safety checks |
+| `layerfs-layerstack-store/src/telemetry.rs` and benchmark consumers | Report checkpoint rather than reconstructed-rebase work; update affected receipt consumers together and preserve old evidence interpretation | Active rebase-only telemetry names/branches after consumers migrate; historical raw receipts are never rewritten |
+| Existing focused tests and documentation | Test repeated Commit, exact returned snapshot, aliases, open-unlinked state, rejection/install recovery and bounded final updates | Tests enforcing the old reconstruction layout, old/new feature flags, unused wrappers, dead helpers and live instructions recommending retired paths |
+
+Retain generic `BuiltRoot` under Store without inserting mutable Workspace NodeIds into it. A compact Workspace-owned prepared/checkpoint record is justified by this concrete handoff. Reconciliation and preview callers of `build_candidate` must be migrated explicitly if its return type changes.
+
+Do not delete methods solely because they look historical: `lookup_path` also serves SDK file edits; `base_manifest`/`final_manifest` currently serve `resolution_fingerprint`; `admit_planned_objects` has a production reconciliation/publication caller. Transfer those responsibilities before deleting them, or narrow their ownership/names so ordinary Commit cannot accidentally reuse them. Do not describe a remaining necessary semantic implementation as retired. Existing content-only incremental algorithms, sorted-builder supported-domain behavior, collision checks, stage/recovery, and immutable-history guarantees remain required.
+
+For each replacement, implementation is incomplete until its ordinary production callers have transferred and the superseded ordinary path is deleted. Do not ship parallel `legacy_commit`/`fast_commit` paths, unused compatibility wrappers, or disabled historical engines for future agents to rediscover. Before completion, publish a concise kept/changed/deleted symbol ledger, search for remaining references, compile affected consumers, and run the relevant existing regressions. A separate semantic feature still awaiting transfer is explicitly listed with its real callers; it is not an excuse to retain an obsolete ordinary-Commit fallback.
+
 | Deliverable | Required evidence |
 |---|---|
 | Two-case runtime | Both original complete timers strictly below 1,000,000,000 ns, fixed seed 1, final delivered product identity |
@@ -232,3 +402,17 @@ Create `issue47-subsecond-workspace-results.md` only when actual work/results ex
 - [Workspace nodes and namespace](../../../../crates/layerfs-workspace/src/cow_tree.rs), [projection handoff](../../../../crates/layerfs-workspace/src/projection.rs), [spool and writes](../../../../crates/layerfs-workspace/src/file_io.rs), [piece representation](../../../../crates/layerfs-workspace/src/file_edit.rs).
 - [Candidate construction](../../../../crates/layerfs-workspace/src/changes.rs), [Commit and continuation](../../../../crates/layerfs-workspace/src/lifecycle.rs), [worker admission](../../../../crates/layerfs-workspace/src/worker.rs), [capture](../../../../crates/layerfs-workspace/src/capture.rs).
 - [Sorted tree updates](../../../../crates/layerfs-content/src/tree/batch.rs), [object/segment/admission primitives](../../../../crates/layerfs-layerstack-store/src/objects.rs), [conditional publication](../../../../crates/layerfs-layerstack-store/src/workspace.rs), [telemetry](../../../../crates/layerfs-layerstack-store/src/telemetry.rs).
+
+## 10. Execution ledger — ordinary checkpoint migration
+
+The authoritative saved-checkout guide was copied verbatim into the isolated worktree before edits. Product source started at `3faaf3839`, documentation at `8aec76f76`.
+
+Implemented the first handoff: Workspace-owned `PreparedCommit { built, checkpoint }`, fixed-record anonymous checkpoint journal, construction/final-record consistency checks, and installation into existing nodes. Ordinary `rebase_committed` and `lookup_committed_path` are removed. The general manifest-based ordinary construction body and its unique helpers are removed; its supported cases transfer to the existing frontier. The localized content-only builder remains temporarily because its supported 1 KiB budget is below the frontier's current 4 KiB minimum; it uses the same prepared/checkpoint handoff.
+
+The journal uses a 256-byte I/O buffer and 104-byte records, with at most one record per materialized node. Its disk bytes are candidate metadata, separate from payload spool allowance; no paths/pins/live graph are copied. Localized sorted scratch reserves 512 bytes for the handoff. Pending publication retains the immutable returned identity plus facts; partial installation retry performs no second Commit. Ordinary pending publication now blocks mutation. Reconciliation retains explicitly named exact-snapshot refresh.
+
+Validation: 47 Workspace library regressions passed serially with Rust 1.85.1 and no default features. Added canonical-reference mismatch/payload-boundary regression and extended identity/alias/open-unlinked regression with a failure after one installed node. Earlier compiler failures (missing Attr equality; metadata helper restricted to CoreReader) were repaired by deriving value equality and generalizing the existing authenticated metadata reader over ObjectRead. No benchmark proof has run.
+
+Next experiment: one full create-100 sample on this source. New `checkpoint_ns` includes `spool_retirement_ns` (unlink plus descriptor close). Historical `in_place_rebase_ns`/`commit_rebase_ns` retains its old meaning and raw receipts remain unchanged. Remaining final-record validation currently reads builder inode records; the next ordered/coalesced inode handoff should supply these results directly. No Commit-only terminal PASS is claimed.
+
+Attempt 1 completed: `issue47-checkpoint-create100`, 19.916002292 s complete product, Commit 5.225464125 s, child TARGET_MISS. Commit snapshot database calls are 5; checkpoint 2.723398708 s includes 2.691903129 s spool retirement. Final-record validation currently contributes namespace work; revise to consume coalesced final records. Exact identities/resource observations are in the results document. This records an intermediate checkpoint, not the stable end of all major Commit work or issue completion.
