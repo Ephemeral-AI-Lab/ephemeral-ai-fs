@@ -566,3 +566,68 @@ Producing identities:
 - image: `sha256:f96306930d3930dd83e7c75813de9ac95db2187b2dbbc0c7dc48d8ecf4aa6f68`
 - harness_identity: `c3610164231c40bfa3e77c27e5c1526b5e9656c046c9e382d095b0d6c75d1abc`
 - input_identity: `fbb9fc021c7dbfb46f202932b8eb3ba2bfdc98b5d8c139a5c9c7416c39687422`
+
+## Attempt 12 — validated owned output, sub400 reassessment
+
+Original create-100 / seed1 on `a07f053bb` (follow-upA, including `49dd521fe`): Commit `636195334 ns`, full lifecycle **TARGET_MISS** `15893156752 ns`. Receipt and strict assessment: `benchmark-results/host-store/results/issue47-validated-owned-create100/`. This does **not** meet strict sub400 or the user-accepted approximate400–450ms Commit milestone. One selected sample; no independent proof.
+
+- create: 10377000 ns
+- exec: 15217984000 ns
+- commit: 636195334 ns
+- visibility: 81709 ns
+- end: 28518709 ns
+
+Measured Commit detail:
+
+- content_ns: 455958791
+- namespace_ns: 39262875
+- deletion_cursor_ns: 0
+- deletion_records_ns: 0
+- candidate_finish_ns: 21711042
+- object_admission_ns: 85498041
+- object_admission_authentication_ns: 0
+- object_admission_storage_authentication_ns: 8010009
+- object_admission_sort_ns: 4471206
+- object_admission_begin_ns: 695041
+- object_admission_insert_ns: 160799664
+- object_admission_commit_ns: 45873041
+- checkpoint_ns: 28999209
+- spool_retirement_ns: 15870750
+- spool_retirement_scan_ns: 4793
+- spool_retired_segments: 101
+- snapshot_database_calls: 6
+- object_admission_spill_readback_bytes: 4256258
+- object_admission_memory_owned_bytes: 109178189
+- object_admission_borrowed_copy_bytes: 0
+- output_pipeline_ns: 374065834
+- output_admission_ns: 179085332
+- output_blocked_ns: 72107460
+- output_consumer_idle_ns: 200205459
+- output_queue_peak_bytes: 1048576
+- spool_write_open_count: 101
+- spool_write_ns: 230743046
+- workspace_fence_ns: 188833
+- candidate_objects: 82762
+- candidate_bytes: 113434447
+- inserted_objects: 81931
+- inserted_bytes: 112321855
+- reused_objects: 831
+- reused_bytes: 1112592
+
+The duplicated memory authentication loop is removed. Construction still computes identity once and now retains complete framing validation in immutable ownership; no duplicate hash was moved into construction. Required fresh selected-spill authentication is separately8,010,009 ns. Candidate/inserted/reused totals remain82,762/81,931/831 objects and113,434,447/112,321,855/1,112,592 bytes. Memory-owned delivery remains109,178,189 bytes; spill readback4,256,258 bytes; borrowed delivery copies zero.
+
+Compared with attribution attempt11, consumer service fell286,477,125→179,085,332 ns and pipeline wall411,530,458→374,065,834 ns. Consumer idle grew131,874,958→200,205,459 ns. Whole Commit644,927,625→636,195,334 ns is only a modest single-sample change, not the practical milestone. Outside-pipeline time is262,129,500 ns. SQL begin/insertion/commit totals and retirement were higher in this observation; retain those costs rather than substituting favorable prior values. Retirement15,870,750 ns includes4,793 ns retain-predicate bookkeeping; all101physical segments and104,857,600 retained bytes are released by Commit.
+
+**Required reassessment after the active finality slice and one evidenced follow-up:** retain the validated ownership/consumer improvement, but stop this focused tuning attempt without declaring the milestone complete. The remaining critical path is producer availability/overlap plus the serial preparation/structural-delivery tail. Reaching the practical range requires a structural reduction or bounded overlap of completed-file preparation/final delivery; eliminating another small lookup, changing transaction/cache knobs, or rerunning unchanged work will not establish it. No additional producer framework, worker count, all-tier/seed/median campaign, #49 prerequisite, or second automatic follow-up is started.
+
+Delete's retained304.405ms is sufficient for the revised Commit objective and is not rerun solely for timing. This is not a current-source final qualification pair. Full-lifecycle #47 acceptance and final independent proof obligations remain distinct and unmet.
+
+Producing identities:
+
+- source_identity: `961f73e6f08e3868935c469d34c5e77dd8d906832ca167ece0d1f378844c15a5`
+- product_identity: `4d1f3e9348a516fa4815defe8f6279c9ada45f20d76285b5d56e14a629bf74c8`
+- image: `sha256:8c96fff17e32ef1da16a4fd2f97e8e6e6b305a4cec03a894260363fa54bb1b5f`
+- harness_identity: `c3610164231c40bfa3e77c27e5c1526b5e9656c046c9e382d095b0d6c75d1abc`
+- input_identity: `5bdab025fd1ebdf02a8ccd5d7840cf42ad543b521accf2694375a5ed1c54e545`
+
+Cleanup PASS, protected preparation/master unchanged, validated host SQLite/no-data-mount topology and existing120s/130s allowances; no OOM/swap. Linux container lifetime peak41,185,280 bytes. No sibling messages or Exec-owned edits.
