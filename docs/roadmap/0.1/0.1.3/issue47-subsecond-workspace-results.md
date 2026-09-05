@@ -631,3 +631,46 @@ Producing identities:
 - input_identity: `5bdab025fd1ebdf02a8ccd5d7840cf42ad543b521accf2694375a5ed1c54e545`
 
 Cleanup PASS, protected preparation/master unchanged, validated host SQLite/no-data-mount topology and existing120s/130s allowances; no OOM/swap. Linux container lifetime peak41,185,280 bytes. No sibling messages or Exec-owned edits.
+
+## Attempts 13–14: approved mixed bulk v3 migration and tier100 pair
+
+The original-workload campaign stops at create Commit636.195ms and retained delete Commit304.405ms. Those results and all earlier raw receipts remain unchanged. Specification commit `66983181a` freezes the approved replacement workload before implementation; migration commit `0ac1ebcf4` changes benchmark registration, bulk fixture/expected/apply, sampled verification, fixture/input/cache identity, classifiers and examples. No product code changes in this migration. These are new-workload absolute observations, not a speedup attributable to product optimization.
+
+Active high-tier IDs are `tiny-bulk-{create,delete}-{100,500}-mixed-v3`; family cardinality remains20. Tier100 affects1,000files/104,857,600B (1x52,428,800B,800x4096B,194x246,995B,5x246,994B). Tier500 affects5,000files/524,288,000B (3x104,857,600B,4000x4096B,936x193,913B,61x193,912B). Both keep200files/1,048,576B witness. Populated namespace totals are1,200/5,200files and105,906,176/525,336,576B, with273/293directories including root. Existing shard paths use5/25target shards; other families and low-tier/individual cases retain their definitions.
+
+### Focused checks and custody
+
+Both tier distributions, all three recipe seeds, exact ordinal assignment, create/delete equivalence, witness, shared path shape, registry20 and every large-file range/absence passed the focused Rust contract check. The canonical/native sampled-reader check passes, including non-prefix byte corruption rejection.15 runner checks and8 proof-selection checks pass. Released-binary registry and fixture-info checks confirm all four IDs/counts/bytes and matching create/delete populated manifests. This is product-free tier500 definition/identity work, not a tier500 performance run.
+
+The populated independent manifest includes paths, per-file lengths/digests, directories and metadata. Its digest joins the prepared plan and selected input identity. Fixture profile `tiny-bulk-mixed-v3` prevents reuse of old target preparations. An immutable oracle-identity cache bound to host binary/family/case/seed avoids full large-file oracle generation during later bounded proofs; missing/corrupt proof custody fails closed. Large files have64KiB ranges at beginning, midpoint and end; every large file is included. Tier100 create selects7files/340,992B, tier500 selects9files/734,208B per view, including witness; delete checks corresponding target absence and retained witness. Unselected paths/bytes and exhaustive inode/object/reference census remain omitted. Independent proof execution is still NOT_RUN.
+
+Exact seed1 fixture identities (create/delete share the populated manifest but have different initial trees):
+
+| Tier | Populated manifest SHA-256 | Create input-plan SHA-256 | Delete input-plan SHA-256 |
+|---|---|---|---|
+|100|`fcf05c8961a938ec8d9853901c0c555f8cc5df7afe98af2c31261b85869e6c5d`|`fda015d62663ae9f90f0191faa7353b26de3a5418667aa711c833790408106ad`|`4b4db51ede8725c2837bfef088e9f5a811b49ead803d4b38cca87cf77ebe7aa5`|
+|500|`f9bf606a551c00deaa3d0ca01346bf174739205f985e2ac04cf555f2c5163b2c`|`2a50f86875c8a84d7fbb0693899c18dae6e2558f61f2448c59e4e780f76ab13e`|`cf51b7e2b45e3907cb96ec3dd92c654e7c2b8f88d00d6742b01f7747dd5ed969`|
+
+Machine-readable definition evidence: `benchmark-results/host-store/results/issue47-mixed-v3-definition/definition.json`; paired assessment: `.../pair-assessment.json`.
+
+### One serial tier100 sample per operation
+
+Both samples use source `0ac1ebcf43b2cfcd266703b4bb40bfbea8be7e5a`, source seal `e80a564bcdbdaf38b3b8f18a8b8b4e50b4161a2dc3f63c50a4308c8132960417`, product seal `4d1f3e9348a516fa4815defe8f6279c9ada45f20d76285b5d56e14a629bf74c8`, host binary SHA-256 `bf38adb473a5b87973a38a77267095af357032c28bf615797abc7841fbfe9480`, and image `layerfs-bench-infra:e80a564bcdbdaf38` / `sha256:9b4638f099f0d2e0ed8a739a533c2e4f964f53bc9eec6538181e2f08ba70ed50`. Product seal is unchanged from the final original-workload Commit slice. This does not claim adoption of additional unpublished Exec-track work.
+
+| Revised tier100 case | Create session ns | Exec ns | Commit ns | Visibility ns | End ns | Complete lifecycle ns | Strict #47 performance |
+|---|---:|---:|---:|---:|---:|---:|---|
+|create|8,932,250|956,095,375|370,395,375|75,542|6,622,875|1,342,121,417|TARGET_MISS|
+|delete|10,784,792|280,367,875|15,033,084|68,708|2,991,291|309,245,750|PASS|
+
+Each row is one observation (n=1; median=min=max), not a distribution. Both parent15s classifiers PASS. Both Commit observations satisfy the practical400ms aim; the pair does not satisfy strict complete-lifecycle qualification because create exceeds1,000,000,000ns. Final proofs remain deferred. #46/#47/#48/#39 are not closed; #49 is not started.
+
+Raw receipts:
+
+- `benchmark-results/host-store/results/issue47-mixed-v3-create100/perf.jsonl`, SHA-256 `93a116a6281d2da42b7230cc9ca335d0d0df8034dbac8728a30f3b6f85ad23af`, selected input `94478fdc58ea9c3e677dc734ed375029e30b84958775a24a5b43ade4c3624027`.
+- `benchmark-results/host-store/results/issue47-mixed-v3-delete100/perf.jsonl`, SHA-256 `af70bce5b3d2e4c83013ac8758c510e7c8973370ef67b3c5e48e55fbd547fe1b`, selected input `57afdc6a47c2bf3c2d694be5667c04a8dc60c74843993c3a7034350bcf2a151a`.
+
+Each launch initially encountered the occupied shared measurement lock and started no sample; the later serial launch collected the sole observation. No overlapping build/measurement was introduced. Host SQLite/Workspace/spools, daemon/workload-only Docker, no data mounts,2CPU/2GiB/no-swap/256PID container and120s/130s allowances remain. Both samples report zero benchmark verifier/reopen/injection in performance, successful cleanup, unchanged prepared masters and0spoolfiles/bytes after Commit. Container peaks11,390,976B create and4,874,240B delete; OOM/swap0. Samples used closed-quiescent byte copies, not APFS clones or a cold-cache claim. Host resources are separately retained in raw records and the pair assessment.
+
+Create performed exactly1,000filewrites/104,857,600B,1,049workload pwrite calls and1,139metadata normalizations. Delete performed exactly1,000unlinks and138rmdirs. Create Commit: pipeline264.614459ms, nested consumer73.407908ms, consumer idle191.688968ms; checkpoint92.428458ms including physical retirement91.601959ms of103segments. Selected canonical data is53,065,971B memory-owned and52,595,430B spill-readback (the new50MiB file exceeds the existing bounded per-file private buffer); required spill authentication47.951924ms. Candidate9,600objects/105,661,401B, inserted9,586/105,660,222B, reused14/1,179B. No cleanup is moved outside Commit. Delete Commit namespace12.107084ms, deletion records10.106586ms, cursor0.798833ms, checkpoint0.157459ms.
+
+The remaining complete-create gap is342.121417ms. Exec metadata normalization alone is548.364209ms in this new sample. This identifies remaining work for reassessment; this migration does not begin another original-workload Commit tuning campaign or claim those nested timers are additive recoverable savings.

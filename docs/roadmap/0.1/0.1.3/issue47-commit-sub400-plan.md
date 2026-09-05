@@ -111,3 +111,7 @@ The active finality slice and one directly evidenced follow-up are complete. Thi
 ## Migration-first direction
 
 The user approved the [mixed bulk v3 migration](tiny-file-churn-mixed-v3.md) before #49. Stop original-workload tuning at create636.195ms and retained delete304.405ms. Preserve those receipts and product changes. Migrate benchmark inputs/custody/verification, check both tier distributions, then collect one revised tier100 create and delete sample on one delivered source. Keep the practical Commit aim around400ms with50ms tolerance separate from strict complete-lifecycle qualification.
+
+## Revised tier100 result
+
+Migration `0ac1ebcf4` now has one complete sample per revised tier100 operation on the same source: create Commit370.395375ms/full lifecycle1,342.121417ms; delete Commit15.033084ms/full lifecycle309.245750ms. Both observed Commit times are below400ms. Strict #47 full-lifecycle pair qualification remains TARGET_MISS due to create; independent proofs remain deferred. These are new mixed-v3 workload measurements, not a product speedup from the original20,000-file profile. Exact identity, focused checks, counters and raw receipt links are in results attempts13–14. #49 has not been started.
