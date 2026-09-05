@@ -1058,11 +1058,13 @@ impl Workspace {
     }
 
     fn reclaim(&mut self, node: NodeId) {
-        if self
-            .nodes
-            .get(&node)
-            .is_some_and(|value| value.paths.is_empty() && value.pins == 0)
-        {
+        if self.nodes.get(&node).is_some_and(|value| {
+            value.paths.is_empty()
+                && value.pins == 0
+                && !(value.links != 0
+                    && !matches!(value.data, Data::Directory(_))
+                    && self.dirty.contains(&node))
+        }) {
             self.dirty.remove(&node);
             self.directory_parents.remove(&node);
             if let Some(value) = self.nodes.remove(&node) {

@@ -1617,41 +1617,47 @@ mod tests {
 
     #[test]
     fn dirty_checkpoint_keeps_rejected_edit_accounting_and_unseen_pinned_alias() {
-        let (root, mut workspace) = empty_workspace("dirty-checkpoint");
-        let a = workspace.create_file(ROOT, b"a", 0o600).unwrap().node;
-        workspace.create_file(ROOT, b"b", 0o600).unwrap();
-        workspace.write(a, 0, b"abc").unwrap();
-        workspace.link(a, ROOT, b"hidden").unwrap();
-        workspace.commit().unwrap();
-        let branch = workspace.branch_id;
-        let store = workspace.store.clone();
-        drop(workspace);
-        let mut workspace = Workspace::open(store, branch, root.join("again")).unwrap();
-        let a = workspace.lookup(ROOT, b"a").unwrap().node;
-        let b = workspace.lookup(ROOT, b"b").unwrap().node;
-        workspace.policy.max_spool_bytes = 0;
-        assert!(workspace.write(a, 0, b"x").is_err());
-        workspace.chmod(b, 0o640).unwrap();
-        workspace.commit().unwrap();
-        workspace.policy.max_spool_bytes = 1024;
-        workspace.write(a, 0, b"x").unwrap();
-        workspace.pin(a, false).unwrap();
-        workspace.unlink(ROOT, b"a", false).unwrap();
-        workspace.commit().unwrap();
-        let mut published = Vec::new();
-        filesystem::stream(
-            &CoreReader(&workspace.reader),
-            workspace.base_root,
-            &CanonicalPath::new("hidden").unwrap(),
-            &mut published,
-        )
-        .unwrap();
-        assert_eq!(published, b"xbc");
-        assert_eq!(workspace.lookup(ROOT, b"hidden").unwrap().node, a);
-        assert_eq!(workspace.read(a, 0, 3).unwrap(), b"xbc");
-        workspace.unpin(a).unwrap();
-        drop(workspace);
-        std::fs::remove_dir_all(root).unwrap();
+        for pinned in [false, true] {
+            let (root, mut workspace) = empty_workspace("dirty-checkpoint");
+            let a = workspace.create_file(ROOT, b"a", 0o600).unwrap().node;
+            workspace.create_file(ROOT, b"b", 0o600).unwrap();
+            workspace.write(a, 0, b"abc").unwrap();
+            workspace.link(a, ROOT, b"hidden").unwrap();
+            workspace.commit().unwrap();
+            let branch = workspace.branch_id;
+            let store = workspace.store.clone();
+            drop(workspace);
+            let mut workspace = Workspace::open(store, branch, root.join("again")).unwrap();
+            let a = workspace.lookup(ROOT, b"a").unwrap().node;
+            let b = workspace.lookup(ROOT, b"b").unwrap().node;
+            workspace.policy.max_spool_bytes = 0;
+            assert!(workspace.write(a, 0, b"x").is_err());
+            workspace.chmod(b, 0o640).unwrap();
+            workspace.commit().unwrap();
+            workspace.policy.max_spool_bytes = 1024;
+            workspace.write(a, 0, b"x").unwrap();
+            if pinned {
+                workspace.pin(a, false).unwrap();
+            }
+            workspace.unlink(ROOT, b"a", false).unwrap();
+            workspace.commit().unwrap();
+            let mut published = Vec::new();
+            filesystem::stream(
+                &CoreReader(&workspace.reader),
+                workspace.base_root,
+                &CanonicalPath::new("hidden").unwrap(),
+                &mut published,
+            )
+            .unwrap();
+            assert_eq!(published, b"xbc");
+            assert_eq!(workspace.lookup(ROOT, b"hidden").unwrap().node, a);
+            assert_eq!(workspace.read(a, 0, 3).unwrap(), b"xbc");
+            if pinned {
+                workspace.unpin(a).unwrap();
+            }
+            drop(workspace);
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]

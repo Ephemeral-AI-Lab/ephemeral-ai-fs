@@ -61,3 +61,27 @@ Deletion release now consumes bounded directory pages and batches immutable inod
 Regression discovery and repair: a rejected write can establish editable backing without semantic mutation. Retained-descriptor accounting preserves its PieceTree charge across another file's Commit. A stronger pinned/unseen-alias test then failed with published `abc` instead of edited `xbc`; construction had skipped every pathless node. Canonical inodes with remaining references now participate even when their materialized path set is empty, preserving the same NodeId and publishing edited bytes to the unseen alias. The regression checks both canonical and live bytes.
 
 Validation so far: all 49 Workspace library tests passed before the additional paged-release test; that new test and the revised lookup-width test passed separately. All 20 object-store unit tests passed; explicit native multi-batch publication-failure cleanup and Workspace candidate/admission/publication failure retry integration tests passed. Builds/tests are serial. No independent benchmark proof ran. Next measurement is one original delete-100 sample, seed 1; its old protected preparation was evicted, so supported infrastructure will regenerate it once.
+
+## Attempt 2 — ordered/paged Commit, delete-100
+
+Receipt: `benchmark-results/host-store/results/issue47-ordered-delete100/perf.jsonl`; strict child assessment alongside. **Child TARGET_MISS: 4,061,720,833 ns**; the runner's parent 15-second PASS is not child PASS. Original 20,000 unlinks / 233 rmdirs, full traversal/metadata/sync, seed 1, one publication. Create 13,896,459 ns; Exec 3,580,485,958 ns; Commit 460,068,958 ns; visibility 89,250 ns; End 7,180,208 ns.
+
+Commit namespace 454,455,959 ns, including cursor 15,309,616 ns and record/reference work 347,007,136 ns. Checkpoint 723,583 ns. Admission is still exactly nine selected objects / 22,318 bytes, with no spill readback. Commit snapshot calls **1,385** versus the retained older delete observation's **27,546**; observed Commit **0.460069 s** versus **1.679852 s**. The retained observation predates the parent-cache revision; this is not a controlled same-source final pair.
+
+Producing identities:
+
+- source_identity: `18954962c98ff1fb959a626820f0ad0df575950cc4e4e97aa53e568531b0f12f`
+- product_identity: `35c9141e56b236f8af8377fba86d342ec31e83601d3b9fde758979ccb4645a6f`
+- image: `sha256:b51dd5afb527c57f55c450f8f3c7ccd9c7dd5badcd842b986d7157c8c0011ec7`
+- harness_identity: `c3610164231c40bfa3e77c27e5c1526b5e9656c046c9e382d095b0d6c75d1abc`
+- input_identity: `d4f9271acc1737f52491808ef1a53cdfdabef33bee5f0657e7b97320cf40660a`
+
+Implementation commit `55c950979a81958dcd8d948dd5af6e3b177baf69`, local and not pushed. The build sidecar reports dirty=true (retained source seal above is authoritative); raw identities are unchanged. Host topology/container bounds were validated, no data mounts, no OOM/swap. Supported infrastructure regenerated the missing deletion preparation, then used an independent closed-copy sample; master unchanged and cleanup PASS. Linux observed peak 9,101,312 bytes. No independent proof ran.
+
+This records a stable checkpoint for the major construction, checkpoint and deletion handoffs, not a standalone Commit acceptance gate. No-go revision: remaining delete time is now primarily Exec (3.580 s). Create's measured 2.692 s per-file retirement still requires the documented physical-lifetime dependency: bounded shared append segments referenced directly by existing PieceTree ranges, preserving rollback/read-plan/open-unlinked ownership and measured retirement. Carry forward to coherent Exec after recording this checkpoint; both full targets and final sampled proofs remain outstanding.
+
+A follow-up regression extended unseen-alias coverage to **unpinned** edited files. It failed with published `abc` instead of `xbc`: `reclaim` removed the pathless dirty inode before Commit despite remaining unseen file links. Reclaim now retains unpublished non-directory inodes with surviving links; directory removal and clean canonical reclamation keep their existing behavior. Both pinned/unpinned forms and the focused construction regressions pass. This correctness repair follows the measured `55c950979` source and is not retroactively attributed to its receipt.
+
+## Coordination boundary
+
+A separately assigned Exec issue/task owns layerfs-fuse and agreed transport changes in another worktree. This task remains Commit and integration owner for Workspace, Store, content, shared spool lifetime and #47 guide/results. No uncommitted FUSE changes exist here. Cross-boundary projection/telemetry hooks require one named patch owner. All performance-sensitive builds/tests/samples use the same host measurement lock; no other task's caches, containers or artifacts are cleaned. Final #47 qualification must use the combined product.
