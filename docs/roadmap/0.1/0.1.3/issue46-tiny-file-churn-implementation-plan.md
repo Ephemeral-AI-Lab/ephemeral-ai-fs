@@ -1,5 +1,7 @@
 # Issue 46: tiny-file churn through shared Exec and Commit improvements
 
+2026-09-06 shared-pipeline amendment: child #47 requires [one construction and persistence pipeline with native and Workspace inputs](issue47-unified-construction-pipeline.md), preserving one ordinary Commit flow, bounded output ownership and lifecycle-specific publication/recovery. This is architectural direction, not parent qualification or closure.
+
 Status: implementation in progress, 2026-09-05. The execution ledger below records current work; earlier source findings are hypotheses and may have been superseded. Terminal PASS is not yet established.
 
 Issue: [#46](https://github.com/Ephemeral-AI-Lab/layerfs/issues/46). Parent: [#39](https://github.com/Ephemeral-AI-Lab/layerfs/issues/39). This is the first implementation step of #39 and establishes the approach for its remaining families.

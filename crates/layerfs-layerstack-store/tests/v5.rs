@@ -74,6 +74,7 @@ fn v4_migration_and_v5_staging_preserve_exact_publication_semantics() {
         pinned.root,
         pinned.branch.base_layer_id,
         candidate,
+        store.workspace_admission(retained_workspace).unwrap(),
     );
     layerfs_layerstack_store::set_transaction_failure_at(None);
     assert!(matches!(
@@ -93,6 +94,7 @@ fn v4_migration_and_v5_staging_preserve_exact_publication_semantics() {
             pinned.root,
             pinned.branch.base_layer_id,
             candidate,
+            store.workspace_admission(retained_workspace).unwrap(),
         )
         .unwrap();
     let CommitOutcome::Committed {
@@ -120,6 +122,7 @@ fn v4_migration_and_v5_staging_preserve_exact_publication_semantics() {
                 current.root,
                 current.branch.base_layer_id,
                 no_op,
+                store.workspace_admission([2; 16]).unwrap(),
             )
             .unwrap(),
         CommitOutcome::UpToDate {
@@ -138,6 +141,7 @@ fn v4_migration_and_v5_staging_preserve_exact_publication_semantics() {
             stale.root,
             stale.branch.base_layer_id,
             winner,
+            store.workspace_admission([3; 16]).unwrap(),
         )
         .unwrap();
     let winner_root = store.pin_branch(branch_id).unwrap().root;
@@ -151,6 +155,7 @@ fn v4_migration_and_v5_staging_preserve_exact_publication_semantics() {
             stale.root,
             stale.branch.base_layer_id,
             stale_candidate,
+            store.workspace_admission(stale_workspace).unwrap(),
         ),
         Err(StoreError::CommitHeadMoved { .. })
     ));
@@ -165,6 +170,7 @@ fn v4_migration_and_v5_staging_preserve_exact_publication_semantics() {
             stale.root,
             stale.branch.base_layer_id,
             replacement,
+            store.workspace_admission(stale_workspace).unwrap(),
         ),
         Err(StoreError::InvalidInput("Workspace stage already retained"))
     ));

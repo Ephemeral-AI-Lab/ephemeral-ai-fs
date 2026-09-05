@@ -60,7 +60,7 @@ impl Workspace {
                 }
             };
             let expected_base = resolution.prepared.current_layer_id;
-            let candidate = match self.build_candidate() {
+            let candidate = match self.build_candidate(crate::changes::CandidatePurpose::Preview) {
                 Ok(candidate) => candidate,
                 Err(error) => {
                     self.resolution = Some(resolution);
@@ -100,12 +100,20 @@ impl Workspace {
         ) {
             crate::changes::inject_candidate_failure_once();
         }
-        let candidate = if self.mutation_generation == 0 {
-            ObjectBuffer::new(&self.reader)?.finish(self.base_root, 0)?
+        let (candidate, admission) = if self.mutation_generation == 0 {
+            (
+                ObjectBuffer::new(&self.reader)?.finish(self.base_root, 0)?,
+                self.store.workspace_admission(self.workspace_id)?,
+            )
         } else {
-            let prepared = self.build_candidate()?;
+            let prepared = self.build_candidate(crate::changes::CandidatePurpose::Commit)?;
             self.pending_checkpoint = Some(prepared.checkpoint);
-            prepared.built
+            (
+                prepared.built,
+                prepared
+                    .admission
+                    .ok_or(StorageError::Integrity("Commit admission handoff"))?,
+            )
         };
         let expected_base = self.expected_base;
         let root = candidate.root_id;
@@ -115,6 +123,7 @@ impl Workspace {
             self.base_root,
             expected_base,
             candidate,
+            admission,
         );
         if outcome.is_err() {
             self.note_retained_stage(root);
@@ -1323,7 +1332,9 @@ mod tests {
         let first_file = lookup_path(&mut first, "file").unwrap();
         first.write(first_file, 0, b"first").unwrap();
         let expected = store.branch(branch_id).unwrap().unwrap();
-        let prepared = first.build_candidate().unwrap();
+        let prepared = first
+            .build_candidate(crate::changes::CandidatePurpose::Preview)
+            .unwrap();
         first.pending_checkpoint = Some(prepared.checkpoint);
         let candidate = prepared.built;
         let first_outcome = store
@@ -1333,6 +1344,7 @@ mod tests {
                 first.base_root,
                 first.expected_base,
                 candidate,
+                store.workspace_admission(first.workspace_id).unwrap(),
             )
             .unwrap();
         let first_root = match first_outcome {

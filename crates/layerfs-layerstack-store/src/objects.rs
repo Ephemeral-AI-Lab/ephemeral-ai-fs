@@ -122,7 +122,7 @@ impl Clone for CanonicalObject {
     }
 }
 
-pub(crate) struct InitializationObjectSlab {
+pub(crate) struct FinalizedObjectSlab {
     pub objects: Vec<CanonicalObject>,
     pub payload_bytes: usize,
 }
@@ -164,7 +164,7 @@ impl InitializationTaskObjectBuffer {
         self.objects.len() as u64
     }
 
-    pub(crate) fn move_into(self, store: &mut InitializationSlabWriter) -> CoreResult<()> {
+    pub(crate) fn move_into(self, store: &mut FinalizedOutputWriter) -> CoreResult<()> {
         for object in self.objects {
             store.push_authenticated(object)?;
         }
@@ -214,7 +214,9 @@ impl ObjectStore for InitializationTaskObjectBuffer {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct InitializationSlabWriterMetrics {
+pub(crate) struct OutputWriterMetrics {
+    pub selected_memory_bytes: u64,
+    pub selected_spill_bytes: u64,
     pub handoffs: u64,
     pub objects: u64,
     pub payload_bytes: u64,
@@ -234,14 +236,14 @@ pub(crate) struct InitializationSlabWriterMetrics {
 }
 
 #[derive(Default)]
-pub(crate) struct InitializationSlabQueueMetrics {
+pub(crate) struct OutputQueueMetrics {
     queued: AtomicU64,
     queued_bytes: AtomicU64,
     peak: AtomicU64,
     peak_bytes: AtomicU64,
 }
 
-impl InitializationSlabQueueMetrics {
+impl OutputQueueMetrics {
     fn before_send(&self, bytes: usize) {
         let queued = self.queued.fetch_add(1, Ordering::AcqRel) + 1;
         let queued_bytes =
@@ -274,28 +276,115 @@ impl InitializationSlabQueueMetrics {
     }
 }
 
-pub(crate) struct InitializationSlabWriter {
-    sender: std::sync::mpsc::SyncSender<InitializationObjectSlab>,
-    queue: std::sync::Arc<InitializationSlabQueueMetrics>,
+#[derive(Default)]
+pub(crate) struct OutputPipelineMetrics {
+    pub wall_ns: u64,
+    pub consumer_idle_ns: u64,
+    pub last_receive_ns: u64,
+    pub queue_peak: u64,
+    pub queue_peak_bytes: u64,
+    pub producer_peak: u64,
+    pub producers_after: u64,
+}
+
+// One bounded ownership/drain/join implementation for native and Workspace inputs.
+pub(crate) fn run_finalized_output<T: Send>(
+    workers: usize,
+    cancelled: &std::sync::atomic::AtomicBool,
+    produce: impl Fn(usize, FinalizedOutputWriter) -> Result<T> + Sync,
+    mut consume: impl FnMut(Vec<CanonicalObject>) -> Result<()>,
+) -> Result<(Vec<T>, OutputPipelineMetrics)> {
+    use std::sync::atomic::Ordering;
+    let started = Instant::now();
+    let queue = std::sync::Arc::new(OutputQueueMetrics::default());
+    let (sender, receiver) = std::sync::mpsc::sync_channel(INITIALIZATION_SLAB_QUEUE_SLOTS);
+    let active = AtomicU64::new(0);
+    let peak = AtomicU64::new(0);
+    let mut metrics = OutputPipelineMetrics::default();
+    let output = std::thread::scope(|scope| {
+        let handles = (0..workers)
+            .map(|index| {
+                let writer = FinalizedOutputWriter::new(sender.clone(), queue.clone());
+                let (produce, active, peak) = (&produce, &active, &peak);
+                scope.spawn(move || {
+                    struct Active<'a>(&'a AtomicU64);
+                    impl Drop for Active<'_> {
+                        fn drop(&mut self) {
+                            self.0.fetch_sub(1, Ordering::AcqRel);
+                        }
+                    }
+                    let count = active.fetch_add(1, Ordering::AcqRel) + 1;
+                    peak.fetch_max(count, Ordering::Relaxed);
+                    let _active = Active(active);
+                    let result = produce(index, writer);
+                    if result.is_err() {
+                        cancelled.store(true, Ordering::Release);
+                    }
+                    result
+                })
+            })
+            .collect::<Vec<_>>();
+        drop(sender);
+        let mut failure = None;
+        loop {
+            let waiting = Instant::now();
+            let received = receiver.recv();
+            metrics.consumer_idle_ns = metrics.consumer_idle_ns.saturating_add(elapsed_ns(waiting));
+            let Ok(slab) = received else { break };
+            metrics.last_receive_ns = elapsed_ns(started);
+            queue.received(slab.payload_bytes);
+            if failure.is_none() {
+                if let Err(error) = consume(slab.objects) {
+                    failure = Some(error);
+                    cancelled.store(true, Ordering::Release);
+                }
+            }
+            // Continue draining after failure so no sender can strand a source owner.
+        }
+        let mut output = Vec::with_capacity(workers);
+        for handle in handles {
+            match handle.join() {
+                Ok(Ok(result)) => output.push(result),
+                Ok(Err(error)) => {
+                    failure.get_or_insert(error);
+                }
+                Err(_) => {
+                    failure.get_or_insert(StoreError::Integrity("canonical output producer"));
+                }
+            }
+        }
+        failure.map_or(Ok(output), Err)
+    })?;
+    metrics.wall_ns = elapsed_ns(started);
+    metrics.queue_peak = queue.peak();
+    metrics.queue_peak_bytes = queue.peak_bytes();
+    metrics.producer_peak = peak.load(Ordering::Relaxed);
+    metrics.producers_after = active.load(Ordering::Acquire);
+    Ok((output, metrics))
+}
+
+pub struct FinalizedOutputWriter {
+    sender: std::sync::mpsc::SyncSender<FinalizedObjectSlab>,
+    queue: std::sync::Arc<OutputQueueMetrics>,
     objects: Vec<CanonicalObject>,
     payload_bytes: usize,
-    metrics: InitializationSlabWriterMetrics,
+    metrics: OutputWriterMetrics,
 }
 
 pub(crate) struct InitializationDirectAdmissionWriter<'admission, 'db> {
-    admission: &'admission mut InitializationSegmentAdmission<'db>,
+    admission: &'admission mut CheckedOutputAdmission<'db>,
     error: Option<StoreError>,
     transient_owned_bytes: u64,
-    pub metrics: InitializationSlabWriterMetrics,
+    pub metrics: OutputWriterMetrics,
 }
 
 impl<'admission, 'db> InitializationDirectAdmissionWriter<'admission, 'db> {
-    pub(crate) fn new(admission: &'admission mut InitializationSegmentAdmission<'db>) -> Self {
+    pub(crate) fn new(admission: &'admission mut CheckedOutputAdmission<'db>) -> Self {
         Self {
             admission,
             error: None,
             transient_owned_bytes: 0,
-            metrics: InitializationSlabWriterMetrics::default(),
+            metrics: OutputWriterMetrics::default(),
         }
     }
 
@@ -352,21 +441,39 @@ impl ObjectStore for InitializationDirectAdmissionWriter<'_, '_> {
     }
 }
 
-impl InitializationSlabWriter {
+impl FinalizedOutputWriter {
     pub(crate) fn new(
-        sender: std::sync::mpsc::SyncSender<InitializationObjectSlab>,
-        queue: std::sync::Arc<InitializationSlabQueueMetrics>,
+        sender: std::sync::mpsc::SyncSender<FinalizedObjectSlab>,
+        queue: std::sync::Arc<OutputQueueMetrics>,
     ) -> Self {
         Self {
             sender,
             queue,
             objects: Vec::with_capacity(INITIALIZATION_SLAB_OBJECTS),
             payload_bytes: 0,
-            metrics: InitializationSlabWriterMetrics::default(),
+            metrics: OutputWriterMetrics::default(),
         }
     }
 
-    pub(crate) fn finish(mut self) -> Result<InitializationSlabWriterMetrics> {
+    /// The caller must first select a completed root through ObjectBuffer::finish.
+    pub fn send_selected(&mut self, objects: DeferredObjectStore) -> Result<()> {
+        let bytes = objects.encoded_bytes();
+        if matches!(objects.storage, DeferredObjects::Spill(_)) {
+            self.metrics.selected_spill_bytes =
+                self.metrics.selected_spill_bytes.saturating_add(bytes);
+        } else {
+            self.metrics.selected_memory_bytes =
+                self.metrics.selected_memory_bytes.saturating_add(bytes);
+        }
+        objects.consume_prevalidated_pages(|page| {
+            for object in page {
+                self.push_object(object, false)?;
+            }
+            Ok(())
+        })
+    }
+
+    pub(crate) fn finish(mut self) -> Result<OutputWriterMetrics> {
         self.flush()?;
         Ok(self.metrics)
     }
@@ -379,7 +486,7 @@ impl InitializationSlabWriter {
         if self.objects.is_empty() {
             return Ok(());
         }
-        let slab = InitializationObjectSlab {
+        let slab = FinalizedObjectSlab {
             objects: std::mem::take(&mut self.objects),
             payload_bytes: std::mem::take(&mut self.payload_bytes),
         };
@@ -468,7 +575,7 @@ impl InitializationSlabWriter {
     }
 }
 
-impl ObjectStore for InitializationSlabWriter {
+impl ObjectStore for FinalizedOutputWriter {
     fn get(&self, _id: ObjectId) -> CoreResult<Vec<u8>> {
         Err(CoreError::InvalidRecord("direct initialization get"))
     }
@@ -664,6 +771,7 @@ pub struct DeferredObjectStore {
     first_store_write_bytes: u64,
     spill_peak_bytes: u64,
     spill_count: u64,
+    memory_limit: usize,
 }
 
 #[cfg(test)]
@@ -1634,27 +1742,54 @@ pub(crate) struct CheckedAdmission {
     pub commit_ns: u64,
 }
 
+impl CheckedAdmission {
+    fn record(&mut self, metrics: &AdmissionBatchMetrics) {
+        let bytes = metrics
+            .insert
+            .bytes
+            .saturating_add(metrics.insert.skipped_bytes);
+        self.transactions += 1;
+        self.max_transaction_objects = self
+            .max_transaction_objects
+            .max(metrics.insert.submitted_rows);
+        self.max_transaction_bytes = self.max_transaction_bytes.max(bytes);
+        self.begin_ns = self.begin_ns.saturating_add(metrics.begin_ns);
+        self.insert_ns = self.insert_ns.saturating_add(metrics.insert.insert_ns);
+        self.commit_ns = self.commit_ns.saturating_add(metrics.commit_ns);
+        self.candidate_objects += metrics.insert.submitted_rows;
+        self.candidate_bytes = self.candidate_bytes.saturating_add(bytes);
+        self.inserted_objects += metrics.insert.objects;
+        self.inserted_bytes = self.inserted_bytes.saturating_add(metrics.insert.bytes);
+        self.reused_objects += metrics.insert.skipped_ids;
+        self.reused_bytes = self
+            .reused_bytes
+            .saturating_add(metrics.insert.skipped_bytes);
+    }
+}
+
 struct AdmissionBatchMetrics {
     insert: ObjectInsertMetrics,
     begin_ns: u64,
     commit_ns: u64,
 }
 
-pub(crate) struct InitializationSegmentAdmission<'a> {
+pub(crate) struct CheckedOutputAdmission<'a> {
     db: &'a crate::schema::StoreDb,
     batch: Vec<CanonicalObject>,
     pending: HashMap<ObjectId, usize>,
     batch_bytes: usize,
     statement_number: u64,
     receipt: crate::CandidateReceipt,
+    checked: CheckedAdmission,
     diagnostics: InitializationAdmissionDiagnostics,
     final_phase: bool,
 }
 
-pub(crate) struct FinishedInitializationAdmission {
+pub(crate) struct FinishedOutputAdmission {
     pub final_batch: Vec<CanonicalObject>,
     pub statement_number: u64,
     pub receipt: crate::CandidateReceipt,
+    pub checked: CheckedAdmission,
     pub diagnostics: InitializationAdmissionDiagnostics,
 }
 
@@ -1741,6 +1876,7 @@ impl DeferredObjectStore {
             first_store_write_bytes: 0,
             spill_peak_bytes: 0,
             spill_count: 0,
+            memory_limit: CANDIDATE_MEMORY_BYTES,
         })
     }
 
@@ -1831,7 +1967,11 @@ impl DeferredObjectStore {
         }
         let mut memory_owned_bytes = 0_u64;
         let mut spill_readback_bytes = 0_u64;
-        let mut page = Vec::with_capacity(INITIALIZATION_ADMISSION_BATCH_COUNT);
+        let capacity = usize::try_from(self.count)
+            .unwrap_or(INITIALIZATION_ADMISSION_BATCH_COUNT)
+            .min(INITIALIZATION_ADMISSION_BATCH_COUNT);
+        let page_limit = self.memory_limit.min(ADMISSION_BATCH_BYTES);
+        let mut page = Vec::with_capacity(capacity);
         let mut page_bytes = 0_usize;
         let mut push = |object: CanonicalObject| {
             if object.bytes.len() > ADMISSION_BATCH_BYTES {
@@ -1839,12 +1979,9 @@ impl DeferredObjectStore {
             }
             if !page.is_empty()
                 && (page.len() == INITIALIZATION_ADMISSION_BATCH_COUNT
-                    || page_bytes.saturating_add(object.bytes.len()) > ADMISSION_BATCH_BYTES)
+                    || page_bytes.saturating_add(object.bytes.len()) > page_limit)
             {
-                visitor(std::mem::replace(
-                    &mut page,
-                    Vec::with_capacity(INITIALIZATION_ADMISSION_BATCH_COUNT),
-                ))?;
+                visitor(std::mem::replace(&mut page, Vec::with_capacity(capacity)))?;
                 page_bytes = 0;
             }
             page_bytes = page_bytes.saturating_add(object.bytes.len());
@@ -2047,7 +2184,7 @@ impl DeferredObjectStore {
             None
         };
         let charge = length.saturating_add(64);
-        if matches!(&self.storage, DeferredObjects::Memory { bytes, .. } if bytes.saturating_add(charge) > CANDIDATE_MEMORY_BYTES)
+        if matches!(&self.storage, DeferredObjects::Memory { bytes, .. } if bytes.saturating_add(charge) > self.memory_limit)
         {
             self.spill()?;
         }
@@ -2456,6 +2593,17 @@ impl<'a> ObjectBuffer<'a> {
         self.objects.all_reachable()
     }
 
+    /// Scratch for a single completed-file producer; queue and admission own the
+    /// other bounded portions of the existing canonical-output allowance.
+    pub fn bounded_output(source: Option<&'a dyn ObjectSource>) -> Result<Self> {
+        let mut output = match source {
+            Some(source) => Self::new(source)?,
+            None => Self::empty()?,
+        };
+        output.objects.memory_limit = CANDIDATE_SPILL_BUFFER_BYTES;
+        Ok(output)
+    }
+
     pub fn finish(self, root_id: ObjectId, cdc_bytes_scanned: u64) -> Result<BuiltRoot> {
         let encode_hash_invocations = self.objects.len();
         let objects = self.objects.reachable_from(root_id)?;
@@ -2494,7 +2642,7 @@ impl<'a> ObjectBuffer<'a> {
         })
     }
 
-    pub(crate) fn merge_prevalidated(&mut self, objects: DeferredObjectStore) -> Result<()> {
+    pub fn merge_prevalidated(&mut self, objects: DeferredObjectStore) -> Result<()> {
         objects.visit_prevalidated_order(&objects.reachable, &mut |id, bytes| {
             self.objects.put_prevalidated(id, bytes)
         })
@@ -2814,13 +2962,8 @@ fn read_object_rows_from_connection(
     Ok(output)
 }
 
-impl<'a> InitializationSegmentAdmission<'a> {
+impl<'a> CheckedOutputAdmission<'a> {
     pub(crate) fn new(db: &'a crate::schema::StoreDb) -> Result<Self> {
-        if !db.initialization_store_is_empty()? {
-            return Err(StoreError::Integrity(
-                "direct initialization requires empty Store",
-            ));
-        }
         Ok(Self {
             db,
             batch: Vec::with_capacity(INITIALIZATION_ADMISSION_BATCH_COUNT),
@@ -2828,6 +2971,7 @@ impl<'a> InitializationSegmentAdmission<'a> {
             batch_bytes: 0,
             statement_number: 0,
             receipt: crate::CandidateReceipt::default(),
+            checked: CheckedAdmission::default(),
             diagnostics: InitializationAdmissionDiagnostics::default(),
             final_phase: false,
         })
@@ -2838,11 +2982,12 @@ impl<'a> InitializationSegmentAdmission<'a> {
         self.admit(objects)
     }
 
-    pub(crate) fn finish(self) -> Result<FinishedInitializationAdmission> {
-        Ok(FinishedInitializationAdmission {
+    pub(crate) fn finish(self) -> Result<FinishedOutputAdmission> {
+        Ok(FinishedOutputAdmission {
             final_batch: self.batch,
             statement_number: self.statement_number,
             receipt: self.receipt,
+            checked: self.checked,
             diagnostics: self.diagnostics,
         })
     }
@@ -2878,6 +3023,26 @@ impl<'a> InitializationSegmentAdmission<'a> {
     pub(crate) fn admit_page(&mut self, page: Vec<CanonicalObject>) -> Result<()> {
         for object in page {
             self.admit_object(object)?;
+        }
+        Ok(())
+    }
+
+    fn admit_unique_page(
+        &mut self,
+        page: Vec<CanonicalObject>,
+        seen: &mut SpillableObjectSet,
+    ) -> Result<()> {
+        for object in page {
+            if self.pending.contains_key(&object.id) {
+                self.admit_duplicate(object.id, &object.bytes)?;
+            } else if seen.contains(object.id)? {
+                if self.db.read_object_row(object.id)? != object.bytes {
+                    return Err(StoreError::Integrity("object collision"));
+                }
+            } else {
+                seen.insert_page(&[object.id])?;
+                self.admit_object(object)?;
+            }
         }
         Ok(())
     }
@@ -2963,6 +3128,7 @@ impl<'a> InitializationSegmentAdmission<'a> {
         let capacity = self.batch.capacity();
         let batch = std::mem::take(&mut self.batch);
         let metrics = consume_checked_owned_page(self.db, batch, &mut self.statement_number)?;
+        self.checked.record(&metrics);
         self.batch = Vec::with_capacity(capacity);
         self.diagnostics.record_sql_batch(
             metrics.insert,
@@ -3005,46 +3171,104 @@ impl<'a> InitializationSegmentAdmission<'a> {
     }
 }
 
-pub(crate) fn admit_checked_objects(
-    db: &crate::schema::StoreDb,
-    objects: DeferredObjectStore,
-    statement_number: &mut u64,
-) -> Result<CheckedAdmission> {
-    let mut admission = CheckedAdmission::default();
-    objects.consume_prevalidated_pages(|batch| {
-        let metrics = consume_checked_owned_page(db, batch, statement_number)?;
-        let candidate_bytes = metrics
-            .insert
-            .bytes
-            .saturating_add(metrics.insert.skipped_bytes);
-        admission.transactions += 1;
-        admission.max_transaction_objects = admission
-            .max_transaction_objects
-            .max(metrics.insert.submitted_rows);
-        admission.max_transaction_bytes = admission.max_transaction_bytes.max(candidate_bytes);
-        admission.begin_ns = admission.begin_ns.saturating_add(metrics.begin_ns);
-        admission.insert_ns = admission.insert_ns.saturating_add(metrics.insert.insert_ns);
-        admission.commit_ns = admission.commit_ns.saturating_add(metrics.commit_ns);
-        admission.candidate_objects += metrics.insert.submitted_rows;
-        admission.candidate_bytes = admission.candidate_bytes.saturating_add(candidate_bytes);
-        admission.inserted_objects += metrics.insert.objects;
-        admission.inserted_bytes = admission
-            .inserted_bytes
-            .saturating_add(metrics.insert.bytes);
-        admission.reused_objects += metrics.insert.skipped_ids;
-        admission.reused_bytes = admission
-            .reused_bytes
-            .saturating_add(metrics.insert.skipped_bytes);
-        Ok(())
-    })?;
-    if admission.candidate_objects != admission.inserted_objects + admission.reused_objects
-        || admission.candidate_bytes != admission.inserted_bytes + admission.reused_bytes
-        || admission.max_transaction_objects > ADMISSION_BATCH_COUNT as u64
-        || admission.max_transaction_bytes > ADMISSION_BATCH_BYTES as u64
-    {
-        return Err(StoreError::Integrity("checked admission equation"));
+pub struct WorkspaceAdmission {
+    pub(crate) db: crate::schema::StoreDb,
+    pub(crate) workspace_id: [u8; 16],
+    pub(crate) checked: CheckedAdmission,
+    pub(crate) statement_number: u64,
+    seen: SpillableObjectSet,
+}
+
+impl crate::LayerStackStore {
+    pub fn workspace_admission(&self, workspace_id: [u8; 16]) -> Result<WorkspaceAdmission> {
+        Ok(WorkspaceAdmission {
+            db: self.db.clone(),
+            workspace_id,
+            checked: Default::default(),
+            statement_number: 0,
+            seen: SpillableObjectSet::empty()?,
+        })
     }
-    Ok(admission)
+
+    pub fn construct_workspace_files<T: Send>(
+        &self,
+        workspace_id: [u8; 16],
+        produce: impl Fn(&mut FinalizedOutputWriter, &std::sync::atomic::AtomicBool) -> Result<T> + Sync,
+    ) -> Result<(T, WorkspaceAdmission)> {
+        let mut token = self.workspace_admission(workspace_id)?;
+        let mut admission = CheckedOutputAdmission::new(&self.db)?;
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        let mut admission_ns = 0_u64;
+        let (mut output, pipeline) = run_finalized_output(
+            1,
+            &cancelled,
+            |_, mut writer| {
+                let result = produce(&mut writer, &cancelled)?;
+                Ok((result, writer.finish()?))
+            },
+            |page| {
+                let started = Instant::now();
+                let result = (|| {
+                    let _operation = self.db.enter_operation()?;
+                    admission.admit_unique_page(page, &mut token.seen)
+                })();
+                admission_ns = admission_ns.saturating_add(elapsed_ns(started));
+                result
+            },
+        )?;
+        let started = Instant::now();
+        {
+            let _operation = self.db.enter_operation()?;
+            admission.flush_batch()?;
+        }
+        admission_ns = admission_ns.saturating_add(elapsed_ns(started));
+        let finished = admission.finish()?;
+        token.checked = finished.checked;
+        token.statement_number = finished.statement_number;
+        let (output, writer) = output
+            .pop()
+            .ok_or(StoreError::Integrity("Workspace file producer"))?;
+        crate::telemetry::note_workspace_candidate_delivery(
+            writer.selected_memory_bytes,
+            writer.selected_spill_bytes,
+        );
+        crate::telemetry::note_workspace_output_pipeline(
+            pipeline.wall_ns,
+            admission_ns,
+            writer.blocked_ns,
+            pipeline.consumer_idle_ns,
+            pipeline.queue_peak_bytes,
+        );
+        Ok((output, token))
+    }
+}
+
+impl WorkspaceAdmission {
+    pub(crate) fn admit_remaining(
+        mut self,
+        objects: DeferredObjectStore,
+    ) -> Result<(CheckedAdmission, u64)> {
+        let mut admission = CheckedOutputAdmission::new(&self.db)?;
+        admission.checked = self.checked;
+        admission.statement_number = self.statement_number;
+        objects.consume_prevalidated_pages(|page| {
+            admission.admit_unique_page(page, &mut self.seen)?;
+            // The input page's owned bytes move into this batch; drain before
+            // requesting the next private page to bound simultaneous ownership.
+            admission.flush_batch()
+        })?;
+        admission.flush_batch()?;
+        let finished = admission.finish()?;
+        let admission = finished.checked;
+        if admission.candidate_objects != admission.inserted_objects + admission.reused_objects
+            || admission.candidate_bytes != admission.inserted_bytes + admission.reused_bytes
+            || admission.max_transaction_objects > ADMISSION_BATCH_COUNT as u64
+            || admission.max_transaction_bytes > ADMISSION_BATCH_BYTES as u64
+        {
+            return Err(StoreError::Integrity("checked admission equation"));
+        }
+        Ok((admission, finished.statement_number))
+    }
 }
 
 pub(crate) fn admit_planned_objects(
@@ -3421,6 +3645,123 @@ mod tests {
     use super::*;
 
     #[test]
+    fn finalized_output_failure_drains_and_joins_source_owners() {
+        use std::sync::atomic::AtomicBool;
+        for producer_fails in [false, true] {
+            let cancelled = AtomicBool::new(false);
+            let joined = AtomicU64::new(0);
+            let result = run_finalized_output(
+                2,
+                &cancelled,
+                |index, mut writer| -> Result<()> {
+                    struct Finished<'a>(&'a AtomicU64);
+                    impl Drop for Finished<'_> {
+                        fn drop(&mut self) {
+                            self.0.fetch_add(1, Ordering::Release);
+                        }
+                    }
+                    let _finished = Finished(&joined);
+                    for _ in 0..32 {
+                        if cancelled.load(Ordering::Acquire) {
+                            break;
+                        }
+                        let bytes = layerfs_content::encode_bytes_object(b"selected").unwrap();
+                        writer.push_object(
+                            CanonicalObject {
+                                id: ObjectId::for_bytes(&bytes),
+                                bytes,
+                            },
+                            false,
+                        )?;
+                        writer.flush()?;
+                        if producer_fails && index == 0 {
+                            return Err(StoreError::Integrity("test producer failure"));
+                        }
+                    }
+                    writer.finish()?;
+                    Ok(())
+                },
+                |_| {
+                    if producer_fails {
+                        Ok(())
+                    } else {
+                        Err(StoreError::Integrity("test consumer failure"))
+                    }
+                },
+            );
+            assert!(result.is_err());
+            assert_eq!(joined.load(Ordering::Acquire), 2);
+            assert!(cancelled.load(Ordering::Acquire));
+        }
+    }
+
+    #[test]
+    fn workspace_delivery_selects_before_admission_and_deduplicates_across_phases() {
+        let root = std::env::temp_dir().join(format!(
+            "layerfs-output-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let store = crate::LayerStackStore::create(root.join("store.sqlite")).unwrap();
+        let canonical = [b"existing".as_slice(), b"selected", b"provisional"]
+            .map(|bytes| layerfs_content::encode_bytes_object(bytes).unwrap());
+        let ids = canonical.each_ref().map(|bytes| ObjectId::for_bytes(bytes));
+        let selected = |index: usize| {
+            let mut buffer = ObjectBuffer::empty().unwrap();
+            buffer.put(&canonical[2]).unwrap();
+            let id = buffer.put(&canonical[index]).unwrap();
+            buffer.finish(id, 0).unwrap().objects
+        };
+        store
+            .workspace_admission([0; 16])
+            .unwrap()
+            .admit_remaining(selected(0))
+            .unwrap();
+        let (_, token) = store
+            .construct_workspace_files([1; 16], |writer, _| {
+                writer.send_selected(selected(0))?;
+                writer.send_selected(selected(1))?;
+                writer.send_selected(selected(1))
+            })
+            .unwrap();
+        let (receipt, _) = token.admit_remaining(selected(1)).unwrap();
+        assert_eq!(
+            (
+                receipt.candidate_objects,
+                receipt.inserted_objects,
+                receipt.reused_objects
+            ),
+            (2, 1, 1)
+        );
+        assert_eq!(
+            receipt.candidate_bytes,
+            (canonical[0].len() + canonical[1].len()) as u64
+        );
+        assert_eq!(store.db.read_object_row(ids[0]).unwrap(), canonical[0]);
+        assert_eq!(store.db.read_object_row(ids[1]).unwrap(), canonical[1]);
+        assert!(store.db.object_membership(&[ids[2]]).unwrap().is_empty());
+        assert_eq!(store.store_counts().unwrap().objects, 2);
+        assert_eq!(store.store_counts().unwrap().commits, 0);
+        assert!(store.workspace_stage([1; 16]).unwrap().is_none());
+        crate::schema::set_transaction_failure_at(Some(1));
+        let failed =
+            store.construct_workspace_files([2; 16], |writer, _| writer.send_selected(selected(2)));
+        crate::schema::set_transaction_failure_at(None);
+        assert!(matches!(
+            failed,
+            Err(StoreError::Integrity("injected transaction failure"))
+        ));
+        assert_eq!(store.store_counts().unwrap().objects, 2);
+        assert!(store.workspace_stage([2; 16]).unwrap().is_none());
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn structural_handoff_identity_is_fixed_at_buffer_insertion() {
         let bytes = b"authenticated structural object".to_vec();
         let expected = ObjectId::for_bytes(&bytes);
@@ -3456,7 +3797,7 @@ mod tests {
 
     fn finish_segment_admission(
         db: &crate::schema::StoreDb,
-        admission: InitializationSegmentAdmission<'_>,
+        admission: CheckedOutputAdmission<'_>,
     ) -> (crate::CandidateReceipt, Vec<ObjectId>) {
         let finished = admission.finish().unwrap();
         let ids = finished
@@ -3921,7 +4262,7 @@ mod tests {
 
         let shared = layerfs_content::encode_bytes_object(b"shared").unwrap();
         let shared_id = ObjectId::for_bytes(&shared);
-        let mut admission = InitializationSegmentAdmission::new(&db).unwrap();
+        let mut admission = CheckedOutputAdmission::new(&db).unwrap();
         admission
             .admit_worker_segment(sealed_segment(vec![CanonicalObject {
                 id: shared_id,
@@ -3976,7 +4317,7 @@ mod tests {
                 .map(|object| object.bytes.len() as u64)
                 .sum::<u64>();
             assert!(expected_bytes < ADMISSION_BATCH_BYTES as u64);
-            let mut admission = InitializationSegmentAdmission::new(&db).unwrap();
+            let mut admission = CheckedOutputAdmission::new(&db).unwrap();
             admission
                 .admit_worker_segment(sealed_segment(objects))
                 .unwrap();
@@ -4035,7 +4376,7 @@ mod tests {
                     bytes: canonical[2].clone(),
                 },
             ]);
-            let mut admission = InitializationSegmentAdmission::new(&db).unwrap();
+            let mut admission = CheckedOutputAdmission::new(&db).unwrap();
             let mut segments = if reverse {
                 vec![right, left]
             } else {
@@ -4080,7 +4421,7 @@ mod tests {
         let duplicate = objects[0].clone();
         let duplicate_id = duplicate.id;
         let expected_objects = objects.len() as u64;
-        let mut admission = InitializationSegmentAdmission::new(&db).unwrap();
+        let mut admission = CheckedOutputAdmission::new(&db).unwrap();
         admission
             .admit_worker_segment(sealed_segment(objects))
             .unwrap();

@@ -23,7 +23,7 @@ use layerfs_content::{CanonicalName, CanonicalPath};
 use layerfs_layerstack_store::{
     BuiltRoot, CoreReader, ObjectBuffer, Result, StoreError as StorageError, WorkspaceCommitPhase,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::unix::fs::FileExt;
@@ -53,10 +53,17 @@ fn anonymous_journal(directory: &std::path::Path) -> Result<File> {
     Ok(file)
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum CandidatePurpose {
+    Commit,
+    Preview,
+}
+
 // Mutable identities stay with Workspace; Store receives only the canonical candidate.
 pub(crate) struct PreparedCommit {
     pub(crate) built: BuiltRoot,
     pub(crate) checkpoint: Checkpoint,
+    pub(crate) admission: Option<layerfs_layerstack_store::WorkspaceAdmission>,
 }
 
 pub(crate) struct Checkpoint {
@@ -83,7 +90,17 @@ impl CheckpointJournal {
         })
     }
 
-    fn push(&mut self, node: NodeId, inode: InodeId, content: ObjectId, attr: Attr) -> Result<()> {
+    fn push(
+        &mut self,
+        node: NodeId,
+        inode: InodeId,
+        content: ObjectId,
+        attr: Attr,
+        checked_file_len: Option<u64>,
+    ) -> Result<()> {
+        if attr.kind == Kind::File && checked_file_len != Some(attr.size) {
+            return Err(StorageError::Integrity("checkpoint file length"));
+        }
         if self.count.saturating_add(1).saturating_mul(104) > self.byte_limit {
             return Err(StorageError::InvalidInput(
                 "workspace checkpoint journal limit",
@@ -129,14 +146,7 @@ impl CheckpointJournal {
                     }
                 };
                 let size = match final_record.kind {
-                    InodeKind::RegularFile => {
-                        rope::state(
-                            objects,
-                            FileStateRoot(content),
-                            &mut RopeCounters::default(),
-                        )?
-                        .logical_len
-                    }
+                    InodeKind::RegularFile => attr.size, // checked at the completed-file handoff
                     InodeKind::Directory => 0,
                     InodeKind::Symlink => ObjectRead::with_authenticated_canonical(
                         objects,
@@ -169,6 +179,7 @@ impl CheckpointJournal {
             .into_inner()
             .map_err(|error| error.into_error())?;
         Ok(PreparedCommit {
+            admission: None,
             checkpoint: Checkpoint {
                 root: built.root_id,
                 generation,
@@ -229,20 +240,20 @@ impl Checkpoint {
 }
 
 impl Workspace {
-    pub(crate) fn build_candidate(&mut self) -> Result<PreparedCommit> {
+    pub(crate) fn build_candidate(&mut self, purpose: CandidatePurpose) -> Result<PreparedCommit> {
         #[cfg(any(debug_assertions, feature = "test-instrumentation"))]
         if INJECT_CANDIDATE_FAILURE.with(|inject| inject.replace(false)) {
             return Err(StorageError::Integrity(
                 "injected Workspace candidate failure",
             ));
         }
-        self.build_frontier_candidate()
+        self.build_frontier_candidate(purpose)
     }
 
     // Directory overlays already are the final binding delta. Applying their inode
     // edges directly preserves untouched subtrees, including a renamed directory,
     // without building either complete namespace manifest.
-    fn build_frontier_candidate(&mut self) -> Result<PreparedCommit> {
+    fn build_frontier_candidate(&mut self, purpose: CandidatePurpose) -> Result<PreparedCommit> {
         let started = Instant::now();
         self.policy.check_final_delta(1024)?;
         let batch_size = (self.policy.max_final_delta_memory_bytes / 4096).clamp(1, 128) as usize;
@@ -258,19 +269,41 @@ impl Workspace {
         if let Some(captured) = &captured {
             layerfs_layerstack_store::note_workspace_capture(1, captured.len);
         }
-        let (mut objects, captured) = match captured {
-            Some(crate::capture::CapturedFile {
-                node,
-                len,
-                root,
-                counters,
-                objects,
-            }) => (
-                ObjectBuffer::resume_prevalidated(&self.reader, objects),
-                Some((node, len, root, counters)),
-            ),
-            None => (ObjectBuffer::new(&self.reader)?, None),
+        let inputs = StableFileInputs {
+            nodes: &self.nodes,
+            dirty: &self.dirty,
+            reader: self.reader.clone(),
+            base_inodes: self.base_inodes,
+            generation: self.mutation_generation,
+            spool: &self.spool,
+            captured: std::sync::Mutex::new(captured),
         };
+        note_commit_phase(WorkspaceCommitPhase::CandidatePlan, started);
+        let content_started = Instant::now();
+        let mut objects = ObjectBuffer::bounded_output(Some(&self.reader))?;
+        let (mut files, admission) = match purpose {
+            CandidatePurpose::Commit => {
+                let (files, admission) = self.store.construct_workspace_files(
+                    self.workspace_id,
+                    |writer, cancelled| {
+                        inputs.produce(cancelled, &mut |selected| writer.send_selected(selected))
+                    },
+                )?;
+                (files, Some(admission))
+            }
+            CandidatePurpose::Preview => {
+                let cancelled = std::sync::atomic::AtomicBool::new(false);
+                (
+                    inputs.produce(&cancelled, &mut |selected| {
+                        objects.merge_prevalidated(selected)
+                    })?,
+                    None,
+                )
+            }
+        };
+        drop(inputs);
+        note_commit_phase(WorkspaceCommitPhase::Content, content_started);
+        let started = Instant::now();
         let mut inodes = FrontierInodes::new(
             self.base_root,
             // The fixed 1 KiB allowance includes the first 256-byte map entry.
@@ -283,7 +316,6 @@ impl Workspace {
             &self.spool,
         );
         let mut metadata_cache = PortableMetadataCache::default();
-        let mut cdc_bytes_scanned = 0_u64;
         let mut checkpoint = CheckpointJournal::new(self)?;
         note_commit_phase(WorkspaceCommitPhase::CandidatePlan, started);
         let started = Instant::now();
@@ -297,9 +329,18 @@ impl Workspace {
                 continue;
             }
             let inode = self.frontier_inode(node)?;
-            let before = match value.canonical {
-                Some(_) => Some(inodes.record(&objects, inode)?),
-                None => None,
+            let file_result = if matches!(value.data, Data::File(_)) {
+                Some(files.next(node, self.mutation_generation, self.attr(node)?.size)?)
+            } else {
+                None
+            };
+            let before = if let Some((_, before)) = file_result {
+                before
+            } else {
+                match value.canonical {
+                    Some(_) => Some(inodes.record(&objects, inode)?),
+                    None => None,
+                }
             };
             let attr = self.attr(node)?;
             let inode_kind = match attr.kind {
@@ -335,50 +376,7 @@ impl Workspace {
                     Some(record) => record.content_root,
                     None => filesystem::symlink_content(&mut objects, target.clone())?,
                 },
-                Data::File(_) => {
-                    if let Some((_, _, root, counters)) =
-                        captured.filter(|(id, _, _, _)| *id == node)
-                    {
-                        cdc_bytes_scanned = cdc_bytes_scanned
-                            .checked_add(counters.cdc_bytes_scanned)
-                            .ok_or(StorageError::Integrity("CDC counter"))?;
-                        root.0
-                    } else if let Some(record) = before {
-                        if !self.file_may_differ(node, record.content_root)? {
-                            record.content_root
-                        } else {
-                            let base = BaseEntry { record };
-                            let changed = self.mutate_existing_file(&mut objects, node, base)?;
-                            let changed = match changed {
-                                Some(changed) => Some(changed),
-                                None if self
-                                    .incremental_file_supported(node, record.content_root) =>
-                                {
-                                    None
-                                }
-                                None => Some(rope::build(
-                                    &mut objects,
-                                    WorkspaceFileReader::new(self, node)?,
-                                )?),
-                            };
-                            if let Some((root, counters)) = changed {
-                                cdc_bytes_scanned = cdc_bytes_scanned
-                                    .checked_add(counters.cdc_bytes_scanned)
-                                    .ok_or(StorageError::Integrity("CDC counter"))?;
-                                root.0
-                            } else {
-                                record.content_root
-                            }
-                        }
-                    } else {
-                        let (root, counters) =
-                            rope::build(&mut objects, WorkspaceFileReader::new(self, node)?)?;
-                        cdc_bytes_scanned = cdc_bytes_scanned
-                            .checked_add(counters.cdc_bytes_scanned)
-                            .ok_or(StorageError::Integrity("CDC counter"))?;
-                        root.0
-                    }
-                }
+                Data::File(_) => file_result.expect("prepared file result").0,
             };
             let old_metadata = before
                 .map(|record| {
@@ -419,11 +417,18 @@ impl Workspace {
                 u64::from(before == Some(record)),
                 0,
             );
-            checkpoint.push(node, inode, content_root, attr)?;
+            checkpoint.push(
+                node,
+                inode,
+                content_root,
+                attr,
+                file_result.map(|_| attr.size),
+            )?;
             if before != Some(record) {
                 inodes.set(inode, Some(record))?;
             }
         }
+        files.finish_read()?;
         note_commit_phase(WorkspaceCommitPhase::Content, started);
         let started = Instant::now();
         // Add all final edges before releasing old ones. A move therefore never
@@ -498,8 +503,14 @@ impl Workspace {
         inodes.finish(&mut objects)?;
         note_commit_phase(WorkspaceCommitPhase::Namespace, started);
         let started = Instant::now();
-        let built = objects.finish(inodes.root, cdc_bytes_scanned)?;
-        let built = checkpoint.finish(built, self.mutation_generation);
+        let mut built = objects.finish(inodes.root, 0)?;
+        add_build_counters(&mut built.counters, files.counters);
+        let built = checkpoint
+            .finish(built, self.mutation_generation)
+            .map(|mut prepared| {
+                prepared.admission = admission;
+                prepared
+            });
         note_commit_phase(WorkspaceCommitPhase::CandidateFinish, started);
         built
     }
@@ -724,51 +735,282 @@ impl Workspace {
         }
         Ok(output)
     }
+}
 
-    fn file_may_differ(&self, node: NodeId, base: ObjectId) -> Result<bool> {
-        match &self
-            .nodes
-            .get(&node)
-            .ok_or(StorageError::NotFound("node"))?
-            .data
+struct StableFileInputs<'a> {
+    nodes: &'a std::collections::HashMap<NodeId, crate::cow_tree::Node>,
+    dirty: &'a BTreeSet<NodeId>,
+    reader: layerfs_layerstack_store::SnapshotReader,
+    base_inodes: InodeTableRoot,
+    generation: u64,
+    spool: &'a std::path::Path,
+    captured: std::sync::Mutex<Option<crate::capture::CapturedFile>>,
+}
+
+struct FileResults {
+    file: std::io::BufReader<File>,
+    remaining: u64,
+    generation: u64,
+    counters: layerfs_layerstack_store::BuildCounters,
+}
+
+fn add_build_counters(
+    total: &mut layerfs_layerstack_store::BuildCounters,
+    next: layerfs_layerstack_store::BuildCounters,
+) {
+    total.cdc_bytes_scanned = total
+        .cdc_bytes_scanned
+        .saturating_add(next.cdc_bytes_scanned);
+    total.encode_hash_invocations = total
+        .encode_hash_invocations
+        .saturating_add(next.encode_hash_invocations);
+    total.first_store_write_bytes = total
+        .first_store_write_bytes
+        .saturating_add(next.first_store_write_bytes);
+    total.reachable_copy_write_bytes = total
+        .reachable_copy_write_bytes
+        .saturating_add(next.reachable_copy_write_bytes);
+    total.spill_peak_bytes = total.spill_peak_bytes.max(next.spill_peak_bytes);
+    total.spill_count = total.spill_count.saturating_add(next.spill_count);
+}
+
+impl StableFileInputs<'_> {
+    fn produce(
+        &self,
+        cancelled: &std::sync::atomic::AtomicBool,
+        emit: &mut dyn FnMut(layerfs_layerstack_store::DeferredObjectStore) -> Result<()>,
+    ) -> Result<FileResults> {
+        use std::io::{Seek, SeekFrom};
+        let mut journal = std::io::BufWriter::with_capacity(256, anonymous_journal(self.spool)?);
+        let mut counters = layerfs_layerstack_store::BuildCounters::default();
+        let mut count = 0_u64;
+        for &id in self.dirty {
+            if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+                return Err(StorageError::Integrity("file production cancelled"));
+            }
+            let node = self
+                .nodes
+                .get(&id)
+                .ok_or(StorageError::Integrity("frozen file node"))?;
+            if !matches!(node.data, Data::File(_)) || (node.paths.is_empty() && node.links == 0) {
+                continue;
+            }
+            let input = FrozenFile::from_node(&self.reader, node)?;
+            let before = node
+                .canonical
+                .map(|inode| -> Result<_> {
+                    let core = CoreReader(&self.reader);
+                    let record = inode_table_lookup(
+                        &core,
+                        self.base_inodes,
+                        inode,
+                        &mut InodeTableCounters::default(),
+                    )?
+                    .ok_or(StorageError::Integrity("frozen file inode"))?;
+                    Ok(core.with_authenticated_canonical(record, decode_inode_record)?)
+                })
+                .transpose()?;
+            let captured = {
+                let mut captured = self
+                    .captured
+                    .lock()
+                    .map_err(|_| StorageError::Integrity("captured file input"))?;
+                if captured
+                    .as_ref()
+                    .is_some_and(|captured| captured.node == id)
+                {
+                    captured.take()
+                } else {
+                    None
+                }
+            };
+            let built = input.build(before, captured)?;
+            let root = built.root_id;
+            add_build_counters(&mut counters, built.counters);
+            emit(built.objects)?;
+            let before = before.map(encode_inode_record).transpose()?;
+            journal.write_all(&id.0.to_le_bytes())?;
+            journal.write_all(&input.len.to_le_bytes())?;
+            journal.write_all(root.as_bytes())?;
+            journal.write_all(&(before.as_ref().map_or(0, Vec::len) as u32).to_le_bytes())?;
+            if let Some(before) = before {
+                journal.write_all(&before)?;
+            }
+            count += 1;
+        }
+        journal.flush()?;
+        let mut file = journal.into_inner().map_err(|error| error.into_error())?;
+        file.seek(SeekFrom::Start(0))?;
+        Ok(FileResults {
+            file: std::io::BufReader::with_capacity(256, file),
+            remaining: count,
+            generation: self.generation,
+            counters,
+        })
+    }
+}
+
+impl FileResults {
+    fn next(
+        &mut self,
+        node: NodeId,
+        generation: u64,
+        len: u64,
+    ) -> Result<(ObjectId, Option<InodeRecordV1>)> {
+        if generation != self.generation || self.remaining == 0 {
+            return Err(StorageError::Integrity("file result generation"));
+        }
+        let mut header = [0; 52];
+        self.file.read_exact(&mut header)?;
+        if u64::from_le_bytes(header[..8].try_into().unwrap()) != node.0
+            || u64::from_le_bytes(header[8..16].try_into().unwrap()) != len
         {
-            Data::File(FileData::Base { root, .. }) if root.0 == base => Ok(false),
-            Data::File(FileData::Edited {
+            return Err(StorageError::Integrity("file result identity"));
+        }
+        let root = ObjectId::from_bytes(&header[16..48])?;
+        let size = u32::from_le_bytes(header[48..52].try_into().unwrap()) as usize;
+        let mut record = [0; 256];
+        if size > record.len() {
+            return Err(StorageError::Integrity("file result record"));
+        }
+        self.file.read_exact(&mut record[..size])?;
+        self.remaining -= 1;
+        Ok((
+            root,
+            if size == 0 {
+                None
+            } else {
+                Some(decode_inode_record(&record[..size])?)
+            },
+        ))
+    }
+    fn finish_read(&mut self) -> Result<()> {
+        if self.remaining != 0 || self.file.read(&mut [0; 1])? != 0 {
+            return Err(StorageError::Integrity("file result coverage"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+struct FrozenFile {
+    reader: layerfs_layerstack_store::SnapshotReader,
+    data: FileData,
+    len: u64,
+}
+
+impl FrozenFile {
+    fn from_node(
+        reader: &layerfs_layerstack_store::SnapshotReader,
+        node: &crate::cow_tree::Node,
+    ) -> Result<Self> {
+        let Data::File(data) = &node.data else {
+            return Err(StorageError::InvalidInput("file input"));
+        };
+        let len = match data {
+            FileData::Base { len, .. } => *len,
+            FileData::Edited { pieces, .. } => pieces.len(),
+        };
+        Ok(Self {
+            reader: reader.clone(),
+            data: data.clone(),
+            len,
+        })
+    }
+
+    fn read(&self, offset: u64, size: usize) -> Result<Vec<u8>> {
+        crate::file_io::ReadPlan::for_file(self.reader.clone(), &self.data, offset, size)?.read()
+    }
+
+    fn reader(&self) -> WorkspaceFileReader {
+        let source = match &self.data {
+            FileData::Edited {
+                base: None, pieces, ..
+            } if pieces.compact_spool().is_some() => {
+                let slice = pieces.compact_spool().unwrap();
+                WorkspaceFileSource::Direct(slice.segment.clone(), slice.offset)
+            }
+            _ => WorkspaceFileSource::Mixed(self.clone()),
+        };
+        WorkspaceFileReader {
+            source,
+            offset: 0,
+            len: self.len,
+        }
+    }
+    fn build(
+        &self,
+        before: Option<InodeRecordV1>,
+        captured: Option<crate::capture::CapturedFile>,
+    ) -> Result<BuiltRoot> {
+        let (mut objects, captured_root) = match captured {
+            Some(captured) => {
+                if captured.len != self.len {
+                    return Err(StorageError::Integrity("captured file length"));
+                }
+                (
+                    ObjectBuffer::resume_prevalidated(&self.reader, captured.objects),
+                    Some((captured.root, captured.counters)),
+                )
+            }
+            None => (ObjectBuffer::bounded_output(Some(&self.reader))?, None),
+        };
+        let (root, counters) = if let Some(captured) = captured_root {
+            captured
+        } else if let Some(record) = before {
+            if !self.file_may_differ(record.content_root)? {
+                (FileStateRoot(record.content_root), RopeCounters::default())
+            } else {
+                match self.mutate_existing_file(&mut objects, BaseEntry { record })? {
+                    Some(changed) => changed,
+                    None if self.incremental_file_supported(record.content_root) => {
+                        (FileStateRoot(record.content_root), RopeCounters::default())
+                    }
+                    None => rope::build(&mut objects, self.reader())?,
+                }
+            }
+        } else {
+            rope::build(&mut objects, self.reader())?
+        };
+        if rope::state(&objects, root, &mut RopeCounters::default())?.logical_len != self.len {
+            return Err(StorageError::Integrity("completed file length"));
+        }
+        objects.finish(root.0, counters.cdc_bytes_scanned)
+    }
+
+    fn file_may_differ(&self, base: ObjectId) -> Result<bool> {
+        match &self.data {
+            FileData::Base { root, .. } if root.0 == base => Ok(false),
+            FileData::Edited {
                 base: Some((root, base_len)),
                 pieces,
                 ..
-            }) if root.0 == base => Ok(pieces.len() != *base_len
+            } if root.0 == base => Ok(pieces.len() != *base_len
                 || !matches!(pieces.pieces().as_slice(), [crate::file_edit::Piece::Base { root: piece_root, offset: 0, len }] if *piece_root == *root && *len == *base_len)),
-            Data::File(_) => Ok(!self.file_matches(node, base)?),
-            _ => Err(StorageError::InvalidInput("file")),
+            _ => Ok(!self.file_matches(base)?),
         }
     }
 
-    fn incremental_file_supported(&self, node: NodeId, base: ObjectId) -> bool {
+    fn incremental_file_supported(&self, base: ObjectId) -> bool {
         matches!(
-            self.nodes.get(&node).map(|node| &node.data),
-            Some(Data::File(FileData::Edited {
+            &self.data,
+            FileData::Edited {
                 base: Some((root, _)),
                 ..
-            })) if root.0 == base
+            } if root.0 == base
         )
     }
 
     fn mutate_existing_file(
         &self,
         objects: &mut ObjectBuffer<'_>,
-        node: NodeId,
         base: BaseEntry,
     ) -> Result<Option<(FileStateRoot, RopeCounters)>> {
-        let Data::File(FileData::Edited {
+        let FileData::Edited {
             base: Some((file_root, _)),
             pieces,
             ..
-        }) = &self
-            .nodes
-            .get(&node)
-            .ok_or(StorageError::NotFound("node"))?
-            .data
+        } = &self.data
         else {
             return Ok(None);
         };
@@ -798,7 +1040,6 @@ impl Workspace {
                         && (delete_len != replacement_len
                             || final_cursor != base_cursor
                             || !self.workspace_range_matches_base(
-                                node,
                                 file_root,
                                 final_cursor,
                                 final_cursor + replacement_len,
@@ -807,7 +1048,7 @@ impl Workspace {
                         batch.replace(
                             final_cursor,
                             delete_len,
-                            WorkspaceRangeReader::new(self, node, final_cursor, replacement_len)?,
+                            WorkspaceRangeReader::new(self, final_cursor, replacement_len)?,
                         )?;
                         changed = true;
                     }
@@ -829,7 +1070,6 @@ impl Workspace {
             && (delete_len != replacement_len
                 || final_cursor != base_cursor
                 || !self.workspace_range_matches_base(
-                    node,
                     file_root,
                     final_cursor,
                     final_cursor + replacement_len,
@@ -838,11 +1078,11 @@ impl Workspace {
             batch.replace(
                 final_cursor,
                 delete_len,
-                WorkspaceRangeReader::new(self, node, final_cursor, replacement_len)?,
+                WorkspaceRangeReader::new(self, final_cursor, replacement_len)?,
             )?;
             changed = true;
         }
-        if batch.logical_len()? != self.attr(node)?.size {
+        if batch.logical_len()? != self.len {
             return Err(StorageError::Integrity("Workspace file mutation length"));
         }
         if !changed {
@@ -853,7 +1093,6 @@ impl Workspace {
 
     fn workspace_range_matches_base(
         &self,
-        node: NodeId,
         base: FileStateRoot,
         start: u64,
         end: u64,
@@ -861,7 +1100,7 @@ impl Workspace {
         let mut offset = start;
         while offset < end {
             let count = (end - offset).min(64 * 1024) as usize;
-            let final_bytes = self.read(node, offset, count)?;
+            let final_bytes = self.read(offset, count)?;
             let mut base_bytes = Vec::with_capacity(count);
             rope::read_range(
                 &CoreReader(&self.reader),
@@ -877,29 +1116,23 @@ impl Workspace {
         Ok(true)
     }
 
-    fn file_matches(&self, node: NodeId, base: ObjectId) -> Result<bool> {
-        match &self
-            .nodes
-            .get(&node)
-            .ok_or(StorageError::NotFound("node"))?
-            .data
-        {
-            Data::File(FileData::Base { root, .. }) if root.0 == base => return Ok(true),
-            Data::File(FileData::Edited {
+    fn file_matches(&self, base: ObjectId) -> Result<bool> {
+        match &self.data {
+            FileData::Base { root, .. } if root.0 == base => return Ok(true),
+            FileData::Edited {
                 base: Some((root, base_len)),
                 pieces,
                 ..
-            }) if root.0 == base
+            } if root.0 == base
                 && pieces.len() == *base_len
                 && matches!(pieces.pieces().as_slice(), [crate::file_edit::Piece::Base { root: piece_root, offset: 0, len }] if *piece_root == *root && *len == *base_len) =>
             {
                 return Ok(true)
             }
-            Data::File(_) => {}
-            _ => return Err(StorageError::InvalidInput("file")),
+            _ => {}
         }
         let mut final_digest = ContentDigestWriter::new();
-        let mut input = WorkspaceFileReader::new(self, node)?;
+        let mut input = self.reader();
         std::io::copy(&mut input, &mut final_digest)?;
         let mut base_digest = ContentDigestWriter::new();
         rope::read_all(
@@ -1328,42 +1561,32 @@ fn path_charge(path: &str) -> u64 {
     (path.len() as u64).saturating_mul(4).saturating_add(512)
 }
 
-struct WorkspaceFileReader<'a> {
-    source: WorkspaceFileSource<'a>,
+struct WorkspaceFileReader {
+    source: WorkspaceFileSource,
     offset: u64,
     len: u64,
 }
 
-#[derive(Clone, Copy)]
-enum WorkspaceFileSource<'a> {
-    Direct(&'a File, u64),
-    Mixed {
-        workspace: &'a Workspace,
-        node: NodeId,
-    },
+enum WorkspaceFileSource {
+    Direct(std::sync::Arc<crate::file_io::SpoolSegment>, u64),
+    Mixed(FrozenFile),
 }
 
 struct WorkspaceRangeReader<'a> {
-    workspace: &'a Workspace,
-    node: NodeId,
+    input: &'a FrozenFile,
     offset: u64,
     end: u64,
 }
 
 impl<'a> WorkspaceRangeReader<'a> {
-    fn new(workspace: &'a Workspace, node: NodeId, offset: u64, len: u64) -> Result<Self> {
+    fn new(input: &'a FrozenFile, offset: u64, len: u64) -> Result<Self> {
         let end = offset
             .checked_add(len)
             .ok_or(StorageError::InvalidInput("file range"))?;
-        if end > workspace.attr(node)?.size {
+        if end > input.len {
             return Err(StorageError::InvalidInput("file range"));
         }
-        Ok(Self {
-            workspace,
-            node,
-            offset,
-            end,
-        })
+        Ok(Self { input, offset, end })
     }
 }
 
@@ -1373,9 +1596,8 @@ impl Read for WorkspaceRangeReader<'_> {
             return Ok(0);
         }
         let bytes = self
-            .workspace
+            .input
             .read(
-                self.node,
                 self.offset,
                 output.len().min((self.end - self.offset) as usize),
             )
@@ -1386,44 +1608,32 @@ impl Read for WorkspaceRangeReader<'_> {
     }
 }
 
-impl<'a> WorkspaceFileReader<'a> {
-    fn new(workspace: &'a Workspace, node: NodeId) -> Result<Self> {
-        let len = workspace.attr(node)?.size;
-        let source = match &workspace
-            .nodes
-            .get(&node)
-            .ok_or(StorageError::NotFound("node"))?
-            .data
-        {
-            Data::File(FileData::Edited {
-                base: None, pieces, ..
-            }) if pieces.compact_spool().is_some() => {
-                let slice = pieces.compact_spool().unwrap();
-                WorkspaceFileSource::Direct(&slice.segment.file, slice.offset)
-            }
-            Data::File(_) => WorkspaceFileSource::Mixed { workspace, node },
-            _ => return Err(StorageError::InvalidInput("file")),
-        };
-        Ok(Self {
-            source,
-            offset: 0,
-            len,
-        })
+impl WorkspaceFileReader {
+    fn new(workspace: &Workspace, node: NodeId) -> Result<Self> {
+        Ok(FrozenFile::from_node(
+            &workspace.reader,
+            workspace
+                .nodes
+                .get(&node)
+                .ok_or(StorageError::NotFound("node"))?,
+        )?
+        .reader())
     }
 }
 
-impl Read for WorkspaceFileReader<'_> {
+impl Read for WorkspaceFileReader {
     fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
         if self.offset == self.len || output.is_empty() {
             return Ok(0);
         }
         let count = output.len().min((self.len - self.offset) as usize);
-        match self.source {
+        match &self.source {
             WorkspaceFileSource::Direct(file, start) => {
                 let mut read = 0;
                 while read < count {
-                    let next =
-                        file.read_at(&mut output[read..count], start + self.offset + read as u64)?;
+                    let next = file
+                        .file
+                        .read_at(&mut output[read..count], start + self.offset + read as u64)?;
                     if next == 0 {
                         return Err(std::io::ErrorKind::UnexpectedEof.into());
                     }
@@ -1432,9 +1642,9 @@ impl Read for WorkspaceFileReader<'_> {
                 self.offset += read as u64;
                 Ok(read)
             }
-            WorkspaceFileSource::Mixed { workspace, node } => {
-                let bytes = workspace
-                    .read(node, self.offset, count)
+            WorkspaceFileSource::Mixed(input) => {
+                let bytes = input
+                    .read(self.offset, count)
                     .map_err(std::io::Error::other)?;
                 output[..bytes.len()].copy_from_slice(&bytes);
                 self.offset += bytes.len() as u64;
@@ -1501,6 +1711,31 @@ mod tests {
             .unwrap();
         let workspace = Workspace::open(store, branch, root.join("spool")).unwrap();
         (root, workspace)
+    }
+
+    #[test]
+    fn preview_stays_private_and_streamed_commit_has_the_same_root() {
+        let (root, mut workspace) = empty_workspace("selected-output");
+        for name in [b"first".as_slice(), b"second"] {
+            let node = workspace.create_file(ROOT, name, 0o640).unwrap().node;
+            workspace.write(node, 0, b"same selected payload").unwrap();
+        }
+        let counts = workspace.store.store_counts().unwrap();
+        let preview = workspace
+            .build_candidate(CandidatePurpose::Preview)
+            .unwrap();
+        assert_eq!(workspace.store.store_counts().unwrap(), counts);
+        assert!(preview.admission.is_none());
+        let expected = preview.built.root_id;
+        drop(preview);
+        workspace.commit().unwrap();
+        assert_eq!(workspace.base_root, expected);
+        assert_eq!(
+            workspace.store.store_counts().unwrap().commits,
+            counts.commits + 1
+        );
+        drop(workspace);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1664,7 +1899,7 @@ mod tests {
             .record(&objects, inode)
             .unwrap();
         journal
-            .push(file, inode, record.content_root, attr)
+            .push(file, inode, record.content_root, attr, Some(attr.size))
             .unwrap();
         journal
             .validate(&objects, &PortableMetadataCache::default(), |_| Ok(record))
@@ -1992,7 +2227,7 @@ mod tests {
             WorkspaceFileReader::new(&workspace, sparse.node)
                 .unwrap()
                 .source,
-            WorkspaceFileSource::Mixed { .. }
+            WorkspaceFileSource::Mixed(..)
         ));
         drop(workspace);
         std::fs::remove_dir_all(root).unwrap();
@@ -2054,7 +2289,9 @@ mod tests {
 
         let store = workspace.store.clone();
         let branch = store.branch(workspace.branch_id).unwrap().unwrap();
-        let built = workspace.build_candidate().unwrap();
+        let built = workspace
+            .build_candidate(CandidatePurpose::Preview)
+            .unwrap();
         let outcome = store
             .commit_candidate(
                 &branch,
@@ -2105,7 +2342,9 @@ mod tests {
 
         let store = workspace.store.clone();
         let branch = store.branch(workspace.branch_id).unwrap().unwrap();
-        let built = workspace.build_candidate().unwrap();
+        let built = workspace
+            .build_candidate(CandidatePurpose::Preview)
+            .unwrap();
         let outcome = store
             .commit_candidate(
                 &branch,
@@ -2217,7 +2456,9 @@ mod tests {
                 }
                 _ => unreachable!(),
             };
-            let built = workspace.build_candidate().unwrap();
+            let built = workspace
+                .build_candidate(CandidatePurpose::Preview)
+                .unwrap();
             assert_eq!(
                 built.built.counters.cdc_bytes_scanned, expected_cdc,
                 "{case}"
@@ -2325,7 +2566,9 @@ mod tests {
             )
             .unwrap();
         let reads_before = workspace.reader.read_metrics_snapshot().unwrap();
-        let built = workspace.build_candidate().unwrap();
+        let built = workspace
+            .build_candidate(CandidatePurpose::Preview)
+            .unwrap();
         let reads_after = workspace.reader.read_metrics_snapshot().unwrap();
         assert_eq!(built.built.counters.cdc_bytes_scanned, 10);
         assert_eq!(

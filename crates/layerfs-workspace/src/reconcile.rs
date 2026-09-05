@@ -352,7 +352,7 @@ impl Workspaces {
                 .lock()
                 .map_err(|_| WorkspaceError::WorkspaceBusy)?;
             if choice == ResolveChoice::WorkingTree {
-                workspace.build_candidate()?;
+                workspace.build_candidate(crate::changes::CandidatePurpose::Preview)?;
             }
             let affected_paths = workspace
                 .resolution

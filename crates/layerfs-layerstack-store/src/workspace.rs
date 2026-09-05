@@ -1,7 +1,7 @@
 use crate::objects::{
-    admit_checked_objects, admit_planned_objects, apply_reconcile_choices, combine_candidates,
-    insert_object_batch, reconcile_candidate, BuildCounters, BuiltRoot, CanonicalObject,
-    DeferredObjectStore, ObjectSource,
+    admit_planned_objects, apply_reconcile_choices, combine_candidates, insert_object_batch,
+    reconcile_candidate, BuildCounters, BuiltRoot, CanonicalObject, DeferredObjectStore,
+    ObjectSource,
 };
 use crate::records::{
     decode_branch, decode_commit, decode_layer_stack_at, decode_object_id, optional_id,
@@ -270,6 +270,7 @@ impl LayerStackStore {
                 objects,
                 counters: selected.counters,
             },
+            self.workspace_admission(workspace_id)?,
         )
     }
 
@@ -441,7 +442,11 @@ impl LayerStackStore {
         expected_root: ObjectId,
         new_base_layer_id: LayerId,
         built: BuiltRoot,
+        admission: crate::WorkspaceAdmission,
     ) -> Result<CommitOutcome> {
+        if admission.workspace_id != workspace_id || !self.db.same_instance(&admission.db) {
+            return Err(StoreError::Integrity("Workspace admission owner"));
+        }
         let _operation = self.db.enter_operation()?;
         #[cfg(feature = "test-instrumentation")]
         crate::schema::verification_candidate(expected.id, built.counters.spill_count);
@@ -459,12 +464,7 @@ impl LayerStackStore {
         }
 
         let started = Instant::now();
-        let mut statement_number = 0;
-        let admission = if up_to_date {
-            Default::default()
-        } else {
-            admit_checked_objects(&self.db, built.objects, &mut statement_number)?
-        };
+        let (admission, mut statement_number) = admission.admit_remaining(built.objects)?;
         crate::telemetry::note_workspace_admission(
             admission.transactions,
             admission.max_transaction_objects,

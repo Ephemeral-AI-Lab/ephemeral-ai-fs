@@ -132,6 +132,28 @@ enum ReadSource {
 }
 
 impl ReadPlan {
+    pub(crate) fn for_file(
+        reader: SnapshotReader,
+        data: &FileData,
+        offset: u64,
+        size: usize,
+    ) -> Result<Self> {
+        let len = match data {
+            FileData::Base { len, .. } => *len,
+            FileData::Edited { pieces, .. } => pieces.len(),
+        };
+        let end = len.min(offset.saturating_add(size as u64));
+        let source = match data {
+            FileData::Base { root, .. } => ReadSource::Base(*root, offset, end),
+            FileData::Edited { pieces, .. } => ReadSource::Edited(pieces.range(offset, end)?),
+        };
+        Ok(Self {
+            reader,
+            requested: end.saturating_sub(offset),
+            source,
+        })
+    }
+
     pub fn read(self) -> Result<Vec<u8>> {
         let started = std::time::Instant::now();
         let reader = self.reader.clone();
@@ -256,27 +278,15 @@ impl Workspace {
         self.read_plan(node, offset, size)?.read()
     }
     pub fn read_plan(&self, node: NodeId, offset: u64, size: usize) -> Result<ReadPlan> {
-        let end = self
-            .attr(node)?
-            .size
-            .min(offset.saturating_add(size as u64));
-        let source = match &self
+        match &self
             .nodes
             .get(&node)
             .ok_or(StoreError::NotFound("node"))?
             .data
         {
-            Data::File(FileData::Base { root, .. }) => ReadSource::Base(*root, offset, end),
-            Data::File(FileData::Edited { pieces, .. }) => {
-                ReadSource::Edited(pieces.range(offset, end)?)
-            }
-            _ => return Err(StoreError::InvalidInput("read")),
-        };
-        Ok(ReadPlan {
-            reader: self.reader.clone(),
-            requested: end.saturating_sub(offset),
-            source,
-        })
+            Data::File(data) => ReadPlan::for_file(self.reader.clone(), data, offset, size),
+            _ => Err(StoreError::InvalidInput("read")),
+        }
     }
 
     pub fn write(&mut self, node: NodeId, offset: u64, bytes: &[u8]) -> Result<usize> {

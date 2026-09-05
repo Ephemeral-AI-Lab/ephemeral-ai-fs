@@ -96,6 +96,11 @@ pub struct WorkspaceCommitReceipt {
     pub candidate_plan_ns: u64,
     pub dirty_compare_ns: u64,
     pub content_ns: u64,
+    pub output_pipeline_ns: u64,
+    pub output_admission_ns: u64,
+    pub output_blocked_ns: u64,
+    pub output_consumer_idle_ns: u64,
+    pub output_queue_peak_bytes: u64,
     pub namespace_ns: u64,
     /// Nested namespace subphases, excluded from attributed_ns summation.
     pub deletion_cursor_ns: u64,
@@ -484,14 +489,36 @@ pub(crate) fn note_workspace_admission(
     });
 }
 
+pub(crate) fn note_workspace_output_pipeline(
+    wall: u64,
+    admission: u64,
+    blocked: u64,
+    idle: u64,
+    peak: u64,
+) {
+    WORKSPACE_COMMIT.with(|current| {
+        if let Some(receipt) = current.borrow_mut().as_mut() {
+            receipt.output_pipeline_ns = wall;
+            receipt.output_admission_ns = admission;
+            receipt.output_blocked_ns = blocked;
+            receipt.output_consumer_idle_ns = idle;
+            receipt.output_queue_peak_bytes = peak;
+        }
+    });
+}
+
 pub(crate) fn note_workspace_candidate_delivery(
     memory_owned_bytes: u64,
     spill_readback_bytes: u64,
 ) {
     WORKSPACE_COMMIT.with(|current| {
         if let Some(receipt) = current.borrow_mut().as_mut() {
-            receipt.object_admission_memory_owned_bytes = memory_owned_bytes;
-            receipt.object_admission_spill_readback_bytes = spill_readback_bytes;
+            receipt.object_admission_memory_owned_bytes = receipt
+                .object_admission_memory_owned_bytes
+                .saturating_add(memory_owned_bytes);
+            receipt.object_admission_spill_readback_bytes = receipt
+                .object_admission_spill_readback_bytes
+                .saturating_add(spill_readback_bytes);
             receipt.object_admission_borrowed_copy_bytes = 0;
         }
     });

@@ -4,6 +4,8 @@ Status: implementation in progress, 2026-09-06. Ordinary checkpoint migration im
 
 Tracking: [#47](https://github.com/Ephemeral-AI-Lab/layerfs/issues/47), a GitHub sub-issue of [#46](https://github.com/Ephemeral-AI-Lab/layerfs/issues/46), under [#39](https://github.com/Ephemeral-AI-Lab/layerfs/issues/39).
 
+Latest architectural requirement: [one construction and persistence pipeline, different inputs](issue47-unified-construction-pipeline.md). Both native initialization and ordinary Commit must use the actual bounded final-output delivery flow; a shared insertion wrapper alone is insufficient. The newer implementation/results ledger below remains authoritative for measured progress.
+
 Execution-order amendment, 2026-09-06: **optimize Commit first, starting by replacing reconstructed ordinary rebase with in-place checkpointing; then optimize Exec.** This supersedes the earlier Exec-ownership-first sequence. Full-lifecycle targets and final-only proof requirements are unchanged. A Commit-phase checkpoint is progress, not child completion.
 
 Starting checkpoint: **`3faaf3839`**, local `main`, not pushed. This preserves the work from Codex task `01a071c0-4365-73f0-9a8f-9acd114a5a55`, including the [#46 guide and attempt ledger](issue46-tiny-file-churn-implementation-plan.md). The source task was idle/interrupted before the commit. Thirteen offline runner checks, nine lifecycle regressions, and diff checks passed at checkpoint time; independent benchmark proofs had not run. Earlier focused tests retain their recorded scope.

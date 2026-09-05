@@ -144,6 +144,10 @@ impl Drop for BranchLease {
 }
 
 impl StoreDb {
+    pub(crate) fn same_instance(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
     pub fn create(path: impl AsRef<Path>) -> Result<Self> {
         Self::open(path.as_ref(), OpenMode::Create)
     }

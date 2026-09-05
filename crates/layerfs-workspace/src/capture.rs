@@ -193,7 +193,7 @@ impl Read for CaptureReader {
 }
 
 fn build_capture(receiver: Receiver<CaptureMessage>) -> Result<CapturedContent> {
-    let mut objects = ObjectBuffer::empty()?;
+    let mut objects = ObjectBuffer::bounded_output(None)?;
     let reader = CaptureReader {
         receiver,
         current: Cursor::new(Vec::new()),
