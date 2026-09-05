@@ -302,6 +302,16 @@ impl PortableMetadataCache {
         self.entries.iter().flatten().count()
     }
 
+    /// Reuse a checked result from this construction when handing off final records.
+    pub fn get_by_root(&self, kind: InodeKind, root: ObjectId) -> Option<PortableMetadataV1> {
+        self.entries
+            .iter()
+            .flatten()
+            .find_map(|(cached_kind, metadata, cached_root)| {
+                (*cached_kind == kind && *cached_root == root).then_some(*metadata)
+            })
+    }
+
     /// Returns the canonical metadata root and whether it was reused.
     pub fn get_or_build<S: ObjectStore>(
         &mut self,

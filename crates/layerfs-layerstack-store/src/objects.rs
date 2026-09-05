@@ -2961,14 +2961,8 @@ impl<'a> InitializationSegmentAdmission<'a> {
             return Ok(());
         }
         let capacity = self.batch.capacity();
-        let mut batch = std::mem::take(&mut self.batch);
-        batch.sort_unstable_by(|left, right| left.id.as_bytes().cmp(right.id.as_bytes()));
-        let metrics = insert_initialization_segment_admission_batch(
-            self.db,
-            &batch,
-            &mut self.statement_number,
-        )?;
-        drop(batch);
+        let batch = std::mem::take(&mut self.batch);
+        let metrics = consume_checked_owned_page(self.db, batch, &mut self.statement_number)?;
         self.batch = Vec::with_capacity(capacity);
         self.diagnostics.record_sql_batch(
             metrics.insert,
@@ -3017,52 +3011,30 @@ pub(crate) fn admit_checked_objects(
     statement_number: &mut u64,
 ) -> Result<CheckedAdmission> {
     let mut admission = CheckedAdmission::default();
-    objects.consume_prevalidated_pages(|mut batch| {
-        batch.sort_unstable_by_key(|object| object.id);
-        let mut batch_bytes = 0_usize;
-        for object in &batch {
-            layerfs_content::authenticate_identity(&object.bytes, object.id)?;
-            batch_bytes = batch_bytes.saturating_add(object.bytes.len());
-        }
-        let begin_started = Instant::now();
-        let mut connection = db.writer()?;
-        let transaction =
-            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let begin_ns = elapsed_ns(begin_started);
-        let mut outcomes = Vec::with_capacity(batch.len());
-        let metrics =
-            insert_checked_object_batch(&transaction, &batch, statement_number, &mut |inserted| {
-                outcomes.push(inserted)
-            })?;
-        let commit_started = Instant::now();
-        transaction.commit()?;
-        let commit_ns = elapsed_ns(commit_started);
-        drop(connection);
-
+    objects.consume_prevalidated_pages(|batch| {
+        let metrics = consume_checked_owned_page(db, batch, statement_number)?;
+        let candidate_bytes = metrics
+            .insert
+            .bytes
+            .saturating_add(metrics.insert.skipped_bytes);
         admission.transactions += 1;
-        admission.max_transaction_objects =
-            admission.max_transaction_objects.max(batch.len() as u64);
-        admission.max_transaction_bytes = admission.max_transaction_bytes.max(batch_bytes as u64);
-        admission.begin_ns = admission.begin_ns.saturating_add(begin_ns);
-        admission.insert_ns = admission.insert_ns.saturating_add(metrics.insert_ns);
-        admission.commit_ns = admission.commit_ns.saturating_add(commit_ns);
-        for (object, inserted) in batch.iter().zip(outcomes) {
-            admission.candidate_objects += 1;
-            admission.candidate_bytes = admission
-                .candidate_bytes
-                .saturating_add(object.bytes.len() as u64);
-            if inserted {
-                admission.inserted_objects += 1;
-                admission.inserted_bytes = admission
-                    .inserted_bytes
-                    .saturating_add(object.bytes.len() as u64);
-            } else {
-                admission.reused_objects += 1;
-                admission.reused_bytes = admission
-                    .reused_bytes
-                    .saturating_add(object.bytes.len() as u64);
-            }
-        }
+        admission.max_transaction_objects = admission
+            .max_transaction_objects
+            .max(metrics.insert.submitted_rows);
+        admission.max_transaction_bytes = admission.max_transaction_bytes.max(candidate_bytes);
+        admission.begin_ns = admission.begin_ns.saturating_add(metrics.begin_ns);
+        admission.insert_ns = admission.insert_ns.saturating_add(metrics.insert.insert_ns);
+        admission.commit_ns = admission.commit_ns.saturating_add(metrics.commit_ns);
+        admission.candidate_objects += metrics.insert.submitted_rows;
+        admission.candidate_bytes = admission.candidate_bytes.saturating_add(candidate_bytes);
+        admission.inserted_objects += metrics.insert.objects;
+        admission.inserted_bytes = admission
+            .inserted_bytes
+            .saturating_add(metrics.insert.bytes);
+        admission.reused_objects += metrics.insert.skipped_ids;
+        admission.reused_bytes = admission
+            .reused_bytes
+            .saturating_add(metrics.insert.skipped_bytes);
         Ok(())
     })?;
     if admission.candidate_objects != admission.inserted_objects + admission.reused_objects
@@ -3226,17 +3198,26 @@ fn insert_admission_batch(
     })
 }
 
-fn insert_initialization_segment_admission_batch(
+fn consume_checked_owned_page(
     db: &crate::schema::StoreDb,
-    batch: &[CanonicalObject],
+    mut batch: Vec<CanonicalObject>,
     statement_number: &mut u64,
 ) -> Result<AdmissionBatchMetrics> {
+    if batch.len() > ADMISSION_BATCH_COUNT
+        || batch.iter().map(|object| object.bytes.len()).sum::<usize>() > ADMISSION_BATCH_BYTES
+    {
+        return Err(StoreError::Integrity("checked admission page limit"));
+    }
+    batch.sort_unstable_by_key(|object| object.id);
+    for object in &batch {
+        layerfs_content::authenticate_identity(&object.bytes, object.id)?;
+    }
     let begin_started = Instant::now();
     let mut connection = db.writer()?;
     let transaction =
         connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let begin_ns = elapsed_ns(begin_started);
-    let insert = insert_initialization_segment_batch(&transaction, batch, statement_number)?;
+    let insert = insert_checked_object_batch(&transaction, &batch, statement_number, &mut |_| {})?;
     let commit_started = Instant::now();
     transaction.commit()?;
     Ok(AdmissionBatchMetrics {

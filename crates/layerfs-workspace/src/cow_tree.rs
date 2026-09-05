@@ -685,7 +685,10 @@ impl Workspace {
             .ok_or(StorageError::NotFound("node"))?
             .data
         {
-            Data::Directory(directory) => Ok(directory),
+            Data::Directory(directory) => {
+                self.dirty.insert(node);
+                Ok(directory)
+            }
             _ => Err(StorageError::InvalidInput("directory")),
         }
     }
@@ -892,6 +895,7 @@ impl Workspace {
         let value = self.nodes.get_mut(&node).unwrap();
         value.links = value.links.saturating_sub(1);
         value.paths.remove(&path);
+        self.dirty.insert(node);
         self.reclaim(node);
         self.note_mutation(paths)?;
         Ok(())
@@ -998,6 +1002,7 @@ impl Workspace {
             .ok_or(StorageError::NotFound("node"))?;
         value.mode = mode & 0o1777;
         let paths = value.paths.iter().cloned().collect::<Vec<_>>();
+        self.dirty.insert(node);
         self.note_mutation(paths)?;
         Ok(())
     }
@@ -1014,6 +1019,7 @@ impl Workspace {
         value.mtime_seconds = seconds;
         value.mtime_nanoseconds = nanos;
         let paths = value.paths.iter().cloned().collect::<Vec<_>>();
+        self.dirty.insert(node);
         self.note_mutation(paths)?;
         Ok(())
     }
@@ -1027,6 +1033,7 @@ impl Workspace {
         self.directory_mut(parent)?
             .changes
             .insert(name.to_vec(), Some(node));
+        self.dirty.insert(node);
         self.remember_directory_parent(node, parent)
     }
 

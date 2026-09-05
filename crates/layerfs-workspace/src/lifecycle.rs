@@ -243,7 +243,7 @@ impl Workspace {
                     .nodes
                     .get(&id)
                     .ok_or(StorageError::Integrity("checkpoint node"))?;
-                if node.paths.is_empty()
+                if (node.paths.is_empty() && node.links == 0)
                     || self.attr(id)? != attr
                     || node.canonical.is_some_and(|old| old != inode)
                     || self
@@ -312,25 +312,34 @@ impl Workspace {
             self.spool_bytes = 0;
             self.inline_bytes = 0;
             self.piece_allocation_bytes = 0;
-            for node in self.nodes.values_mut().filter(|node| node.paths.is_empty()) {
-                if let Some(inode) = node.canonical.take() {
-                    self.canonical_nodes.remove(&inode);
+            for id in &self.dirty {
+                if let Some(node) = self
+                    .nodes
+                    .get_mut(id)
+                    .filter(|node| node.paths.is_empty() && node.links == 0)
+                {
+                    if let Some(inode) = node.canonical.take() {
+                        self.canonical_nodes.remove(&inode);
+                    }
                 }
-                if let Data::File(FileData::Edited {
+            }
+            // Every remaining Edited file owns a descriptor, including a clean
+            // linked file whose rejected write only established editable backing.
+            for id in self.open_spools.keys() {
+                let Data::File(FileData::Edited {
                     spool_high_water,
                     pieces,
                     ..
-                }) = &node.data
-                {
-                    self.spool_bytes = self.spool_bytes.saturating_add(*spool_high_water);
-                    self.inline_bytes = self.inline_bytes.saturating_add(pieces.inline_len());
-                    self.piece_allocation_bytes = self
-                        .piece_allocation_bytes
-                        .saturating_add(pieces.logical_allocation_charge()?);
-                }
+                }) = &self.nodes[id].data
+                else {
+                    return Err(StorageError::Integrity("checkpoint retained spool"));
+                };
+                self.spool_bytes = self.spool_bytes.saturating_add(*spool_high_water);
+                self.inline_bytes = self.inline_bytes.saturating_add(pieces.inline_len());
+                self.piece_allocation_bytes = self
+                    .piece_allocation_bytes
+                    .saturating_add(pieces.logical_allocation_charge()?);
             }
-            self.nodes
-                .retain(|_, node| !node.paths.is_empty() || node.pins != 0);
             self.reader = reader;
             self.expected_head = head;
             self.expected_base = expected_base;
