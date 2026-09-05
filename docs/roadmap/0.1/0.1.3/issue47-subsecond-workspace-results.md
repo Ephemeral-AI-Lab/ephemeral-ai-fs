@@ -290,3 +290,56 @@ Cleanup PASS; no OOM/swap; Linux container lifetime peak 41717760 bytes. Host SQ
 ### Receipt-parser correction for attempts5–6
 
 Commit snapshot database calls are **6**, not11, in both attempts5 and6. The derived assessment parser had selected the preceding WorkspaceCreate receipt's same-named field from concatenated operation details. It now prioritizes `WorkspaceCommitReceipt`; both derived assessments record the previous and corrected values explicitly. Raw `perf.jsonl` files and all timings/bytes/object counts are unchanged. This correction preserves the earlier5–6-call snapshot result; it is not another lookup-cache optimization.
+
+## Attempt 7 — shared consumer ownership/membership, create-100
+
+Original create-100 / seed1 on `ebb98dbe7`: complete lifecycle **TARGET_MISS** under #47, `14942030209 ns`; Commit `679934459 ns`. The parent15-second harness reports PASS; this is explicitly not #47 acceptance. Receipt and strict assessment: `benchmark-results/host-store/results/issue47-consumer-create100/`. One selected sample, no independent proof.
+
+- create: 10433416 ns
+- exec: 14218591084 ns
+- commit: 679934459 ns
+- visibility: 77458 ns
+- end: 32993792 ns
+
+Measured Commit detail:
+
+- content_ns: 514723750
+- namespace_ns: 52006291
+- candidate_finish_ns: 21261167
+- object_admission_ns: 64173041
+- checkpoint_ns: 17021792
+- spool_retirement_ns: 3402375
+- spool_retirement_scan_ns: 4454
+- spool_retired_segments: 101
+- snapshot_database_calls: 6
+- object_admission_spill_readback_bytes: 4256258
+- object_admission_memory_owned_bytes: 109178189
+- object_admission_borrowed_copy_bytes: 0
+- output_pipeline_ns: 431588250
+- output_admission_ns: 286724334
+- output_blocked_ns: 191189916
+- output_consumer_idle_ns: 151823170
+- output_queue_peak_bytes: 1048576
+- spool_write_open_count: 101
+- spool_write_ns: 213158270
+- workspace_fence_ns: 215250
+- candidate_objects: 82762
+- candidate_bytes: 113434447
+- inserted_objects: 81931
+- inserted_bytes: 112321855
+- reused_objects: 831
+- reused_bytes: 1112592
+
+Pipeline wall time fell from480,500,250 to431,588,250 ns; consumer service from332,000,194 to286,724,334 ns. Namespace was52,006,291 ns, candidate finish21,261,167 ns and remaining structural admission64,173,041 ns. Canonical candidate/inserted/reused totals and4,256,258-byte spill readback remain unchanged. The private high-cardinality ID index was not triggered here; no measured gain is assigned to that fallback replacement.
+
+All101segments and104,857,600 retained bytes were released by Commit. Retirement was3,402,375 ns, including4,454 ns retain-predicate bookkeeping. Cleanup PASS, no OOM/swap, protected preparation and master unchanged, validated host SQLite/no-data-mount topology. Linux container lifetime peak41,439,232 bytes.
+
+Replan: retain the consumer gain. The <=300ms Commit exploration objective remains unmet and the pipeline still dominates. Next substantive slice is shared deletion/namespace record-reference processing and ordered edge facts, followed by one original delete-100 measurement; do not assign create-only gains to delete. Avoid prolonged minor tuning or added producers while the consumer remains dominant.
+
+Producing identities:
+
+- source_identity: `ddc5adf1a0fd786b831df2c1a385e0f1291526241464a34b0c56116f6ccfc5c1`
+- product_identity: `729862bf7622306d82d75b874913b44e32398c059ffab8a0e25940ec12482244`
+- image: `sha256:d8ffbdd27afb893c680d41e9806d4e1d9f5ac0a3c18727129cf51ac039775501`
+- harness_identity: `c3610164231c40bfa3e77c27e5c1526b5e9656c046c9e382d095b0d6c75d1abc`
+- input_identity: `bb92170a6ab2b38f9385d2deeab3b22c1d0275072beacb0ffa59727dd2b6e7c9`
