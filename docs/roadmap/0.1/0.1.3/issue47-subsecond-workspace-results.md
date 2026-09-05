@@ -398,3 +398,58 @@ Producing identities:
 - input_identity: `43525efe0eb21bad661d9aadfbb1000c86086f0d03487b76bdbfa78e5c389f55`
 
 Cleanup PASS; protected preparation and master unchanged; host SQLite/no data mounts validated; no OOM/swap. Linux container lifetime peak9,166,848 bytes. No independent proof.
+
+## Attempt 9 — located reference update, delete-100
+
+Original delete-100 / seed1 on `02af76b86`: complete lifecycle **TARGET_MISS**, `3531075500 ns`; Commit `304405125 ns`. Receipt and strict assessment: `benchmark-results/host-store/results/issue47-located-reference-delete100/`. One selected sample, no independent proof.304.4ms is not rounded into the <=300ms exploration objective.
+
+- create: 11085208 ns
+- exec: 3208255125 ns
+- commit: 304405125 ns
+- visibility: 75625 ns
+- end: 7254417 ns
+
+Measured Commit detail:
+
+- content_ns: 662625
+- namespace_ns: 299466542
+- deletion_cursor_ns: 14840300
+- deletion_records_ns: 270915432
+- candidate_finish_ns: 147500
+- object_admission_ns: 515375
+- checkpoint_ns: 609708
+- spool_retirement_ns: 250
+- spool_retirement_scan_ns: 0
+- spool_retired_segments: 0
+- snapshot_database_calls: 1393
+- object_admission_spill_readback_bytes: 0
+- object_admission_memory_owned_bytes: 22318
+- object_admission_borrowed_copy_bytes: 0
+- output_pipeline_ns: 309250
+- output_admission_ns: 16167
+- output_blocked_ns: 0
+- output_consumer_idle_ns: 254917
+- output_queue_peak_bytes: 0
+- spool_write_open_count: 0
+- spool_write_ns: 0
+- workspace_fence_ns: 14208
+- candidate_objects: 9
+- candidate_bytes: 22318
+- inserted_objects: 9
+- inserted_bytes: 22318
+- reused_objects: 0
+- reused_bytes: 0
+
+The single-sample difference is modest: Commit311.3→304.4ms and record processing281.2→270.9ms. Keep the simpler exact-location update, but this disproves treating the repeated locator alone as the main remaining record cost. No unchanged reruns will chase the300ms line. Further deletion work needs a larger reduction in record loading/decoding, not admission/checkpoint tweaks.
+
+Canonical totals remain9objects /22,318bytes, all inserted; snapshot calls remain1,393; payload spools and readback remain zero. Cleanup PASS, protected preparation/master unchanged, host SQLite/no data mounts and resource bounds validated, no OOM/swap; Linux container lifetime peak9,670,656 bytes.
+
+Replan toward create's larger pipeline cost: prove the existing full-file streaming builder emits only final reachable objects before omitting its per-file selection scaffolding. Incremental/provisional paths keep selection, and no incomplete file output may enter admission. More producers alone still cannot meet300ms with the observed consumer and finalizer costs.
+
+Producing identities:
+
+- source_identity: `38e6b3a3a31c08c33f7a7837cd3acdbba5c6773e3445fe43e5218ab7960f2cc1`
+- product_identity: `0f4dfec7a71defe81e020665702da5b508120317893422fd828393020b335f2d`
+- image: `sha256:9dbb39e99f81b276dac1a8bd0ba0f010a33db2611fae9f8fefbf047991d21e87`
+- harness_identity: `c3610164231c40bfa3e77c27e5c1526b5e9656c046c9e382d095b0d6c75d1abc`
+- input_identity: `80db9050a07847d0659431069f675da6d93076362ea03b80d20882507c6dde63`
