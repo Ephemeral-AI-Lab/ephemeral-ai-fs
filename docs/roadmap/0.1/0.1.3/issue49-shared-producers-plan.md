@@ -175,3 +175,7 @@ All builds/checks/tests used the shared host lock, serially. No performance samp
 One intermediate Store type-check failed while its adapter still had the old whole-worker signature (E0277/E0061). Migrating that actual caller to the task interface resolved it; subsequent checks passed. Injected panic messages in the failure test are expected and caught, not unhandled test failures. Passing checks were repeated only after corresponding journal-budget, capture-proof or fallback changes.
 
 The #49 implementation scope is complete in local commits. Existing benchmark observations remain attached to their pre-refactor source/product identities; this refactor does not establish a throughput gain, current-source performance qualification or parent #47/#46/#39 completion. #48 integration and final performance/proof obligations remain separate. No issue is closed by this ledger.
+
+### Subsequent user-requested measurements
+
+The user's follow-up asking for current numbers authorized one revised tier100 create/delete pair after implementation. Source `6de381837` records create Commit358.675583ms/full1,291.390876ms and delete Commit14.803083ms/full298.008125ms. Both observed Commits are below400ms; strict #47 create lifecycle remains a miss. Full custody and comparison limits are recorded in results attempts21–22. This does not alter the completed refactor's worker defaults or qualify a speedup; no independent proofs or other-tier reruns were added.

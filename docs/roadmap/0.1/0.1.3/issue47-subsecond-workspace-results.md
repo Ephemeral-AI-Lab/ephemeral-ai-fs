@@ -750,3 +750,24 @@ Machine-readable assessment: `benchmark-results/host-store/results/issue47-compa
 After the four low-tier observations, the user authorized #49. Plan `cc6d3b0ef`, completion-facts slice `2570c0d81` and shared task/result slice `da40c431c` are implemented. Native initialization (direct and fallback) and ordinary Workspace Commit now share task claim/cancel/step/result-finish/writer-finish/drain/join behavior. Completed full-file root/length facts come from the existing rope builder; native duplicated file construction and Workspace single-result/whole-dirty-worker loops are removed. Workspace generation-bound result ordering uses bounded worker journals and fixed ordinal metadata slots. Production remains one Commit worker and native's existing cap; preview, incremental/capture semantics and lifecycle owners remain separate.
 
 The [#49 implementation/adoption/deletion/test ledger](issue49-shared-producers-plan.md#implementation-and-adoption-ledger) records resource accounting, exact tests, the resolved intermediate compiler obstacle and retained semantic boundaries. Store suite51passed/1existing ignored plus the additional partitioned construction check; final Workspace58passed; file-edit12/reconciliation2passed; targeted core/native checks and SDK compilation pass. No benchmark performance or independent proof run was added. Attempts1–20 remain immutable evidence for their recorded sources; they are not re-attributed to the new refactor. No parent issue is closed and no unpublished Exec work is claimed.
+
+## Attempts 21–22: current-source numbers after issue49
+
+After #49 implementation, the user asked whether it was fully done and requested numbers. One complete seed1 sample per revised tier100 operation was therefore collected on the delivered refactor, with unchanged one-worker Commit default and normal120/130second allowances. This is a scoped post-refactor pair, not an all-tier campaign or independent proof. Host/image builds and both measurements were serial under the shared lock.
+
+| Case | Create session ns | Exec ns | Commit ns | Visibility ns | End ns | Complete lifecycle ns | Strict #47 performance |
+|---|---:|---:|---:|---:|---:|---:|---|
+|tiny-bulk-create-100-mixed-v3|8,974,334|917,203,209|358,675,583|75,750|6,462,000|1,291,390,876|TARGET_MISS|
+|tiny-bulk-delete-100-mixed-v3|12,330,750|268,385,792|14,803,083|70,625|2,417,875|298,008,125|PASS|
+
+Each is n=1, median=min=max. Both observed Commit durations are below400ms; complete create remains291.390876ms above the strict1second threshold. #49's implementation/tests are complete; overall #47 performance/proof qualification is not. No unpublished #48 implementation was adopted and no issue was closed.
+
+Exact matching source: `6de381837d1c22e5eb21dfaf446f85c9c30ea6ec`; source seal `4ce40e2c3c3573902e3820d8e16c5f1be793f42dbeb14e4bb72ed4274557fc1f`; product seal `3fb2f18f1c636b8c3aa8b2a901bb3ca2a56cb075e674b6f520e8c685ca2b1053`; host binary SHA-256 `4de1c0e44903299865434e94c1378f00d03545e930719e0a81e205f792ac9be7`; image `layerfs-bench-infra:4ce40e2c3c357390` / `sha256:47d0d03f9a7079292c6ab5fa076a5392c7aa6e79a7f1e47a76467f89eed15e0e`.
+
+- Create raw `benchmark-results/host-store/results/issue49-shared-producers-create100/perf.jsonl`, SHA-256 `93f5f439f80f30c0ca6efa472582995cd5be664890bbe337a6ffa55218f67e28`; selected input `0f74e6e62a5729f144e1f29e84d94c40984e4f9ebd6b947114d6d72659b6d580`.
+- Delete raw `benchmark-results/host-store/results/issue49-shared-producers-delete100/perf.jsonl`, SHA-256 `391df7cabf8ff78707c417dbbfacc2d38b71cb57c571510d27a19ead2fef0756`; selected input `35beeec41c290dafcf98142cddde294d857b078e15682537f2c54e8e686919c2`.
+- Machine assessment: `benchmark-results/host-store/results/issue49-shared-producers-assessment.json`.
+
+Both retain exact fixture-info identity from attempts13–14,1,000affectedfiles/100MiB plus200-file/1MiB witness, complete operations, cleanupPASS, unchanged prepared masters and0physical spoolfiles/bytes after Commit. OOM/swap0; container peaks11,468,800B create/4,866,048B delete, with host resources separately retained. Performance verifier/reopen/injection counts are0. Independent proofs remain NOT_RUN.
+
+Historical create Commit370.395375→358.675583ms and delete15.033084→14.803083ms are unpaired observations with different product/source/harness/image identities, not a controlled speedup claim. Create pipeline is essentially unchanged264.614459→264.543417ms; retirement91.601959→80.705000ms accounts for most of the Commit difference. Selected memory/spill bytes remain53,065,971/52,595,430. This supports reporting current absolute behavior without claiming a material pipeline acceleration from code reuse. The empty delete pipeline now measures0.033875ms with no producer work, consistent with its zero-task path.
