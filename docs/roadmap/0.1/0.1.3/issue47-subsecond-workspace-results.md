@@ -453,3 +453,60 @@ Producing identities:
 - image: `sha256:9dbb39e99f81b276dac1a8bd0ba0f010a33db2611fae9f8fefbf047991d21e87`
 - harness_identity: `c3610164231c40bfa3e77c27e5c1526b5e9656c046c9e382d095b0d6c75d1abc`
 - input_identity: `80db9050a07847d0659431069f675da6d93076362ea03b80d20882507c6dde63`
+
+## Attempt 10 — completed full-file finality, create-100
+
+Original create-100 / seed1 on `c6683078c`: complete lifecycle **TARGET_MISS**, `16102944458 ns`; Commit `710825625 ns`. Receipt and strict assessment: `benchmark-results/host-store/results/issue47-complete-file-create100/`. This is the first create sample after edge/reference changes as well as full-file finality; whole-Commit changes are cumulative. One selected sample, no independent proof.
+
+- create: 10952833 ns
+- exec: 15350047042 ns
+- commit: 710825625 ns
+- visibility: 101666 ns
+- end: 31017292 ns
+
+Measured Commit detail:
+
+- content_ns: 500782249
+- namespace_ns: 40152167
+- deletion_cursor_ns: 0
+- deletion_records_ns: 0
+- candidate_finish_ns: 21877125
+- object_admission_ns: 62682708
+- checkpoint_ns: 75893958
+- spool_retirement_ns: 60861916
+- spool_retirement_scan_ns: 9161
+- spool_retired_segments: 101
+- snapshot_database_calls: 6
+- object_admission_spill_readback_bytes: 4256258
+- object_admission_memory_owned_bytes: 109178189
+- object_admission_borrowed_copy_bytes: 0
+- output_pipeline_ns: 413859583
+- output_admission_ns: 291501415
+- output_blocked_ns: 204800792
+- output_consumer_idle_ns: 129881794
+- output_queue_peak_bytes: 1048576
+- spool_write_open_count: 101
+- spool_write_ns: 224506025
+- workspace_fence_ns: 202208
+- candidate_objects: 82762
+- candidate_bytes: 113434447
+- inserted_objects: 81931
+- inserted_bytes: 112321855
+- reused_objects: 831
+- reused_bytes: 1112592
+
+The full-file builder no longer constructs a reference index or performs per-file DFS/seen/order selection. Focused boundary checks establish identical roots and selected object sets, including repeated data and spill. Candidate/inserted/reused objects and bytes remain identical to attempts4–7, and selected spill readback remains4,256,258 bytes. This is actual removed construction work, not admission of provisional trees.
+
+Pipeline wall was413,859,583 ns versus431,588,250 ns in attempt7; consumer service291,501,415 ns, producer blocked204,800,792 ns and consumer idle129,881,794 ns. The observed pipeline reduction is modest. Whole Commit710.8ms is **not a net performance win** over the prior679.9ms sample: checkpoint was75,893,958 ns, including60,861,916 ns retirement. Only9,161 ns was retain-predicate bookkeeping; the remainder includes owner drop/physical close, accounting and map iteration. Preserve this observation alongside earlier2.6/3.4/90.4ms retirement; do not subtract a favorable close time to claim a hypothetical result. All101segments and104,857,600 retained bytes were released by Commit.
+
+Replan: keep the proven construction simplification and earlier substantial final-record/consumer gains, but stop further threshold-chasing micro-tuning. Create still needs a structural reduction in consumer work or overlap with finalization; more producers alone cannot supply the missing budget at the observed291.5ms consumer service plus remaining work. Delete remains304.4ms in its latest source-bound sample, with270.9ms record processing. Neither <=300ms exploration objective is demonstrated, and both complete lifecycle targets remain TARGET_MISS. Independent bounded proofs stay deferred until full performance gates pass.
+
+Producing identities:
+
+- source_identity: `d81d7d170760524589246e84976f4451b1fbfedae8736bdebf48835a39df9cdd`
+- product_identity: `cf7bec19be0fa50a456aa80b926ba118fa8aa345e9d69aaf0cedb8114d3d026a`
+- image: `sha256:3d2d4d8579a37adc8e73bfce94abefd773ddacb338015282c10ad67fd8447222`
+- harness_identity: `c3610164231c40bfa3e77c27e5c1526b5e9656c046c9e382d095b0d6c75d1abc`
+- input_identity: `d675b23abbb5b11449f11c0d6e4e843d26ae69b47c458f502eed1ef603dd6f07`
+
+Cleanup PASS, protected preparation/master unchanged, validated host SQLite/no-data-mount topology and existing resource/timing bounds, no OOM/swap. Linux container lifetime peak41,443,328 bytes. No sibling messages or Exec-owned source edits were made during these slices.
