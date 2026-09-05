@@ -171,3 +171,63 @@ Producing identities:
 - input_identity: `f9796fea5d4552c28a77f9499f783a70c1235e686c7e855f356634e23a6ecdca`
 
 Host topology/container bounds validated, protected preparation reused with independent closed-copy sample, master unchanged, cleanup PASS, no OOM/swap. No independent proof. No-go revision: physical per-file lifecycle is removed; next target is candidate payload retention/readback while Exec remains separately owned. Full subsecond acceptance remains unmet.
+
+## Attempt 5 — shared finalized-output pipeline, create-100
+
+Original complete create-100 / seed 1 on `de3c35387`, child **TARGET_MISS**: `16173168125 ns`. Receipt and strict assessment: `benchmark-results/host-store/results/issue47-output-create100/`. One selected sample; no independent proof.
+
+- create: 9272917 ns
+- exec: 14990186625 ns
+- commit: 1129995125 ns
+- visibility: 89792 ns
+- end: 43623666 ns
+
+Measured Commit/storage detail:
+
+- content_ns: 636913499
+- namespace_ns: 269526667
+- candidate_finish_ns: 25910208
+- object_admission_ns: 73278333
+- checkpoint_ns: 112590041
+- spool_retirement_ns: 90428458
+- snapshot_database_calls: 11
+- object_admission_spill_readback_bytes: 4256258
+- object_admission_memory_owned_bytes: 109178189
+- object_admission_borrowed_copy_bytes: 0
+- output_pipeline_ns: 467859084
+- output_admission_ns: 316901950
+- output_blocked_ns: 198744293
+- output_consumer_idle_ns: 158446244
+- output_queue_peak_bytes: 1048576
+- spool_write_open_count: 101
+- spool_write_ns: 239242460
+- workspace_fence_ns: 270542
+- candidate_objects: 82762
+- candidate_bytes: 113434447
+- inserted_objects: 81931
+- inserted_bytes: 112321855
+- reused_objects: 831
+- reused_bytes: 1112592
+
+Selected spill readback fell by 109,178,189 bytes (96.25%), from 113,434,447 to 4,256,258. Exactly 109,178,189 bytes were instead delivered as final owned memory; borrowed payload copies remain zero. Candidate objects/bytes (82,762 / 113,434,447), inserted objects/bytes (81,931 / 112,321,855) and reused objects/bytes (831 / 1,112,592) match the shared-spool sample. This establishes actual removed delivery I/O, not only overlapping timers. Store live size after Commit remained 131,661,824 bytes, 2,009 pages, zero freelist pages.
+
+Commit was 1,129,995,125 ns versus 1,270,814,792 ns in the prior single sample. Checkpoint retirement was slower in this sample, 90,428,458 ns versus 2,571,041 ns; retain both observations rather than subtracting the difference to claim another result. Both samples retire all 101 physical spool files and all 104,857,600 retained segment bytes by Commit. End was included at 43,623,666 ns.
+
+The shared file pipeline occupied 467,859,084 ns, with 316,901,950 ns consumer work, 198,744,293 ns producer blocked time and 158,446,244 ns consumer idle time. These are overlapping/nested measurements, not additive phases. Queue peak reached its 1,048,576-byte bound. The existing content-labelled phase also includes the subsequent metadata/directory/record preparation; its 636,913,499 ns is not pure content construction. Final selection was 25,910,208 ns and remaining structural admission 73,278,333 ns.
+
+Replan: retain the shared delivery slice. More producers are not justified while the single producer already spends substantial time blocked on the consumer. Remaining Commit opportunities are consumer ownership/dedup handling and ordered record/reference updates; the latter is shared with the measured delete bottleneck. Do not revisit checkpoint lookup caches or attribute the 14,990,186,625 ns Exec phase to this Commit change. The sibling-owned Exec path remains outside this worktree's edits. No sibling messages were sent during this slice.
+
+Physical segment observations:
+
+- `{"allocated_bytes": 104914944, "kind": "workspace-physical-spool", "method": "verification_workspace_state", "observation_count": 20202, "observation_errors": 0, "open_physical_files": 101, "peak_bytes": 104914944, "phase": "after-workload-before-commit", "precision": "mutation-event-aggregate-allocation", "retained_segment_bytes": 104857600, "scope": "passive maintained Workspace counters; no independent verification"}`
+- `{"allocated_bytes": 0, "kind": "workspace-physical-spool", "method": "verification_workspace_state", "observation_count": 20202, "observation_errors": 0, "open_physical_files": 0, "peak_bytes": 104914944, "phase": "after-commit", "precision": "mutation-event-aggregate-allocation", "retained_segment_bytes": 0, "scope": "passive maintained Workspace counters; no independent verification"}`
+
+Producing identities:
+
+- source_identity: `b69042b744fd21748ba88917c5abe4b2cd34175040d41a5c5b013831e477bb75`
+- product_identity: `7fc8975b47aafeb1d617e60835cb7a87166fd572bb5ad4107829cfb42733e0eb`
+- image: `sha256:c0d0eae8b922539759ba684d076054cda903d8f8626a81e7c7580276924a8247`
+- harness_identity: `c3610164231c40bfa3e77c27e5c1526b5e9656c046c9e382d095b0d6c75d1abc`
+- input_identity: `4f10c2489f344103bab40c75b9f233cb7ce6af443318c7f016814d835ba33de9`
+
+Host topology/container limits validated, protected preparation reused and master unchanged, cleanup PASS, no OOM/swap. Linux container lifetime peak 41,172,992 bytes. Host process peak RSS 122,552,320 bytes (previous single sample 142,573,568); RSS sampler peak 122,109,952, 1,506 samples, maximum sample gap 14,071,500 ns. These are individual observations, not a statistical distribution. Both original full-lifecycle subsecond targets remain unqualified, and final independent proofs remain deferred.
