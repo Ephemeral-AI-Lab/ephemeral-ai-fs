@@ -4,6 +4,8 @@ Status: implementation in progress, 2026-09-05. The execution ledger below recor
 
 Issue: [#46](https://github.com/Ephemeral-AI-Lab/layerfs/issues/46). Parent: [#39](https://github.com/Ephemeral-AI-Lab/layerfs/issues/39). This is the first implementation step of #39 and establishes the approach for its remaining families.
 
+Focused follow-up, 2026-09-06: [#47](https://github.com/Ephemeral-AI-Lab/layerfs/issues/47) is attached to #46 and narrows the next implementation step to the two original bulk tier-100 cases, each strictly below 1,000 ms. Its [shared Workspace redesign plan](issue47-subsecond-workspace-plan.md) builds on checkpoint `3faaf3839`. The remaining #46 cases and parent obligations are not automatically qualified by this child.
+
 The plan combines three read-only reviews of Exec, Commit, and benchmark infrastructure. The inspected checkout was clean at `e180b7b6e` after the workload-layout migration in `1997836c6`. Recheck the current source and preserve unrelated changes before implementation. Source findings below establish actual repeated work; its present wall-clock importance needs fresh host measurements.
 
 ## Latest execution amendment — 2026-09-05
