@@ -132,3 +132,42 @@ Validation: 51 Workspace library tests passed together after the main migration;
 Normal benchmark observations now include passive maintained physical allocation, open physical file count and retained segment bytes before and after Commit. The directory walk is explicitly named-file-only; anonymous segment allocation is not inferred from that walk. These observations perform no oracle, namespace scan or independent proof. Performance remains unmeasured for this slice until the next source-bound receipt; no subsecond claim.
 
 The full 12-test SDK file-edit integration suite also passed serially after the spool migration, including candidate/admission/publication failure retry, projection refresh/reopen, aliases, owner composition, stale heads and discard. No independent benchmark proof ran.
+
+## Attempt 4 — shared segments, create-100
+
+Original complete create-100 / seed 1 on `8cbbb425b`, child **TARGET_MISS**: `16186989166 ns`. Receipt and assessment: `benchmark-results/host-store/results/issue47-segments-create100/`.
+
+- create: 8691500 ns
+- exec: 14875371750 ns
+- commit: 1270814792 ns
+- visibility: 73541 ns
+- end: 32037583 ns
+
+Measured Commit/storage detail:
+
+- content_ns: 435104125
+- namespace_ns: 299912500
+- candidate_finish_ns: 90672416
+- object_admission_ns: 417636958
+- checkpoint_ns: 23277250
+- spool_retirement_ns: 2571041
+- snapshot_database_calls: 6
+- object_admission_spill_readback_bytes: 113434447
+- spool_write_open_count: 101
+- spool_write_ns: 217079511
+- workspace_fence_ns: 198000
+
+Physical segment observations:
+
+- `{"allocated_bytes": 104914944, "kind": "workspace-physical-spool", "method": "verification_workspace_state", "observation_count": 20202, "observation_errors": 0, "open_physical_files": 101, "peak_bytes": 104914944, "phase": "after-workload-before-commit", "precision": "mutation-event-aggregate-allocation", "retained_segment_bytes": 104857600, "scope": "passive maintained Workspace counters; no independent verification"}`
+- `{"allocated_bytes": 0, "kind": "workspace-physical-spool", "method": "verification_workspace_state", "observation_count": 20202, "observation_errors": 0, "open_physical_files": 0, "peak_bytes": 104914944, "phase": "after-commit", "precision": "mutation-event-aggregate-allocation", "retained_segment_bytes": 0, "scope": "passive maintained Workspace counters; no independent verification"}`
+
+Producing identities:
+
+- source_identity: `a1cff705acbc35adad92c3b7115ab42dde35a944e6a4396049e68b3e0377149f`
+- product_identity: `b3f0333e3ce623aa59c8ce1312d2cb4f52aa55ad45905438ceeb22a5dabac5cb`
+- image: `sha256:445fb85c77c344069325af3debd132b8240dd158e37be2f9ad18de1eff200366`
+- harness_identity: `c3610164231c40bfa3e77c27e5c1526b5e9656c046c9e382d095b0d6c75d1abc`
+- input_identity: `f9796fea5d4552c28a77f9499f783a70c1235e686c7e855f356634e23a6ecdca`
+
+Host topology/container bounds validated, protected preparation reused with independent closed-copy sample, master unchanged, cleanup PASS, no OOM/swap. No independent proof. No-go revision: physical per-file lifecycle is removed; next target is candidate payload retention/readback while Exec remains separately owned. Full subsecond acceptance remains unmet.
