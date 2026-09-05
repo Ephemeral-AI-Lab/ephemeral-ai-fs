@@ -76,7 +76,7 @@ impl LayerStackStore {
                             finished.root_id,
                             finished.scanned_files,
                             finished.scanned_bytes,
-                            finished.final_batch,
+                            InitializationFinalBatch::Checked(finished.final_batch),
                             finished.receipt,
                             finished.statement_number,
                             true,
@@ -137,18 +137,13 @@ impl LayerStackStore {
             let final_begin_ns = final_begin_started
                 .map(|started| started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64)
                 .unwrap_or(0);
-            let final_metrics = if direct_segments {
-                insert_initialization_segment_batch(
-                    &transaction,
-                    &final_batch,
-                    &mut statement_number,
-                )?
-            } else {
-                insert_initialization_object_batch(
-                    &transaction,
-                    &final_batch,
-                    &mut statement_number,
-                )?
+            let final_metrics = match &final_batch {
+                InitializationFinalBatch::Checked(batch) => {
+                    insert_initialization_segment_batch(&transaction, batch, &mut statement_number)?
+                }
+                InitializationFinalBatch::Planned(batch) => {
+                    insert_initialization_object_batch(&transaction, batch, &mut statement_number)?
+                }
             };
             #[cfg(debug_assertions)]
             crate::schema::fail_transaction_statement(u64::MAX)?;
@@ -378,15 +373,20 @@ struct AddSnapshot {
     existing_layer_id: Option<LayerId>,
 }
 
+enum InitializationFinalBatch {
+    Checked(Vec<crate::objects::AuthenticatedCanonicalObject>),
+    Planned(Vec<crate::CanonicalObject>),
+}
+
 fn plan_single_initialization(
     db: &crate::schema::StoreDb,
     objects: &DeferredObjectStore,
-) -> Result<(Vec<crate::CanonicalObject>, crate::CandidateReceipt, u64)> {
+) -> Result<(InitializationFinalBatch, crate::CandidateReceipt, u64)> {
     let plan = db.plan_initialization_candidate(objects)?;
     let mut statement_number = 0;
     let admission = admit_initialization_objects(db, objects, &plan, &mut statement_number)?;
     Ok((
-        admission.final_batch,
+        InitializationFinalBatch::Planned(admission.final_batch),
         crate::CandidateReceipt {
             candidate_objects: plan.candidate_objects,
             candidate_bytes: plan.candidate_bytes,
@@ -559,7 +559,7 @@ struct FinishedAppendOnlyInitialization {
     root_id: layerfs_content::ObjectId,
     scanned_files: u64,
     scanned_bytes: u64,
-    final_batch: Vec<crate::CanonicalObject>,
+    final_batch: Vec<crate::objects::AuthenticatedCanonicalObject>,
     receipt: crate::CandidateReceipt,
     statement_number: u64,
     diagnostics: FastInitializationDiagnostics,

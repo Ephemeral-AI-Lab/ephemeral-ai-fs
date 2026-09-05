@@ -15,8 +15,8 @@ pub use error::{CoreError, CoreResult};
 pub use object::{
     authenticate_identity, decode_bytes_object, decode_object, decode_object_from,
     encode_bytes_object, encode_bytes_object_to, encode_object, encode_object_to,
-    validate_bytes_identity, validate_identity, validate_object_from, DirectoryEntry, Object,
-    ObjectKind, ObjectReference, ObjectSummary,
+    identify_canonical, validate_bytes_identity, validate_identity, validate_object_from,
+    DirectoryEntry, Object, ObjectKind, ObjectReference, ObjectSummary,
 };
 pub use object::{ChunkId, ObjectId};
 pub use tree::{CanonicalName, CanonicalPath};

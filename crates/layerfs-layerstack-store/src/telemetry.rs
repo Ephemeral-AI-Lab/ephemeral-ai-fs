@@ -116,6 +116,8 @@ pub struct WorkspaceCommitReceipt {
     pub object_admission_commit_ns: u64,
     /// Nested shared-consumer validation/sort costs; excluded from phase summation.
     pub object_admission_authentication_ns: u64,
+    /// Required selected-spill read authentication, including producer handoff.
+    pub object_admission_storage_authentication_ns: u64,
     pub object_admission_sort_ns: u64,
     /// Selected canonical bytes moved from candidate memory into admission pages.
     pub object_admission_memory_owned_bytes: u64,
@@ -540,6 +542,7 @@ pub(crate) fn note_workspace_output_pipeline(
 pub(crate) fn note_workspace_candidate_delivery(
     memory_owned_bytes: u64,
     spill_readback_bytes: u64,
+    storage_authentication_ns: u64,
 ) {
     WORKSPACE_COMMIT.with(|current| {
         if let Some(receipt) = current.borrow_mut().as_mut() {
@@ -550,6 +553,9 @@ pub(crate) fn note_workspace_candidate_delivery(
                 .object_admission_spill_readback_bytes
                 .saturating_add(spill_readback_bytes);
             receipt.object_admission_borrowed_copy_bytes = 0;
+            receipt.object_admission_storage_authentication_ns = receipt
+                .object_admission_storage_authentication_ns
+                .saturating_add(storage_authentication_ns);
         }
     });
 }

@@ -123,22 +123,41 @@ impl Clone for CanonicalObject {
 }
 
 pub(crate) struct FinalizedObjectSlab {
-    pub objects: Vec<CanonicalObject>,
+    pub objects: Vec<AuthenticatedCanonicalObject>,
     pub payload_bytes: usize,
 }
 
-struct AuthenticatedCanonicalObject {
-    id: ObjectId,
-    bytes: Vec<u8>,
-}
+/// Immutable ownership of bytes whose identity and complete outer framing were checked.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[repr(transparent)]
+pub(crate) struct AuthenticatedCanonicalObject(CanonicalObject);
 
+impl std::ops::Deref for AuthenticatedCanonicalObject {
+    type Target = CanonicalObject;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl AsRef<CanonicalObject> for AuthenticatedCanonicalObject {
+    fn as_ref(&self) -> &CanonicalObject {
+        &self.0
+    }
+}
+impl AsRef<CanonicalObject> for CanonicalObject {
+    fn as_ref(&self) -> &CanonicalObject {
+        self
+    }
+}
 impl AuthenticatedCanonicalObject {
     fn new(bytes: Vec<u8>, expected: Option<ObjectId>) -> CoreResult<Self> {
-        let id = ObjectId::for_bytes(&bytes);
-        if expected.is_some_and(|expected| expected != id) {
-            return Err(CoreError::IdentityMismatch);
-        }
-        Ok(Self { id, bytes })
+        let id = match expected {
+            Some(id) => {
+                layerfs_content::authenticate_identity(&bytes, id)?;
+                id
+            }
+            None => layerfs_content::identify_canonical(&bytes)?.0,
+        };
+        Ok(Self(CanonicalObject { id, bytes }))
     }
 }
 
@@ -217,6 +236,7 @@ impl ObjectStore for InitializationTaskObjectBuffer {
 pub(crate) struct OutputWriterMetrics {
     pub selected_memory_bytes: u64,
     pub selected_spill_bytes: u64,
+    pub selected_storage_authentication_ns: u64,
     pub handoffs: u64,
     pub objects: u64,
     pub payload_bytes: u64,
@@ -292,7 +312,7 @@ pub(crate) fn run_finalized_output<T: Send>(
     workers: usize,
     cancelled: &std::sync::atomic::AtomicBool,
     produce: impl Fn(usize, FinalizedOutputWriter) -> Result<T> + Sync,
-    mut consume: impl FnMut(Vec<CanonicalObject>) -> Result<()>,
+    mut consume: impl FnMut(Vec<AuthenticatedCanonicalObject>) -> Result<()>,
 ) -> Result<(Vec<T>, OutputPipelineMetrics)> {
     use std::sync::atomic::Ordering;
     let started = Instant::now();
@@ -366,7 +386,7 @@ pub(crate) fn run_finalized_output<T: Send>(
 pub struct FinalizedOutputWriter {
     sender: std::sync::mpsc::SyncSender<FinalizedObjectSlab>,
     queue: std::sync::Arc<OutputQueueMetrics>,
-    objects: Vec<CanonicalObject>,
+    objects: Vec<AuthenticatedCanonicalObject>,
     payload_bytes: usize,
     metrics: OutputWriterMetrics,
 }
@@ -393,19 +413,17 @@ impl<'admission, 'db> InitializationDirectAdmissionWriter<'admission, 'db> {
     }
 
     fn push_owned(&mut self, canonical: Vec<u8>, copied: bool) -> CoreResult<ObjectId> {
-        let id = ObjectId::for_bytes(&canonical);
+        let object = AuthenticatedCanonicalObject::new(canonical, None)?;
+        let id = object.id;
         self.metrics.canonical_hash_calls += 1;
-        let bytes = canonical.len() as u64;
+        let bytes = object.bytes.len() as u64;
         self.metrics.payload_capacity_bytes = self
             .metrics
             .payload_capacity_bytes
-            .saturating_add(canonical.capacity() as u64);
+            .saturating_add(object.bytes.capacity() as u64);
         self.admission
-            .observe_final_owned_bytes(self.transient_owned_bytes, canonical.capacity() as u64);
-        if let Err(error) = self.admission.admit_object(CanonicalObject {
-            id,
-            bytes: canonical,
-        }) {
+            .observe_final_owned_bytes(self.transient_owned_bytes, object.bytes.capacity() as u64);
+        if let Err(error) = self.admission.admit_object(object) {
             self.error = Some(error);
             return Err(CoreError::Io);
         }
@@ -455,7 +473,8 @@ impl FinalizedOutputWriter {
         }
     }
 
-    /// The caller must first select a completed root through ObjectBuffer::finish.
+    /// Accept only completed selected output from ObjectBuffer::finish or the
+    /// complete-file builder's established finality contract.
     pub fn send_selected(&mut self, objects: DeferredObjectStore) -> Result<()> {
         let bytes = objects.encoded_bytes();
         if matches!(objects.storage, DeferredObjects::Spill(_)) {
@@ -465,12 +484,17 @@ impl FinalizedOutputWriter {
             self.metrics.selected_memory_bytes =
                 self.metrics.selected_memory_bytes.saturating_add(bytes);
         }
-        objects.consume_prevalidated_pages(|page| {
+        let storage_authentication_ns = objects.consume_prevalidated_pages(|page| {
             for object in page {
                 self.push_object(object, false)?;
             }
             Ok(())
-        })
+        })?;
+        self.metrics.selected_storage_authentication_ns = self
+            .metrics
+            .selected_storage_authentication_ns
+            .saturating_add(storage_authentication_ns);
+        Ok(())
     }
 
     pub(crate) fn finish(mut self) -> Result<OutputWriterMetrics> {
@@ -513,29 +537,22 @@ impl FinalizedOutputWriter {
     }
 
     fn push_owned(&mut self, canonical: Vec<u8>, copied: bool) -> CoreResult<ObjectId> {
-        let id = ObjectId::for_bytes(&canonical);
+        let object = AuthenticatedCanonicalObject::new(canonical, None)?;
+        let id = object.id;
         self.metrics.canonical_hash_calls += 1;
-        self.push_object(
-            CanonicalObject {
-                id,
-                bytes: canonical,
-            },
-            copied,
-        )?;
+        self.push_object(object, copied)?;
         Ok(id)
     }
 
     fn push_authenticated(&mut self, object: AuthenticatedCanonicalObject) -> CoreResult<()> {
-        self.push_object(
-            CanonicalObject {
-                id: object.id,
-                bytes: object.bytes,
-            },
-            false,
-        )
+        self.push_object(object, false)
     }
 
-    fn push_object(&mut self, object: CanonicalObject, copied: bool) -> CoreResult<()> {
+    fn push_object(
+        &mut self,
+        object: AuthenticatedCanonicalObject,
+        copied: bool,
+    ) -> CoreResult<()> {
         let canonical = &object.bytes;
         if canonical.len() > INITIALIZATION_SLAB_BYTES {
             return Err(CoreError::ObjectLimitExceeded);
@@ -555,7 +572,7 @@ impl FinalizedOutputWriter {
         self.metrics.payload_capacity_bytes = self
             .metrics
             .payload_capacity_bytes
-            .saturating_add(canonical.capacity() as u64);
+            .saturating_add(object.bytes.capacity() as u64);
         if copied {
             self.metrics.candidate_copy_bytes = self
                 .metrics
@@ -887,7 +904,7 @@ impl Read for CountedFile {
 enum DeferredObjects {
     Memory {
         order: Vec<ObjectId>,
-        rows: BTreeMap<ObjectId, Vec<u8>>,
+        rows: BTreeMap<ObjectId, AuthenticatedCanonicalObject>,
         bytes: usize,
     },
     Spill(SpillObjects),
@@ -1775,7 +1792,7 @@ struct AdmissionBatchMetrics {
 
 pub(crate) struct CheckedOutputAdmission<'a> {
     db: &'a crate::schema::StoreDb,
-    batch: Vec<CanonicalObject>,
+    batch: Vec<AuthenticatedCanonicalObject>,
     pending: HashMap<ObjectId, usize>,
     batch_bytes: usize,
     statement_number: u64,
@@ -1786,7 +1803,7 @@ pub(crate) struct CheckedOutputAdmission<'a> {
 }
 
 pub(crate) struct FinishedOutputAdmission {
-    pub final_batch: Vec<CanonicalObject>,
+    pub final_batch: Vec<AuthenticatedCanonicalObject>,
     pub statement_number: u64,
     pub receipt: crate::CandidateReceipt,
     pub checked: CheckedAdmission,
@@ -1981,19 +1998,41 @@ impl DeferredObjectStore {
         visitor: &mut dyn FnMut(ObjectId, &[u8]) -> Result<()>,
     ) -> Result<()> {
         match &self.storage {
-            DeferredObjects::Memory { rows, .. } => {
-                order.visit(|id| visitor(id, rows.get(&id).ok_or(StoreError::MissingObject(id))?))
-            }
+            DeferredObjects::Memory { rows, .. } => order.visit(|id| {
+                visitor(
+                    id,
+                    &rows.get(&id).ok_or(StoreError::MissingObject(id))?.bytes,
+                )
+            }),
             DeferredObjects::Spill(spill) => {
                 spill.visit_ordered(order, &mut |id, bytes| visitor(id, bytes))
             }
         }
     }
 
+    fn visit_authenticated_order(
+        &self,
+        order: &IdOrder,
+        visitor: &mut dyn FnMut(&AuthenticatedCanonicalObject) -> Result<()>,
+    ) -> Result<()> {
+        match &self.storage {
+            DeferredObjects::Memory { rows, .. } => {
+                order.visit(|id| visitor(rows.get(&id).ok_or(StoreError::MissingObject(id))?))
+            }
+            DeferredObjects::Spill(spill) => spill.visit_ordered(order, &mut |id, bytes| {
+                let checked = AuthenticatedCanonicalObject::new(std::mem::take(bytes), Some(id))?;
+                let result = visitor(&checked);
+                *bytes = checked.0.bytes;
+                result
+            }),
+        }
+    }
+
+    // Returns required selected-spill authentication time; memory owners retain proof.
     fn consume_prevalidated_pages(
         mut self,
-        mut visitor: impl FnMut(Vec<CanonicalObject>) -> Result<()>,
-    ) -> Result<()> {
+        mut visitor: impl FnMut(Vec<AuthenticatedCanonicalObject>) -> Result<()>,
+    ) -> Result<u64> {
         // Admission publishes only after every selected object is durable; its
         // delivery order need not be the graph traversal's child-first order.
         if matches!(self.storage, DeferredObjects::Spill(_)) {
@@ -2004,13 +2043,14 @@ impl DeferredObjectStore {
         }
         let mut memory_owned_bytes = 0_u64;
         let mut spill_readback_bytes = 0_u64;
+        let mut storage_authentication_ns = 0_u64;
         let capacity = usize::try_from(self.count)
             .unwrap_or(INITIALIZATION_ADMISSION_BATCH_COUNT)
             .min(INITIALIZATION_ADMISSION_BATCH_COUNT);
         let page_limit = self.memory_limit.min(ADMISSION_BATCH_BYTES);
         let mut page = Vec::with_capacity(capacity);
         let mut page_bytes = 0_usize;
-        let mut push = |object: CanonicalObject| {
+        let mut push = |object: AuthenticatedCanonicalObject| {
             if object.bytes.len() > ADMISSION_BATCH_BYTES {
                 return Err(StoreError::Integrity("canonical object admission size"));
             }
@@ -2027,17 +2067,19 @@ impl DeferredObjectStore {
         };
         match &mut self.storage {
             DeferredObjects::Memory { rows, .. } => self.reachable.visit(|id| {
-                let bytes = rows.remove(&id).ok_or(StoreError::MissingObject(id))?;
-                memory_owned_bytes = memory_owned_bytes.saturating_add(bytes.len() as u64);
-                push(CanonicalObject { id, bytes })
+                let object = rows.remove(&id).ok_or(StoreError::MissingObject(id))?;
+                memory_owned_bytes = memory_owned_bytes.saturating_add(object.bytes.len() as u64);
+                push(object)
             })?,
             DeferredObjects::Spill(spill) => {
                 spill.visit_ordered(&self.reachable, &mut |id, bytes| {
                     spill_readback_bytes = spill_readback_bytes.saturating_add(bytes.len() as u64);
-                    push(CanonicalObject {
-                        id,
-                        bytes: std::mem::take(bytes),
-                    })
+                    let started = Instant::now();
+                    let object =
+                        AuthenticatedCanonicalObject::new(std::mem::take(bytes), Some(id))?;
+                    storage_authentication_ns =
+                        storage_authentication_ns.saturating_add(elapsed_ns(started));
+                    push(object)
                 })?;
             }
         }
@@ -2047,8 +2089,9 @@ impl DeferredObjectStore {
         crate::telemetry::note_workspace_candidate_delivery(
             memory_owned_bytes,
             spill_readback_bytes,
+            storage_authentication_ns,
         );
-        Ok(())
+        Ok(storage_authentication_ns)
     }
 
     pub fn visit_batches(
@@ -2174,7 +2217,9 @@ impl DeferredObjectStore {
 
     fn get(&self, id: ObjectId) -> Result<Option<Vec<u8>>> {
         match &self.storage {
-            DeferredObjects::Memory { rows, .. } => Ok(rows.get(&id).cloned()),
+            DeferredObjects::Memory { rows, .. } => {
+                Ok(rows.get(&id).map(|object| object.bytes.clone()))
+            }
             DeferredObjects::Spill(spill) => spill.get(id),
         }
     }
@@ -2183,7 +2228,7 @@ impl DeferredObjectStore {
         match &self.storage {
             DeferredObjects::Memory { rows, .. } => rows
                 .get(&id)
-                .map(|bytes| bytes.len() as u64)
+                .map(|object| object.bytes.len() as u64)
                 .ok_or(StoreError::MissingObject(id)),
             DeferredObjects::Spill(spill) => spill.encoded_length(id),
         }
@@ -2191,36 +2236,32 @@ impl DeferredObjectStore {
 
     #[cfg(test)]
     fn put(&mut self, id: ObjectId, canonical: &[u8]) -> Result<()> {
-        layerfs_content::authenticate_identity(canonical, id)?;
-        self.put_prevalidated(id, canonical)
+        self.put_authenticated(AuthenticatedCanonicalObject::new(
+            canonical.to_vec(),
+            Some(id),
+        )?)
     }
 
-    fn put_prevalidated(&mut self, id: ObjectId, canonical: &[u8]) -> Result<()> {
-        self.put_owned(id, canonical.to_vec())
-    }
-
-    fn put_owned(&mut self, id: ObjectId, canonical: Vec<u8>) -> Result<()> {
-        let known = match &self.storage {
-            DeferredObjects::Memory { rows, .. } => rows.get(&id).cloned(),
-            DeferredObjects::Spill(_) => self.get(id)?,
-        };
-        if let Some(known) = known {
-            return if known == canonical {
+    fn put_authenticated(&mut self, object: AuthenticatedCanonicalObject) -> Result<()> {
+        let id = object.id;
+        if let Some(known) = self.get(id)? {
+            return if known == object.bytes {
                 Ok(())
             } else {
                 Err(StoreError::Integrity("candidate object collision"))
             };
         }
-        let length = canonical.len();
+        let length = object.bytes.len();
         let children = if self.references.is_some() {
-            let mut children = referenced_objects(&canonical)?;
+            let mut children = referenced_objects(&object.bytes)?;
             children.sort();
             children.dedup();
             Some(children)
         } else {
             None
         };
-        let charge = length.saturating_add(64);
+        // The checked owner retains its identity alongside the existing index key.
+        let charge = length.saturating_add(64 + std::mem::size_of::<ObjectId>());
         if matches!(&self.storage, DeferredObjects::Memory { bytes, .. } if bytes.saturating_add(charge) > self.memory_limit)
         {
             self.spill()?;
@@ -2228,10 +2269,10 @@ impl DeferredObjectStore {
         match &mut self.storage {
             DeferredObjects::Memory { order, rows, bytes } => {
                 order.push(id);
-                rows.insert(id, canonical);
+                rows.insert(id, object);
                 *bytes += charge;
             }
-            DeferredObjects::Spill(spill) => spill.put(id, &canonical)?,
+            DeferredObjects::Spill(spill) => spill.put(id, &object.bytes)?,
         }
         self.reachable.push(id)?;
         self.count += 1;
@@ -2281,8 +2322,10 @@ impl DeferredObjectStore {
         for id in order {
             spill.put(
                 id,
-                rows.get(&id)
-                    .ok_or(StoreError::Integrity("candidate object"))?,
+                &rows
+                    .get(&id)
+                    .ok_or(StoreError::Integrity("candidate object"))?
+                    .bytes,
             )?;
         }
         self.storage = DeferredObjects::Spill(spill);
@@ -2708,8 +2751,8 @@ impl<'a> ObjectBuffer<'a> {
     }
 
     pub fn merge_prevalidated(&mut self, objects: DeferredObjectStore) -> Result<()> {
-        objects.visit_prevalidated_order(&objects.reachable, &mut |id, bytes| {
-            self.objects.put_prevalidated(id, bytes)
+        objects.visit_authenticated_order(&objects.reachable, &mut |object| {
+            self.objects.put_authenticated(object.clone())
         })
     }
 }
@@ -2726,17 +2769,14 @@ impl ObjectStore for ObjectBuffer<'_> {
     }
 
     fn put(&mut self, canonical: &[u8]) -> CoreResult<ObjectId> {
-        let id = ObjectId::for_bytes(canonical);
-        self.objects
-            .put_prevalidated(id, canonical)
-            .map_err(|_| CoreError::Io)?;
-        Ok(id)
+        self.put_owned(canonical.to_vec())
     }
 
     fn put_owned(&mut self, canonical: Vec<u8>) -> CoreResult<ObjectId> {
-        let id = ObjectId::for_bytes(&canonical);
+        let object = AuthenticatedCanonicalObject::new(canonical, None)?;
+        let id = object.id;
         self.objects
-            .put_owned(id, canonical)
+            .put_authenticated(object)
             .map_err(|_| CoreError::Io)?;
         Ok(id)
     }
@@ -2777,11 +2817,8 @@ pub(crate) fn combine_candidates(
 ) -> Result<DeferredObjectStore> {
     let mut combined = DeferredObjectStore::new()?;
     for candidate in candidates {
-        candidate.visit_batches(&mut |batch, _| {
-            for object in batch {
-                combined.put_prevalidated(object.id, &object.bytes)?;
-            }
-            Ok(())
+        candidate.visit_authenticated_order(&candidate.reachable, &mut |object| {
+            combined.put_authenticated(object.clone())
         })?;
     }
     combined.reachable_from(root_id)
@@ -3069,10 +3106,12 @@ impl<'a> CheckedOutputAdmission<'a> {
 
     #[cfg(test)]
     fn admit(&mut self, objects: DeferredObjectStore) -> Result<()> {
-        objects.consume_prevalidated_pages(|page| self.admit_page(page))
+        objects
+            .consume_prevalidated_pages(|page| self.admit_page(page))
+            .map(|_| ())
     }
 
-    pub(crate) fn admit_page(&mut self, page: Vec<CanonicalObject>) -> Result<()> {
+    pub(crate) fn admit_page(&mut self, page: Vec<AuthenticatedCanonicalObject>) -> Result<()> {
         for object in page {
             self.admit_object(object)?;
         }
@@ -3081,7 +3120,7 @@ impl<'a> CheckedOutputAdmission<'a> {
 
     fn admit_unique_page(
         &mut self,
-        page: Vec<CanonicalObject>,
+        page: Vec<AuthenticatedCanonicalObject>,
         seen: &mut SpillableObjectSet,
     ) -> Result<()> {
         let mut duplicates = Vec::new();
@@ -3107,7 +3146,7 @@ impl<'a> CheckedOutputAdmission<'a> {
         self.check_flushed_duplicates(&duplicates)
     }
 
-    fn check_flushed_duplicates(&self, duplicates: &[CanonicalObject]) -> Result<()> {
+    fn check_flushed_duplicates(&self, duplicates: &[AuthenticatedCanonicalObject]) -> Result<()> {
         if duplicates.is_empty() {
             return Ok(());
         }
@@ -3126,7 +3165,7 @@ impl<'a> CheckedOutputAdmission<'a> {
         Ok(())
     }
 
-    pub(crate) fn admit_object(&mut self, object: CanonicalObject) -> Result<()> {
+    pub(crate) fn admit_object(&mut self, object: AuthenticatedCanonicalObject) -> Result<()> {
         if let Some(&index) = self.pending.get(&object.id) {
             return self.admit_duplicate(index, &object.bytes);
         }
@@ -3146,7 +3185,7 @@ impl<'a> CheckedOutputAdmission<'a> {
         Ok(())
     }
 
-    fn push_pending(&mut self, object: CanonicalObject) -> Result<()> {
+    fn push_pending(&mut self, object: AuthenticatedCanonicalObject) -> Result<()> {
         if object.bytes.len() > ADMISSION_BATCH_BYTES {
             return Err(StoreError::Integrity("canonical object admission size"));
         }
@@ -3306,6 +3345,7 @@ impl crate::LayerStackStore {
         crate::telemetry::note_workspace_candidate_delivery(
             writer.selected_memory_bytes,
             writer.selected_spill_bytes,
+            writer.selected_storage_authentication_ns,
         );
         crate::telemetry::note_workspace_output_pipeline(
             pipeline.wall_ns,
@@ -3499,7 +3539,7 @@ fn insert_admission_batch(
 
 fn consume_checked_owned_page(
     db: &crate::schema::StoreDb,
-    mut batch: Vec<CanonicalObject>,
+    mut batch: Vec<AuthenticatedCanonicalObject>,
     statement_number: &mut u64,
 ) -> Result<AdmissionBatchMetrics> {
     if batch.len() > ADMISSION_BATCH_COUNT
@@ -3510,14 +3550,8 @@ fn consume_checked_owned_page(
     let sort_started = Instant::now();
     batch.sort_unstable_by_key(|object| object.id);
     let sort_ns = elapsed_ns(sort_started);
-    let authentication_started = Instant::now();
-    for object in &batch {
-        layerfs_content::authenticate_identity(&object.bytes, object.id)?;
-    }
-    crate::telemetry::note_workspace_admission_validation(
-        elapsed_ns(authentication_started),
-        sort_ns,
-    );
+    // Fresh storage reads create a new checked owner; immutable memory retains it.
+    crate::telemetry::note_workspace_admission_validation(0, sort_ns);
     let begin_started = Instant::now();
     let mut connection = db.writer()?;
     let transaction =
@@ -3617,18 +3651,18 @@ pub(crate) fn insert_initialization_object_batch(
     })
 }
 
-pub(crate) fn insert_initialization_segment_batch(
+pub(crate) fn insert_initialization_segment_batch<T: AsRef<CanonicalObject>>(
     transaction: &rusqlite::Transaction<'_>,
-    objects: &[CanonicalObject],
+    objects: &[T],
     statement_number: &mut u64,
 ) -> Result<ObjectInsertMetrics> {
     insert_checked_object_batch(transaction, objects, statement_number, &mut |_| {})
 }
 
 // Outcomes are provisional until the caller commits its transaction.
-pub(crate) fn insert_checked_object_batch(
+pub(crate) fn insert_checked_object_batch<T: AsRef<CanonicalObject>>(
     transaction: &rusqlite::Transaction<'_>,
-    objects: &[CanonicalObject],
+    objects: &[T],
     statement_number: &mut u64,
     outcome: &mut dyn FnMut(bool),
 ) -> Result<ObjectInsertMetrics> {
@@ -3648,6 +3682,7 @@ pub(crate) fn insert_checked_object_batch(
     let mut inserted_bytes = 0_u64;
     let mut skipped = Vec::new();
     for object in objects {
+        let object = object.as_ref();
         if statement.execute(rusqlite::params![
             object.id.as_bytes().as_slice(),
             object.bytes.as_slice()
@@ -3850,10 +3885,7 @@ mod tests {
         let objects = (0..300_u64)
             .map(|index| {
                 let bytes = layerfs_content::encode_bytes_object(&index.to_le_bytes()).unwrap();
-                CanonicalObject {
-                    id: ObjectId::for_bytes(&bytes),
-                    bytes,
-                }
+                AuthenticatedCanonicalObject::new(bytes, None).unwrap()
             })
             .collect::<Vec<_>>();
         admission
@@ -3882,7 +3914,9 @@ mod tests {
             (300, 300, 0)
         );
         let mut corrupt = objects[0].clone();
-        corrupt.bytes = objects[1].bytes.clone();
+        // Deliberately violate the private invariant to exercise exact conflict comparison.
+        // Production owners expose no mutable bytes.
+        corrupt.0.bytes = objects[1].bytes.clone();
         assert!(matches!(
             admission.admit_unique_page(vec![corrupt], &mut seen),
             Err(StoreError::Integrity("object collision"))
@@ -3914,13 +3948,8 @@ mod tests {
                             break;
                         }
                         let bytes = layerfs_content::encode_bytes_object(b"selected").unwrap();
-                        writer.push_object(
-                            CanonicalObject {
-                                id: ObjectId::for_bytes(&bytes),
-                                bytes,
-                            },
-                            false,
-                        )?;
+                        writer
+                            .push_object(AuthenticatedCanonicalObject::new(bytes, None)?, false)?;
                         writer.flush()?;
                         if producer_fails && index == 0 {
                             return Err(StoreError::Integrity("test producer failure"));
@@ -4009,9 +4038,67 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn owned_delivery_authenticates_fresh_spill_before_handoff() {
+        use std::os::unix::fs::FileExt;
+        let mut buffer = ObjectBuffer::empty().unwrap();
+        let root = buffer
+            .put_owned(layerfs_content::encode_bytes_object(b"spill witness").unwrap())
+            .unwrap();
+        buffer.objects.spill().unwrap();
+        let (writer, offset) = match &buffer.objects.storage {
+            DeferredObjects::Spill(spill) => (
+                spill.writer.as_ref().unwrap().try_clone().unwrap(),
+                spill.location(root).unwrap().unwrap().0,
+            ),
+            _ => panic!("forced payload spill"),
+        };
+        let built = buffer.finish(root, 0).unwrap();
+        // Simulate corruption through a test-only descriptor retained before seal.
+        writer.write_all_at(&[0xff], offset + 9).unwrap();
+        let mut handed_off = 0;
+        assert!(built
+            .objects
+            .consume_prevalidated_pages(|page| {
+                handed_off += page.len();
+                Ok(())
+            })
+            .is_err());
+        assert_eq!(handed_off, 0);
+    }
+
+    #[test]
+    fn checked_owned_output_requires_complete_framing_and_identity() {
+        let canonical = layerfs_content::encode_bytes_object(b"checked owner").unwrap();
+        let owner = AuthenticatedCanonicalObject::new(canonical.clone(), None).unwrap();
+        assert_eq!(owner.id, ObjectId::for_bytes(&canonical));
+        assert_eq!(
+            std::mem::size_of::<AuthenticatedCanonicalObject>(),
+            std::mem::size_of::<CanonicalObject>()
+        );
+        assert!(matches!(
+            AuthenticatedCanonicalObject::new(
+                canonical.clone(),
+                Some(ObjectId::for_bytes(b"wrong"))
+            ),
+            Err(CoreError::IdentityMismatch)
+        ));
+        for invalid in [
+            canonical[..8].to_vec(),
+            [canonical.as_slice(), &[0]].concat(),
+            b"unframed".to_vec(),
+        ] {
+            let expected = ObjectId::for_bytes(&invalid);
+            assert!(AuthenticatedCanonicalObject::new(invalid.clone(), None).is_err());
+            assert!(AuthenticatedCanonicalObject::new(invalid, Some(expected)).is_err());
+        }
+    }
+
     #[test]
     fn structural_handoff_identity_is_fixed_at_buffer_insertion() {
-        let bytes = b"authenticated structural object".to_vec();
+        let bytes =
+            layerfs_content::encode_bytes_object(b"authenticated structural object").unwrap();
         let expected = ObjectId::for_bytes(&bytes);
         let wrong = ObjectId::for_bytes(b"different structural object");
         assert!(matches!(
@@ -4094,7 +4181,7 @@ mod tests {
         let mut segment = DeferredObjectStore::new_all_reachable().unwrap();
         segment.put(id, &bytes).unwrap();
         let original = match &segment.storage {
-            DeferredObjects::Memory { rows, .. } => rows.get(&id).unwrap().as_ptr(),
+            DeferredObjects::Memory { rows, .. } => rows.get(&id).unwrap().bytes.as_ptr(),
             DeferredObjects::Spill(_) => panic!("small segment spilled"),
         };
         segment
@@ -4387,7 +4474,10 @@ mod tests {
             (count, written)
         );
         assert!(matches!(
-            objects.put_owned(ids[0], canonical[1].clone()),
+            objects.put_authenticated(AuthenticatedCanonicalObject(CanonicalObject {
+                id: ids[0],
+                bytes: canonical[1].clone()
+            })),
             Err(StoreError::Integrity("candidate object collision"))
         ));
         let objects = objects.all_reachable().unwrap();

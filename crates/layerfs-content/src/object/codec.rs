@@ -164,6 +164,16 @@ pub fn authenticate_identity(bytes: &[u8], expected: ObjectId) -> CoreResult<Obj
     if ObjectId::for_bytes(bytes) != expected {
         return Err(CoreError::IdentityMismatch);
     }
+    authenticate_framing(bytes)
+}
+
+/// Computes identity and validates complete outer framing in one pass.
+pub fn identify_canonical(bytes: &[u8]) -> CoreResult<(ObjectId, ObjectSummary)> {
+    let id = ObjectId::for_bytes(bytes);
+    Ok((id, authenticate_framing(bytes)?))
+}
+
+fn authenticate_framing(bytes: &[u8]) -> CoreResult<ObjectSummary> {
     if bytes.len() > MAX_OBJECT_BYTES {
         return Err(CoreError::ObjectLimitExceeded);
     }
@@ -518,6 +528,22 @@ mod tests {
             buffer[..length].copy_from_slice(&self.bytes[self.position..self.position + length]);
             self.position += length;
             Ok(length)
+        }
+    }
+
+    #[test]
+    fn assigned_identity_and_expected_identity_share_framing_validation() {
+        let bytes = encode_bytes_object(b"validated framing").unwrap();
+        let (id, summary) = identify_canonical(&bytes).unwrap();
+        assert_eq!(id, ObjectId::for_bytes(&bytes));
+        assert_eq!(summary, authenticate_identity(&bytes, id).unwrap());
+        for invalid in [bytes[..8].to_vec(), [bytes.as_slice(), &[0]].concat()] {
+            assert!(identify_canonical(&invalid).is_err());
+            assert!(authenticate_identity(&invalid, ObjectId::for_bytes(&invalid)).is_err());
+            assert!(matches!(
+                authenticate_identity(&invalid, id),
+                Err(CoreError::IdentityMismatch)
+            ));
         }
     }
 
