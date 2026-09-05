@@ -231,3 +231,58 @@ Producing identities:
 - input_identity: `4f10c2489f344103bab40c75b9f233cb7ce6af443318c7f016814d835ba33de9`
 
 Host topology/container limits validated, protected preparation reused and master unchanged, cleanup PASS, no OOM/swap. Linux container lifetime peak 41,172,992 bytes. Host process peak RSS 122,552,320 bytes (previous single sample 142,573,568); RSS sampler peak 122,109,952, 1,506 samples, maximum sample gap 14,071,500 ns. These are individual observations, not a statistical distribution. Both original full-lifecycle subsecond targets remain unqualified, and final independent proofs remain deferred.
+
+## Attempt 6 — coalesced final-record handoff, create-100
+
+Original create-100 / seed1 on `d09cc7dd7`, complete lifecycle **TARGET_MISS**, `17126516710 ns`; Commit `772030417 ns`. Receipt and strict assessment: `benchmark-results/host-store/results/issue47-final-records-create100/`. One selected sample, protected preparation reused unchanged, no independent proof. The <=300ms exploration objective remains unmet.
+
+- create: 9563959 ns
+- exec: 16308660709 ns
+- commit: 772030417 ns
+- visibility: 82541 ns
+- end: 36179084 ns
+
+Measured Commit detail:
+
+- content_ns: 579296458
+- namespace_ns: 58928084
+- candidate_finish_ns: 26390250
+- object_admission_ns: 78753583
+- checkpoint_ns: 19332750
+- spool_retirement_ns: 3723292
+- spool_retirement_scan_ns: 3493
+- spool_retired_segments: 101
+- snapshot_database_calls: 11
+- object_admission_spill_readback_bytes: 4256258
+- object_admission_memory_owned_bytes: 109178189
+- object_admission_borrowed_copy_bytes: 0
+- output_pipeline_ns: 480500250
+- output_admission_ns: 332000194
+- output_blocked_ns: 213946792
+- output_consumer_idle_ns: 157011998
+- output_queue_peak_bytes: 1048576
+- spool_write_open_count: 101
+- spool_write_ns: 179983171
+- workspace_fence_ns: 192292
+- candidate_objects: 82762
+- candidate_bytes: 113434447
+- inserted_objects: 81931
+- inserted_bytes: 112321855
+- reused_objects: 831
+- reused_bytes: 1112592
+
+Namespace/final-record time decreased from269,526,667 to58,928,084 ns. The content-labelled phase's work outside the pipeline decreased from169,054,415 to98,796,208 ns. Final selection and remaining structural admission were26,390,250 and78,753,583 ns. These observations support eliminating per-record journal I/O and the checkpoint lookup pass; they do not attribute Exec variation to this slice.
+
+Candidate/inserted/reused object and byte totals are unchanged from attempts4–5. Owned selected memory delivery remains109,178,189 bytes and selected spill readback4,256,258 bytes. All101segments and104,857,600 retained bytes are retired by Commit. Retirement was3,723,292 ns, including3,493 ns in retain-predicate bookkeeping; the3,719,799 ns remainder includes owner drop/physical close, physical accounting and map iteration, not only a close syscall. Retain the earlier2.6ms and90.4ms observations unchanged.
+
+Replan: retain this substantive finalization gain. The shared pipeline now dominates at480,500,250 ns, including332,000,194 ns consumer work; producer blocked time213,946,792 ns and consumer idle time157,011,998 ns overlap other timers. Next target is exact consumer membership/ownership handling and batched duplicate equality reads; do not increase producer count before reducing consumer service time. Delete still requires a new measurement after its shared record/reference work changes; no gains are assigned to its retained460ms result from this create sample.
+
+Producing identities:
+
+- source_identity: `a76e6d9fbbc93abe18e41fad0d16f1e008a569be478b6d24fd390d68ddc75920`
+- product_identity: `7187d124792e1e30648f63e605787b3687c1a76bc8a0494d9882fd97e4e5d171`
+- image: `sha256:738e367096503caa76b37af996604d70f852cbd204a1dcb514569cd3d3e4bd22`
+- harness_identity: `c3610164231c40bfa3e77c27e5c1526b5e9656c046c9e382d095b0d6c75d1abc`
+- input_identity: `72327bbcd5d3abb037aea79c02445706971d2ad8a56cb3e5eb960f58d0ce39b9`
+
+Cleanup PASS; no OOM/swap; Linux container lifetime peak 41717760 bytes. Host SQLite, no data mounts, 2CPU/2GiB container limits and120s/130s timing allowances preserved. No full-lifecycle qualification or independent proof.
