@@ -1795,7 +1795,10 @@ pub(crate) struct FinishedOutputAdmission {
 
 enum SeenStorage {
     Memory(BTreeSet<ObjectId>),
-    Spill { file: std::fs::File, path: TempPath },
+    Spill {
+        connection: Mutex<Connection>,
+        _path: TempPath,
+    },
 }
 
 impl SpillableObjectSet {
@@ -1809,44 +1812,78 @@ impl SpillableObjectSet {
     pub fn contains(&self, id: ObjectId) -> Result<bool> {
         match &self.storage {
             SeenStorage::Memory(ids) => Ok(ids.contains(&id)),
-            SeenStorage::Spill { path, .. } => scan_id_file(&path.0, id),
+            SeenStorage::Spill { connection, .. } => {
+                let connection = connection
+                    .lock()
+                    .map_err(|_| StoreError::Integrity("candidate seen index"))?;
+                let found = connection
+                    .prepare_cached("SELECT 1 FROM seen WHERE id=?1")?
+                    .exists([id.as_bytes().as_slice()])?;
+                Ok(found)
+            }
         }
+    }
+
+    fn spill(&mut self) -> Result<()> {
+        let SeenStorage::Memory(known) = &self.storage else {
+            return Ok(());
+        };
+        let (mut connection, path) = scratch_index(
+            "candidate-seen",
+            "CREATE TABLE seen (id BLOB PRIMARY KEY CHECK(length(id)=32)) WITHOUT ROWID;",
+        )?;
+        let mut ids = known.iter();
+        loop {
+            let transaction = connection.transaction()?;
+            let mut count = 0;
+            {
+                let mut insert = transaction.prepare_cached("INSERT INTO seen VALUES (?1)")?;
+                for id in ids.by_ref().take(ADMISSION_BATCH_COUNT) {
+                    insert.execute([id.as_bytes().as_slice()])?;
+                    count += 1;
+                }
+            }
+            transaction.commit()?;
+            if count < ADMISSION_BATCH_COUNT {
+                break;
+            }
+        }
+        // Publish only after the derived index is complete; errors retain the old set.
+        self.storage = SeenStorage::Spill {
+            connection: Mutex::new(connection),
+            _path: path,
+        };
+        Ok(())
+    }
+
+    fn insert(&mut self, id: ObjectId) -> Result<bool> {
+        // Reserve the existing 4 MiB SQLite cache during the memory-to-index transfer.
+        if matches!(&self.storage, SeenStorage::Memory(_) if (self.count + 1) * 48 > CANDIDATE_INDEX_BYTES - 4 * 1024 * 1024)
+            && !self.contains(id)?
+        {
+            self.spill()?;
+        }
+        let inserted = match &mut self.storage {
+            SeenStorage::Memory(ids) => ids.insert(id),
+            SeenStorage::Spill { connection, .. } => {
+                connection
+                    .get_mut()
+                    .map_err(|_| StoreError::Integrity("candidate seen index"))?
+                    .prepare_cached("INSERT OR IGNORE INTO seen VALUES (?1)")?
+                    .execute([id.as_bytes().as_slice()])?
+                    != 0
+            }
+        };
+        self.count += usize::from(inserted);
+        Ok(inserted)
     }
 
     pub fn insert_page(&mut self, ids: &[ObjectId]) -> Result<Vec<ObjectId>> {
         let mut inserted = Vec::new();
-        for id in ids {
-            if self.contains(*id)? {
-                continue;
+        for &id in ids {
+            if self.insert(id)? {
+                inserted.push(id);
             }
-            if matches!(&self.storage, SeenStorage::Memory(_) if (self.count + 1) * 48 > CANDIDATE_INDEX_BYTES)
-            {
-                let SeenStorage::Memory(known) =
-                    std::mem::replace(&mut self.storage, SeenStorage::Memory(BTreeSet::new()))
-                else {
-                    unreachable!()
-                };
-                let (mut file, path) = temporary_file("candidate-seen")?;
-                for known in known {
-                    file.write_all(known.as_bytes())?;
-                }
-                self.storage = SeenStorage::Spill {
-                    file,
-                    path: TempPath(path),
-                };
-            }
-            match &mut self.storage {
-                SeenStorage::Memory(known) => {
-                    known.insert(*id);
-                }
-                SeenStorage::Spill { file, .. } => {
-                    // ponytail: exact spill fallback is O(n²); add a bounded on-disk hash
-                    // index only if candidate-ID counts make this measurable.
-                    file.write_all(id.as_bytes())?;
-                }
-            }
-            self.count += 1;
-            inserted.push(*id);
         }
         Ok(inserted)
     }
@@ -2450,19 +2487,26 @@ impl SpillObjects {
     }
 }
 
+fn scratch_index(label: &str, schema: &str) -> Result<(Connection, TempPath)> {
+    let (temporary, path) = temporary_file(label)?;
+    let path = TempPath(path);
+    drop(temporary);
+    let connection = Connection::open(&path.0)?;
+    // Derived private scratch, with the same bounded cache and no Store policy changes.
+    connection.execute_batch(
+        "PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;
+        PRAGMA temp_store=FILE; PRAGMA cache_size=-4096; PRAGMA cache_spill=ON;
+        PRAGMA mmap_size=0; PRAGMA locking_mode=EXCLUSIVE;",
+    )?;
+    connection.execute_batch(schema)?;
+    Ok((connection, path))
+}
+
 impl SpillDiskIndex {
     fn from_spill(file: &mut std::fs::File, end: u64) -> Result<Self> {
-        let (temporary, path) = temporary_file("candidate-index")?;
-        let path = TempPath(path);
-        drop(temporary);
-        let mut connection = Connection::open(&path.0)?;
-        // Derived, private scratch state: no persistent Store policy changes.
-        // Disk spilling and bounded transactions avoid retaining the index in RAM.
-        connection.execute_batch(
-            "PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;
-            PRAGMA temp_store=FILE; PRAGMA cache_size=-4096; PRAGMA cache_spill=ON;
-            PRAGMA mmap_size=0; PRAGMA locking_mode=EXCLUSIVE;
-            CREATE TABLE offsets (id BLOB PRIMARY KEY CHECK(length(id)=32),
+        let (mut connection, path) = scratch_index(
+            "candidate-index",
+            "CREATE TABLE offsets (id BLOB PRIMARY KEY CHECK(length(id)=32),
                 offset INTEGER NOT NULL CHECK(offset>=0),
                 length INTEGER NOT NULL CHECK(length>=0)) WITHOUT ROWID;",
         )?;
@@ -2751,19 +2795,6 @@ fn elapsed_ns(started: Instant) -> u64 {
     started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64
 }
 
-fn scan_id_file(path: &std::path::Path, id: ObjectId) -> Result<bool> {
-    let mut file = std::fs::File::open(path)?;
-    let mut bytes = [0; 32];
-    loop {
-        match file.read_exact(&mut bytes) {
-            Ok(()) if bytes == *id.as_bytes() => return Ok(true),
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(false),
-            Err(error) => return Err(error.into()),
-        }
-    }
-}
-
 impl crate::schema::StoreDb {
     pub fn read_object_row(&self, id: ObjectId) -> Result<Vec<u8>> {
         let connection = self.reader()?;
@@ -3032,33 +3063,56 @@ impl<'a> CheckedOutputAdmission<'a> {
         page: Vec<CanonicalObject>,
         seen: &mut SpillableObjectSet,
     ) -> Result<()> {
+        let mut duplicates = Vec::new();
+        let mut duplicate_bytes = 0;
         for object in page {
-            if self.pending.contains_key(&object.id) {
-                self.admit_duplicate(object.id, &object.bytes)?;
-            } else if seen.contains(object.id)? {
-                if self.db.read_object_row(object.id)? != object.bytes {
-                    return Err(StoreError::Integrity("object collision"));
-                }
+            if let Some(&index) = self.pending.get(&object.id) {
+                self.admit_duplicate(index, &object.bytes)?;
+            } else if seen.insert(object.id)? {
+                self.push_pending(object)?;
             } else {
-                seen.insert_page(&[object.id])?;
-                self.admit_object(object)?;
+                if !duplicates.is_empty()
+                    && (duplicates.len() == OBJECT_PAGE_COUNT
+                        || duplicate_bytes + object.bytes.len() > INITIALIZATION_SLAB_BYTES)
+                {
+                    self.check_flushed_duplicates(&duplicates)?;
+                    duplicates.clear();
+                    duplicate_bytes = 0;
+                }
+                duplicate_bytes += object.bytes.len();
+                duplicates.push(object);
             }
+        }
+        self.check_flushed_duplicates(&duplicates)
+    }
+
+    fn check_flushed_duplicates(&self, duplicates: &[CanonicalObject]) -> Result<()> {
+        if duplicates.is_empty() {
+            return Ok(());
+        }
+        let ids = duplicates
+            .iter()
+            .map(|object| object.id)
+            .collect::<Vec<_>>();
+        let durable = self.db.read_object_rows(&ids)?;
+        if durable
+            .iter()
+            .zip(duplicates)
+            .any(|(stored, supplied)| stored.bytes != supplied.bytes)
+        {
+            return Err(StoreError::Integrity("object collision"));
         }
         Ok(())
     }
 
     pub(crate) fn admit_object(&mut self, object: CanonicalObject) -> Result<()> {
-        if self.pending.contains_key(&object.id) {
-            return self.admit_duplicate(object.id, &object.bytes);
+        if let Some(&index) = self.pending.get(&object.id) {
+            return self.admit_duplicate(index, &object.bytes);
         }
         self.push_pending(object)
     }
 
-    fn admit_duplicate(&mut self, id: ObjectId, bytes: &[u8]) -> Result<()> {
-        let index = *self
-            .pending
-            .get(&id)
-            .ok_or(StoreError::Integrity("pending initialization object"))?;
+    fn admit_duplicate(&mut self, index: usize, bytes: &[u8]) -> Result<()> {
         self.diagnostics.collision_checks += 1;
         if self.batch[index].bytes != bytes {
             return Err(StoreError::Integrity("object collision"));
@@ -3643,6 +3697,103 @@ impl ObjectSource for crate::schema::StoreDb {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seen_index_spill_preserves_exact_membership_and_private_cleanup() {
+        let ids = [b"first".as_slice(), b"second", b"third"].map(ObjectId::for_bytes);
+        let mut seen = SpillableObjectSet::empty().unwrap();
+        assert_eq!(seen.insert_page(&ids[..2]).unwrap(), ids[..2]);
+        seen.spill().unwrap();
+        let path = match &seen.storage {
+            SeenStorage::Spill { connection, _path } => {
+                let connection = connection.lock().unwrap();
+                let plan: String = connection
+                    .query_row(
+                        "EXPLAIN QUERY PLAN SELECT 1 FROM seen WHERE id=?1",
+                        [ids[0].as_bytes().as_slice()],
+                        |row| row.get(3),
+                    )
+                    .unwrap();
+                assert!(plan.contains("SEARCH") && plan.contains("PRIMARY KEY"));
+                assert_eq!(
+                    connection
+                        .pragma_query_value::<i64, _>(None, "cache_size", |row| row.get(0))
+                        .unwrap(),
+                    -4096
+                );
+                _path.0.clone()
+            }
+            _ => panic!("forced seen spill"),
+        };
+        assert!(seen.contains(ids[0]).unwrap());
+        assert!(!seen.contains(ids[2]).unwrap());
+        assert_eq!(
+            seen.insert_page(&[ids[1], ids[2], ids[2]]).unwrap(),
+            [ids[2]]
+        );
+        assert_eq!(seen.count, 3);
+        drop(seen);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn consumer_batches_flushed_duplicate_checks_without_recounting() {
+        let root = std::env::temp_dir().join(format!(
+            "layerfs-duplicate-pages-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = crate::schema::StoreDb::create(root.join("store.sqlite")).unwrap();
+        let mut admission = CheckedOutputAdmission::new(&db).unwrap();
+        let mut seen = SpillableObjectSet::empty().unwrap();
+        let objects = (0..300_u64)
+            .map(|index| {
+                let bytes = layerfs_content::encode_bytes_object(&index.to_le_bytes()).unwrap();
+                CanonicalObject {
+                    id: ObjectId::for_bytes(&bytes),
+                    bytes,
+                }
+            })
+            .collect::<Vec<_>>();
+        admission
+            .admit_unique_page(objects.clone(), &mut seen)
+            .unwrap();
+        admission.flush_batch().unwrap();
+        #[cfg(feature = "test-instrumentation")]
+        crate::schema::reset_sql_trace();
+        admission
+            .admit_unique_page(objects.iter().rev().cloned().collect(), &mut seen)
+            .unwrap();
+        #[cfg(feature = "test-instrumentation")]
+        assert_eq!(
+            crate::schema::sql_trace()
+                .iter()
+                .filter(|sql| sql.contains("WHERE object_id IN ("))
+                .count(),
+            3
+        );
+        assert_eq!(
+            (
+                admission.checked.candidate_objects,
+                admission.checked.inserted_objects,
+                admission.checked.reused_objects
+            ),
+            (300, 300, 0)
+        );
+        let mut corrupt = objects[0].clone();
+        corrupt.bytes = objects[1].bytes.clone();
+        assert!(matches!(
+            admission.admit_unique_page(vec![corrupt], &mut seen),
+            Err(StoreError::Integrity("object collision"))
+        ));
+        drop(admission);
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn finalized_output_failure_drains_and_joins_source_owners() {

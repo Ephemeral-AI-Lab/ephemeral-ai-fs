@@ -286,3 +286,7 @@ Producing identities:
 - input_identity: `72327bbcd5d3abb037aea79c02445706971d2ad8a56cb3e5eb960f58d0ce39b9`
 
 Cleanup PASS; no OOM/swap; Linux container lifetime peak 41717760 bytes. Host SQLite, no data mounts, 2CPU/2GiB container limits and120s/130s timing allowances preserved. No full-lifecycle qualification or independent proof.
+
+### Receipt-parser correction for attempts5–6
+
+Commit snapshot database calls are **6**, not11, in both attempts5 and6. The derived assessment parser had selected the preceding WorkspaceCreate receipt's same-named field from concatenated operation details. It now prioritizes `WorkspaceCommitReceipt`; both derived assessments record the previous and corrected values explicitly. Raw `perf.jsonl` files and all timings/bytes/object counts are unchanged. This correction preserves the earlier5–6-call snapshot result; it is not another lookup-cache optimization.
