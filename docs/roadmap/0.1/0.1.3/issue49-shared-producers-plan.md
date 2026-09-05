@@ -1,5 +1,7 @@
 # Issue 49: shared producer execution with different inputs and configuration
 
+> Historical completed scope: issue #49 now tracks the [FUSE Exec redesign](fuse-exec-rewrite-spec.md). The producer implementation and ledgers below remain retained starting-code evidence, not an instruction to repeat the refactor.
+
 Implementation handoff, 2026-09-06. Parent [#47](https://github.com/Ephemeral-AI-Lab/layerfs/issues/47); task [#49](https://github.com/Ephemeral-AI-Lab/layerfs/issues/49). Consolidates three read-only subagent reviews of integration checkpoint `9600e7f90` in `/Users/yifanxu/.codex/worktrees/7311/layerfs`.
 
 ## Outcome and scope
