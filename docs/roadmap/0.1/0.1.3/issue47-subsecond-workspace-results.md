@@ -343,3 +343,58 @@ Producing identities:
 - image: `sha256:d8ffbdd27afb893c680d41e9806d4e1d9f5ac0a3c18727129cf51ac039775501`
 - harness_identity: `c3610164231c40bfa3e77c27e5c1526b5e9656c046c9e382d095b0d6c75d1abc`
 - input_identity: `bb92170a6ab2b38f9385d2deeab3b22c1d0275072beacb0ffa59727dd2b6e7c9`
+
+## Attempt 8 — cumulative shared finalization/reference changes, delete-100
+
+Original delete-100 / seed1 on `6fbaf2f9e`: complete lifecycle **TARGET_MISS**, `3538963293 ns`; Commit `311255958 ns`. Parent15s PASS does not satisfy #47. Receipt and strict assessment: `benchmark-results/host-store/results/issue47-reference-delete100/`. This is the first delete sample after the shared-spool/output/final-record/consumer/reference slices, so the reduction from460,068,958 ns is cumulative, not isolated attribution to edge observations.
+
+- create: 9684334 ns
+- exec: 3212627167 ns
+- commit: 311255958 ns
+- visibility: 70875 ns
+- end: 5324959 ns
+
+Measured Commit detail:
+
+- content_ns: 798792
+- namespace_ns: 306671625
+- deletion_cursor_ns: 13676300
+- deletion_records_ns: 281150379
+- candidate_finish_ns: 98667
+- object_admission_ns: 451584
+- checkpoint_ns: 577792
+- spool_retirement_ns: 208
+- spool_retirement_scan_ns: 0
+- spool_retired_segments: 0
+- snapshot_database_calls: 1393
+- object_admission_spill_readback_bytes: 0
+- object_admission_memory_owned_bytes: 22318
+- object_admission_borrowed_copy_bytes: 0
+- output_pipeline_ns: 340083
+- output_admission_ns: 18625
+- output_blocked_ns: 0
+- output_consumer_idle_ns: 281208
+- output_queue_peak_bytes: 0
+- spool_write_open_count: 0
+- spool_write_ns: 0
+- workspace_fence_ns: 13917
+- candidate_objects: 9
+- candidate_bytes: 22318
+- inserted_objects: 9
+- inserted_bytes: 22318
+- reused_objects: 0
+- reused_bytes: 0
+
+Candidate totals remain9objects /22,318bytes, all inserted. Payload spill readback is zero; there are no physical payload spool segments before or after Commit. The8-query snapshot increase (1,385 to1,393) is retained; no cache improvement is claimed.
+
+Replan: record/reference processing remains281,150,379 ns out of306,671,625 ns namespace time. The shared release path still looks up a spilled record once in `record_with_base` and again in `set_value`. Combine that ownership/location decision into one checked reference update, preserving current-over-prefetched precedence and zero-reference traversal. Admission451,584 ns and checkpoint577,792 ns remain non-priorities. The300ms Commit exploration objective is close but still unmet; no threshold-based PASS is invented.
+
+Producing identities:
+
+- source_identity: `3e4ffc3953ed322c84cf86d5956d5aa3ab782becfb8c318f9d1eac741af00118`
+- product_identity: `59e706e9ffe59e57e66991511decee12997e91baca0e91f0d9868c002b77b6d9`
+- image: `sha256:9a2016d153ccedc68237b34d707fed178ef0d3ed70d2fdfe8b2d395e11ebe1fe`
+- harness_identity: `c3610164231c40bfa3e77c27e5c1526b5e9656c046c9e382d095b0d6c75d1abc`
+- input_identity: `43525efe0eb21bad661d9aadfbb1000c86086f0d03487b76bdbfa78e5c389f55`
+
+Cleanup PASS; protected preparation and master unchanged; host SQLite/no data mounts validated; no OOM/swap. Linux container lifetime peak9,166,848 bytes. No independent proof.
