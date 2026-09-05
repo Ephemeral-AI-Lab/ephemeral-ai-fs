@@ -14,3 +14,5 @@ The separate 200-file / 1 MiB witness remains unchanged. New bulk IDs end in `-m
 **Implemented:** specification `66983181a`, migration `0ac1ebcf4`. The active registry contains the four new mixed-v3 IDs. The original unversioned high-tier bulk receipts remain historical and are not a product-speedup comparator.
 
 Use the existing host-owned SQLite runner and [QUICKSTART](../../QUICKSTART.md). Registration, generation, oracle/sampling, input/cache identity and assessments are migrated together. Select one revised tier-100 case at a time; tier-500 performance remains deferred. No product case/size optimization switches.
+
+The subsequent user authorization now permits one complete tier500 create/delete pair with extended600second product/630second outer/600second preparation allowances. See the explicit commands in QUICKSTART. This supersedes the tier500-performance deferral above without changing the family15second pass target.

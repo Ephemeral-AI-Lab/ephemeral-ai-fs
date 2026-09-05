@@ -94,6 +94,7 @@ const PRODUCT_EXECUTION_LIMIT_NS: u64 = 120_000_000_000;
 
 pub(crate) struct ProductBudget {
     enabled: bool,
+    limit_ns: u64,
     cumulative_ns: u64,
     state: Arc<std::sync::Mutex<ProductBudgetState>>,
     _deadline: Option<PhaseDeadline>,
@@ -113,11 +114,12 @@ impl ProductBudgetState {
     }
 }
 impl ProductBudget {
-    fn new(enabled: bool) -> Self {
+    fn new(enabled: bool, limit_ns: u64) -> Self {
         let state = Arc::new(std::sync::Mutex::new(ProductBudgetState::default()));
-        let deadline = enabled.then(|| PhaseDeadline::product_budget(state.clone()));
+        let deadline = enabled.then(|| PhaseDeadline::product_budget(state.clone(), limit_ns));
         Self {
             enabled,
+            limit_ns,
             cumulative_ns: 0,
             state,
             _deadline: deadline,
@@ -187,7 +189,7 @@ impl ProductBudget {
         Ok(end)
     }
     fn check(&self) -> AnyResult<()> {
-        if self.enabled && self.cumulative_ns > PRODUCT_EXECUTION_LIMIT_NS {
+        if self.enabled && self.cumulative_ns > self.limit_ns {
             return Err("product execution allowance exceeded".into());
         }
         Ok(())
@@ -206,11 +208,11 @@ impl ProductBudget {
             .ok_or("product budget phase sum overflow")?;
         if self.enabled {
             self.event("end", phase, elapsed_ns, error);
-            if self.cumulative_ns > PRODUCT_EXECUTION_LIMIT_NS {
+            if self.cumulative_ns > self.limit_ns {
                 emit(
                     "product-time-budget-exceeded",
                     &[
-                        ("limit_ns", PRODUCT_EXECUTION_LIMIT_NS.to_string()),
+                        ("limit_ns", self.limit_ns.to_string()),
                         ("cumulative_ns", self.cumulative_ns.to_string()),
                         ("phase", quote(phase)),
                         ("measurement", quote("completed-pure-call-sum")),
@@ -227,7 +229,7 @@ impl ProductBudget {
                 ("state", quote(state)),
                 ("phase", quote(phase)),
                 ("cumulative_ns", self.cumulative_ns.to_string()),
-                ("limit_ns", PRODUCT_EXECUTION_LIMIT_NS.to_string()),
+                ("limit_ns", self.limit_ns.to_string()),
                 ("elapsed_ns", elapsed_ns.to_string()),
                 (
                     "phase_error",
@@ -250,7 +252,7 @@ pub(crate) struct PhaseDeadline {
     thread: Option<std::thread::JoinHandle<()>>,
 }
 impl PhaseDeadline {
-    fn product_budget(state: Arc<std::sync::Mutex<ProductBudgetState>>) -> Self {
+    fn product_budget(state: Arc<std::sync::Mutex<ProductBudgetState>>, limit_ns: u64) -> Self {
         let (tx, rx) = mpsc::channel();
         let thread = std::thread::spawn(move || loop {
             match rx.recv_timeout(std::time::Duration::from_millis(1)) {
@@ -279,7 +281,7 @@ impl PhaseDeadline {
                 },
             };
             let total = state.total_at(elapsed);
-            if total <= PRODUCT_EXECUTION_LIMIT_NS {
+            if total <= limit_ns {
                 continue;
             }
             let completed = state.completed_ns;
@@ -287,7 +289,7 @@ impl PhaseDeadline {
             emit(
                 "product-time-budget-exceeded",
                 &[
-                    ("limit_ns", PRODUCT_EXECUTION_LIMIT_NS.to_string()),
+                    ("limit_ns", limit_ns.to_string()),
                     ("cumulative_ns", total.to_string()),
                     ("completed_product_ns", completed.to_string()),
                     ("active_phase_ns", elapsed.to_string()),
@@ -1242,7 +1244,12 @@ fn run_case(
     }
     let orchestration_start = Instant::now();
     let mut pure_call_sum_ns = 0u64;
-    let mut product_budget = ProductBudget::new(!verification);
+    let limit_ns = match std::env::var("LAYERFS_BENCH_PRODUCT_TIMEOUT_SECONDS") {
+        Ok(seconds) => seconds.parse::<u64>()?.checked_mul(1_000_000_000).filter(|ns| *ns > 0).ok_or("invalid product timeout")?,
+        Err(std::env::VarError::NotPresent) => PRODUCT_EXECUTION_LIMIT_NS,
+        Err(error) => return Err(error.into()),
+    };
+    let mut product_budget = ProductBudget::new(!verification, limit_ns);
     if registry::is_import(case) {
         let name = EntityName::new("phase1-import")?;
         let source = LayerStackInitialization::Directory(input.to_owned());
@@ -2406,8 +2413,8 @@ mod product_budget_tests {
     fn live_watchdog_stops_at_remaining_cumulative_budget() {
         const CHILD: &str = "LAYERFS_BUDGET_WATCHDOG_TEST_CHILD";
         if std::env::var_os(CHILD).is_some() {
-            let mut budget = ProductBudget::new(true);
-            budget.cumulative_ns = PRODUCT_EXECUTION_LIMIT_NS - 10_000_000;
+            let mut budget = ProductBudget::new(true, 600_000_000_000);
+            budget.cumulative_ns = 600_000_000_000 - 10_000_000;
             budget.state.lock().unwrap().completed_ns = budget.cumulative_ns;
             budget.begin("watchdog-test").unwrap();
             let _start = budget.start_clock("watchdog-test").unwrap();
@@ -2430,7 +2437,7 @@ mod product_budget_tests {
         assert!(stdout.contains("\"measurement\":\"active-pure-call-sum\""));
         assert!(stdout.contains(&format!(
             "\"completed_product_ns\":{}",
-            PRODUCT_EXECUTION_LIMIT_NS - 10_000_000
+            600_000_000_000_u64 - 10_000_000
         )));
     }
 
@@ -2438,7 +2445,7 @@ mod product_budget_tests {
     fn cumulative_budget_keeps_prior_phases_and_exact_boundary() {
         assert_eq!(PRODUCT_EXECUTION_LIMIT_NS, 120_000_000_000);
         // Fake phase durations: no product work, sleeping, preparation or verifier.
-        let mut budget = ProductBudget::new(true);
+        let mut budget = ProductBudget::new(true, PRODUCT_EXECUTION_LIMIT_NS);
         for (phase, duration) in [
             ("create", 2_000_000_000),
             ("exec", 7_000_000_000),
@@ -2459,8 +2466,13 @@ mod product_budget_tests {
         assert!(state.total_at(1_000_000_001) > PRODUCT_EXECUTION_LIMIT_NS);
         budget.end("visibility", 1, None).unwrap();
         assert!(budget.begin("next-step").is_err());
+        let mut extended = ProductBudget::new(true, 600_000_000_000);
+        extended.end("exec", PRODUCT_EXECUTION_LIMIT_NS + 1, None).unwrap();
+        assert!(extended.check().is_ok());
+        extended.end("commit", 600_000_000_000 - PRODUCT_EXECUTION_LIMIT_NS, None).unwrap();
+        assert!(extended.check().is_err());
         // Verification/proof mode keeps accounting but cannot arm a deadline.
-        let mut disabled = ProductBudget::new(false);
+        let mut disabled = ProductBudget::new(false, PRODUCT_EXECUTION_LIMIT_NS);
         assert!(disabled._deadline.is_none());
         disabled
             .end("verify", PRODUCT_EXECUTION_LIMIT_NS + 1, None)

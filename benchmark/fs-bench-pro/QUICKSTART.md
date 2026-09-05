@@ -65,3 +65,13 @@ python3 benchmark/fs-bench-pro/shared/runner.py --topology host-store --family t
 ```
 
 Use `tiny-bulk-delete-100-mixed-v3` for the separate serial delete sample on the same source. The broader family target remains 15 seconds; the sample also records the separate strict #47 assessment (`pure_call_sum_ns < 1,000,000,000`) for the revised tier-100 pair. Tier-500 performance and independent final proofs are deferred. Proof selection includes every large file with three 64 KiB ranges (beginning, midpoint, end), declared small/medium paths, and the witness; delete checks corresponding absence. Report omissions explicitly.
+
+## Full tier500 mixed-v3 diagnostic run
+
+The user-authorized tier500 extension uses600seconds product time,630seconds outer command time and600seconds preparation. This changes execution allowance only; the15second family PASS target and resource caps remain. Select create and delete separately and serially:
+
+```bash
+python3 benchmark/fs-bench-pro/shared/runner.py --topology host-store --family tiny_file_churn --case tiny-bulk-create-500-mixed-v3 --seed 1 --setup clone --perf-fast --product-timeout 600 --timeout 630 --setup-timeout 600
+```
+
+Then select `tiny-bulk-delete-500-mixed-v3` with the same options and source. This authorization supersedes the earlier tier500-performance deferral above. Other runs retain the120second product/130second outer defaults. Independent proof budgets remain45/59seconds.

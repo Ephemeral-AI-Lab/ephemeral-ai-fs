@@ -79,7 +79,8 @@ def build_parser(include_modes=True):
     p.add_argument("--source", "--source-identity", dest="source")
     p.add_argument("--input", "--input-identity", dest="input")
     p.add_argument("--output", default=str(REPO / "benchmark-results" / "infra" / ("run-" + uuid.uuid4().hex[:12])))
-    p.add_argument("--timeout", type=float, default=130, help="Outer performance command allowance; Workspace watchdog is 120 seconds and the pass target remains 15 seconds")
+    p.add_argument("--timeout", type=float, default=130, help="Outer performance command allowance; must exceed --product-timeout; pass target remains 15 seconds")
+    p.add_argument("--product-timeout", type=int, default=120, help="Workspace diagnostic product allowance in seconds; does not change pass targets")
     p.add_argument("--setup-timeout", type=float, default=120)
     p.add_argument("--cpus", type=int, default=2)
     p.add_argument("--memory-mib", type=int, default=2048)
@@ -184,6 +185,7 @@ def resolve_selection(args, deadline):
         raise ValueError("select a built Linux image with --image or LAYERFS_BENCH_IMAGE; use shared/runner.py --build-image separately")
     if (not 1 <= args.cpus <= 8 or args.memory_mib <= 0
             or not math.isfinite(args.timeout) or args.timeout <= 0
+            or args.product_timeout <= 0 or args.product_timeout >= args.timeout
             or not math.isfinite(args.setup_timeout) or args.setup_timeout <= 0):
         raise ValueError("invalid resource/budget selection")
     if getattr(args, "perf_samples", None) is not None and args.perf_samples <= 0:
@@ -263,6 +265,7 @@ def resolve_selection(args, deadline):
         selection["fixture_info"] = fixture_info
     selection["source_arm"] = args.source_arm
     selection["timer"] = TIMERS.get(row.get("route"))
+    selection["product_execution_allowance_seconds"] = args.product_timeout
     selection["topology"] = args.topology
     selection.update(host_executor=host_identity, image_source_identity=identity.get("dev.layerfs.source-seal"),
                      host_environment={"os": platform.system(), "architecture": platform.machine(), "cpu_count": os.cpu_count()})
@@ -440,6 +443,8 @@ def execute_selected(args, *, deadline, verification=False):
         command_end = min(work_end, time.monotonic() + (45 if verification else args.timeout))
         command_env = {"LAYERFS_V013_IMAGE": selection["image"],
                        "LAYERFS_BENCH_SOURCE_ARM": selection["source_arm"]}
+        if not verification:
+            command_env["LAYERFS_BENCH_PRODUCT_TIMEOUT_SECONDS"] = str(args.product_timeout)
         if args.performance_rows != "-":
             command_env["LAYERFS_SDK_EDIT_PERFORMANCE_ROWS"] = args.performance_rows
         if selection["family"] in ("dedup_cross_file", "dedup_cdc_locality"):
@@ -610,6 +615,7 @@ def main(argv=None):
             emit({"kind": "header", "schema": "layerfs-perf-v1", "identities": selection,
                   "requested_samples": count, "full_workload": True, "cpus": args.cpus,
                   "product_target_ns": PRODUCT_TARGET_NS, "command_allowance_seconds": args.timeout,
+                  "product_execution_allowance_seconds": args.product_timeout,
                   "memory_mib": args.memory_mib, "resource_limit_scope": "Linux container only; host CPU not capped", "verification_status": "NOT_RUN"})
             for index in range(1, count + 1):
                 row = execute_selected(args, deadline=time.monotonic() + args.setup_timeout + args.timeout + 10)

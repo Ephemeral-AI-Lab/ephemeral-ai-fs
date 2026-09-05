@@ -100,6 +100,14 @@ class RunnerTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "cache mismatch"):
                     runner.mixed_fixture_info(args, identity, 1, 10)
 
+    def test_explicit_diagnostic_product_allowance_keeps_target(self):
+        _, selection = self.resolve(["--product-timeout", "600", "--timeout", "630"], {})
+        self.assertEqual(selection["product_execution_allowance_seconds"], 600)
+        self.assertEqual(runner.performance_target_status(16_000_000_000), "TARGET_MISS")
+        for arguments in (["--product-timeout", "0"], ["--product-timeout", "130"], ["--product-timeout", "600"]):
+            with self.assertRaisesRegex(ValueError, "resource/budget"):
+                self.resolve(arguments, {})
+
     def test_deadline_units(self):
         remaining = runner._deadline(time.monotonic() + 5).remaining()
         self.assertGreater(remaining, 4)
