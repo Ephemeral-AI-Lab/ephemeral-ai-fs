@@ -114,6 +114,9 @@ pub struct WorkspaceCommitReceipt {
     pub object_admission_begin_ns: u64,
     pub object_admission_insert_ns: u64,
     pub object_admission_commit_ns: u64,
+    /// Nested shared-consumer validation/sort costs; excluded from phase summation.
+    pub object_admission_authentication_ns: u64,
+    pub object_admission_sort_ns: u64,
     /// Selected canonical bytes moved from candidate memory into admission pages.
     pub object_admission_memory_owned_bytes: u64,
     /// Selected canonical bytes read from spill and moved into admission pages;
@@ -447,6 +450,18 @@ pub fn note_workspace_commit_phase(phase: WorkspaceCommitPhase, elapsed_ns: u64)
             WorkspaceCommitPhase::Resume => &mut receipt.resume_ns,
         };
         *target = target.saturating_add(elapsed_ns);
+    });
+}
+
+pub(crate) fn note_workspace_admission_validation(authentication_ns: u64, sort_ns: u64) {
+    WORKSPACE_COMMIT.with(|current| {
+        if let Some(receipt) = current.borrow_mut().as_mut() {
+            receipt.object_admission_authentication_ns = receipt
+                .object_admission_authentication_ns
+                .saturating_add(authentication_ns);
+            receipt.object_admission_sort_ns =
+                receipt.object_admission_sort_ns.saturating_add(sort_ns);
+        }
     });
 }
 

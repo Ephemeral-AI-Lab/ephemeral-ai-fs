@@ -3507,10 +3507,17 @@ fn consume_checked_owned_page(
     {
         return Err(StoreError::Integrity("checked admission page limit"));
     }
+    let sort_started = Instant::now();
     batch.sort_unstable_by_key(|object| object.id);
+    let sort_ns = elapsed_ns(sort_started);
+    let authentication_started = Instant::now();
     for object in &batch {
         layerfs_content::authenticate_identity(&object.bytes, object.id)?;
     }
+    crate::telemetry::note_workspace_admission_validation(
+        elapsed_ns(authentication_started),
+        sort_ns,
+    );
     let begin_started = Instant::now();
     let mut connection = db.writer()?;
     let transaction =
