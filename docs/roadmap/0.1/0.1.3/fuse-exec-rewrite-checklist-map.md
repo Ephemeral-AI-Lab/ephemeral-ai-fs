@@ -4,7 +4,7 @@ Status: proposed design traceability; **all 109 requirements remain unchecked**.
 
 The requirement text is reproduced exactly below, with Markdown table escaping. IDs identify each checkbox in checklist order. S references identify specification sections; T references identify the focused acceptance groups in S11. The implementation owner must record source-bound checks and limitations before changing any checklist status. A mapped obligation still fails acceptance if its implementation, compatibility inventory, or required evidence is missing.
 
-Checklist SHA-256 at generation: `8317561fe5f2b51cba3b179631ea21ab4496c1a3b2a0cd8d8218ff2e1ce8c8d6`. Regenerate/check this map when requirements change; do not let a stale map imply coverage.
+Checklist SHA-256 at generation: `777545abe39f40fec47eefa73600ffe51f7be656a23140de4218b56c7d7cea37`. Regenerate/check this map when requirements change; do not let a stale map imply coverage.
 
 | Requirement | Exact checklist obligation | Spec sections | Required checks |
 |---|---|---|---|
@@ -35,7 +35,7 @@ Checklist SHA-256 at generation: `8317561fe5f2b51cba3b179631ea21ab4496c1a3b2a0cd
 | R3.09 | Authentication and workspace/mount authorization apply to acquisition, mutation, content access and synchronization requests; validate lengths and allocation bounds at trust boundaries. | S4, S5, S9 | T1, T3, T4 |
 | R4.01 | Multiple processes can use one workspace concurrently. | S1, S4, S6, S9 | T1, T3, T5 |
 | R4.02 | Independent operations can progress concurrently; conflicting operations have defined ordering and atomicity. | S1, S4, S6, S9 | T1, T3, T5 |
-| R4.03 | Multiple workspaces can be mounted simultaneously with isolated mutable state, handles, errors and accounting. | S1, S4, S6, S9 | T1, T3, T5 |
+| R4.03 | Support at least 100 simultaneously mounted independent live workspaces per daemon, with concurrent clients, isolated mutable state/handles/errors/accounting, and shared bounded execution resources. | S1, S4, S6, S9 | T1, T3, T5 |
 | R4.04 | Mutable cache and handle keys distinguish workspace and mount lifetime; NodeId alone must not accidentally alias state across workspaces. | S1, S4, S6, S9 | T1, T3, T5 |
 | R4.05 | All hardlink aliases of an inode share content and metadata state. | S1, S4, S6, S9 | T1, T3, T5 |
 | R4.06 | Cross-directory rename and other multi-object operations use a deliberate atomicity/locking protocol. | S1, S4, S6, S9 | T1, T3, T5 |

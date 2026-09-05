@@ -57,7 +57,7 @@ The first version retains host spool placement. It does not add container-side S
 
 This is one logical writable state owner. Host recovery facts are a synchronized prefix for recovery/frozen construction, not a second live mutation API. Do not replay and re-decide every POSIX operation in a shadow filesystem: transfer resolved existing record/range facts and reuse existing checked installation primitives where available. If that transfer cannot be implemented without a broad new effect framework, stop and simplify the seam before coding more layers.
 
-Baseline scope: concurrent processes within one writable mount; multiple independent mounted workspaces; one writable mount per Workspace lifetime. Reject a second writable mount of the same Workspace explicitly. Additional immutable snapshot mounts are independent read-only views. Cross-machine multi-writer coherence and transparent mount migration are not claimed.
+Baseline scope: concurrent processes within one writable mount; at least 100 simultaneously mounted independent live workspaces per daemon; one writable mount per Workspace lifetime. The earlier 8-mount proposal is superseded by the user's 100-workspace requirement. Reject a second writable mount of the same Workspace explicitly. Additional immutable snapshot mounts are independent read-only views. Cross-machine multi-writer coherence and transparent mount migration are not claimed.
 
 ## S2. Lessons and comparator, not architecture mandates
 
@@ -149,7 +149,7 @@ Never create `host Workspace lock -> Session drain -> host apply needs Workspace
 
 Host-to-owner SDK requests use the control connection independently of the owner's backing/acquisition connection. A waiting host SDK handler holds neither the data pump nor a Store/Workspace lock needed by that acquisition. Ordinary SDK work consumes ordinary admission; it cannot consume the reserved cancellation/drain slots. This prevents an owner callback from needing a host service lane occupied by its own caller.
 
-Use a small bounded ready-workspace queue and a fixed execution pool. Dispatch one bounded operation/continuation quantum per ready Workspace, then rotate. Park I/O/capacity waits instead of occupying every execution worker. Reuse existing threading/queue primitives, not a general actor framework. Each mount's transport pump is bounded separately, so a stalled stream cannot occupy the complete global execution pool. Cancellation/control has reserved admission but cannot skip required mutation predecessors.
+Use a small bounded ready-workspace queue and a fixed execution pool. Dispatch one bounded operation/continuation quantum per ready Workspace, then rotate. Park I/O/capacity waits instead of occupying every execution worker. Reuse existing threading/queue primitives, not a general actor framework. Each mount has bounded connection state served by shared nonblocking transport workers, so a stalled stream cannot occupy the complete execution or transport pool. No dedicated blocking transport/control thread per mount is added. Cancellation/control has reserved admission but cannot skip required mutation predecessors.
 
 FUSE callbacks must copy borrowed payloads or retain reply/request objects only after charging their owned capacity. Kernel pending requests are distinct from admitted userspace work and must remain visible in overload reporting.
 
@@ -159,13 +159,13 @@ These are proposed finite design defaults, not measured/enforced properties of c
 
 | Resource | Initial envelope / enforcement |
 |---|---|
-| Mounted live workspaces | 8 per daemon; admission fails explicitly beyond configured capacity |
-| FUSE ingress | 1 existing receive thread per mount, at most 8; ingestion hands bounded owned work to executor |
+| Mounted live workspaces | 100 per daemon as the required default capacity; configurable higher with an explicit deployment budget; reject the 101st at the default capacity |
+| FUSE ingress | Initially at most 1 receive thread per mount, 100 aggregate; bounded ingestion only, not 100 execution workers; count actual fuser helper threads before adoption |
 | Active execution workers | 2 across the Linux daemon, shared fairly; at most 2 state operations per Workspace |
-| Ordinary admitted requests | 64 aggregate, at most 8 per Workspace; request bytes have their separate stricter budget |
-| Per-mount progress reservation | 1 ordinary request, 1 MiB transfer space and 256 KiB operation/result space per admitted mount, inside aggregate budgets; unavailable to other mounts |
+| Ordinary admitted requests | 128 aggregate, at most 8 per Workspace; includes one reserved ordinary slot for each of 100 admitted mounts; request bytes have their separate stricter budget |
+| Per-mount progress reservation | 1 ordinary request, 256 KiB transfer space and 64 KiB operation/result space per mount, inside aggregate budgets; 25 MiB transfer and 6.25 MiB operation reserves at 100 mounts; unavailable to other mounts |
 | Control admission | 2 reserved entries per mount; included in managed-memory envelope |
-| Transport pumps | At most 1 per active mount/data connection; no thread per request; blocked I/O holds no execution-worker permit |
+| Transport workers | 2 shared nonblocking I/O workers per side for all mounted data/control connections; bounded per-connection state; no per-mount transport thread and no execution-worker permit held by I/O waits |
 | Live nodes/bindings/dirty ranges/handles/cursors | 32 MiB per Workspace, 128 MiB aggregate, charged by actual owned capacities |
 | Clean immutable cache | 8 MiB per Workspace, 32 MiB aggregate; only clean entries evict |
 | All transport/request/reply/pending-byte buffers | 8 MiB per Workspace, 32 MiB aggregate, including simultaneous sender/receiver/local-read ownership |
@@ -176,9 +176,15 @@ These are proposed finite design defaults, not measured/enforced properties of c
 | Handles | 8,192 per mount / 65,536 aggregate, also charged to live-state bytes; negotiated deployment limits must be compatibility-checked |
 | Directory acquisition | At most 128 entries and 256 KiB per page; stable bounded cursor, never whole-directory reply required |
 | Unlink/change batches | At most 512 entries and wire-byte bound; preserve per-operation ordering/errors |
-| Backing retained bytes | Existing 1 GiB per Workspace; explicit 8 GiB host aggregate for 8 admitted quotas, including partial/dead-but-pinned ranges; no speculative disk preallocation required |
+| Backing retained bytes | Existing 1 GiB per Workspace maximum; explicit 100 GiB host aggregate ceiling for 100 quotas, including partial/dead-but-pinned ranges; allocate backing on demand, not 100 GiB at mount; actual host disk capacity and errors remain explicit |
 | Host construction CPU | One shared configured producer allowance, initially at most 8 active workers across construction jobs; do not multiply by mounts |
-| Host service CPU | At most 2 active processing workers plus bounded parked per-mount I/O; construction uses its separately declared allowance |
+| Host service CPU | At most 2 active processing workers plus 2 shared nonblocking transport workers; construction uses its separately declared allowance |
+
+**100 mounted workspaces does not allocate 100 full per-workspace memory budgets or 100 sets of workers.** The shared execution pool stays at 2 workers, and execution managed memory stays at 256 MiB. Per-workspace maxima are ceilings; aggregate limits and reservations are enforced simultaneously. Idle mounts retain bounded identity/root/handle/connection state and acquire namespace/content lazily. All 100 may have concurrent clients; requests exceeding active capacity wait fairly or receive their defined resource error, rather than denying mounts merely because only two workers execute at once.
+
+The initial 100 FUSE receive threads plus 2 execution and 2 transport workers require an explicit thread/stack/PID census, including lifecycle helpers and child applications. Preserve the existing 256-PID container limit for the matched benchmark deployment. Mount count does not promise capacity for 100 arbitrary process trees under that limit. No hidden per-mount worker pool is allowed. Use the existing transport runtime's readiness facilities where available; readiness waits must service control and data without a socket-blocked thread per connection. This is a required adjustment from the earlier 8-mount proposal, not an optional optimization.
+
+The 256 KiB per-mount transfer reservation supports bounded progress frames; negotiated writes up to 1 MiB retain their API support. A larger callback must reserve additional shared capacity before copying its borrowed payload, or wait at ingress without a state lock. Do not pre-copy 100 one-MiB requests into an uncharged queue. The aggregate transfer budget remains 32 MiB; the initial progress reservations consume 25 MiB of it. Actual framing/read-plan/ack ownership must fit the remaining capacity or safely retain/wait within the mount's own reservation.
 
 The per-mount progress reserve prevents another mount's retained dirty buffers from consuming every ordinary-operation slot/byte. Shared surplus is allocated fairly. A mount that exhausts its own retained-state quota must return the declared resource error or wait on its own releasable work; it cannot wait indefinitely on another mount's quota. Control reserve is separate. The guarantee is progress of admitted supported work or a bounded explicit error, not unlimited successful writes into full storage.
 
@@ -241,7 +247,7 @@ Test identifiers below are referenced by the checklist map. Each is a focused gr
 | T2 Canonical/continuation | fresh/incremental/zero/captured state, unchanged extents and old roots, exact reference counts, NodeId/handle continuity, private preview, published-install retry |
 | T3 Concurrency/coherence | simultaneous same/different inode operations, opposing renames, multiple processes and mounts, owner SDK edit/read, observer during drain, stale acquisition/replaced mount, namespace-only/no-op Commit |
 | T4 Failure/durability | partial append and cleanup failure, resource exhaustion before mutation, host I/O failure, lost reply/no replay, mid-transfer disconnect, daemon/host loss at every acknowledgment cut, cancellation/unmount with open readers/mappings |
-| T5 Resource/load | 8 admitted mounts plus rejected ninth, saturated queues, deliberately stalled A while B progresses, reserved control progress, checked allocation failure at each boundary, worker accounting, repeated cycles with no retained growth |
+| T5 Resource/load | 100 simultaneously admitted mounts plus rejected 101st at default capacity; concurrent clients across all 100, idle/resident footprint, fair operation progress, saturated queues, stalled mounts while others progress, reserved control progress, checked allocation failures, actual thread/PID/socket/descriptor accounting and repeated teardown cycles without retained growth |
 | T6 Performance/custody | exact optimized baseline vs replacement source/recipe, diagnostics off, complete Exec/Commit/End, CPU/RSS/backing and queue/lock waits, explicit actual work/copies/acquisitions/acks, unchanged raw history |
 | T7 Integration/adoption | actual #48/#49 source adoption, native direct-host parity, private SDK/reconciliation behavior, deleted caller ledger, no unsupported platform or combined-phase claims |
 
