@@ -697,3 +697,50 @@ Raw receipts and exact identities:
 - `benchmark-results/host-store/results/issue47-mixed-v3-create500/perf.jsonl`, SHA-256 `fc19ed12c45fe6f1a6cb3f6bd0f07c519578aa5b918072782105117410411394`, selected input `f9524311661812fd26332de47f379b053121602ab33a059043b4b1d5522acce3`.
 - `benchmark-results/host-store/results/issue47-mixed-v3-delete500/perf.jsonl`, SHA-256 `1832a640eefa649fcb515b11d20771ce9954d00187a9532a9a7456f59d8b0965`, selected input `2a752bda5e8a7022f2f7e97a4a1bf4ffb12399a52d74df8187cf3a1b67a791a5`.
 - `benchmark-results/host-store/results/issue47-mixed-v3-definition/tier500-pair-assessment.json` balances all lifecycle phases, verifies configured limits, exact operation counts, shared source/binary/image identities, physical retirement and cleanup. Independent proofs remain NOT_RUN; #49 remains unstarted.
+
+## Attempts 17–20: tier1/tier10 shared-path coverage refresh
+
+The user requested four missing low-tier observations before #49. One seed1 complete performance sample was collected per `tiny-bulk-{create,delete}-{1,10}-compact-v2` on the delivered product, serially through the global lock. No product, workload, low-tier definition or benchmark source changed; no unpublished Exec-track work was adopted. Normal120second product/130second outer allowances are confirmed by headers and phase receipts. Tier100/500 were not rerun. No independent proof, new low-tier target, optimization campaign or issue closure was performed.
+
+The unchanged compact witness is50files/1MiB. Tier1 affects50files/1MiB; tier10 affects500files/10MiB. Complete populated trees therefore contain100files/2MiB and550files/11MiB, plus directories. This differs intentionally from the200-file witness in the high-tier mixed-v3 profile. Creation byte counts are measured writes; deletion byte counts below describe the affected input payload, not content reads or rewritten bytes.
+
+| Case (all compact-v2) | Affected files / bytes | Exec ns | Commit ns | Complete lifecycle ns | Cleanup | Family15s performance |
+|---|---:|---:|---:|---:|---|---|
+|create1|50 / 1,048,576|206,973,125|9,743,625|230,565,041|PASS|PASS|
+|delete1|50 / 1,048,576|96,636,750|7,095,500|114,032,375|PASS|PASS|
+|create10|500 / 10,485,760|550,552,083|40,627,167|604,193,624|PASS|PASS|
+|delete10|500 / 10,485,760|199,131,625|10,010,417|220,390,332|PASS|PASS|
+
+Each row is one observation (n=1, median=min=max), not a distribution. All four phase sums balance exactly. Create performs50/500filewrites and1,048,576/10,485,760B; delete performs50/500unlinks. Required metadata normalization and root sync remain. All selected operation counts checked against historical receipts match. Both creation samples and both deletion samples have0physical spool files/bytes after Commit, unchanged prepared masters, cleanupPASS, benchmark verifier/reopen/injection0 and OOM/swap0. Tier10 create reused the compatible preparation populated during tier1 create; other worktree preparations were cache misses. All writable samples use closed-quiescent byte copies, not a cold-cache claim. Host resources are recorded separately.
+
+### Shared mechanism adoption
+
+All four use ordinary `lifecycle.rs::build_candidate(Commit)` → `changes.rs::build_frontier_candidate` → `LayerStackStore::construct_workspace_files`, one ordered inode/reference finalizer, shared checked structural admission and `install_checkpoint`. There is no tier-selected product engine.
+
+Creation uses the existing PieceTree backed by shared segment extents, `FrozenFile::build`/`ObjectBuffer::build_complete_file`, the shared bounded `run_finalized_output` driver, immutable authenticated owners and checked consumer. Tier1 retires1physical segment for50files; tier10 retires11for500files. Selected output is1,130,913B/10,780,341B memory-owned,0spill-readback,0borrowed copies and0repeat-memory authentication in both. Pipeline walls are2.136916/21.536000ms, with checkpoint0.763792/9.749459ms including retirement0.605250/9.318958ms. These are nested counters, not additive savings.
+
+Deletion enters the same driver but has no file content output: output queue bytes0 and retired payload segments0. It exercises the shared directory/reference deletion algorithm, ordered final inode updates and checked consumer for7structural objects/12,502B in each case. Record/reference processing is4.053753/5.984241ms; checkpoint0.140334/0.162208ms. Thus shared finalization/checkpoint/consumer adoption is demonstrated for delete without claiming a payload-spool benefit on a payload-free operation.
+
+### Historical comparison and limits
+
+The four saved references have product `77aff139adefb45e5175cddaffb6e4e9acb9a5ceaae027c05ae4a9eae6271802`; the current product is different. Initial fixture compatibility dictionaries (including exact input-plan SHA, byte/file totals, schema and seed) match, and observed write/unlink/mkdir/rmdir/metadata-normalization/root-sync counts match. Definitions are compatible; product/source/harness/binary/image differ. These are historical unpaired observations, not a controlled product-speedup estimate. Current absolute results are primary. Old raw receipts are read-only and unchanged.
+
+| Case | Historical Exec ms | Current Exec ms | Historical Commit ms | Current Commit ms | Historical full ms | Current full ms |
+|---|---:|---:|---:|---:|---:|---:|
+|create1|187.551125|206.973125|45.502000|9.743625|245.388250|230.565041|
+|delete1|114.423167|96.636750|6.740833|7.095500|132.160375|114.032375|
+|create10|481.299250|550.552083|193.929583|40.627167|687.995042|604.193624|
+|delete10|195.842792|199.131625|23.885833|10.010417|232.338708|220.390332|
+
+Retain the increases: tier1 delete Commit rises0.354667ms; create Exec rises19.422000ms at tier1 and69.252833ms at tier10, and tier10 delete Exec rises3.288833ms. Full lifecycle is lower in all four observations, but these single historical comparisons do not isolate causality or justify reruns to select a favorable result.
+
+### Exact custody
+
+All four: source `459eefaa01db3fc08c7b40c930da5981d8b04bc1`, source seal `b6159377eadfc07806aaba102525a8b5d7b10c8ef2c0b48c834f3b2fb60731ca`, product `4d1f3e9348a516fa4815defe8f6279c9ada45f20d76285b5d56e14a629bf74c8`, host binary SHA-256 `ba22f2936ef28e07a74fc6a5a6dc5abc822b36da59c52958e1c16ae4290e20cf`, harness `9cbde969b686b82163e16dfee411cead2831b76b1a95375218da8bd757a49813`, image `layerfs-bench-infra:b6159377eadfc078` / `sha256:ff14c13a66f1224fe5879d682b0345015e52a626eab381a5f9f27995ce985002`. This is the same delivered product used for the retained mixed-v3 observations.
+
+- **tiny-bulk-create-1-compact-v2**: raw `benchmark-results/host-store/results/issue47-shared-create1-compact-v2/perf.jsonl`; SHA-256 `8de24c5e7c73461f3e6af3557a2eccc55ed5f2a345408dcfd1ca8096608b3ea4`; selected input `969cb46947836e7e12d47bd0734ecb9c92656aea13c9d05215c7971f61a4efe6`; fixture plan `9efa8bc2a72d30d2ae27c02cd5970cf5334a2beb142360e1178436154f5b0246`; container peak7,782,400B. Historical receipt: `/Users/yifanxu/Ephemeral-AI-Lab/layerfs/benchmark-results/host-store/results/issue46-collection-tiny-bulk-create-1-compact-v2/perf.jsonl`.
+- **tiny-bulk-delete-1-compact-v2**: raw `benchmark-results/host-store/results/issue47-shared-delete1-compact-v2/perf.jsonl`; SHA-256 `774b8c1f2fed2e20eec6cfd7dd093ca37784efca5550b4940fbe24376c9bf36d`; selected input `46a11657d71387afa6e49330900dc469491d355d744df09983ca6aaae4a1cd19`; fixture plan `6db2ad97220cf1bc6b6651e8ecbc550d3e5cb517b1f15f7ed5dd97a640cbdc7b`; container peak4,866,048B. Historical receipt: `/Users/yifanxu/Ephemeral-AI-Lab/layerfs/benchmark-results/host-store/results/issue46-collection-tiny-bulk-delete-1-compact-v2/perf.jsonl`.
+- **tiny-bulk-create-10-compact-v2**: raw `benchmark-results/host-store/results/issue47-shared-create10-compact-v2/perf.jsonl`; SHA-256 `5d3d40158306e9505452f2864aeeabb5cc259b6aa22d0766dbe8cf6140718869`; selected input `537dafab30733ef6e54ee79d847d178ce0c4ef0c0b44217330676dd1edabd093`; fixture plan `9efa8bc2a72d30d2ae27c02cd5970cf5334a2beb142360e1178436154f5b0246`; container peak11,608,064B. Historical receipt: `/Users/yifanxu/Ephemeral-AI-Lab/layerfs/benchmark-results/host-store/results/issue46-finalrefs-create10/perf.jsonl`.
+- **tiny-bulk-delete-10-compact-v2**: raw `benchmark-results/host-store/results/issue47-shared-delete10-compact-v2/perf.jsonl`; SHA-256 `e014b223443e6d0691b7281477983ca34572c110c77983ff56faa6490e93c8f4`; selected input `ff36f18861202f2f9ebc231ef85116621d0180fdd6272d28dadce25786b4cbc9`; fixture plan `000598b5116beebbc5cf8f60759c27a8d5885f966fcab3008be8a36a1298bd8d`; container peak4,837,376B. Historical receipt: `/Users/yifanxu/Ephemeral-AI-Lab/layerfs/benchmark-results/host-store/results/issue46-collection-tiny-bulk-delete-10-compact-v2/perf.jsonl`.
+
+Machine-readable assessment: `benchmark-results/host-store/results/issue47-compact-low-tier-assessment.json`. It retains all current and historical identities/raw hashes, full phase sums, exact fixture compatibility, operation counts, resource/cleanup evidence and mechanism mapping. Coverage refresh is recorded; #49 remains unstarted. Independent proofs and full-family qualification remain pending; retained tier100 create still misses the strict #47 complete-lifecycle target.
