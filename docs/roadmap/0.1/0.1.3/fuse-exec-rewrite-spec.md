@@ -19,7 +19,7 @@ The completed [ten-family campaign](issue49-ten-family-refresh.md) records 138/1
 | 500 create | 4.1284 | 1.7790 | 5.9276 |
 | 500 delete | 0.9103 | 0.0541 | 0.9771 |
 
-Integration CI requires Rust 1.96.0 formatting. The follow-up formats two benchmark source files without changing their operations, workload recipe or timer semantics. Historical source/product seals remain attached to their original measurements; formatting is not a new measured product qualification.
+Integration CI requires Rust 1.96.0 formatting. The follow-up formats two benchmark source files without changing their operations, workload recipe or timer semantics. CI also exposed existing Clippy warnings in the finalized producer/frontier/fsync code. Integration follow-up retains those interfaces and backing layouts, uses scoped lint annotations, and simplifies equivalent expressions without changing ordering, failure or workload semantics. Historical source/product seals remain attached to their original measurements; these integration corrections are not a new measured product qualification.
 
 Timings are seconds rounded to four decimals; decisions use unrounded receipts. Full per-case results and provenance are preserved in [#46 results](https://github.com/Ephemeral-AI-Lab/layerfs/issues/46#issuecomment-5555290362) and [evidence](https://github.com/Ephemeral-AI-Lab/layerfs/issues/46#issuecomment-5555291106). The strict tier100 create lifecycle target still misses; its strict final proof pair remains deferred. The campaign does not include the separate retained #48 research implementation. S2's research timings are a second-source comparator, never additive phases of this adopted product.
 

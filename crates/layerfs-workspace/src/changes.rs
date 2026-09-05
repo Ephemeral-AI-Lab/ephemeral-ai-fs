@@ -572,6 +572,8 @@ impl Workspace {
         built
     }
 
+    // Keep the existing frontier inputs explicit without adding a wrapper type.
+    #[allow(clippy::too_many_arguments)]
     fn apply_frontier_directory(
         &self,
         objects: &mut ObjectBuffer<'_>,

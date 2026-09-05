@@ -634,20 +634,17 @@ impl Workspace {
         let started = std::time::Instant::now();
         let mut segments = std::collections::BTreeMap::new();
         if let Some(node) = node {
-            match &self
+            if let Data::File(FileData::Edited { pieces, .. }) = &self
                 .nodes
                 .get(&node)
                 .ok_or(StoreError::NotFound("node"))?
                 .data
             {
-                Data::File(FileData::Edited { pieces, .. }) => {
-                    for piece in pieces.pieces() {
-                        if let Piece::Spool { segment, .. } = piece {
-                            segments.insert(segment.id, segment);
-                        }
+                for piece in pieces.pieces() {
+                    if let Piece::Spool { segment, .. } = piece {
+                        segments.insert(segment.id, segment);
                     }
                 }
-                _ => {}
             }
             for segment in segments.values() {
                 segment.check()?;

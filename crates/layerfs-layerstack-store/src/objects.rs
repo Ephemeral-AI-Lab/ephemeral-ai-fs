@@ -340,6 +340,8 @@ pub(crate) struct OutputPipelineMetrics {
 }
 
 // One bounded ownership/drain/join implementation for native and Workspace inputs.
+// Keep lifecycle callbacks explicit rather than introducing a configuration wrapper.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_finalized_output<I, S: Send, T: Send>(
     worker_limit: usize,
     task_count: usize,
@@ -442,10 +444,9 @@ where
             metrics.last_receive_ns = elapsed_ns(started);
             queue.received(slab.payload_bytes);
             if failure.is_none() {
-                let result = catch_unwind(AssertUnwindSafe(|| consume(slab.objects)))
-                    .unwrap_or_else(|_| {
-                        Err(StoreError::Integrity("canonical output consumer panic"))
-                    });
+                let result = catch_unwind(AssertUnwindSafe(|| consume(slab.objects))).unwrap_or(
+                    Err(StoreError::Integrity("canonical output consumer panic")),
+                );
                 if let Err(error) = result {
                     failure = Some(error);
                     cancelled.store(true, Ordering::Release);
@@ -465,18 +466,18 @@ where
                 }
             }
         }
-        if failure.is_none() && !cancelled.load(Ordering::Acquire) {
-            if claimed.load(Ordering::Relaxed) != task_count as u64
+        if failure.is_none()
+            && !cancelled.load(Ordering::Acquire)
+            && (claimed.load(Ordering::Relaxed) != task_count as u64
                 || completed.load(Ordering::Relaxed) != task_count as u64
                 || tasks
                     .lock()
                     .map_err(|_| StoreError::Integrity("canonical task source"))?
                     .next()
-                    .is_some()
-            {
-                failure = Some(StoreError::Integrity("canonical task coverage"));
-                cancelled.store(true, Ordering::Release);
-            }
+                    .is_some())
+        {
+            failure = Some(StoreError::Integrity("canonical task coverage"));
+            cancelled.store(true, Ordering::Release);
         }
         failure.map_or(Ok(output), Err)
     })?;
@@ -1920,6 +1921,8 @@ pub(crate) struct FinishedOutputAdmission {
     pub diagnostics: InitializationAdmissionDiagnostics,
 }
 
+// Preserve inline spill ownership; Connection/Mutex layout varies by platform.
+#[allow(clippy::large_enum_variant)]
 enum SeenStorage {
     Memory(BTreeSet<ObjectId>),
     Spill {
@@ -3525,6 +3528,8 @@ impl crate::LayerStackStore {
         })
     }
 
+    // Match the shared driver's explicit task inputs and lifecycle callbacks.
+    #[allow(clippy::too_many_arguments)]
     pub fn construct_workspace_files<I, S: Send, T: Send>(
         &self,
         workspace_id: [u8; 16],
