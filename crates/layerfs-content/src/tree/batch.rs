@@ -147,6 +147,7 @@ impl<K: Clone> Node<K> {
 }
 struct Engine<'a, S, F> {
     store: &'a mut S,
+    changes: &'a mut dyn FnMut(Option<ObjectId>, Option<ObjectId>) -> CoreResult<()>,
     budget: Rc<Budget>,
     counters: TreeBatchCounters,
     format: PhantomData<F>,
@@ -479,10 +480,12 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
                 let (key, value) = if delta_first {
                     let (key, value) = deltas.take()?;
                     self.counters.delta_keys += 1;
-                    let existed = old.peek().is_some_and(|old| old.0 == key);
-                    if existed {
-                        old.next();
-                    }
+                    let previous = if old.peek().is_some_and(|old| old.0 == key) {
+                        old.next().map(|(_, value)| value)
+                    } else {
+                        None
+                    };
+                    (self.changes)(previous, value)?;
                     (key, value)
                 } else {
                     let (key, value) = old.next().unwrap();
@@ -580,7 +583,14 @@ fn apply<S: ObjectStore, F: Format>(
     root: ObjectId,
     source: impl Iterator<Item = CoreResult<(F::Key, Option<ObjectId>)>>,
 ) -> CoreResult<(ObjectId, TreeBatchCounters)> {
-    apply_budgeted::<S, F>(store, root, source, SORTED_TREE_UPDATE_SCRATCH_BYTES, None)
+    apply_budgeted::<S, F>(
+        store,
+        root,
+        source,
+        SORTED_TREE_UPDATE_SCRATCH_BYTES,
+        None,
+        &mut |_, _| Ok(()),
+    )
 }
 fn apply_budgeted<S: ObjectStore, F: Format>(
     store: &mut S,
@@ -588,6 +598,7 @@ fn apply_budgeted<S: ObjectStore, F: Format>(
     source: impl Iterator<Item = CoreResult<(F::Key, Option<ObjectId>)>>,
     scratch_limit: usize,
     expected: Option<(u8, u64)>,
+    changes: &mut dyn FnMut(Option<ObjectId>, Option<ObjectId>) -> CoreResult<()>,
 ) -> CoreResult<(ObjectId, TreeBatchCounters)> {
     let mut deltas = Deltas::new(source)?;
     if deltas.next.is_none() {
@@ -595,6 +606,7 @@ fn apply_budgeted<S: ObjectStore, F: Format>(
     }
     let mut engine = Engine::<S, F> {
         store,
+        changes,
         budget: Rc::new(Budget {
             limit: scratch_limit,
             ..Budget::default()
@@ -826,6 +838,18 @@ pub fn directory_apply_sorted_with_budget<S: ObjectStore>(
     deltas: impl Iterator<Item = CoreResult<(CanonicalName, Option<InodeId>)>>,
     scratch_limit: usize,
 ) -> CoreResult<(super::directory::DirectoryStateRoot, TreeBatchCounters)> {
+    directory_apply_sorted_observed(store, root, deltas, scratch_limit, |_, _| Ok(()))
+}
+
+/// Reports each original/final binding from the same leaf merge. Observations
+/// are provisional until success; callers must discard them if construction fails.
+pub fn directory_apply_sorted_observed<S: ObjectStore>(
+    store: &mut S,
+    root: super::directory::DirectoryStateRoot,
+    deltas: impl Iterator<Item = CoreResult<(CanonicalName, Option<InodeId>)>>,
+    scratch_limit: usize,
+    mut changes: impl FnMut(Option<InodeId>, Option<InodeId>) -> CoreResult<()>,
+) -> CoreResult<(super::directory::DirectoryStateRoot, TreeBatchCounters)> {
     use super::directory::codec::{decode_directory_state, encode_directory_state};
     let mut state = store.with_authenticated_canonical(root.0, decode_directory_state)?;
     let (mapping, mut counters) = apply_budgeted::<S, Directory>(
@@ -834,6 +858,12 @@ pub fn directory_apply_sorted_with_budget<S: ObjectStore>(
         deltas.map(|v| v.map(|(k, v)| (k, v.map(|v| ObjectId::from_digest(v.0))))),
         scratch_limit,
         Some((state.tree_level, state.entry_count)),
+        &mut |before, after| {
+            changes(
+                before.map(|id| InodeId(id.to_bytes())),
+                after.map(|id| InodeId(id.to_bytes())),
+            )
+        },
     )?;
     counters.nodes_read += 1;
     if mapping == state.mapping_root {
@@ -864,7 +894,10 @@ pub fn inode_table_apply_sorted_with_budget<S: ObjectStore>(
     deltas: impl Iterator<Item = CoreResult<(InodeId, Option<ObjectId>)>>,
     scratch_limit: usize,
 ) -> CoreResult<(super::inode::InodeTableRoot, TreeBatchCounters)> {
-    let (root, counters) = apply_budgeted::<S, Inodes>(store, root.0, deltas, scratch_limit, None)?;
+    let (root, counters) =
+        apply_budgeted::<S, Inodes>(store, root.0, deltas, scratch_limit, None, &mut |_, _| {
+            Ok(())
+        })?;
     Ok((super::inode::InodeTableRoot(root), counters))
 }
 
@@ -907,6 +940,66 @@ mod tests {
     }
     fn value(index: usize) -> ObjectId {
         ObjectId::for_bytes(&(index as u64).to_le_bytes())
+    }
+
+    #[test]
+    fn sorted_directory_reports_original_and_final_bindings_from_the_merge() {
+        let mut store = MemoryStore::default();
+        let root =
+            build_initial_directory(&mut store, (0..12).map(|i| (name(i), inode(i)))).unwrap();
+        let deltas = [
+            (name(1), Some(inode(99))),
+            (name(3), None),
+            (name(5), Some(inode(5))),
+            (name(13), Some(inode(13))),
+            (name(14), None),
+        ];
+        let mut observed = Vec::new();
+        let (actual, _) = directory_apply_sorted_observed(
+            &mut store,
+            root,
+            deltas.clone().into_iter().map(Ok),
+            SORTED_TREE_UPDATE_SCRATCH_BYTES,
+            |before, after| {
+                observed.push((before, after));
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            observed,
+            [
+                (Some(inode(1)), Some(inode(99))),
+                (Some(inode(3)), None),
+                (Some(inode(5)), Some(inode(5))),
+                (None, Some(inode(13))),
+                (None, None)
+            ]
+        );
+        let (expected, _) =
+            directory_apply_sorted(&mut store, root, deltas.clone().into_iter().map(Ok)).unwrap();
+        assert_eq!(actual, expected);
+        let mut prefix = 0;
+        let failed = directory_apply_sorted_observed(
+            &mut store,
+            root,
+            deltas.into_iter().map(Ok),
+            SORTED_TREE_UPDATE_SCRATCH_BYTES,
+            |_, _| {
+                prefix += 1;
+                if prefix == 2 {
+                    Err(CoreError::Io)
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert!(matches!(failed, Err(CoreError::Io)));
+        assert_eq!(prefix, 2);
+        assert_eq!(
+            directory_lookup(&store, root, &name(3), &mut NamespaceCounters::default()).unwrap(),
+            Some(inode(3))
+        );
     }
 
     #[test]
