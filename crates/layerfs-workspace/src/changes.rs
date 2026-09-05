@@ -1021,6 +1021,9 @@ impl FrozenFile {
         before: Option<InodeRecordV1>,
         captured: Option<crate::capture::CapturedFile>,
     ) -> Result<BuiltRoot> {
+        if before.is_none() && captured.is_none() {
+            return ObjectBuffer::build_complete_file(self.reader(), self.len);
+        }
         let (mut objects, captured_root) = match captured {
             Some(captured) => {
                 if captured.len != self.len {
@@ -1044,11 +1047,11 @@ impl FrozenFile {
                     None if self.incremental_file_supported(record.content_root) => {
                         (FileStateRoot(record.content_root), RopeCounters::default())
                     }
-                    None => rope::build(&mut objects, self.reader())?,
+                    None => return ObjectBuffer::build_complete_file(self.reader(), self.len),
                 }
             }
         } else {
-            rope::build(&mut objects, self.reader())?
+            return ObjectBuffer::build_complete_file(self.reader(), self.len);
         };
         if rope::state(&objects, root, &mut RopeCounters::default())?.logical_len != self.len {
             return Err(StorageError::Integrity("completed file length"));

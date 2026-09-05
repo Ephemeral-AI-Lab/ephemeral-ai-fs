@@ -2648,6 +2648,27 @@ impl<'a> ObjectBuffer<'a> {
         Ok(output)
     }
 
+    /// Full-file rope construction emits sealed prefixes, attaches every prefix
+    /// to its final mapping root, and then emits FileState. This is the same
+    /// append-only finality used by native import; incremental edits do not use it.
+    /// Keep the entire file private until successful construction and length check.
+    pub fn build_complete_file(source: impl Read, expected_len: u64) -> Result<BuiltRoot> {
+        let mut objects = Self::bounded_output(None)?;
+        objects.objects.references = None;
+        let (root, counters) = layerfs_content::file::rope::build(&mut objects, source)?;
+        if layerfs_content::file::rope::state(
+            &objects,
+            root,
+            &mut layerfs_content::file::rope::RopeCounters::default(),
+        )?
+        .logical_len
+            != expected_len
+        {
+            return Err(StoreError::Integrity("completed file length"));
+        }
+        objects.finish_all_reachable(root.0, counters.cdc_bytes_scanned)
+    }
+
     pub fn finish(self, root_id: ObjectId, cdc_bytes_scanned: u64) -> Result<BuiltRoot> {
         let encode_hash_invocations = self.objects.len();
         let objects = self.objects.reachable_from(root_id)?;
@@ -3697,6 +3718,75 @@ impl ObjectSource for crate::schema::StoreDb {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn complete_file_output_matches_reachability_selection_across_spill_and_tree_boundaries() {
+        use layerfs_content::file::{cdc::MAXIMUM_CHUNK_BYTES, extent::MAX_ENTRIES, rope};
+        for size in [
+            0,
+            1,
+            MAXIMUM_CHUNK_BYTES + 1,
+            MAXIMUM_CHUNK_BYTES * (MAX_ENTRIES + 1),
+        ] {
+            for repetitive in [false, true] {
+                let mut random = 7_u64;
+                let bytes = (0..size)
+                    .map(|_| {
+                        random ^= random << 13;
+                        random ^= random >> 7;
+                        random ^= random << 17;
+                        if repetitive {
+                            0
+                        } else {
+                            random as u8
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                let mut selected = ObjectBuffer::bounded_output(None).unwrap();
+                let (root, counters) = rope::build(&mut selected, bytes.as_slice()).unwrap();
+                let selected = selected.finish(root.0, counters.cdc_bytes_scanned).unwrap();
+                let direct =
+                    ObjectBuffer::build_complete_file(bytes.as_slice(), size as u64).unwrap();
+                assert_eq!(direct.root_id, selected.root_id);
+                assert_eq!(direct.objects.len(), selected.objects.len());
+                assert_eq!(
+                    direct.objects.encoded_bytes(),
+                    selected.objects.encoded_bytes()
+                );
+                assert_eq!(
+                    direct
+                        .objects
+                        .ids_in_order(usize::MAX)
+                        .unwrap()
+                        .unwrap()
+                        .into_iter()
+                        .collect::<BTreeSet<_>>(),
+                    selected
+                        .objects
+                        .ids_in_order(usize::MAX)
+                        .unwrap()
+                        .unwrap()
+                        .into_iter()
+                        .collect::<BTreeSet<_>>()
+                );
+                assert!(!direct.objects.has_reference_index());
+                if !repetitive && size > CANDIDATE_SPILL_BUFFER_BYTES {
+                    assert!(direct.counters.spill_count > 0);
+                }
+            }
+        }
+        assert!(matches!(
+            ObjectBuffer::build_complete_file(b"short".as_slice(), 6),
+            Err(StoreError::Integrity("completed file length"))
+        ));
+        struct Broken;
+        impl Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::Other.into())
+            }
+        }
+        assert!(ObjectBuffer::build_complete_file(Broken, 1).is_err());
+    }
 
     #[test]
     fn seen_index_spill_preserves_exact_membership_and_private_cleanup() {
