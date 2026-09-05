@@ -2768,6 +2768,21 @@ impl ObjectStore for ObjectBuffer<'_> {
             .map_err(core_read_error)
     }
 
+    fn with_authenticated_canonical<T, F>(&self, id: ObjectId, callback: F) -> CoreResult<T>
+    where
+        F: FnOnce(&[u8]) -> CoreResult<T>,
+    {
+        if let DeferredObjects::Memory { rows, .. } = &self.objects.storage {
+            if let Some(object) = rows.get(&id) {
+                return callback(&object.bytes);
+            }
+        }
+        // Storage/base reads have no retained owned proof at this boundary.
+        let bytes = ObjectStore::get(self, id)?;
+        layerfs_content::authenticate_identity(&bytes, id)?;
+        callback(&bytes)
+    }
+
     fn put(&mut self, canonical: &[u8]) -> CoreResult<ObjectId> {
         self.put_owned(canonical.to_vec())
     }
@@ -4184,7 +4199,17 @@ mod tests {
             DeferredObjects::Memory { rows, .. } => rows.get(&id).unwrap().bytes.as_ptr(),
             DeferredObjects::Spill(_) => panic!("small segment spilled"),
         };
-        segment
+        let buffer = ObjectBuffer {
+            source: None,
+            objects: segment,
+        };
+        ObjectStore::with_authenticated_canonical(&buffer, id, |bytes| {
+            assert_eq!(bytes.as_ptr(), original);
+            Ok(())
+        })
+        .unwrap();
+        buffer
+            .into_resumable()
             .all_reachable()
             .unwrap()
             .consume_prevalidated_pages(|page| {
