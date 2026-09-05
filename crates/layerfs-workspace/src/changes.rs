@@ -345,11 +345,19 @@ impl Workspace {
     // edges directly preserves untouched subtrees, including a renamed directory,
     // without building either complete namespace manifest.
     fn build_frontier_candidate(&mut self, purpose: CandidatePurpose) -> Result<PreparedCommit> {
+        self.build_frontier_candidate_with_workers(purpose, 1)
+    }
+
+    fn build_frontier_candidate_with_workers(
+        &mut self,
+        purpose: CandidatePurpose,
+        worker_limit: usize,
+    ) -> Result<PreparedCommit> {
         let started = Instant::now();
         self.policy.check_final_delta(1024)?;
         let batch_size = (self.policy.max_final_delta_memory_bytes / 4096).clamp(1, 128) as usize;
         let io_bytes = journal_io_bytes(self.policy.max_final_delta_memory_bytes);
-        // Four live journal buffers share the existing final-delta allowance.
+        // Task-index and all worker-result buffers split one existing journal allowance.
         let frontier_budget = self
             .policy
             .max_final_delta_memory_bytes
@@ -368,32 +376,48 @@ impl Workspace {
             base_inodes: self.base_inodes,
             generation: self.mutation_generation,
             spool: &self.spool,
-            io_bytes,
+            io_bytes: io_bytes / 2,
             captured: std::sync::Mutex::new(captured),
         };
         note_commit_phase(WorkspaceCommitPhase::CandidatePlan, started);
         let content_started = Instant::now();
         let mut objects = ObjectBuffer::bounded_output(Some(&self.reader))?;
-        let (mut files, admission) = match purpose {
+        let plan = inputs.prepare()?;
+        let workers = worker_limit.min(plan.count).min(io_bytes / 256).min(8);
+        if workers == 0 && plan.count != 0 {
+            return Err(StorageError::InvalidInput("file producer budget"));
+        }
+        let tasks = plan.tasks(io_bytes / 2)?;
+        let initialize = |worker| inputs.worker(worker, workers.max(1));
+        let step =
+            |worker: &mut FileResultWriter,
+             ordinal,
+             task: Result<NodeId>,
+             writer: &mut layerfs_layerstack_store::FinalizedOutputWriter| {
+                inputs.produce_file(worker, &plan.file, ordinal, task?, &mut |selected| {
+                    writer.send_selected(selected)
+                })
+            };
+        let finish = |worker: FileResultWriter| worker.finish();
+        let (workers, admission) = match purpose {
             CandidatePurpose::Commit => {
-                let (files, admission) = self.store.construct_workspace_files(
+                let (workers, admission) = self.store.construct_workspace_files(
                     self.workspace_id,
-                    |writer, cancelled| {
-                        inputs.produce(cancelled, &mut |selected| writer.send_selected(selected))
-                    },
+                    workers,
+                    plan.count,
+                    tasks,
+                    initialize,
+                    step,
+                    finish,
                 )?;
-                (files, Some(admission))
+                (workers, Some(admission))
             }
-            CandidatePurpose::Preview => {
-                let cancelled = std::sync::atomic::AtomicBool::new(false);
-                (
-                    inputs.produce(&cancelled, &mut |selected| {
-                        objects.merge_prevalidated(selected)
-                    })?,
-                    None,
-                )
-            }
+            CandidatePurpose::Preview => (
+                objects.construct_files(workers, plan.count, tasks, initialize, step, finish)?,
+                None,
+            ),
         };
+        let mut files = FileResults::new(plan, workers, io_bytes / 2)?;
         drop(inputs);
         note_commit_phase(WorkspaceCommitPhase::Content, content_started);
         let started = Instant::now();
@@ -825,8 +849,81 @@ struct StableFileInputs<'a> {
     captured: std::sync::Mutex<Option<crate::capture::CapturedFile>>,
 }
 
+// Fixed task slots restore ordinal order without an in-memory completion map.
+// Each slot holds NodeId, worker+1, journal offset and encoded result length.
+const FILE_TASK_BYTES: u64 = 32;
+struct FileTaskPlan {
+    file: File,
+    count: usize,
+    generation: u64,
+}
+struct FileTasks {
+    reader: BufReader<File>,
+    remaining: usize,
+}
+impl Iterator for FileTasks {
+    type Item = Result<NodeId>;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        self.remaining -= 1;
+        let mut slot = [0; FILE_TASK_BYTES as usize];
+        Some(
+            self.reader
+                .read_exact(&mut slot)
+                .map(|()| NodeId(u64::from_le_bytes(slot[..8].try_into().unwrap())))
+                .map_err(Into::into),
+        )
+    }
+}
+impl FileTaskPlan {
+    fn tasks(&self, io_bytes: usize) -> Result<FileTasks> {
+        let mut file = self.file.try_clone()?;
+        file.seek(SeekFrom::Start(0))?;
+        Ok(FileTasks {
+            reader: BufReader::with_capacity(io_bytes, file),
+            remaining: self.count,
+        })
+    }
+}
+struct FileResultWriter {
+    worker: usize,
+    partitions: usize,
+    journal: BufWriter<File>,
+    offset: u64,
+    count: u64,
+    counters: layerfs_layerstack_store::BuildCounters,
+}
+struct WorkerFileResults {
+    worker: usize,
+    file: File,
+    io_bytes: usize,
+    count: u64,
+    counters: layerfs_layerstack_store::BuildCounters,
+}
+impl FileResultWriter {
+    fn finish(mut self) -> Result<WorkerFileResults> {
+        self.journal.flush()?;
+        let io_bytes = self.journal.capacity();
+        let mut file = self
+            .journal
+            .into_inner()
+            .map_err(|error| error.into_error())?;
+        file.seek(SeekFrom::Start(0))?;
+        Ok(WorkerFileResults {
+            worker: self.worker,
+            file,
+            io_bytes,
+            count: self.count,
+            counters: self.counters,
+        })
+    }
+}
 struct FileResults {
-    file: std::io::BufReader<File>,
+    index: BufReader<File>,
+    files: Vec<BufReader<File>>,
+    offsets: Vec<u64>,
     remaining: u64,
     generation: u64,
     counters: layerfs_layerstack_store::BuildCounters,
@@ -853,19 +950,10 @@ fn add_build_counters(
 }
 
 impl StableFileInputs<'_> {
-    fn produce(
-        &self,
-        cancelled: &std::sync::atomic::AtomicBool,
-        emit: &mut dyn FnMut(layerfs_layerstack_store::DeferredObjectStore) -> Result<()>,
-    ) -> Result<FileResults> {
-        use std::io::{Seek, SeekFrom};
-        let mut journal = BufWriter::with_capacity(self.io_bytes, anonymous_journal(self.spool)?);
-        let mut counters = layerfs_layerstack_store::BuildCounters::default();
-        let mut count = 0_u64;
+    fn prepare(&self) -> Result<FileTaskPlan> {
+        let mut writer = BufWriter::with_capacity(self.io_bytes, anonymous_journal(self.spool)?);
+        let mut count = 0_usize;
         for &id in self.dirty {
-            if cancelled.load(std::sync::atomic::Ordering::Acquire) {
-                return Err(StorageError::Integrity("file production cancelled"));
-            }
             let node = self
                 .nodes
                 .get(&id)
@@ -873,62 +961,144 @@ impl StableFileInputs<'_> {
             if !matches!(node.data, Data::File(_)) || (node.paths.is_empty() && node.links == 0) {
                 continue;
             }
-            let input = FrozenFile::from_node(&self.reader, node)?;
-            let before = node
-                .canonical
-                .map(|inode| -> Result<_> {
-                    let core = CoreReader(&self.reader);
-                    let record = inode_table_lookup(
-                        &core,
-                        self.base_inodes,
-                        inode,
-                        &mut InodeTableCounters::default(),
-                    )?
-                    .ok_or(StorageError::Integrity("frozen file inode"))?;
-                    Ok(core.with_authenticated_canonical(record, decode_inode_record)?)
-                })
-                .transpose()?;
-            let captured = {
-                let mut captured = self
-                    .captured
-                    .lock()
-                    .map_err(|_| StorageError::Integrity("captured file input"))?;
-                if captured
-                    .as_ref()
-                    .is_some_and(|captured| captured.node == id)
-                {
-                    captured.take()
-                } else {
-                    None
-                }
-            };
-            let built = input.build(before, captured)?;
-            let root = built.root_id;
-            add_build_counters(&mut counters, built.counters);
-            emit(built.objects)?;
-            let before = before.map(encode_inode_record).transpose()?;
-            journal.write_all(&id.0.to_le_bytes())?;
-            journal.write_all(&input.len.to_le_bytes())?;
-            journal.write_all(root.as_bytes())?;
-            journal.write_all(&(before.as_ref().map_or(0, Vec::len) as u32).to_le_bytes())?;
-            if let Some(before) = before {
-                journal.write_all(&before)?;
-            }
-            count += 1;
+            let mut slot = [0; FILE_TASK_BYTES as usize];
+            slot[..8].copy_from_slice(&id.0.to_le_bytes());
+            writer.write_all(&slot)?;
+            count = count
+                .checked_add(1)
+                .ok_or(StorageError::Integrity("file task count"))?;
         }
-        journal.flush()?;
-        let mut file = journal.into_inner().map_err(|error| error.into_error())?;
-        file.seek(SeekFrom::Start(0))?;
-        Ok(FileResults {
-            file: BufReader::with_capacity(self.io_bytes, file),
-            remaining: count,
+        writer.flush()?;
+        Ok(FileTaskPlan {
+            file: writer.into_inner().map_err(|error| error.into_error())?,
+            count,
             generation: self.generation,
-            counters,
         })
+    }
+
+    fn worker(&self, worker: usize, workers: usize) -> Result<FileResultWriter> {
+        Ok(FileResultWriter {
+            worker,
+            partitions: workers,
+            journal: BufWriter::with_capacity(
+                self.io_bytes / workers,
+                anonymous_journal(self.spool)?,
+            ),
+            offset: 0,
+            count: 0,
+            counters: Default::default(),
+        })
+    }
+
+    fn produce_file(
+        &self,
+        worker: &mut FileResultWriter,
+        index: &File,
+        ordinal: usize,
+        id: NodeId,
+        emit: &mut dyn FnMut(layerfs_layerstack_store::DeferredObjectStore) -> Result<()>,
+    ) -> Result<()> {
+        let node = self
+            .nodes
+            .get(&id)
+            .ok_or(StorageError::Integrity("frozen file node"))?;
+        let input = FrozenFile::from_node(&self.reader, node)?;
+        let before = node
+            .canonical
+            .map(|inode| -> Result<_> {
+                let core = CoreReader(&self.reader);
+                let record = inode_table_lookup(
+                    &core,
+                    self.base_inodes,
+                    inode,
+                    &mut InodeTableCounters::default(),
+                )?
+                .ok_or(StorageError::Integrity("frozen file inode"))?;
+                Ok(core.with_authenticated_canonical(record, decode_inode_record)?)
+            })
+            .transpose()?;
+        let captured = {
+            let mut captured = self
+                .captured
+                .lock()
+                .map_err(|_| StorageError::Integrity("captured file input"))?;
+            if captured
+                .as_ref()
+                .is_some_and(|captured| captured.node == id)
+            {
+                captured.take()
+            } else {
+                None
+            }
+        };
+        let built = input.build(before, captured, worker.partitions)?;
+        let root = built.root_id;
+        add_build_counters(&mut worker.counters, built.counters);
+        emit(built.objects)?;
+        let before = before.map(encode_inode_record).transpose()?;
+        let mut record = Vec::with_capacity(308);
+        record.extend_from_slice(&id.0.to_le_bytes());
+        record.extend_from_slice(&input.len.to_le_bytes());
+        record.extend_from_slice(root.as_bytes());
+        record.extend_from_slice(&(before.as_ref().map_or(0, Vec::len) as u32).to_le_bytes());
+        if let Some(before) = before {
+            record.extend_from_slice(&before);
+        }
+        worker.journal.write_all(&record)?;
+        let mut location = [0; 24];
+        location[..8].copy_from_slice(&(worker.worker as u64 + 1).to_le_bytes());
+        location[8..16].copy_from_slice(&worker.offset.to_le_bytes());
+        location[16..].copy_from_slice(&(record.len() as u64).to_le_bytes());
+        let offset = (ordinal as u64)
+            .checked_mul(FILE_TASK_BYTES)
+            .and_then(|v| v.checked_add(8))
+            .ok_or(StorageError::Integrity("file task offset"))?;
+        index.write_all_at(&location, offset)?;
+        worker.offset = worker
+            .offset
+            .checked_add(record.len() as u64)
+            .ok_or(StorageError::Integrity("file result offset"))?;
+        worker.count += 1;
+        Ok(())
     }
 }
 
 impl FileResults {
+    fn new(
+        mut plan: FileTaskPlan,
+        workers: Vec<WorkerFileResults>,
+        io_bytes: usize,
+    ) -> Result<Self> {
+        let mut counters = layerfs_layerstack_store::BuildCounters::default();
+        let mut count = 0_u64;
+        let mut files = Vec::with_capacity(workers.len());
+        for worker in workers {
+            if worker.worker != files.len() {
+                return Err(StorageError::Integrity("file result worker order"));
+            }
+            count += worker.count;
+            // Sum worker-local spill peaks as an upper bound on concurrent spill.
+            let peak = counters
+                .spill_peak_bytes
+                .saturating_add(worker.counters.spill_peak_bytes);
+            add_build_counters(&mut counters, worker.counters);
+            counters.spill_peak_bytes = peak;
+            files.push(BufReader::with_capacity(worker.io_bytes, worker.file));
+        }
+        if count != plan.count as u64 {
+            return Err(StorageError::Integrity("file result task coverage"));
+        }
+        plan.file.seek(SeekFrom::Start(0))?;
+        Ok(Self {
+            index: BufReader::with_capacity(io_bytes, plan.file),
+            offsets: vec![0; files.len()],
+            files,
+            remaining: count,
+            generation: plan.generation,
+            counters,
+        })
+    }
+
     fn next(
         &mut self,
         node: NodeId,
@@ -938,8 +1108,23 @@ impl FileResults {
         if generation != self.generation || self.remaining == 0 {
             return Err(StorageError::Integrity("file result generation"));
         }
+        let mut slot = [0; FILE_TASK_BYTES as usize];
+        self.index.read_exact(&mut slot)?;
+        let worker = u64::from_le_bytes(slot[8..16].try_into().unwrap())
+            .checked_sub(1)
+            .and_then(|worker| usize::try_from(worker).ok())
+            .ok_or(StorageError::Integrity("missing file result"))?;
+        let offset = u64::from_le_bytes(slot[16..24].try_into().unwrap());
+        let encoded_len = u64::from_le_bytes(slot[24..].try_into().unwrap());
+        if u64::from_le_bytes(slot[..8].try_into().unwrap()) != node.0
+            || self.offsets.get(worker) != Some(&offset)
+            || !(52..=308).contains(&encoded_len)
+        {
+            return Err(StorageError::Integrity("file result task identity"));
+        }
+        let file = &mut self.files[worker];
         let mut header = [0; 52];
-        self.file.read_exact(&mut header)?;
+        file.read_exact(&mut header)?;
         if u64::from_le_bytes(header[..8].try_into().unwrap()) != node.0
             || u64::from_le_bytes(header[8..16].try_into().unwrap()) != len
         {
@@ -948,10 +1133,11 @@ impl FileResults {
         let root = ObjectId::from_bytes(&header[16..48])?;
         let size = u32::from_le_bytes(header[48..52].try_into().unwrap()) as usize;
         let mut record = [0; 256];
-        if size > record.len() {
+        if size > record.len() || encoded_len != 52 + size as u64 {
             return Err(StorageError::Integrity("file result record"));
         }
-        self.file.read_exact(&mut record[..size])?;
+        file.read_exact(&mut record[..size])?;
+        self.offsets[worker] += encoded_len;
         self.remaining -= 1;
         Ok((
             root,
@@ -963,8 +1149,13 @@ impl FileResults {
         ))
     }
     fn finish_read(&mut self) -> Result<()> {
-        if self.remaining != 0 || self.file.read(&mut [0; 1])? != 0 {
+        if self.remaining != 0 || self.index.read(&mut [0; 1])? != 0 {
             return Err(StorageError::Integrity("file result coverage"));
+        }
+        for file in &mut self.files {
+            if file.read(&mut [0; 1])? != 0 {
+                return Err(StorageError::Integrity("file result journal coverage"));
+            }
         }
         Ok(())
     }
@@ -1020,9 +1211,14 @@ impl FrozenFile {
         &self,
         before: Option<InodeRecordV1>,
         captured: Option<crate::capture::CapturedFile>,
+        partitions: usize,
     ) -> Result<BuiltRoot> {
         if before.is_none() && captured.is_none() {
-            return ObjectBuffer::build_complete_file(self.reader(), self.len);
+            return ObjectBuffer::build_complete_file_partition(
+                self.reader(),
+                self.len,
+                partitions,
+            );
         }
         let (mut objects, captured_root) = match captured {
             Some(captured) => {
@@ -1036,6 +1232,7 @@ impl FrozenFile {
             }
             None => (ObjectBuffer::bounded_output(Some(&self.reader))?, None),
         };
+        objects.partition_output(partitions)?;
         let (root, counters) = if let Some(captured) = captured_root {
             captured
         } else if let Some(record) = before {
@@ -1047,11 +1244,21 @@ impl FrozenFile {
                     None if self.incremental_file_supported(record.content_root) => {
                         (FileStateRoot(record.content_root), RopeCounters::default())
                     }
-                    None => return ObjectBuffer::build_complete_file(self.reader(), self.len),
+                    None => {
+                        return ObjectBuffer::build_complete_file_partition(
+                            self.reader(),
+                            self.len,
+                            partitions,
+                        )
+                    }
                 }
             }
         } else {
-            return ObjectBuffer::build_complete_file(self.reader(), self.len);
+            return ObjectBuffer::build_complete_file_partition(
+                self.reader(),
+                self.len,
+                partitions,
+            );
         };
         if rope::state(&objects, root, &mut RopeCounters::default())?.logical_len != self.len {
             return Err(StorageError::Integrity("completed file length"));
@@ -2092,6 +2299,196 @@ mod tests {
             .unwrap();
         let workspace = Workspace::open(store, branch, root.join("spool")).unwrap();
         (root, workspace)
+    }
+
+    #[test]
+    fn producer_workers_preserve_roots_alias_capture_and_empty_inputs() {
+        let (root, mut workspace) = empty_workspace("producer-workers");
+        workspace.mkdir(ROOT, b"directory", 0o700).unwrap();
+        let empty = workspace
+            .build_frontier_candidate_with_workers(CandidatePurpose::Preview, 4)
+            .unwrap();
+        assert_eq!(empty.built.counters.cdc_bytes_scanned, 0);
+        drop(empty);
+        let mut files = Vec::new();
+        for index in 0..4 {
+            let data = vec![index as u8 + 1; 100_000 + index * 123];
+            let node = workspace
+                .create_file(ROOT, format!("file-{index}").as_bytes(), 0o640)
+                .unwrap()
+                .node;
+            workspace.write(node, 0, &data).unwrap();
+            files.push((node, data));
+        }
+        workspace.link(files[0].0, ROOT, b"alias").unwrap();
+        let arm_capture = |workspace: &mut Workspace| {
+            let mut objects = ObjectBuffer::empty().unwrap();
+            let (root, counters) = rope::build(&mut objects, files[0].1.as_slice()).unwrap();
+            workspace.capture =
+                crate::capture::CaptureState::Ready(Box::new(crate::capture::CapturedFile {
+                    node: files[0].0,
+                    len: files[0].1.len() as u64,
+                    root,
+                    counters,
+                    objects: objects.into_resumable(),
+                }));
+        };
+        let before = workspace.store.store_counts().unwrap();
+        arm_capture(&mut workspace);
+        let serial = workspace
+            .build_frontier_candidate_with_workers(CandidatePurpose::Preview, 1)
+            .unwrap();
+        let expected = serial.built.root_id;
+        let expected_ids = serial
+            .built
+            .objects
+            .ids_in_order(usize::MAX)
+            .unwrap()
+            .unwrap()
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let scanned = files
+            .iter()
+            .map(|(_, bytes)| bytes.len() as u64)
+            .sum::<u64>();
+        assert_eq!(serial.built.counters.cdc_bytes_scanned, scanned);
+        drop(serial);
+        // Corrupt only the captured inode's backing to prove that its completed
+        // output is reused, rather than silently rebuilding it for either alias.
+        let Data::File(FileData::Edited { pieces, .. }) = &workspace.nodes[&files[0].0].data else {
+            unreachable!()
+        };
+        let captured_slice = pieces.compact_spool().unwrap();
+        let captured_segment = captured_slice.segment.clone();
+        let captured_offset = captured_slice.offset;
+        captured_segment
+            .file
+            .write_all_at(&vec![0; files[0].1.len()], captured_offset)
+            .unwrap();
+        arm_capture(&mut workspace);
+        let parallel = workspace
+            .build_frontier_candidate_with_workers(CandidatePurpose::Preview, 4)
+            .unwrap();
+        assert_eq!(parallel.built.root_id, expected);
+        assert_eq!(parallel.built.counters.cdc_bytes_scanned, scanned);
+        assert_eq!(
+            parallel
+                .built
+                .objects
+                .ids_in_order(usize::MAX)
+                .unwrap()
+                .unwrap()
+                .into_iter()
+                .collect::<BTreeSet<_>>(),
+            expected_ids
+        );
+        assert_eq!(workspace.store.store_counts().unwrap(), before);
+        assert!(workspace.take_capture().is_none());
+        drop(parallel);
+        captured_segment
+            .file
+            .write_all_at(&files[0].1, captured_offset)
+            .unwrap();
+        drop(captured_segment);
+        arm_capture(&mut workspace);
+        let admitted = workspace
+            .build_frontier_candidate_with_workers(CandidatePurpose::Commit, 4)
+            .unwrap();
+        assert_eq!(admitted.built.root_id, expected);
+        assert_eq!(admitted.built.counters.cdc_bytes_scanned, scanned);
+        assert!(admitted.admission.is_some());
+        drop(admitted);
+        workspace.commit().unwrap();
+        assert_eq!(workspace.base_root, expected);
+        let old = workspace.reader.clone();
+        workspace.write(files[1].0, 7, b"edit").unwrap();
+        workspace.truncate(files[2].0, 150_000).unwrap();
+        let serial = workspace
+            .build_frontier_candidate_with_workers(CandidatePurpose::Preview, 1)
+            .unwrap();
+        let parallel = workspace
+            .build_frontier_candidate_with_workers(CandidatePurpose::Preview, 4)
+            .unwrap();
+        assert_eq!(serial.built.root_id, parallel.built.root_id);
+        assert_eq!(
+            serial.built.counters.cdc_bytes_scanned,
+            parallel.built.counters.cdc_bytes_scanned
+        );
+        assert!(parallel.built.counters.cdc_bytes_scanned < scanned);
+        assert!(layerfs_layerstack_store::ObjectSource::read_object(&old, expected).is_ok());
+        drop(serial);
+        drop(parallel);
+        drop(old);
+        workspace.policy.max_final_delta_memory_bytes = 1024;
+        let result = workspace.build_frontier_candidate_with_workers(CandidatePurpose::Preview, 4);
+        // Existing tiny-budget fallback is allowed to reject, never to exceed its policy.
+        if let Err(error) = result {
+            assert!(error.to_string().contains("limit"));
+        }
+        drop(workspace);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn file_result_journals_restore_reverse_completion_and_reject_missing_slots() {
+        let (root, mut workspace) = empty_workspace("reverse-results");
+        for index in 0..4 {
+            let node = workspace
+                .create_file(ROOT, format!("file-{index}").as_bytes(), 0o600)
+                .unwrap()
+                .node;
+            workspace.write(node, 0, &[index as u8; 17]).unwrap();
+        }
+        let inputs = StableFileInputs {
+            nodes: &workspace.nodes,
+            dirty: &workspace.dirty,
+            reader: workspace.reader.clone(),
+            base_inodes: workspace.base_inodes,
+            generation: workspace.mutation_generation,
+            spool: &workspace.spool,
+            io_bytes: 1024,
+            captured: std::sync::Mutex::new(None),
+        };
+        let plan = inputs.prepare().unwrap();
+        assert_eq!(plan.count, 4);
+        let tasks = plan
+            .tasks(256)
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        let mut workers = (0..4)
+            .map(|index| inputs.worker(index, 4).unwrap())
+            .collect::<Vec<_>>();
+        for ordinal in (0..4).rev() {
+            inputs
+                .produce_file(
+                    &mut workers[ordinal],
+                    &plan.file,
+                    ordinal,
+                    tasks[ordinal],
+                    &mut |_| Ok(()),
+                )
+                .unwrap();
+        }
+        let mut output = FileResults::new(
+            plan,
+            workers
+                .into_iter()
+                .map(|worker| worker.finish().unwrap())
+                .collect(),
+            256,
+        )
+        .unwrap();
+        for node in &tasks {
+            output.next(*node, inputs.generation, 17).unwrap();
+        }
+        output.finish_read().unwrap();
+        let missing = inputs.prepare().unwrap();
+        assert!(FileResults::new(missing, Vec::new(), 256).is_err());
+        drop(output);
+        drop(inputs);
+        drop(workspace);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

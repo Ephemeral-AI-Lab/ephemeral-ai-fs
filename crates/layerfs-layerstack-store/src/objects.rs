@@ -255,6 +255,38 @@ pub(crate) struct OutputWriterMetrics {
     pub producer_bytes: u64,
 }
 
+impl OutputWriterMetrics {
+    // Work counts/time totals sum. Per-worker slab peaks remain maxima; the sum
+    // of structural peaks is a conservative simultaneous-memory bound.
+    pub(crate) fn merge(&mut self, other: Self) {
+        macro_rules! sum { ($($field:ident),* $(,)?) => { $(self.$field = self.$field.saturating_add(other.$field);)* }; }
+        macro_rules! peak { ($($field:ident),* $(,)?) => { $(self.$field = self.$field.max(other.$field);)* }; }
+        sum!(
+            selected_memory_bytes,
+            selected_spill_bytes,
+            selected_storage_authentication_ns,
+            handoffs,
+            objects,
+            payload_bytes,
+            payload_capacity_bytes,
+            canonical_hash_calls,
+            blocked_ns,
+            candidate_copy_bytes,
+            parent_payload_copy_bytes,
+            structural_peak_bytes,
+            producer_tasks,
+            producer_files,
+            producer_bytes
+        );
+        peak!(
+            partial_peak_objects,
+            partial_peak_payload_bytes,
+            producer_wall_ns,
+            producer_completion_offset_ns
+        );
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct OutputQueueMetrics {
     queued: AtomicU64,
@@ -308,14 +340,30 @@ pub(crate) struct OutputPipelineMetrics {
 }
 
 // One bounded ownership/drain/join implementation for native and Workspace inputs.
-pub(crate) fn run_finalized_output<T: Send>(
-    workers: usize,
+pub(crate) fn run_finalized_output<I, S: Send, T: Send>(
+    worker_limit: usize,
+    task_count: usize,
+    tasks: I,
     cancelled: &std::sync::atomic::AtomicBool,
-    produce: impl Fn(usize, FinalizedOutputWriter) -> Result<T> + Sync,
+    initialize: impl Fn(usize) -> Result<S> + Sync,
+    step: impl Fn(&mut S, usize, I::Item, &mut FinalizedOutputWriter) -> Result<()> + Sync,
+    finish: impl Fn(S) -> Result<T> + Sync,
     mut consume: impl FnMut(Vec<AuthenticatedCanonicalObject>) -> Result<()>,
-) -> Result<(Vec<T>, OutputPipelineMetrics)> {
+) -> Result<(Vec<(T, OutputWriterMetrics)>, OutputPipelineMetrics)>
+where
+    I: Iterator + Send,
+    I::Item: Send,
+{
+    use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::sync::atomic::Ordering;
+    if worker_limit == 0 && task_count != 0 {
+        return Err(StoreError::InvalidInput("canonical output worker limit"));
+    }
+    let workers = worker_limit.min(task_count);
     let started = Instant::now();
+    let tasks = Mutex::new(tasks.enumerate());
+    let claimed = AtomicU64::new(0);
+    let completed = AtomicU64::new(0);
     let queue = std::sync::Arc::new(OutputQueueMetrics::default());
     let (sender, receiver) = std::sync::mpsc::sync_channel(INITIALIZATION_SLAB_QUEUE_SLOTS);
     let active = AtomicU64::new(0);
@@ -324,8 +372,10 @@ pub(crate) fn run_finalized_output<T: Send>(
     let output = std::thread::scope(|scope| {
         let handles = (0..workers)
             .map(|index| {
-                let writer = FinalizedOutputWriter::new(sender.clone(), queue.clone());
-                let (produce, active, peak) = (&produce, &active, &peak);
+                let mut writer = FinalizedOutputWriter::new(sender.clone(), queue.clone());
+                let (initialize, step, finish) = (&initialize, &step, &finish);
+                let (tasks, claimed, completed, active, peak) =
+                    (&tasks, &claimed, &completed, &active, &peak);
                 scope.spawn(move || {
                     struct Active<'a>(&'a AtomicU64);
                     impl Drop for Active<'_> {
@@ -336,7 +386,45 @@ pub(crate) fn run_finalized_output<T: Send>(
                     let count = active.fetch_add(1, Ordering::AcqRel) + 1;
                     peak.fetch_max(count, Ordering::Relaxed);
                     let _active = Active(active);
-                    let result = produce(index, writer);
+                    let producer_started = Instant::now();
+                    let result = catch_unwind(AssertUnwindSafe(|| {
+                        let mut state = initialize(index)?;
+                        let mut task_total = 0_u64;
+                        loop {
+                            if cancelled.load(Ordering::Acquire) {
+                                break;
+                            }
+                            let next = {
+                                let mut tasks = tasks
+                                    .lock()
+                                    .map_err(|_| StoreError::Integrity("canonical task source"))?;
+                                if cancelled.load(Ordering::Acquire) {
+                                    None
+                                } else {
+                                    tasks.next()
+                                }
+                            };
+                            let Some((ordinal, task)) = next else { break };
+                            if ordinal >= task_count {
+                                return Err(StoreError::Integrity("canonical task count"));
+                            }
+                            claimed.fetch_add(1, Ordering::Relaxed);
+                            step(&mut state, ordinal, task, &mut writer)?;
+                            task_total += 1;
+                            completed.fetch_add(1, Ordering::Relaxed);
+                        }
+                        // Result journals seal before the final output flush. Neither a
+                        // finish error nor a writer error may publish successful coverage.
+                        let output = finish(state)?;
+                        let mut writer = writer.finish()?;
+                        writer.producer_tasks = task_total;
+                        writer.producer_wall_ns = elapsed_ns(producer_started);
+                        writer.producer_completion_offset_ns = elapsed_ns(started);
+                        Ok((output, writer))
+                    }))
+                    .unwrap_or_else(|_| {
+                        Err(StoreError::Integrity("canonical output producer panic"))
+                    });
                     if result.is_err() {
                         cancelled.store(true, Ordering::Release);
                     }
@@ -354,12 +442,16 @@ pub(crate) fn run_finalized_output<T: Send>(
             metrics.last_receive_ns = elapsed_ns(started);
             queue.received(slab.payload_bytes);
             if failure.is_none() {
-                if let Err(error) = consume(slab.objects) {
+                let result = catch_unwind(AssertUnwindSafe(|| consume(slab.objects)))
+                    .unwrap_or_else(|_| {
+                        Err(StoreError::Integrity("canonical output consumer panic"))
+                    });
+                if let Err(error) = result {
                     failure = Some(error);
                     cancelled.store(true, Ordering::Release);
                 }
             }
-            // Continue draining after failure so no sender can strand a source owner.
+            // Drain even after failure: every sender and retained source owner joins.
         }
         let mut output = Vec::with_capacity(workers);
         for handle in handles {
@@ -371,6 +463,19 @@ pub(crate) fn run_finalized_output<T: Send>(
                 Err(_) => {
                     failure.get_or_insert(StoreError::Integrity("canonical output producer"));
                 }
+            }
+        }
+        if failure.is_none() && !cancelled.load(Ordering::Acquire) {
+            if claimed.load(Ordering::Relaxed) != task_count as u64
+                || completed.load(Ordering::Relaxed) != task_count as u64
+                || tasks
+                    .lock()
+                    .map_err(|_| StoreError::Integrity("canonical task source"))?
+                    .next()
+                    .is_some()
+            {
+                failure = Some(StoreError::Integrity("canonical task coverage"));
+                cancelled.store(true, Ordering::Release);
             }
         }
         failure.map_or(Ok(output), Err)
@@ -789,6 +894,9 @@ pub struct DeferredObjectStore {
     spill_peak_bytes: u64,
     spill_count: u64,
     memory_limit: usize,
+    index_limit: usize,
+    spill_buffer_bytes: usize,
+    order_memory_bytes: usize,
 }
 
 #[cfg(test)]
@@ -920,8 +1028,9 @@ struct SpillObjects {
     index: Option<BTreeMap<ObjectId, (u64, u64)>>,
     index_bytes: usize,
     disk_index: Option<Box<SpillDiskIndex>>,
-    #[cfg(test)]
     index_limit: usize,
+    buffer_bytes: usize,
+    order_memory_bytes: usize,
 }
 
 struct SpillDiskIndex {
@@ -1530,8 +1639,8 @@ impl IdOrder {
         Self::Memory(Vec::new())
     }
 
-    fn push(&mut self, id: ObjectId) -> Result<()> {
-        if matches!(self, Self::Memory(ids) if (ids.len() + 1) * 32 > CANDIDATE_INDEX_BYTES) {
+    fn push_bounded(&mut self, id: ObjectId, limit: usize) -> Result<()> {
+        if matches!(self, Self::Memory(ids) if (ids.len() + 1) * 32 > limit) {
             let Self::Memory(ids) = std::mem::replace(self, Self::Memory(Vec::new())) else {
                 unreachable!()
             };
@@ -1577,6 +1686,7 @@ impl IdOrder {
 pub struct SpillableObjectSet {
     storage: SeenStorage,
     count: usize,
+    memory_limit: usize,
 }
 
 pub(crate) struct CandidatePlan {
@@ -1820,9 +1930,13 @@ enum SeenStorage {
 
 impl SpillableObjectSet {
     pub fn empty() -> Result<Self> {
+        Self::bounded(CANDIDATE_INDEX_BYTES)
+    }
+    fn bounded(memory_limit: usize) -> Result<Self> {
         Ok(Self {
             storage: SeenStorage::Memory(BTreeSet::new()),
             count: 0,
+            memory_limit,
         })
     }
 
@@ -1875,7 +1989,7 @@ impl SpillableObjectSet {
 
     fn insert(&mut self, id: ObjectId) -> Result<bool> {
         // Reserve the existing 4 MiB SQLite cache during the memory-to-index transfer.
-        if matches!(&self.storage, SeenStorage::Memory(_) if (self.count + 1) * 48 > CANDIDATE_INDEX_BYTES - 4 * 1024 * 1024)
+        if matches!(&self.storage, SeenStorage::Memory(_) if (self.count + 1) * 48 > self.memory_limit.saturating_sub(4 * 1024 * 1024))
             && !self.contains(id)?
         {
             self.spill()?;
@@ -1931,6 +2045,9 @@ impl DeferredObjectStore {
             spill_peak_bytes: 0,
             spill_count: 0,
             memory_limit: CANDIDATE_MEMORY_BYTES,
+            index_limit: CANDIDATE_INDEX_BYTES,
+            spill_buffer_bytes: CANDIDATE_SPILL_BUFFER_BYTES,
+            order_memory_bytes: CANDIDATE_MEMORY_BYTES,
         })
     }
 
@@ -1973,7 +2090,7 @@ impl DeferredObjectStore {
         let mut count = 0_usize;
         let mut push = |id| {
             if missing.contains(id)? {
-                output.push(id)?;
+                output.push_bounded(id, self.index_limit)?;
                 count += 1;
             }
             Ok(())
@@ -2036,7 +2153,7 @@ impl DeferredObjectStore {
         // Admission publishes only after every selected object is durable; its
         // delivery order need not be the graph traversal's child-first order.
         if matches!(self.storage, DeferredObjects::Spill(_)) {
-            let mut selected = SpillableObjectSet::empty()?;
+            let mut selected = SpillableObjectSet::bounded(self.index_limit)?;
             self.reachable
                 .visit(|id| selected.insert_page(&[id]).map(|_| ()))?;
             self.reachable = self.order_missing(&selected)?;
@@ -2046,7 +2163,8 @@ impl DeferredObjectStore {
         let mut storage_authentication_ns = 0_u64;
         let capacity = usize::try_from(self.count)
             .unwrap_or(INITIALIZATION_ADMISSION_BATCH_COUNT)
-            .min(INITIALIZATION_ADMISSION_BATCH_COUNT);
+            .min(INITIALIZATION_ADMISSION_BATCH_COUNT)
+            .min((self.memory_limit / std::mem::size_of::<AuthenticatedCanonicalObject>()).max(1));
         let page_limit = self.memory_limit.min(ADMISSION_BATCH_BYTES);
         let mut page = Vec::with_capacity(capacity);
         let mut page_bytes = 0_usize;
@@ -2146,7 +2264,7 @@ impl DeferredObjectStore {
         if let DeferredObjects::Spill(spill) = &mut self.storage {
             spill.flush()?;
         }
-        let mut seen = SpillableObjectSet::empty()?;
+        let mut seen = SpillableObjectSet::bounded(self.index_limit)?;
         seen.insert_page(&[root])?;
         let mut active = BTreeSet::new();
         let mut stack = vec![(root, false)];
@@ -2161,7 +2279,7 @@ impl DeferredObjectStore {
             };
             if expanded {
                 active.remove(&id);
-                order.push(id)?;
+                order.push_bounded(id, self.index_limit)?;
                 count += 1;
                 encoded_bytes = encoded_bytes
                     .checked_add(length)
@@ -2206,7 +2324,7 @@ impl DeferredObjectStore {
             return;
         };
         let charge = 64_usize.saturating_add(children.len().saturating_mul(32));
-        if self.reference_bytes.saturating_add(charge) > CANDIDATE_INDEX_BYTES {
+        if self.reference_bytes.saturating_add(charge) > self.index_limit {
             self.references = None;
             self.reference_bytes = 0;
             return;
@@ -2274,7 +2392,7 @@ impl DeferredObjectStore {
             }
             DeferredObjects::Spill(spill) => spill.put(id, &object.bytes)?,
         }
-        self.reachable.push(id)?;
+        self.reachable.push_bounded(id, self.index_limit)?;
         self.count += 1;
         self.encoded_bytes = self
             .encoded_bytes
@@ -2310,14 +2428,15 @@ impl DeferredObjectStore {
             writer: Some(file),
             reader: Mutex::new(reader),
             path,
-            pending: Vec::with_capacity(CANDIDATE_SPILL_BUFFER_BYTES),
+            pending: Vec::with_capacity(self.spill_buffer_bytes),
             pending_index: BTreeMap::new(),
             end: 0,
             index: Some(BTreeMap::new()),
             index_bytes: 0,
             disk_index: None,
-            #[cfg(test)]
-            index_limit: CANDIDATE_INDEX_BYTES,
+            index_limit: self.index_limit,
+            buffer_bytes: self.spill_buffer_bytes,
+            order_memory_bytes: self.order_memory_bytes,
         };
         for id in order {
             spill.put(
@@ -2343,6 +2462,18 @@ impl DeferredObjectStore {
 }
 
 impl SpillObjects {
+    fn spill_index(&mut self) -> Result<()> {
+        self.index = None;
+        self.index_bytes = 0;
+        self.flush()?;
+        let mut reader = self
+            .reader
+            .lock()
+            .map_err(|_| StoreError::Integrity("candidate spool lock"))?;
+        self.disk_index = Some(Box::new(SpillDiskIndex::from_spill(&mut reader, self.end)?));
+        Ok(())
+    }
+
     fn seal(&mut self) -> Result<()> {
         self.flush()?;
         self.writer = None;
@@ -2370,7 +2501,7 @@ impl SpillObjects {
             .checked_add(40)
             .ok_or(StoreError::Integrity("candidate object length"))?;
         if !self.pending.is_empty()
-            && self.pending.len().saturating_add(row_len) > CANDIDATE_SPILL_BUFFER_BYTES
+            && self.pending.len().saturating_add(row_len) > self.buffer_bytes
         {
             self.flush()?;
         }
@@ -2386,23 +2517,10 @@ impl SpillObjects {
             .end
             .checked_add(row_len as u64)
             .ok_or(StoreError::Integrity("candidate object length"))?;
-        #[cfg(not(test))]
-        let index_limit = CANDIDATE_INDEX_BYTES;
-        #[cfg(test)]
         let index_limit = self.index_limit;
         if let Some(index) = &mut self.index {
             if self.index_bytes.saturating_add(64) > index_limit {
-                // Release the entire memory index before allocating the bounded
-                // SQLite page cache. Backfill the flushed spill exactly once.
-                self.index = None;
-                self.index_bytes = 0;
-                self.flush()?;
-                let mut reader = self
-                    .reader
-                    .lock()
-                    .map_err(|_| StoreError::Integrity("candidate spool lock"))?;
-                self.disk_index =
-                    Some(Box::new(SpillDiskIndex::from_spill(&mut reader, self.end)?));
+                self.spill_index()?;
             } else {
                 index.insert(id, (start + 40, canonical.len() as u64));
                 self.index_bytes += 64;
@@ -2413,7 +2531,7 @@ impl SpillObjects {
                 .ok_or(StoreError::Integrity("candidate spill index unavailable"))?
                 .insert(id, start + 40, canonical.len() as u64)?;
         }
-        if self.pending.len() >= CANDIDATE_SPILL_BUFFER_BYTES {
+        if self.pending.len() >= self.buffer_bytes {
             self.flush()?;
         }
         Ok(())
@@ -2421,7 +2539,7 @@ impl SpillObjects {
 
     fn visit_ids(&self, visitor: &mut dyn FnMut(ObjectId) -> Result<()>) -> Result<()> {
         if let Some(index) = &self.index {
-            if index.len() <= CANDIDATE_MEMORY_BYTES / std::mem::size_of::<(u64, ObjectId)>() {
+            if index.len() <= self.order_memory_bytes / std::mem::size_of::<(u64, ObjectId)>() {
                 let mut order = index
                     .iter()
                     .map(|(id, (offset, _))| (*offset, *id))
@@ -2438,7 +2556,7 @@ impl SpillObjects {
             .lock()
             .map_err(|_| StoreError::Integrity("candidate spool lock"))?;
         file.seek(SeekFrom::Start(0))?;
-        let mut file = BufReader::with_capacity(CANDIDATE_SPILL_BUFFER_BYTES, &mut *file);
+        let mut file = BufReader::with_capacity(self.buffer_bytes, &mut *file);
         loop {
             let mut object_id = [0; 32];
             match file.read_exact(&mut object_id) {
@@ -2466,7 +2584,7 @@ impl SpillObjects {
             .lock()
             .map_err(|_| StoreError::Integrity("candidate spool lock"))?;
         file.seek(SeekFrom::Start(0))?;
-        let mut file = BufReader::with_capacity(CANDIDATE_SPILL_BUFFER_BYTES, &mut *file);
+        let mut file = BufReader::with_capacity(self.buffer_bytes, &mut *file);
         let mut position = 0_u64;
         let mut canonical = Vec::new();
         order.visit(|expected| {
@@ -2705,12 +2823,63 @@ impl<'a> ObjectBuffer<'a> {
         Ok(output)
     }
 
+    /// Partition the existing aggregate candidate allowances, including spill
+    /// buffers and indexes. The SQLite fallback's fixed cache must still fit.
+    pub fn partition_output(&mut self, partitions: usize) -> Result<()> {
+        if partitions == 0 || partitions > 8 {
+            return Err(StoreError::InvalidInput("candidate partitions"));
+        }
+        if partitions == 1 {
+            return Ok(());
+        }
+        self.objects.memory_limit = CANDIDATE_SPILL_BUFFER_BYTES / partitions;
+        self.objects.index_limit = CANDIDATE_INDEX_BYTES / partitions;
+        self.objects.spill_buffer_bytes = CANDIDATE_SPILL_BUFFER_BYTES / partitions;
+        self.objects.order_memory_bytes = CANDIDATE_MEMORY_BYTES / partitions;
+        if matches!(&self.objects.storage, DeferredObjects::Memory { bytes, .. } if *bytes > self.objects.memory_limit)
+        {
+            self.objects.spill()?;
+        }
+        if let DeferredObjects::Spill(spill) = &mut self.objects.storage {
+            spill.flush()?;
+            spill.pending = Vec::with_capacity(self.objects.spill_buffer_bytes);
+            spill.buffer_bytes = self.objects.spill_buffer_bytes;
+            spill.index_limit = self.objects.index_limit;
+            spill.order_memory_bytes = self.objects.order_memory_bytes;
+            if spill.index_bytes > spill.index_limit {
+                spill.spill_index()?;
+            }
+        }
+        if matches!(&self.objects.reachable, IdOrder::Memory(ids) if ids.len().saturating_mul(32) > self.objects.index_limit)
+        {
+            let mut order = IdOrder::empty();
+            self.objects
+                .reachable
+                .visit(|id| order.push_bounded(id, self.objects.index_limit))?;
+            self.objects.reachable = order;
+        }
+        if self.objects.reference_bytes > self.objects.index_limit {
+            self.objects.references = None;
+            self.objects.reference_bytes = 0;
+        }
+        Ok(())
+    }
+
     /// Full-file rope construction emits sealed prefixes, attaches every prefix
     /// to its final mapping root, and then emits FileState. This is the same
     /// append-only finality used by native import; incremental edits do not use it.
     /// Keep the entire file private until successful construction and length check.
     pub fn build_complete_file(source: impl Read, expected_len: u64) -> Result<BuiltRoot> {
+        Self::build_complete_file_partition(source, expected_len, 1)
+    }
+
+    pub fn build_complete_file_partition(
+        source: impl Read,
+        expected_len: u64,
+        partitions: usize,
+    ) -> Result<BuiltRoot> {
         let mut objects = Self::bounded_output(None)?;
+        objects.partition_output(partitions)?;
         objects.objects.references = None;
         let completed = build_checked_file(&mut objects, source, expected_len)?;
         objects.finish_all_reachable(completed.root.0, completed.counters.cdc_bytes_scanned)
@@ -2752,6 +2921,39 @@ impl<'a> ObjectBuffer<'a> {
             },
             objects,
         })
+    }
+
+    /// Preview/reconciliation uses the same task driver, with a private sink.
+    pub fn construct_files<I, S: Send, T: Send>(
+        &mut self,
+        worker_limit: usize,
+        task_count: usize,
+        tasks: I,
+        initialize: impl Fn(usize) -> Result<S> + Sync,
+        step: impl Fn(&mut S, usize, I::Item, &mut FinalizedOutputWriter) -> Result<()> + Sync,
+        finish: impl Fn(S) -> Result<T> + Sync,
+    ) -> Result<Vec<T>>
+    where
+        I: Iterator + Send,
+        I::Item: Send,
+    {
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        let (output, _) = run_finalized_output(
+            worker_limit,
+            task_count,
+            tasks,
+            &cancelled,
+            initialize,
+            step,
+            finish,
+            |page| {
+                for object in page {
+                    self.objects.put_authenticated(object)?;
+                }
+                Ok(())
+            },
+        )?;
+        Ok(output.into_iter().map(|(result, _)| result).collect())
     }
 
     pub fn merge_prevalidated(&mut self, objects: DeferredObjectStore) -> Result<()> {
@@ -3323,22 +3525,32 @@ impl crate::LayerStackStore {
         })
     }
 
-    pub fn construct_workspace_files<T: Send>(
+    pub fn construct_workspace_files<I, S: Send, T: Send>(
         &self,
         workspace_id: [u8; 16],
-        produce: impl Fn(&mut FinalizedOutputWriter, &std::sync::atomic::AtomicBool) -> Result<T> + Sync,
-    ) -> Result<(T, WorkspaceAdmission)> {
+        worker_limit: usize,
+        task_count: usize,
+        tasks: I,
+        initialize: impl Fn(usize) -> Result<S> + Sync,
+        step: impl Fn(&mut S, usize, I::Item, &mut FinalizedOutputWriter) -> Result<()> + Sync,
+        finish: impl Fn(S) -> Result<T> + Sync,
+    ) -> Result<(Vec<T>, WorkspaceAdmission)>
+    where
+        I: Iterator + Send,
+        I::Item: Send,
+    {
         let mut token = self.workspace_admission(workspace_id)?;
         let mut admission = CheckedOutputAdmission::new(&self.db)?;
         let cancelled = std::sync::atomic::AtomicBool::new(false);
         let mut admission_ns = 0_u64;
-        let (mut output, pipeline) = run_finalized_output(
-            1,
+        let (output, pipeline) = run_finalized_output(
+            worker_limit,
+            task_count,
+            tasks,
             &cancelled,
-            |_, mut writer| {
-                let result = produce(&mut writer, &cancelled)?;
-                Ok((result, writer.finish()?))
-            },
+            initialize,
+            step,
+            finish,
             |page| {
                 let started = Instant::now();
                 let result = (|| {
@@ -3358,9 +3570,17 @@ impl crate::LayerStackStore {
         let finished = admission.finish()?;
         token.checked = finished.checked;
         token.statement_number = finished.statement_number;
-        let (output, writer) = output
-            .pop()
-            .ok_or(StoreError::Integrity("Workspace file producer"))?;
+        let mut writer = OutputWriterMetrics::default();
+        let output = output
+            .into_iter()
+            .map(|(result, metrics)| {
+                writer.merge(metrics);
+                result
+            })
+            .collect();
+        if writer.producer_tasks != task_count as u64 {
+            return Err(StoreError::Integrity("Workspace file task coverage"));
+        }
         crate::telemetry::note_workspace_candidate_delivery(
             writer.selected_memory_bytes,
             writer.selected_spill_bytes,
@@ -3850,6 +4070,125 @@ mod tests {
     }
 
     #[test]
+    fn partitioned_completed_files_share_direct_facts_and_keep_failures_private() {
+        let mut random = 23_u64;
+        let data = (0..2 * 1024 * 1024 + 17)
+            .map(|_| {
+                random ^= random << 13;
+                random ^= random >> 7;
+                random ^= random << 17;
+                random as u8
+            })
+            .collect::<Vec<_>>();
+        let private =
+            ObjectBuffer::build_complete_file_partition(data.as_slice(), data.len() as u64, 4)
+                .unwrap();
+        assert!(private.counters.spill_count > 0);
+        let expected_ids = private
+            .objects
+            .ids_in_order(usize::MAX)
+            .unwrap()
+            .unwrap()
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let mut direct_ids = BTreeSet::new();
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        let (direct, _) = run_finalized_output(
+            1,
+            1,
+            std::iter::once(()),
+            &cancelled,
+            |_| Ok(None),
+            |result, _, _, writer| {
+                *result = Some(build_checked_file(
+                    writer,
+                    data.as_slice(),
+                    data.len() as u64,
+                )?);
+                Ok(())
+            },
+            |result| result.ok_or(StoreError::Integrity("missing completion")),
+            |page| {
+                direct_ids.extend(page.into_iter().map(|object| object.id));
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(direct[0].0.root.0, private.root_id);
+        assert_eq!(direct[0].0.logical_len, data.len() as u64);
+        assert_eq!(
+            direct[0].0.counters.cdc_bytes_scanned,
+            private.counters.cdc_bytes_scanned
+        );
+        assert_eq!(direct_ids, expected_ids);
+        let mut buffer = ObjectBuffer::bounded_output(None).unwrap();
+        buffer.partition_output(4).unwrap();
+        assert_eq!(
+            buffer.objects.memory_limit * 4,
+            CANDIDATE_SPILL_BUFFER_BYTES
+        );
+        assert_eq!(buffer.objects.index_limit * 4, CANDIDATE_INDEX_BYTES);
+        assert_eq!(
+            buffer.objects.spill_buffer_bytes * 4,
+            CANDIDATE_SPILL_BUFFER_BYTES
+        );
+        assert!(buffer.partition_output(0).is_err());
+
+        struct Broken {
+            remaining: usize,
+        }
+        impl Read for Broken {
+            fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+                if self.remaining == 0 {
+                    return Err(std::io::ErrorKind::Other.into());
+                }
+                let size = bytes.len().min(self.remaining);
+                bytes[..size].fill(7);
+                self.remaining -= size;
+                Ok(size)
+            }
+        }
+        let path = std::env::temp_dir().join(format!(
+            "layerfs-private-failure-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let store = crate::LayerStackStore::create(&path).unwrap();
+        let before = store.store_counts().unwrap();
+        let failed = store.construct_workspace_files(
+            [5; 16],
+            4,
+            1,
+            std::iter::once(()),
+            |_| Ok(()),
+            |_, _, _, writer| {
+                let built = ObjectBuffer::build_complete_file_partition(
+                    Broken {
+                        remaining: 2 * 1024 * 1024,
+                    },
+                    2 * 1024 * 1024 + 1,
+                    4,
+                )?;
+                writer.send_selected(built.objects)
+            },
+            |_| Ok(()),
+        );
+        assert!(failed.is_err());
+        assert_eq!(store.store_counts().unwrap(), before);
+        assert!(ObjectBuffer::build_complete_file_partition(
+            data.as_slice(),
+            data.len() as u64 + 1,
+            4
+        )
+        .is_err());
+        drop(store);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn seen_index_spill_preserves_exact_membership_and_private_cleanup() {
         let ids = [b"first".as_slice(), b"second", b"third"].map(ObjectId::for_bytes);
         let mut seen = SpillableObjectSet::empty().unwrap();
@@ -3946,48 +4285,150 @@ mod tests {
     }
 
     #[test]
-    fn finalized_output_failure_drains_and_joins_source_owners() {
+    fn finalized_output_tasks_restore_coverage_and_join_all_failures() {
         use std::sync::atomic::AtomicBool;
-        for producer_fails in [false, true] {
+        use std::sync::{Condvar, Mutex};
+        for workers in [1, 4] {
+            let cancelled = AtomicBool::new(false);
+            let order = (Mutex::new((3_usize, Vec::new())), Condvar::new());
+            let (output, metrics) = run_finalized_output(
+                workers,
+                4,
+                0..4,
+                &cancelled,
+                |_| Ok(Vec::new()),
+                |local, ordinal, task, _| {
+                    assert_eq!(ordinal, task);
+                    if workers > 1 {
+                        let mut state = order.0.lock().unwrap();
+                        while state.0 != ordinal {
+                            state = order.1.wait(state).unwrap();
+                        }
+                        state.1.push(ordinal);
+                        state.0 = state.0.saturating_sub(1);
+                        order.1.notify_all();
+                    }
+                    local.push(ordinal);
+                    Ok(())
+                },
+                Ok,
+                |_| Ok(()),
+            )
+            .unwrap();
+            assert_eq!(metrics.producers_after, 0);
+            assert_eq!(
+                output
+                    .iter()
+                    .map(|(_, metrics)| metrics.producer_tasks)
+                    .sum::<u64>(),
+                4
+            );
+            let mut ordinals = output
+                .into_iter()
+                .flat_map(|(rows, _)| rows)
+                .collect::<Vec<_>>();
+            ordinals.sort();
+            assert_eq!(ordinals, vec![0, 1, 2, 3]);
+            if workers > 1 {
+                assert_eq!(order.0.lock().unwrap().1, vec![3, 2, 1, 0]);
+            }
+        }
+        let cancelled = AtomicBool::new(false);
+        let (empty, metrics) = run_finalized_output(
+            4,
+            0,
+            std::iter::empty::<()>(),
+            &cancelled,
+            |_| -> Result<()> { panic!("empty worker") },
+            |_, _, _, _| Ok(()),
+            Ok,
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert!(empty.is_empty());
+        assert_eq!(metrics.producer_peak, 0);
+        assert!(run_finalized_output(
+            1,
+            2,
+            0..1,
+            &cancelled,
+            |_| Ok(()),
+            |_, _, _, _| Ok(()),
+            Ok,
+            |_| Ok(())
+        )
+        .is_err());
+
+        for failure in [
+            "producer",
+            "producer-panic",
+            "consumer",
+            "consumer-panic",
+            "finish",
+            "finish-panic",
+            "writer-finish",
+        ] {
             let cancelled = AtomicBool::new(false);
             let joined = AtomicU64::new(0);
+            struct Finished<'a>(&'a AtomicU64);
+            impl Drop for Finished<'_> {
+                fn drop(&mut self) {
+                    self.0.fetch_add(1, Ordering::Release);
+                }
+            }
             let result = run_finalized_output(
                 2,
+                64,
+                0..64,
                 &cancelled,
-                |index, mut writer| -> Result<()> {
-                    struct Finished<'a>(&'a AtomicU64);
-                    impl Drop for Finished<'_> {
-                        fn drop(&mut self) {
-                            self.0.fetch_add(1, Ordering::Release);
-                        }
+                |_| Ok(Finished(&joined)),
+                |_, index, _, writer| {
+                    if index == 0 && failure == "producer" {
+                        return Err(StoreError::Integrity("test producer failure"));
                     }
-                    let _finished = Finished(&joined);
-                    for _ in 0..32 {
-                        if cancelled.load(Ordering::Acquire) {
-                            break;
-                        }
-                        let bytes = layerfs_content::encode_bytes_object(b"selected").unwrap();
-                        writer
-                            .push_object(AuthenticatedCanonicalObject::new(bytes, None)?, false)?;
+                    if index == 0 && failure == "producer-panic" {
+                        panic!("test producer panic");
+                    }
+                    writer.push_object(
+                        AuthenticatedCanonicalObject::new(
+                            layerfs_content::encode_bytes_object(b"selected")?,
+                            None,
+                        )?,
+                        false,
+                    )?;
+                    if failure == "writer-finish" {
+                        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+                        drop(receiver);
+                        writer.sender = sender;
+                    } else {
                         writer.flush()?;
-                        if producer_fails && index == 0 {
-                            return Err(StoreError::Integrity("test producer failure"));
-                        }
                     }
-                    writer.finish()?;
+                    Ok(())
+                },
+                |owner| {
+                    if failure == "finish" {
+                        return Err(StoreError::Integrity("test finish failure"));
+                    }
+                    if failure == "finish-panic" {
+                        panic!("test finish panic");
+                    }
+                    drop(owner);
                     Ok(())
                 },
                 |_| {
-                    if producer_fails {
-                        Ok(())
-                    } else {
+                    if failure == "consumer-panic" {
+                        panic!("test consumer panic");
+                    }
+                    if failure == "consumer" {
                         Err(StoreError::Integrity("test consumer failure"))
+                    } else {
+                        Ok(())
                     }
                 },
             );
-            assert!(result.is_err());
-            assert_eq!(joined.load(Ordering::Acquire), 2);
-            assert!(cancelled.load(Ordering::Acquire));
+            assert!(result.is_err(), "{failure}");
+            assert_eq!(joined.load(Ordering::Acquire), 2, "{failure}");
+            assert!(cancelled.load(Ordering::Acquire), "{failure}");
         }
     }
 
@@ -4018,11 +4459,15 @@ mod tests {
             .admit_remaining(selected(0))
             .unwrap();
         let (_, token) = store
-            .construct_workspace_files([1; 16], |writer, _| {
-                writer.send_selected(selected(0))?;
-                writer.send_selected(selected(1))?;
-                writer.send_selected(selected(1))
-            })
+            .construct_workspace_files(
+                [1; 16],
+                2,
+                3,
+                [0, 1, 1].into_iter(),
+                |_| Ok(()),
+                |_, _, index, writer| writer.send_selected(selected(index)),
+                |_| Ok(()),
+            )
             .unwrap();
         let (receipt, _) = token.admit_remaining(selected(1)).unwrap();
         assert_eq!(
@@ -4044,8 +4489,15 @@ mod tests {
         assert_eq!(store.store_counts().unwrap().commits, 0);
         assert!(store.workspace_stage([1; 16]).unwrap().is_none());
         crate::schema::set_transaction_failure_at(Some(1));
-        let failed =
-            store.construct_workspace_files([2; 16], |writer, _| writer.send_selected(selected(2)));
+        let failed = store.construct_workspace_files(
+            [2; 16],
+            1,
+            1,
+            std::iter::once(2),
+            |_| Ok(()),
+            |_, _, index, writer| writer.send_selected(selected(index)),
+            |_| Ok(()),
+        );
         crate::schema::set_transaction_failure_at(None);
         assert!(matches!(
             failed,

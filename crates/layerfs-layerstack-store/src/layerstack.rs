@@ -437,10 +437,28 @@ fn finish_parallel_candidate(
 }
 
 fn serial_directory_root(path: &std::path::Path, seed: [u8; 32]) -> Result<(BuiltRoot, u64, u64)> {
-    let mut objects = ObjectBuffer::empty_all_reachable()?;
-    let mut import = NativeImport::new(seed, &mut objects);
-    import.directory(path, &layerfs_content::CanonicalPath::root(), true)?;
-    let imported = import.finish()?;
+    let cancelled = std::sync::atomic::AtomicBool::new(false);
+    let (output, _) = crate::objects::run_finalized_output(
+        1,
+        1,
+        std::iter::once(path),
+        &cancelled,
+        |_| Ok((ObjectBuffer::empty_all_reachable()?, None)),
+        |(objects, imported), _, path, _| {
+            let mut import = NativeImport::new(seed, objects);
+            import.directory(path, &layerfs_content::CanonicalPath::root(), true)?;
+            *imported = Some(import.finish()?);
+            Ok(())
+        },
+        Ok,
+        |_| Err(StoreError::Integrity("private initialization output")),
+    )?;
+    // There is one native root task; final namespace construction stays here.
+    let ((mut objects, imported), _) = output
+        .into_iter()
+        .next()
+        .ok_or(StoreError::Integrity("native root task"))?;
+    let imported = imported.ok_or(StoreError::Integrity("native root completion"))?;
     let root = layerfs_content::filesystem::build_initial_namespace(
         &mut objects,
         seed,
@@ -862,6 +880,15 @@ struct PreparedAppendOnlyWorker {
     pairs: crate::objects::CompactInodePairSegment,
 }
 
+struct DirectWorkerState {
+    index: usize,
+    tasks: Vec<PreparedDirectTask>,
+    pair_blocks: Vec<crate::objects::CompactInodePairBlock>,
+    pairs: crate::objects::CompactInodePairWriter,
+    metadata_cache: layerfs_content::filesystem::PortableMetadataCache,
+    structural_peak_bytes: u64,
+}
+
 struct PreparedDirectWorker {
     index: usize,
     tasks: Vec<PreparedDirectTask>,
@@ -1050,7 +1077,6 @@ fn direct_initialize_root_directories_inner(
             .unwrap_or(0);
     let workers = worker_limit.min(tasks.len());
     let pair_pending_bytes = INITIALIZATION_PAIR_PENDING_BYTES.div_ceil(workers).max(64);
-    let next = std::sync::atomic::AtomicUsize::new(0);
     let fallback = std::sync::atomic::AtomicBool::new(false);
     if !db.initialization_store_is_empty()? {
         return Err(StoreError::Integrity(
@@ -1061,120 +1087,125 @@ fn direct_initialize_root_directories_inner(
     let pipeline_started = std::time::Instant::now();
     let (prepared, pipeline) = crate::objects::run_finalized_output(
         workers,
+        tasks.len(),
+        tasks.iter(),
         &fallback,
-        |worker_index, mut objects| {
-            let producer_started = std::time::Instant::now();
-            (|| {
-                let mut prepared_tasks = Vec::new();
-                let mut pair_blocks = Vec::new();
-                let mut metadata_cache =
-                    layerfs_content::filesystem::PortableMetadataCache::default();
-                let mut pairs = crate::objects::CompactInodePairWriter::new(pair_pending_bytes)?;
-                let mut structural_peak_bytes = 0_u64;
-                loop {
-                    if fallback.load(std::sync::atomic::Ordering::Acquire) {
-                        break;
+        |index| {
+            Ok(DirectWorkerState {
+                index,
+                tasks: Vec::new(),
+                pair_blocks: Vec::new(),
+                pairs: crate::objects::CompactInodePairWriter::new(pair_pending_bytes)?,
+                metadata_cache: Default::default(),
+                structural_peak_bytes: 0,
+            })
+        },
+        |worker, index, task, objects| {
+            let pair_checkpoint = worker.pairs.checkpoint();
+            let mut structure = InitializationTaskObjectBuffer::new();
+            let mut import = NativeImport::new_split_with_cache(
+                seed,
+                objects,
+                &mut structure,
+                std::mem::take(&mut worker.metadata_cache),
+            );
+            let children = match task {
+                DirectInitializationTask::Directory(task) => import
+                    .directory(&task.native, &task.logical, false)
+                    .map(|inode| vec![(task.name.clone(), inode)]),
+                DirectInitializationTask::File(task) => import
+                    .regular_file(&task.native, &task.logical)
+                    .map(|inode| vec![(task.name.clone(), inode)]),
+                DirectInitializationTask::FlatFiles { start, end } => {
+                    let flat = flat
+                        .as_ref()
+                        .ok_or(StoreError::Integrity("flat initialization plan"))?;
+                    let mut children = Vec::with_capacity(end - start);
+                    for name in &flat.files[*start..*end] {
+                        let logical = child(&flat.logical, name)?;
+                        let native = flat
+                            .native
+                            .join(std::ffi::OsStr::from_bytes(name.as_bytes()));
+                        children.push((name.clone(), import.regular_file(&native, &logical)?));
                     }
-                    let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let Some(task) = tasks.get(index) else {
-                        break;
-                    };
-                    let pair_checkpoint = pairs.checkpoint();
-                    let mut structure = InitializationTaskObjectBuffer::new();
-                    let mut import = NativeImport::new_split_with_cache(
-                        seed,
-                        &mut objects,
-                        &mut structure,
-                        metadata_cache,
-                    );
-                    let children = match task {
-                        DirectInitializationTask::Directory(task) => import
-                            .directory(&task.native, &task.logical, false)
-                            .map(|inode| vec![(task.name.clone(), inode)]),
-                        DirectInitializationTask::File(task) => import
-                            .regular_file(&task.native, &task.logical)
-                            .map(|inode| vec![(task.name.clone(), inode)]),
-                        DirectInitializationTask::FlatFiles { start, end } => {
-                            let flat = flat
-                                .as_ref()
-                                .ok_or(StoreError::Integrity("flat initialization plan"))?;
-                            let mut children = Vec::with_capacity(end - start);
-                            for name in &flat.files[*start..*end] {
-                                let logical = child(&flat.logical, name)?;
-                                let native = flat
-                                    .native
-                                    .join(std::ffi::OsStr::from_bytes(name.as_bytes()));
-                                children
-                                    .push((name.clone(), import.regular_file(&native, &logical)?));
-                            }
-                            Ok(children)
-                        }
-                    };
-                    let children = match children {
-                        Ok(children) => children,
-                        Err(StoreError::Core(layerfs_content::CoreError::ObjectLimitExceeded)) => {
-                            fallback.store(true, std::sync::atomic::Ordering::Release);
-                            break;
-                        }
-                        Err(error) => return Err(error),
-                    };
-                    let imported = match import.finish_compact_with_cache(&mut pairs) {
-                        Ok((imported, cache)) => {
-                            metadata_cache = cache;
-                            imported
-                        }
-                        Err(StoreError::Core(layerfs_content::CoreError::ObjectLimitExceeded)) => {
-                            fallback.store(true, std::sync::atomic::Ordering::Release);
-                            break;
-                        }
-                        Err(error) => return Err(error),
-                    };
-                    if imported.hard_links.is_empty() {
-                        structural_peak_bytes =
-                            structural_peak_bytes.max(structure.explicit_owned_bytes());
-                        objects.note_hash_invocations(structure.hash_invocations());
-                        structure.move_into(&mut objects)?;
-                    } else {
-                        fallback.store(true, std::sync::atomic::Ordering::Release);
-                    }
-                    pair_blocks.push(pairs.block_since(index, worker_index, pair_checkpoint)?);
-                    prepared_tasks.push(PreparedDirectTask {
-                        index,
-                        children,
-                        imported,
-                    });
+                    Ok(children)
                 }
-                let mut slab = objects.finish()?;
-                slab.structural_peak_bytes = structural_peak_bytes;
-                slab.producer_wall_ns = producer_started
-                    .elapsed()
-                    .as_nanos()
-                    .min(u128::from(u64::MAX)) as u64;
-                slab.producer_completion_offset_ns = pipeline_started
-                    .elapsed()
-                    .as_nanos()
-                    .min(u128::from(u64::MAX))
-                    as u64;
-                slab.producer_tasks = prepared_tasks.len() as u64;
-                slab.producer_files = prepared_tasks
+            };
+            let children = match children {
+                Ok(children) => children,
+                Err(StoreError::Core(layerfs_content::CoreError::ObjectLimitExceeded)) => {
+                    fallback.store(true, std::sync::atomic::Ordering::Release);
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            };
+            let imported = match import.finish_compact_with_cache(&mut worker.pairs) {
+                Ok((imported, cache)) => {
+                    worker.metadata_cache = cache;
+                    imported
+                }
+                Err(StoreError::Core(layerfs_content::CoreError::ObjectLimitExceeded)) => {
+                    fallback.store(true, std::sync::atomic::Ordering::Release);
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            };
+            if imported.hard_links.is_empty() {
+                worker.structural_peak_bytes = worker
+                    .structural_peak_bytes
+                    .max(structure.explicit_owned_bytes());
+                objects.note_hash_invocations(structure.hash_invocations());
+                structure.move_into(objects)?;
+            } else {
+                fallback.store(true, std::sync::atomic::Ordering::Release);
+            }
+            worker.pair_blocks.push(worker.pairs.block_since(
+                index,
+                worker.index,
+                pair_checkpoint,
+            )?);
+            worker.tasks.push(PreparedDirectTask {
+                index,
+                children,
+                imported,
+            });
+            Ok(())
+        },
+        |worker| {
+            let slab = OutputWriterMetrics {
+                structural_peak_bytes: worker.structural_peak_bytes,
+                producer_files: worker
+                    .tasks
                     .iter()
                     .map(|task| task.imported.scanned_files)
-                    .sum();
-                slab.producer_bytes = prepared_tasks
+                    .sum(),
+                producer_bytes: worker
+                    .tasks
                     .iter()
                     .map(|task| task.imported.scanned_bytes)
-                    .sum();
-                Ok::<_, StoreError>(PreparedDirectWorker {
-                    index: worker_index,
-                    tasks: prepared_tasks,
-                    pair_blocks,
-                    pairs: pairs.seal()?,
-                    slab,
-                })
-            })()
+                    .sum(),
+                ..Default::default()
+            };
+            Ok(PreparedDirectWorker {
+                index: worker.index,
+                tasks: worker.tasks,
+                pair_blocks: worker.pair_blocks,
+                pairs: worker.pairs.seal()?,
+                slab,
+            })
         },
         |page| admission.admit_page(page),
     )?;
+    let prepared = prepared
+        .into_iter()
+        .map(|(mut worker, mut writer)| {
+            writer.structural_peak_bytes = worker.slab.structural_peak_bytes;
+            writer.producer_files = worker.slab.producer_files;
+            writer.producer_bytes = worker.slab.producer_bytes;
+            worker.slab = writer;
+            worker
+        })
+        .collect::<Vec<_>>();
     let consumer_idle_ns = pipeline.consumer_idle_ns;
     let last_slab_receive_offset_ns = pipeline.last_receive_ns;
     let pipeline_wall_ns = pipeline_started
@@ -1247,28 +1278,7 @@ fn direct_initialize_root_directories_inner(
         prepared_tasks.extend(worker.tasks);
         pair_blocks.extend(worker.pair_blocks);
         pairs.push(worker.pairs);
-        slab.handoffs = slab.handoffs.saturating_add(worker.slab.handoffs);
-        slab.objects = slab.objects.saturating_add(worker.slab.objects);
-        slab.payload_bytes = slab.payload_bytes.saturating_add(worker.slab.payload_bytes);
-        slab.payload_capacity_bytes = slab
-            .payload_capacity_bytes
-            .saturating_add(worker.slab.payload_capacity_bytes);
-        slab.canonical_hash_calls = slab
-            .canonical_hash_calls
-            .saturating_add(worker.slab.canonical_hash_calls);
-        slab.blocked_ns = slab.blocked_ns.saturating_add(worker.slab.blocked_ns);
-        slab.partial_peak_objects = slab
-            .partial_peak_objects
-            .max(worker.slab.partial_peak_objects);
-        slab.partial_peak_payload_bytes = slab
-            .partial_peak_payload_bytes
-            .max(worker.slab.partial_peak_payload_bytes);
-        slab.candidate_copy_bytes = slab
-            .candidate_copy_bytes
-            .saturating_add(worker.slab.candidate_copy_bytes);
-        slab.structural_peak_bytes = slab
-            .structural_peak_bytes
-            .saturating_add(worker.slab.structural_peak_bytes);
+        slab.merge(worker.slab);
     }
     producers.sort_by_key(|producer| producer.index);
     prepared_tasks.sort_by_key(|task| task.index);
@@ -1546,60 +1556,51 @@ fn prepare_append_only_root_directories(
     }
     let pending_bytes = INITIALIZATION_APPEND_PENDING_BYTES.div_ceil(workers);
     let pair_pending_bytes = INITIALIZATION_PAIR_PENDING_BYTES.div_ceil(workers).max(64);
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let prepared = std::thread::scope(|scope| -> Result<Vec<PreparedAppendOnlyWorker>> {
-        let handles = (0..workers)
-            .map(|worker_index| {
-                let next = &next;
-                let tasks = &tasks;
-                scope.spawn(move || {
-                    let mut directories = Vec::new();
-                    let mut blocks = Vec::new();
-                    let mut pair_blocks = Vec::new();
-                    let mut segment = AppendOnlyInitializationWriter::new(pending_bytes)?;
-                    let mut pairs =
-                        crate::objects::CompactInodePairWriter::new(pair_pending_bytes)?;
-                    loop {
-                        let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        let Some(task) = tasks.get(index) else {
-                            break;
-                        };
-                        let checkpoint = segment.checkpoint();
-                        let pair_checkpoint = pairs.checkpoint();
-                        let mut import = NativeImport::new(seed, &mut segment);
-                        import.directory(&task.native, &task.logical, false)?;
-                        let imported = import.finish_compact(&mut pairs)?;
-                        blocks.push(segment.block_since(index, worker_index, checkpoint)?);
-                        pair_blocks.push(pairs.block_since(
-                            index,
-                            worker_index,
-                            pair_checkpoint,
-                        )?);
-                        directories.push(PreparedCompactDirectory { index, imported });
-                    }
-                    if segment.get_calls() != 0 {
-                        return Err(StoreError::Integrity("append-only initialization get"));
-                    }
-                    Ok::<_, StoreError>(PreparedAppendOnlyWorker {
-                        directories,
-                        blocks,
-                        segment: segment.seal()?,
-                        pair_blocks,
-                        pairs: pairs.seal()?,
-                    })
-                })
+    let cancelled = std::sync::atomic::AtomicBool::new(false);
+    let (prepared, _) = crate::objects::run_finalized_output(
+        workers,
+        tasks.len(),
+        tasks.iter(),
+        &cancelled,
+        |index| {
+            Ok((
+                index,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                AppendOnlyInitializationWriter::new(pending_bytes)?,
+                crate::objects::CompactInodePairWriter::new(pair_pending_bytes)?,
+            ))
+        },
+        |(worker, directories, blocks, pair_blocks, segment, pairs), index, task, _| {
+            let checkpoint = segment.checkpoint();
+            let pair_checkpoint = pairs.checkpoint();
+            let mut import = NativeImport::new(seed, segment);
+            import.directory(&task.native, &task.logical, false)?;
+            let imported = import.finish_compact(pairs)?;
+            blocks.push(segment.block_since(index, *worker, checkpoint)?);
+            pair_blocks.push(pairs.block_since(index, *worker, pair_checkpoint)?);
+            directories.push(PreparedCompactDirectory { index, imported });
+            Ok(())
+        },
+        |(_, directories, blocks, pair_blocks, segment, pairs)| {
+            if segment.get_calls() != 0 {
+                return Err(StoreError::Integrity("append-only initialization get"));
+            }
+            Ok(PreparedAppendOnlyWorker {
+                directories,
+                blocks,
+                segment: segment.seal()?,
+                pair_blocks,
+                pairs: pairs.seal()?,
             })
-            .collect::<Vec<_>>();
-        let mut output = Vec::with_capacity(workers);
-        for handle in handles {
-            output.push(
-                handle
-                    .join()
-                    .map_err(|_| StoreError::Integrity("Layer initialization worker"))??,
-            );
-        }
-        Ok(output)
-    })?;
+        },
+        |_| Err(StoreError::Integrity("private initialization output")),
+    )?;
+    let prepared = prepared
+        .into_iter()
+        .map(|(worker, _)| worker)
+        .collect::<Vec<_>>();
 
     let mut identities = std::collections::HashSet::new();
     if prepared
@@ -1663,7 +1664,7 @@ fn prepare_parallel_root_directories(
             .as_bytes()
             .cmp(right.file_name().as_bytes())
     });
-    if entries.len() < 2 {
+    if entries.len() < 2 || entries.len() > INITIALIZATION_TASK_BLOCK_LIMIT {
         return Ok(None);
     }
     let mut tasks = Vec::with_capacity(entries.len());
@@ -1686,46 +1687,40 @@ fn prepare_parallel_root_directories(
     if workers < 2 {
         return Ok(None);
     }
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let prepared = std::thread::scope(|scope| -> Result<Vec<PreparedWorker>> {
-        let handles = (0..workers)
-            .map(|_| {
-                let next = &next;
-                let tasks = &tasks;
-                scope.spawn(move || {
-                    let mut directories = Vec::new();
-                    let mut local = ObjectBuffer::empty_all_reachable()?;
-                    loop {
-                        let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        let Some(task) = tasks.get(index) else {
-                            break;
-                        };
-                        let mut import = NativeImport::new(seed, &mut local);
-                        let inode = import.directory(&task.native, &task.logical, false)?;
-                        directories.push(PreparedDirectory {
-                            index,
-                            name: task.name.clone(),
-                            inode,
-                            imported: import.finish()?,
-                        });
-                    }
-                    Ok::<_, StoreError>(PreparedWorker {
-                        directories,
-                        objects: local.into_prevalidated()?,
-                    })
-                })
+    let cancelled = std::sync::atomic::AtomicBool::new(false);
+    let (prepared, _) = crate::objects::run_finalized_output(
+        workers,
+        tasks.len(),
+        tasks.iter(),
+        &cancelled,
+        |_| {
+            let mut objects = ObjectBuffer::empty_all_reachable()?;
+            objects.partition_output(workers)?;
+            Ok((Vec::new(), objects))
+        },
+        |(directories, local), index, task, _writer| {
+            let mut import = NativeImport::new(seed, local);
+            let inode = import.directory(&task.native, &task.logical, false)?;
+            directories.push(PreparedDirectory {
+                index,
+                name: task.name.clone(),
+                inode,
+                imported: import.finish()?,
+            });
+            Ok(())
+        },
+        |(directories, local)| {
+            Ok(PreparedWorker {
+                directories,
+                objects: local.into_prevalidated()?,
             })
-            .collect::<Vec<_>>();
-        let mut output = Vec::with_capacity(workers);
-        for handle in handles {
-            output.push(
-                handle
-                    .join()
-                    .map_err(|_| StoreError::Integrity("Layer initialization worker"))??,
-            );
-        }
-        Ok(output)
-    })?;
+        },
+        |_| Err(StoreError::Integrity("private initialization output")),
+    )?;
+    let prepared = prepared
+        .into_iter()
+        .map(|(worker, _)| worker)
+        .collect::<Vec<_>>();
 
     let mut identities = std::collections::HashSet::new();
     if prepared
