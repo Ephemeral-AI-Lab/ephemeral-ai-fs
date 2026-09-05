@@ -68,7 +68,6 @@ pub(crate) enum FileData {
     },
     Edited {
         base: Option<(FileStateRoot, u64)>,
-        spool: PathBuf,
         spool_high_water: u64,
         pieces: crate::file_edit::PieceTree,
         edits: u32,
@@ -96,9 +95,9 @@ pub(crate) struct Node {
 /// Event-boundary observations of owned regular spool inode allocation, not
 /// logical file lengths or a continuous filesystem allocator peak. Kept outside
 /// edit checkpoints so failed writes cannot erase resources they actually used.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub(crate) struct PhysicalSpoolMetrics {
-    allocated: HashMap<NodeId, u64>,
+    allocated: HashMap<u64, u64>,
     current: u64,
     peak: u64,
     errors: u64,
@@ -106,7 +105,7 @@ pub(crate) struct PhysicalSpoolMetrics {
 }
 
 impl PhysicalSpoolMetrics {
-    pub(crate) fn observe(&mut self, node: NodeId, metadata: &std::fs::Metadata) {
+    pub(crate) fn observe(&mut self, node: u64, metadata: &std::fs::Metadata) {
         use std::os::unix::fs::MetadataExt;
         self.observations = self.observations.saturating_add(1);
         let previous = self.allocated.get(&node).copied().unwrap_or(0);
@@ -127,7 +126,7 @@ impl PhysicalSpoolMetrics {
         self.peak = self.peak.max(current);
     }
 
-    pub(crate) fn removed(&mut self, node: NodeId) {
+    pub(crate) fn removed(&mut self, node: u64) {
         if let Some(bytes) = self.allocated.remove(&node) {
             if let Some(current) = self.current.checked_sub(bytes) {
                 self.current = current;
@@ -164,12 +163,16 @@ pub struct Workspace {
     pub(crate) spool: PathBuf,
     pub(crate) spool_bytes: u64,
     pub(crate) spool_bytes_peak: u64,
-    pub(crate) physical_spool: std::cell::RefCell<PhysicalSpoolMetrics>,
+    pub(crate) physical_spool: std::sync::Arc<std::sync::Mutex<PhysicalSpoolMetrics>>,
     pub(crate) inline_bytes: u64,
     pub(crate) piece_allocation_bytes: u64,
     pub(crate) spool_write_metrics: SpoolWriteMetrics,
     pub(crate) capture: crate::capture::CaptureState,
-    pub(crate) open_spools: HashMap<NodeId, std::fs::File>,
+    pub(crate) edited_nodes: BTreeSet<NodeId>,
+    pub(crate) spool_segments: HashMap<u64, std::sync::Arc<crate::file_io::SpoolSegment>>,
+    pub(crate) current_spool: Option<u64>,
+    pub(crate) next_spool: u64,
+    pub(crate) segment_bytes: u64,
     pub(crate) mutation_generation: u64,
     pub(crate) mutation_paths: BTreeMap<String, u64>,
     pub(crate) policy: ResourcePolicy,
@@ -301,12 +304,16 @@ impl Workspace {
             spool,
             spool_bytes: 0,
             spool_bytes_peak: 0,
-            physical_spool: std::cell::RefCell::default(),
+            physical_spool: Default::default(),
             inline_bytes: 0,
             piece_allocation_bytes: 0,
             spool_write_metrics: SpoolWriteMetrics::default(),
             capture: crate::capture::CaptureState::default(),
-            open_spools: HashMap::new(),
+            edited_nodes: BTreeSet::new(),
+            spool_segments: HashMap::new(),
+            current_spool: None,
+            next_spool: 1,
+            segment_bytes: 0,
             mutation_generation: 0,
             mutation_paths: BTreeMap::new(),
             policy,
@@ -1068,12 +1075,11 @@ impl Workspace {
             self.dirty.remove(&node);
             self.directory_parents.remove(&node);
             if let Some(value) = self.nodes.remove(&node) {
-                self.open_spools.remove(&node);
+                self.edited_nodes.remove(&node);
                 if let Some(inode) = value.canonical {
                     self.canonical_nodes.remove(&inode);
                 }
                 if let Data::File(FileData::Edited {
-                    spool,
                     spool_high_water,
                     pieces,
                     ..
@@ -1084,7 +1090,8 @@ impl Workspace {
                     self.piece_allocation_bytes = self
                         .piece_allocation_bytes
                         .saturating_sub(pieces.logical_allocation_charge().unwrap_or(0));
-                    let _ = self.remove_spool_file(node, &spool);
+                    drop(pieces);
+                    self.retire_spool_segments();
                 }
             }
         }
@@ -1259,7 +1266,7 @@ mod tests {
         let file = workspace.create_file(ROOT, b"file", 0o600).unwrap();
         workspace.write(file.node, 0, b"data").unwrap();
         workspace.fsync(Some(file.node)).unwrap();
-        assert_eq!(workspace.open_spools.len(), 1);
+        assert_eq!(workspace.spool_segments.len(), 1);
         let metrics = workspace.take_spool_write_metrics();
         assert_eq!(metrics.write_bytes, 4);
         assert_eq!(metrics.write_open_count, 1);
@@ -1269,7 +1276,7 @@ mod tests {
             SpoolWriteMetrics::default()
         );
         workspace.unlink(ROOT, b"file", false).unwrap();
-        assert!(workspace.open_spools.is_empty());
+        assert!(workspace.spool_segments.is_empty());
         drop(workspace);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -1279,10 +1286,14 @@ mod tests {
         let (root, mut workspace) = fixture("failed-write");
         let file = workspace.create_file(ROOT, b"file", 0o600).unwrap();
         workspace.write(file.node, 0, b"base").unwrap();
-        let Data::File(FileData::Edited { spool, .. }) = &workspace.nodes[&file.node].data else {
-            panic!("expected overlay")
-        };
-        std::fs::remove_file(spool).unwrap();
+        workspace
+            .spool_segments
+            .values()
+            .next()
+            .unwrap()
+            .file
+            .set_len(3)
+            .unwrap();
         let before = snapshot(&workspace);
         assert!(workspace.write(file.node, 4, b"lost").is_err());
         assert_eq!(snapshot(&workspace), before);
@@ -1292,10 +1303,14 @@ mod tests {
         let (root, mut workspace) = fixture("failed-truncate");
         let file = workspace.create_file(ROOT, b"file", 0o600).unwrap();
         workspace.write(file.node, 0, b"base").unwrap();
-        let Data::File(FileData::Edited { spool, .. }) = &workspace.nodes[&file.node].data else {
-            panic!("expected overlay")
-        };
-        std::fs::remove_file(spool).unwrap();
+        workspace
+            .spool_segments
+            .values()
+            .next()
+            .unwrap()
+            .file
+            .set_len(3)
+            .unwrap();
         let before = snapshot(&workspace);
         assert!(workspace.truncate(file.node, 2).is_err());
         assert_eq!(snapshot(&workspace), before);

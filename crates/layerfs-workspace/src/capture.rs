@@ -148,11 +148,7 @@ impl Workspace {
                 pieces,
                 ..
             })) if pieces.len() == captured.len
-                && pieces.pieces().iter().try_fold(0_u64, |offset, piece| match piece {
-                    crate::file_edit::Piece::Spool { offset: source, len }
-                        if *source == offset => offset.checked_add(*len),
-                    _ => None,
-                }) == Some(captured.len)
+                && pieces.pieces().iter().all(|piece| matches!(piece, crate::file_edit::Piece::Spool { .. }))
         );
         exact.then_some(*captured)
     }

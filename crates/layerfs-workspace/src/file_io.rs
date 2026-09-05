@@ -6,9 +6,107 @@ use crate::file_edit::{
 use layerfs_content::file::rope::read_range;
 use layerfs_layerstack_store::{CoreReader, Result, SnapshotReader, StoreError};
 use std::fs::{File, OpenOptions};
-use std::os::unix::fs::{FileExt, MetadataExt};
+#[cfg(test)]
+use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{FileExt, OpenOptionsExt};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex;
+
+// Physical segments are shared by immutable piece/read-plan references. Only the
+// existing exclusive Workspace writer appends or rolls back an unpublished tail.
+const SPOOL_SEGMENT_BYTES: u64 = 1024 * 1024;
+
+#[derive(Debug)]
+pub(crate) struct SpoolSegment {
+    pub(crate) file: File,
+    id: u64,
+    len: AtomicU64,
+    capacity: u64,
+    physical: Arc<Mutex<crate::cow_tree::PhysicalSpoolMetrics>>,
+}
+
+impl PartialEq for SpoolSegment {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other)
+    }
+}
+impl Eq for SpoolSegment {}
+
+impl SpoolSegment {
+    fn new(
+        directory: &Path,
+        id: u64,
+        capacity: u64,
+        physical: Arc<Mutex<crate::cow_tree::PhysicalSpoolMetrics>>,
+    ) -> Result<Self> {
+        let path = directory.join(format!("segment-{}", crate::WorkspaceId::new()));
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)?;
+        // Access uses the exclusively owned descriptor; no mutable path can
+        // replace this backing, and no per-logical-file unlink remains at Commit.
+        std::fs::remove_file(path)?;
+        let segment = Self {
+            file,
+            id,
+            len: AtomicU64::new(0),
+            capacity,
+            physical,
+        };
+        segment.observe();
+        Ok(segment)
+    }
+
+    fn observe(&self) {
+        let metadata = self.file.metadata();
+        if let Ok(mut physical) = self.physical.lock() {
+            match metadata {
+                Ok(metadata) => physical.observe(self.id, &metadata),
+                Err(_) => physical.error(),
+            }
+        }
+    }
+
+    fn check(&self) -> Result<()> {
+        let metadata = self.file.metadata().inspect_err(|_| {
+            if let Ok(mut physical) = self.physical.lock() {
+                physical.error();
+            }
+        })?;
+        if metadata.len() != self.len.load(Ordering::Relaxed) {
+            if let Ok(mut physical) = self.physical.lock() {
+                physical.error();
+            }
+            return Err(StoreError::Integrity("spool segment high-water"));
+        }
+        Ok(())
+    }
+}
+
+impl Drop for SpoolSegment {
+    fn drop(&mut self) {
+        if let Ok(mut physical) = self.physical.lock() {
+            physical.removed(self.id);
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_segment() -> Arc<SpoolSegment> {
+    static SEGMENT: std::sync::OnceLock<Arc<SpoolSegment>> = std::sync::OnceLock::new();
+    SEGMENT
+        .get_or_init(|| {
+            Arc::new(
+                SpoolSegment::new(&std::env::temp_dir(), 1, u64::MAX, Default::default()).unwrap(),
+            )
+        })
+        .clone()
+}
 
 pub(crate) struct EditCheckpoint {
     node: NodeId,
@@ -30,7 +128,7 @@ pub struct ReadPlan {
 }
 enum ReadSource {
     Base(layerfs_content::file::rope::FileStateRoot, u64, u64),
-    Edited(std::path::PathBuf, Vec<Piece>),
+    Edited(Vec<Piece>),
 }
 
 impl ReadPlan {
@@ -39,9 +137,8 @@ impl ReadPlan {
         let reader = self.reader.clone();
         let output = match self.source {
             ReadSource::Base(root, start, end) => read_base(&self.reader, root, start, end),
-            ReadSource::Edited(spool, pieces) => {
+            ReadSource::Edited(pieces) => {
                 let mut output = Vec::with_capacity(as_usize(self.requested)?);
-                let spool = File::open(spool)?;
                 for piece in pieces {
                     match piece {
                         Piece::Base { root, offset, len } => {
@@ -50,10 +147,14 @@ impl ReadPlan {
                         Piece::Inline { bytes, offset, len } => output
                             .extend_from_slice(&bytes[as_usize(offset)?..as_usize(offset + len)?]),
                         Piece::Zero { len } => output.resize(output.len() + as_usize(len)?, 0),
-                        Piece::Spool { offset, len } => {
+                        Piece::Spool {
+                            segment,
+                            offset,
+                            len,
+                        } => {
                             let start = output.len();
                             output.resize(start + as_usize(len)?, 0);
-                            read_exact_at(&spool, &mut output[start..], offset)?;
+                            read_exact_at(&segment.file, &mut output[start..], offset)?;
                         }
                     }
                 }
@@ -99,7 +200,7 @@ impl Workspace {
             self.spool_bytes.saturating_sub(spool_live),
             metric_nodes_scanned,
         );
-        let (current, peak, errors, observations) = self.physical_spool.borrow().snapshot();
+        let (current, peak, errors, observations) = self.physical_spool_snapshot();
         layerfs_layerstack_store::note_workspace_physical_spool(
             current,
             peak,
@@ -130,10 +231,9 @@ impl Workspace {
 
     pub(crate) fn restore_edit(&mut self, checkpoint: EditCheckpoint) -> Result<()> {
         if matches!(checkpoint.value.data, Data::File(FileData::Base { .. })) {
-            self.open_spools.remove(&checkpoint.node);
-            if let Data::File(FileData::Edited { spool, .. }) = &self.nodes[&checkpoint.node].data {
-                self.remove_spool_if_exists(checkpoint.node, spool)?;
-            }
+            self.edited_nodes.remove(&checkpoint.node);
+        } else {
+            self.edited_nodes.insert(checkpoint.node);
         }
         self.nodes.insert(checkpoint.node, checkpoint.value);
         if checkpoint.dirty {
@@ -148,6 +248,7 @@ impl Workspace {
         self.spool_write_metrics = checkpoint.spool_write_metrics;
         self.mutation_generation = checkpoint.mutation_generation;
         self.mutation_paths = checkpoint.mutation_paths;
+        self.retire_spool_segments();
         Ok(())
     }
 
@@ -166,8 +267,8 @@ impl Workspace {
             .data
         {
             Data::File(FileData::Base { root, .. }) => ReadSource::Base(*root, offset, end),
-            Data::File(FileData::Edited { spool, pieces, .. }) => {
-                ReadSource::Edited(spool.clone(), pieces.range(offset, end)?)
+            Data::File(FileData::Edited { pieces, .. }) => {
+                ReadSource::Edited(pieces.range(offset, end)?)
             }
             _ => return Err(StoreError::InvalidInput("read")),
         };
@@ -201,10 +302,12 @@ impl Workspace {
             .checked_add(byte_len as u64)
             .ok_or(StoreError::InvalidInput("write length"))?;
         self.ensure_edited(node)?;
-        let (spool, high_water, old, edits) = self.edited_state(node)?;
-        if bytes.is_none() {
-            self.spool_file(node, &spool)?;
-        }
+        let (high_water, old, edits) = self.edited_state(node)?;
+        let physical = if bytes.is_some() {
+            Some(self.append_segment(byte_len as u64)?)
+        } else {
+            None
+        };
         let start = offset.min(old_len);
         let delete_len = if offset < old_len {
             (old_len - offset).min(byte_len as u64)
@@ -219,7 +322,8 @@ impl Workspace {
         }
         replacement.push(if bytes.is_some() {
             Piece::Spool {
-                offset: high_water,
+                segment: physical.as_ref().unwrap().0.clone(),
+                offset: physical.as_ref().unwrap().1,
                 len: byte_len as u64,
             }
         } else {
@@ -262,32 +366,50 @@ impl Workspace {
                 crate::lifecycle::VerificationFault::ShortAppend,
                 self.spool_bytes,
             );
-            let file = self.spool_file(node, &spool)?;
-            let metadata = file
-                .metadata()
-                .inspect_err(|_| self.physical_spool.borrow_mut().error())?;
-            self.physical_spool.borrow_mut().observe(node, &metadata);
-            if metadata.len() != high_water {
-                return Err(StoreError::Integrity("spool high-water"));
-            }
+            let (segment, physical_start) = physical.as_ref().unwrap();
+            segment.check()?;
+            let file = &segment.file;
             #[cfg(feature = "test-instrumentation")]
             let append = if inject_short {
-                file.write_all_at(&bytes[..bytes.len() / 2], high_water)
+                file.write_all_at(&bytes[..bytes.len() / 2], *physical_start)
                     .and_then(|_| Err(std::io::Error::other("injected short spool append")))
             } else {
-                append_spool(file, bytes, high_water)
+                append_spool(file, bytes, *physical_start)
             };
             #[cfg(not(feature = "test-instrumentation"))]
-            let append = append_spool(file, bytes, high_water);
-            // Observe actual allocation before rollback can erase a partial
-            // append's footprint. Measurement failures never change write results.
-            self.observe_spool_file(node, file);
+            let append = append_spool(file, bytes, *physical_start);
+            segment.observe();
             if let Err(error) = append {
-                let cleanup = file.set_len(high_water);
-                self.observe_spool_file(node, file);
-                cleanup.map_err(|_| StoreError::Integrity("spool append cleanup failure"))?;
+                // No visible range references this tail; other files' earlier
+                // bytes in the shared segment must never be truncated.
+                #[cfg(test)]
+                let cleanup = if INJECT_APPEND_CLEANUP_FAILURE.with(|inject| inject.replace(false))
+                {
+                    Err(std::io::Error::other("injected spool rollback failure"))
+                } else {
+                    file.set_len(*physical_start)
+                };
+                #[cfg(not(test))]
+                let cleanup = file.set_len(*physical_start);
+                segment.observe();
+                if cleanup.is_err() {
+                    let retained = file.metadata()?.len();
+                    let extra = retained
+                        .checked_sub(*physical_start)
+                        .ok_or(StoreError::Integrity("spool append cleanup length"))?;
+                    segment.len.store(retained, Ordering::Relaxed);
+                    self.segment_bytes = self
+                        .segment_bytes
+                        .checked_add(extra)
+                        .ok_or(StoreError::Integrity("spool segment charge"))?;
+                    return Err(StoreError::Integrity("spool append cleanup failure"));
+                }
                 return Err(error.into());
             }
+            segment
+                .len
+                .store(*physical_start + appended, Ordering::Relaxed);
+            self.segment_bytes += appended;
             self.spool_write_metrics.write_bytes = self
                 .spool_write_metrics
                 .write_bytes
@@ -325,15 +447,7 @@ impl Workspace {
         self.ensure_active()?;
         let (old, prior_edits, was_base) = match &self.nodes[&node].data {
             Data::File(FileData::Base { root, len }) => (PieceTree::base(*root, *len)?, 0, true),
-            Data::File(FileData::Edited {
-                spool,
-                pieces,
-                edits,
-                ..
-            }) => {
-                self.spool_file(node, spool)?;
-                (pieces.clone(), *edits, false)
-            }
+            Data::File(FileData::Edited { pieces, edits, .. }) => (pieces.clone(), *edits, false),
             _ => return Err(StoreError::InvalidInput("file")),
         };
         let total_edits = prior_edits
@@ -381,7 +495,7 @@ impl Workspace {
         let paths = self.nodes[&node].paths.iter().cloned().collect();
         self.invalidate_capture();
         self.ensure_edited(node)?;
-        let (_, high_water, installed, _) = self.edited_state(node)?;
+        let (high_water, installed, _) = self.edited_state(node)?;
         self.install_edit(
             node,
             installed,
@@ -402,8 +516,12 @@ impl Workspace {
             return Ok(());
         }
         self.ensure_edited(node)?;
-        let (spool, high_water, old, edits) = self.edited_state(node)?;
-        self.spool_file(node, &spool)?;
+        let (high_water, old, edits) = self.edited_state(node)?;
+        for piece in old.pieces() {
+            if let Piece::Spool { segment, .. } = piece {
+                segment.check()?;
+            }
+        }
         let (start, delete_len, replacement) = if size < old_len {
             (size, old_len - size, None)
         } else {
@@ -436,15 +554,14 @@ impl Workspace {
             .checked_add(1)
             .ok_or(StoreError::Integrity("Workspace mutation generation"))
     }
-    fn edited_state(&self, node: NodeId) -> Result<(std::path::PathBuf, u64, PieceTree, u32)> {
+    fn edited_state(&self, node: NodeId) -> Result<(u64, PieceTree, u32)> {
         match &self.nodes[&node].data {
             Data::File(FileData::Edited {
-                spool,
                 spool_high_water,
                 pieces,
                 edits,
                 ..
-            }) => Ok((spool.clone(), *spool_high_water, pieces.clone(), *edits)),
+            }) => Ok((*spool_high_water, pieces.clone(), *edits)),
             _ => Err(StoreError::InvalidInput("file")),
         }
     }
@@ -504,28 +621,33 @@ impl Workspace {
     }
 
     pub fn fsync(&mut self, node: Option<NodeId>) -> Result<()> {
-        let spools = if let Some(node) = node {
+        let started = std::time::Instant::now();
+        let mut segments = std::collections::BTreeMap::new();
+        if let Some(node) = node {
             match &self
                 .nodes
                 .get(&node)
                 .ok_or(StoreError::NotFound("node"))?
                 .data
             {
-                Data::File(FileData::Edited { spool, .. }) => vec![(node, spool.clone())],
-                _ => Vec::new(),
+                Data::File(FileData::Edited { pieces, .. }) => {
+                    for piece in pieces.pieces() {
+                        if let Piece::Spool { segment, .. } = piece {
+                            segments.insert(segment.id, segment);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            for segment in segments.values() {
+                segment.check()?;
+                segment.observe();
             }
         } else {
-            self.nodes
-                .iter()
-                .filter_map(|(node, value)| match &value.data {
-                    Data::File(FileData::Edited { spool, .. }) => Some((*node, spool.clone())),
-                    _ => None,
-                })
-                .collect()
-        };
-        let started = std::time::Instant::now();
-        for (node, spool) in spools {
-            self.spool_file(node, &spool)?;
+            for segment in self.spool_segments.values() {
+                segment.check()?;
+                segment.observe();
+            }
         }
         self.finish_capture(node);
         self.spool_write_metrics.fence_count =
@@ -541,12 +663,19 @@ impl Workspace {
     }
     pub(crate) fn clear_spool(&mut self) -> Result<()> {
         self.invalidate_capture();
-        self.open_spools.clear();
-        for (node, value) in &self.nodes {
-            if let Data::File(FileData::Edited { spool, .. }) = &value.data {
-                self.remove_spool_if_exists(*node, spool)?;
+        for id in &self.edited_nodes {
+            if let Some(Node {
+                data: Data::File(FileData::Edited { pieces, .. }),
+                ..
+            }) = self.nodes.get_mut(id)
+            {
+                *pieces = PieceTree::empty();
             }
         }
+        self.edited_nodes.clear();
+        self.current_spool = None;
+        self.spool_segments.clear();
+        self.segment_bytes = 0;
         self.spool_bytes = 0;
         self.spool_bytes_peak = 0;
         self.inline_bytes = 0;
@@ -573,14 +702,8 @@ impl Workspace {
         path: String,
         reserved: bool,
     ) -> Result<()> {
-        let spool = self.spool.join(node.0.to_string());
-        let started = std::time::Instant::now();
-        let file = create_spool(&spool)?;
-        self.observe_spool_file(node, &file);
-        self.note_spool_open(elapsed_ns(started));
         let data = Data::File(FileData::Edited {
             base: None,
-            spool,
             spool_high_water: 0,
             pieces: PieceTree::empty(),
             edits: 0,
@@ -603,106 +726,93 @@ impl Workspace {
             let allocated = self.allocate(value);
             debug_assert_eq!(allocated, node);
         }
-        if self.open_spools.insert(node, file).is_some() {
-            return Err(StoreError::Integrity("spool descriptor"));
-        }
+        self.edited_nodes.insert(node);
         Ok(())
     }
     fn ensure_edited(&mut self, node: NodeId) -> Result<()> {
         if let Data::File(FileData::Base { root, len }) = self.nodes[&node].data {
-            let path = self.spool.join(node.0.to_string());
             let pieces = PieceTree::base(root, len)?;
             let next_allocation = self
                 .piece_allocation_bytes
                 .checked_add(pieces.logical_allocation_charge()?)
                 .filter(|v| *v <= MAX_PIECE_ALLOCATION)
                 .ok_or(StoreError::InvalidInput("workspace piece allocation limit"))?;
-            let started = std::time::Instant::now();
-            let file = create_spool(&path)?;
-            self.observe_spool_file(node, &file);
-            let open_ns = elapsed_ns(started);
-            if self.open_spools.contains_key(&node) {
-                let _ = self.remove_spool_file(node, &path);
-                return Err(StoreError::Integrity("spool descriptor"));
-            }
             self.nodes.get_mut(&node).unwrap().data = Data::File(FileData::Edited {
                 base: Some((root, len)),
-                spool: path,
                 spool_high_water: 0,
                 pieces,
                 edits: 0,
             });
             self.piece_allocation_bytes = next_allocation;
-            self.open_spools.insert(node, file);
-            self.note_spool_open(open_ns);
+            self.edited_nodes.insert(node);
         }
         matches!(self.nodes[&node].data, Data::File(FileData::Edited { .. }))
             .then_some(())
             .ok_or(StoreError::InvalidInput("file"))
     }
-    pub(crate) fn spool_file(&self, node: NodeId, path: &Path) -> Result<&File> {
-        let file = self
-            .open_spools
-            .get(&node)
-            .ok_or(StoreError::Integrity("spool descriptor"))?;
-        let open = file
-            .metadata()
-            .inspect_err(|_| self.physical_spool.borrow_mut().error())?;
-        let linked =
-            std::fs::metadata(path).inspect_err(|_| self.physical_spool.borrow_mut().error())?;
-        if open.dev() != linked.dev() || open.ino() != linked.ino() {
-            self.physical_spool.borrow_mut().error();
-            return Err(StoreError::Integrity("spool descriptor identity"));
-        }
-        self.physical_spool.borrow_mut().observe(node, &open);
-        Ok(file)
+    pub(crate) fn physical_spool_snapshot(&self) -> (Option<u64>, Option<u64>, u64, u64) {
+        self.physical_spool
+            .lock()
+            .map_or((None, None, 1, 0), |metrics| metrics.snapshot())
     }
 
-    fn observe_spool_file(&self, node: NodeId, file: &File) {
-        match file.metadata() {
-            Ok(metadata) => self.physical_spool.borrow_mut().observe(node, &metadata),
-            Err(_) => self.physical_spool.borrow_mut().error(),
+    fn append_segment(&mut self, bytes: u64) -> Result<(Arc<SpoolSegment>, u64)> {
+        if self.segment_bytes.saturating_add(bytes) > self.policy.max_spool_bytes {
+            self.retire_spool_segments();
         }
-    }
-
-    pub(crate) fn remove_spool_file(&self, node: NodeId, path: &Path) -> std::io::Result<()> {
-        match std::fs::metadata(path) {
-            Ok(metadata) => self.physical_spool.borrow_mut().observe(node, &metadata),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-            Err(_) => self.physical_spool.borrow_mut().error(),
-        }
-        let result = std::fs::remove_file(path);
-        if result.is_ok()
-            || result
-                .as_ref()
-                .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+        self.policy.check(
+            self.spool_bytes
+                .max(self.segment_bytes)
+                .checked_add(bytes)
+                .ok_or(StoreError::InvalidInput("workspace spool limit"))?,
+        )?;
+        if let Some(segment) = self
+            .current_spool
+            .and_then(|id| self.spool_segments.get(&id))
         {
-            self.physical_spool.borrow_mut().removed(node);
+            let offset = segment.len.load(Ordering::Relaxed);
+            if offset.saturating_add(bytes) <= segment.capacity {
+                return Ok((segment.clone(), offset));
+            }
         }
-        result
+        self.retire_spool_segments();
+        let started = std::time::Instant::now();
+        let id = self.next_spool;
+        self.next_spool = id
+            .checked_add(1)
+            .ok_or(StoreError::Integrity("spool segment identity"))?;
+        let segment = Arc::new(SpoolSegment::new(
+            &self.spool,
+            id,
+            SPOOL_SEGMENT_BYTES
+                .max(bytes)
+                .min(self.policy.max_spool_bytes),
+            self.physical_spool.clone(),
+        )?);
+        self.spool_segments.insert(id, segment.clone());
+        self.current_spool = Some(id);
+        self.note_spool_open(elapsed_ns(started));
+        Ok((segment, 0))
     }
 
-    pub(crate) fn remove_spool_if_exists(&self, node: NodeId, path: &Path) -> std::io::Result<()> {
-        // Reuse the metadata lookup previously performed by Path::exists.
-        // Preserve its error suppression; only the observation becomes unknown.
-        match std::fs::metadata(path) {
-            Ok(metadata) => {
-                self.physical_spool.borrow_mut().observe(node, &metadata);
-                let result = std::fs::remove_file(path);
-                if result.is_ok() {
-                    self.physical_spool.borrow_mut().removed(node);
-                }
-                result
+    pub(crate) fn retire_spool_segments(&mut self) {
+        let started = std::time::Instant::now();
+        self.spool_segments.retain(|id, segment| {
+            if Arc::strong_count(segment) != 1 {
+                return true;
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                self.physical_spool.borrow_mut().removed(node);
-                Ok(())
+            self.segment_bytes = self
+                .segment_bytes
+                .saturating_sub(segment.len.load(Ordering::Relaxed));
+            if self.current_spool == Some(*id) {
+                self.current_spool = None;
             }
-            Err(_) => {
-                self.physical_spool.borrow_mut().error();
-                Ok(())
-            }
-        }
+            false
+        });
+        layerfs_layerstack_store::note_workspace_commit_phase(
+            layerfs_layerstack_store::WorkspaceCommitPhase::SpoolRetirement,
+            elapsed_ns(started),
+        );
     }
     fn note_spool_open(&mut self, ns: u64) {
         self.spool_write_metrics.write_open_count =
@@ -720,15 +830,6 @@ fn next_edit(edits: u32) -> Result<u32> {
 fn elapsed_ns(started: std::time::Instant) -> u64 {
     u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
-fn create_spool(path: &Path) -> std::io::Result<File> {
-    OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(path)
-}
-
 fn append_spool(file: &File, bytes: &[u8], offset: u64) -> std::io::Result<()> {
     #[cfg(test)]
     if INJECT_SHORT_APPEND.with(|inject| inject.replace(false)) {
@@ -741,6 +842,7 @@ fn append_spool(file: &File, bytes: &[u8], offset: u64) -> std::io::Result<()> {
 #[cfg(test)]
 thread_local! {
     static INJECT_SHORT_APPEND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static INJECT_APPEND_CLEANUP_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 fn read_base(
     reader: &SnapshotReader,
@@ -845,16 +947,98 @@ mod tests {
     }
 
     #[test]
+    fn failed_tail_cleanup_keeps_discarded_physical_bytes_charged() {
+        let (root, mut workspace) = workspace("failed-tail-cleanup");
+        workspace.policy.max_spool_bytes = 6;
+        let file = workspace.create_file(ROOT, b"file", 0o600).unwrap().node;
+        workspace.write(file, 0, b"ok").unwrap();
+        INJECT_SHORT_APPEND.with(|inject| inject.set(true));
+        INJECT_APPEND_CLEANUP_FAILURE.with(|inject| inject.set(true));
+        assert!(matches!(
+            workspace.write(file, 2, b"bad!"),
+            Err(StoreError::Integrity("spool append cleanup failure"))
+        ));
+        assert_eq!(workspace.read(file, 0, 2).unwrap(), b"ok");
+        assert_eq!(workspace.spool_bytes, 2);
+        assert_eq!(workspace.segment_bytes, 4);
+        workspace.policy.max_spool_bytes = 4;
+        assert!(workspace.write(file, 2, b"x").is_err());
+        workspace.commit().unwrap();
+        assert_eq!(workspace.segment_bytes, 0);
+        workspace.write(file, 2, b"x").unwrap();
+        assert_eq!(workspace.read(file, 0, 3).unwrap(), b"okx");
+        workspace.discard().unwrap();
+        drop(workspace);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn shared_segments_keep_interleaved_rollback_reads_and_open_unlinked_lifetime() {
+        let (root, mut workspace) = workspace("shared-segment-lifetime");
+        let a = workspace.create_file(ROOT, b"a", 0o600).unwrap().node;
+        let b = workspace.create_file(ROOT, b"b", 0o600).unwrap().node;
+        workspace.write(a, 0, b"abc").unwrap();
+        workspace.write(b, 0, b"XYZ").unwrap();
+        workspace.write(a, 3, b"def").unwrap();
+        assert_eq!(workspace.spool_segments.len(), 1);
+        let held = workspace.read_plan(a, 0, 6).unwrap();
+        workspace.write(a, 0, b"Q").unwrap();
+        workspace.truncate(b, 2).unwrap();
+        workspace.write(b, 5, b"R").unwrap();
+        let end = workspace.segment_bytes;
+        INJECT_SHORT_APPEND.with(|inject| inject.set(true));
+        assert!(workspace.write(a, 6, b"failed tail").is_err());
+        assert_eq!(workspace.segment_bytes, end);
+        assert_eq!(workspace.read(a, 0, 6).unwrap(), b"Qbcdef");
+        assert_eq!(workspace.read(b, 0, 6).unwrap(), b"XY\0\0\0R");
+        workspace.pin(a, false).unwrap();
+        workspace.unlink(ROOT, b"a", false).unwrap();
+        let c = workspace.create_file(ROOT, b"c", 0o600).unwrap().node;
+        workspace
+            .write(c, 0, &vec![7; SPOOL_SEGMENT_BYTES as usize])
+            .unwrap();
+        assert_eq!(workspace.spool_segments.len(), 2);
+        workspace.fsync(None).unwrap();
+        workspace.commit().unwrap();
+        assert_eq!(workspace.spool_segments.len(), 1);
+        assert_eq!(
+            workspace.segment_bytes, end,
+            "retained segment dead bytes remain charged"
+        );
+        assert_eq!(workspace.read(a, 0, 6).unwrap(), b"Qbcdef");
+        workspace.chmod(c, 0o640).unwrap();
+        workspace.commit().unwrap();
+        workspace.unpin(a).unwrap();
+        assert_eq!(
+            workspace.spool_segments.len(),
+            1,
+            "prepared read owns old extents"
+        );
+        assert_eq!(held.read().unwrap(), b"abcdef");
+        workspace.commit().unwrap();
+        assert!(workspace.spool_segments.is_empty());
+        assert_eq!(workspace.segment_bytes, 0);
+        assert_eq!(workspace.physical_spool_snapshot().0, Some(0));
+        workspace.end_clean().unwrap();
+        drop(workspace);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn edit_limit_and_sparse_physical_charge_are_exact() {
         let (root, mut workspace) = workspace("limits");
         let sparse = workspace.create_file(ROOT, b"sparse", 0o600).unwrap().node;
         workspace.write(sparse, 60 * 1024, b"x").unwrap();
         assert_eq!(workspace.attr(sparse).unwrap().size, 60 * 1024 + 1);
         assert_eq!(workspace.spool_bytes, 1);
-        let Data::File(FileData::Edited { spool, .. }) = &workspace.nodes[&sparse].data else {
-            panic!("edited file")
-        };
-        assert_eq!(std::fs::metadata(spool).unwrap().len(), 1);
+        assert_eq!(
+            workspace
+                .spool_segments
+                .values()
+                .map(|segment| segment.file.metadata().unwrap().len())
+                .sum::<u64>(),
+            1
+        );
 
         let file = workspace.create_file(ROOT, b"limit", 0o600).unwrap().node;
         for value in 0..MAX_EDITS_PER_FILE {
@@ -880,15 +1064,14 @@ mod tests {
         assert_eq!(workspace.nodes[&file], before);
         assert_eq!(workspace.spool_bytes, before_charge);
         assert_eq!(workspace.spool_bytes_peak, before_peak);
-        let Data::File(FileData::Edited {
-            spool,
-            spool_high_water,
-            ..
-        }) = &workspace.nodes[&file].data
-        else {
-            panic!("edited file")
-        };
-        assert_eq!(std::fs::metadata(spool).unwrap().len(), *spool_high_water);
+        assert_eq!(
+            workspace
+                .spool_segments
+                .values()
+                .map(|segment| segment.file.metadata().unwrap().len())
+                .sum::<u64>(),
+            before_charge
+        );
         assert_eq!(workspace.read(file, 0, 16).unwrap(), b"base");
         workspace.policy.max_spool_bytes = before_charge;
         assert!(workspace.write(file, 4, b"x").is_err());
@@ -906,17 +1089,18 @@ mod tests {
         workspace.write(second, 0, &[0x53; 8192]).unwrap();
         let actual = || {
             workspace
-                .open_spools
+                .spool_segments
                 .values()
-                .map(|f| f.metadata().unwrap().blocks() * 512)
+                .map(|f| f.file.metadata().unwrap().blocks() * 512)
                 .sum::<u64>()
         };
+        assert_eq!(workspace.physical_spool_snapshot().0, Some(actual()));
         assert_eq!(
-            workspace.physical_spool.borrow().snapshot().0,
-            Some(actual())
+            workspace.spool_segments.len(),
+            1,
+            "two files share one physical segment"
         );
-        let first_blocks = workspace.open_spools[&first].metadata().unwrap().blocks() * 512;
-        let initial_peak = workspace.physical_spool.borrow().snapshot().1.unwrap();
+        let initial_peak = workspace.physical_spool_snapshot().1.unwrap();
         let failed = workspace.create_file(ROOT, b"failed", 0o600).unwrap().node;
         let logical_before = (workspace.spool_bytes, workspace.spool_bytes_peak);
         INJECT_SHORT_APPEND.with(|inject| inject.set(true));
@@ -925,12 +1109,20 @@ mod tests {
             (workspace.spool_bytes, workspace.spool_bytes_peak),
             logical_before
         );
-        assert_eq!(workspace.open_spools[&failed].metadata().unwrap().len(), 0);
-        let (current, peak, errors, count) = workspace.physical_spool.borrow().snapshot();
+        assert_eq!(workspace.attr(failed).unwrap().size, 0);
+        assert_eq!(
+            workspace
+                .spool_segments
+                .values()
+                .map(|segment| segment.file.metadata().unwrap().len())
+                .sum::<u64>(),
+            logical_before.0
+        );
+        let (current, peak, errors, count) = workspace.physical_spool_snapshot();
         let actual = workspace
-            .open_spools
+            .spool_segments
             .values()
-            .map(|f| f.metadata().unwrap().blocks() * 512)
+            .map(|f| f.file.metadata().unwrap().blocks() * 512)
             .sum::<u64>();
         assert_eq!(current, Some(actual));
         assert!(
@@ -958,32 +1150,29 @@ mod tests {
         workspace.pin(first, false).unwrap();
         workspace.unlink(ROOT, b"first", false).unwrap();
         assert_eq!(
-            workspace.physical_spool.borrow().snapshot().0,
+            workspace.physical_spool_snapshot().0,
             current,
             "open unlinked spool stays charged"
         );
         workspace.unpin(first).unwrap();
-        assert_eq!(
-            workspace.physical_spool.borrow().snapshot().0,
-            Some(actual - first_blocks)
-        );
-        assert_eq!(workspace.physical_spool.borrow().snapshot().1, peak);
+        assert_eq!(workspace.physical_spool_snapshot().0, Some(actual));
+        assert_eq!(workspace.physical_spool_snapshot().1, peak);
 
         workspace.commit().unwrap();
-        assert_eq!(workspace.physical_spool.borrow().snapshot().0, Some(0));
+        assert_eq!(workspace.physical_spool_snapshot().0, Some(0));
         assert_eq!(
-            workspace.physical_spool.borrow().snapshot().1,
+            workspace.physical_spool_snapshot().1,
             peak,
-            "Commit rebase keeps lifetime allocation evidence"
+            "Commit checkpoint keeps lifetime allocation evidence"
         );
         let last = workspace.create_file(ROOT, b"last", 0o600).unwrap().node;
         workspace.write(last, 0, b"later").unwrap();
         workspace.discard().unwrap();
-        assert_eq!(workspace.physical_spool.borrow().snapshot().0, Some(0));
-        assert_eq!(workspace.physical_spool.borrow().snapshot().1, peak);
-        workspace.physical_spool.borrow_mut().error();
-        assert_eq!(workspace.physical_spool.borrow().snapshot().0, None);
-        assert_eq!(workspace.physical_spool.borrow().snapshot().1, None);
+        assert_eq!(workspace.physical_spool_snapshot().0, Some(0));
+        assert_eq!(workspace.physical_spool_snapshot().1, peak);
+        workspace.physical_spool.lock().unwrap().error();
+        assert_eq!(workspace.physical_spool_snapshot().0, None);
+        assert_eq!(workspace.physical_spool_snapshot().1, None);
         drop(workspace);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -1068,11 +1257,9 @@ mod tests {
             .unwrap();
         let end = workspace.attr(file).unwrap().size;
         workspace.write(file, end, b"S").unwrap();
-        let Data::File(FileData::Edited { spool, pieces, .. }) = &workspace.nodes[&file].data
-        else {
+        let Data::File(FileData::Edited { pieces, .. }) = &workspace.nodes[&file].data else {
             panic!("edited file")
         };
-        let spool = spool.clone();
         let variants = pieces.pieces();
         assert!(variants
             .iter()
@@ -1086,7 +1273,8 @@ mod tests {
         assert!(variants
             .iter()
             .any(|piece| matches!(piece, Piece::Spool { .. })));
-        assert!(spool.exists());
+        drop(variants);
+        assert_eq!(workspace.spool_segments.len(), 1);
         workspace.discard().unwrap();
         assert_eq!(
             workspace.store.pin_branch(branch).unwrap().root,
@@ -1095,7 +1283,8 @@ mod tests {
         assert_eq!(workspace.spool_bytes, 0);
         assert_eq!(workspace.inline_bytes, 0);
         assert_eq!(workspace.piece_allocation_bytes, 0);
-        assert!(!spool.exists());
+        assert!(workspace.spool_segments.is_empty());
+        assert_eq!(workspace.physical_spool_snapshot().0, Some(0));
         drop(workspace);
         std::fs::remove_dir_all(root).unwrap();
     }

@@ -85,3 +85,50 @@ A follow-up regression extended unseen-alias coverage to **unpinned** edited fil
 ## Coordination boundary
 
 A separately assigned Exec issue/task owns layerfs-fuse and agreed transport changes in another worktree. This task remains Commit and integration owner for Workspace, Store, content, shared spool lifetime and #47 guide/results. No uncommitted FUSE changes exist here. Cross-boundary projection/telemetry hooks require one named patch owner. All performance-sensitive builds/tests/samples use the same host measurement lock; no other task's caches, containers or artifacts are cleaned. Final #47 qualification must use the combined product.
+
+## Attempt 3 — ordered Commit, create-100
+
+Original complete create-100 / seed 1 on `46463287c`, before shared spools. Child **TARGET_MISS**: `18940567833 ns`. This directly measures the second Commit slice; gains are not inferred from delete. Receipt and strict assessment: `benchmark-results/host-store/results/issue47-ordered-create100/`.
+
+- create: 9046375 ns
+- exec: 15337713958 ns
+- commit: 3561906833 ns
+- visibility: 79500 ns
+- end: 31821167 ns
+
+Commit detail:
+
+- content_ns: 597275834
+- namespace_ns: 318532333
+- candidate_finish_ns: 91943750
+- object_admission_ns: 431737875
+- checkpoint_ns: 2117268584
+- spool_retirement_ns: 2079293345
+- snapshot_database_calls: 6
+- object_admission_spill_readback_bytes: 113434447
+
+Producing identities:
+
+- source_identity: `772a892b09a3d39e7aa82e5610da1bc4d3a82faf3c3beb96b07555cc1f3d967c`
+- product_identity: `641afd33103ef39c1453ed8321101799567068eb1fb967836eabedcb4e40872f`
+- image: `sha256:ac58ab1abda379bab689f66919c7889e6cd2f9a6ed162f16fb3ceac368dd6f43`
+- harness_identity: `c3610164231c40bfa3e77c27e5c1526b5e9656c046c9e382d095b0d6c75d1abc`
+- input_identity: `28fcd85776a5f85c1b4919cea46374dcb3bc0424c51f1cd41a37fbc7334c2acf`
+
+Complete host topology and container bounds validated; protected preparation reused through independent closed-copy sample, master unchanged, cleanup PASS, no OOM/swap. No independent proof. The next change targets shared physical segment ownership; snapshot rediscovery is already removed and no further lookup-cache tuning is planned.
+
+## Shared physical spool ownership slice
+
+Existing `Piece::Spool` ranges now carry an `Arc<SpoolSegment>` and absolute physical offset/length. The compact PieceTree case owns a one-word range handle instead of a private path/descriptor; the existing 100,000-file / 800,000-byte logical compact-piece charge regression remains valid. PieceTree split/replace and canonical FileMutationBatch/rope algorithms remain unchanged. Range binding metadata replaces per-logical-file physical ownership; it is bounded by the live range graph.
+
+`SpoolSegment` uses a private create-new descriptor and removes its temporary name immediately. Workspace shares append capacity across files and checks physical high-water before writes. Nominal segment capacity is 1 MiB; a larger single write receives a segment large enough for that write within the unchanged payload allowance. There is one storage mechanism. New empty files, inline edits and logical zero ranges need no physical file. `edited_nodes` tracks logical editable state; the physical registry tracks unique segment descriptors.
+
+Delayed `ReadPlan` and rollback pieces retain segment ownership directly. Short append rollback truncates only the current unpublished physical tail. If tail cleanup itself fails, observed retained bytes are added to segment charge while logical file state remains unchanged. Admission checks the existing logical charge and retained physical segment charge; partially dead shared segments remain charged. Checkpoint drops published ranges and retires unused segments, including on a clean subsequent Commit after a held read finishes. Reconciliation transfers still-held segments and charge into the refreshed Workspace. Physical allocation/peak/error observations remain tied to actual segment lifetime.
+
+Retired ordinary production symbols/state: per-node `open_spools`, `FileData::Edited.spool`, `spool_file`, `create_spool`, `remove_spool_file`, `remove_spool_if_exists`, and zero-based `contiguous_spool_len`. Their callers transfer to segment-owned ranges, `edited_nodes`, direct descriptor reads and `retire_spool_segments`. The generic Workspace runtime `spool` directory remains for owned candidate journals/runtime artifacts. Capture eligibility follows the unchanged logical sequential-write checks and accepts physical segment transitions.
+
+Validation: 51 Workspace library tests passed together after the main migration; targeted reconciliation-held-charge and failed-tail-cleanup regressions passed afterward. Existing tests still cover dense 100,000 compact ranges, sparse/overlap/zero data, edit limits, exact rollback, capture equivalence, canonical history, alias/reference behavior, partial-install recovery and repeated Commit. A new interleaved two-file regression holds a prepared read across overwrite, sparse changes, short append, unlink, rollover and two Commits, proving correct bytes and segment retirement. The first cleanup-failure test setup incorrectly placed the failed tail in an entirely unreferenced segment, which was correctly reclaimable; the test was corrected to retain a partial tail in the same live segment. No product weakening was made to satisfy it.
+
+Normal benchmark observations now include passive maintained physical allocation, open physical file count and retained segment bytes before and after Commit. The directory walk is explicitly named-file-only; anonymous segment allocation is not inferred from that walk. These observations perform no oracle, namespace scan or independent proof. Performance remains unmeasured for this slice until the next source-bound receipt; no subsecond claim.
+
+The full 12-test SDK file-edit integration suite also passed serially after the spool migration, including candidate/admission/publication failure retry, projection refresh/reopen, aliases, owner composition, stale heads and discard. No independent benchmark proof ran.

@@ -145,6 +145,12 @@ impl Workspace {
         refresh: bool,
     ) -> Result<CommitTransition> {
         if matches!(outcome, CommitOutcome::UpToDate { .. }) && self.mutation_generation == 0 {
+            let started = Instant::now();
+            self.retire_spool_segments();
+            layerfs_layerstack_store::note_workspace_commit_phase(
+                WorkspaceCommitPhase::Checkpoint,
+                elapsed_ns(started),
+            );
             self.pending_stage = None;
             return Ok(if refresh {
                 CommitTransition::Refreshed
@@ -209,10 +215,16 @@ impl Workspace {
             &self.spool,
             self.policy,
         )?;
-        // Reconciliation can publish a different visible state; its projection is refreshed.
+        // Held read plans retain old segments and their admission charge across refresh.
+        let segments = std::mem::take(&mut self.spool_segments);
+        let segment_bytes = self.segment_bytes;
         self.clear_spool()?;
+        committed.spool_segments = segments;
+        committed.segment_bytes = segment_bytes;
         committed.physical_spool = std::mem::take(&mut self.physical_spool);
+        committed.next_spool = self.next_spool;
         *self = committed;
+        self.retire_spool_segments();
         Ok(())
     }
 
@@ -254,7 +266,7 @@ impl Workspace {
                     return Err(StorageError::Integrity("checkpoint presentation"));
                 }
                 if matches!(&node.data, Data::File(FileData::Edited { .. }))
-                    && !self.open_spools.contains_key(&id)
+                    && !self.edited_nodes.contains(&id)
                 {
                     return Err(StorageError::Integrity("spool descriptor"));
                 }
@@ -271,18 +283,6 @@ impl Workspace {
             // The descriptor remains readable if unlink succeeds but a later step
             // fails. Each installed node then owns canonical backing; retries skip its spool.
             checkpoint.visit(|id, inode, content, attr| {
-                if let Data::File(FileData::Edited { spool, .. }) = &self.nodes[&id].data {
-                    let started = Instant::now();
-                    let retired = self.remove_spool_if_exists(id, spool);
-                    if retired.is_ok() {
-                        self.open_spools.remove(&id);
-                    }
-                    layerfs_layerstack_store::note_workspace_commit_phase(
-                        WorkspaceCommitPhase::SpoolRetirement,
-                        elapsed_ns(started),
-                    );
-                    retired?;
-                }
                 let node = self.nodes.get_mut(&id).expect("validated checkpoint node");
                 match &mut node.data {
                     Data::File(data) => {
@@ -299,6 +299,7 @@ impl Workspace {
                     }
                     Data::Symlink(_) => {}
                 }
+                self.edited_nodes.remove(&id);
                 node.canonical = Some(inode);
                 self.canonical_nodes.insert(inode, id);
                 #[cfg(test)]
@@ -323,9 +324,9 @@ impl Workspace {
                     }
                 }
             }
-            // Every remaining Edited file owns a descriptor, including a clean
-            // linked file whose rejected write only established editable backing.
-            for id in self.open_spools.keys() {
+            // Includes inline/zero-only state and rejected writes that established
+            // editable backing without applying a semantic mutation.
+            for id in &self.edited_nodes {
                 let Data::File(FileData::Edited {
                     spool_high_water,
                     pieces,
@@ -340,6 +341,7 @@ impl Workspace {
                     .piece_allocation_bytes
                     .saturating_add(pieces.logical_allocation_charge()?);
             }
+            self.retire_spool_segments();
             self.reader = reader;
             self.expected_head = head;
             self.expected_base = expected_base;
@@ -411,7 +413,7 @@ impl Workspaces {
             .lock()
             .map_err(|_| WorkspaceError::WorkspaceBusy)?;
         let (physical_current, physical_peak, physical_errors, physical_observations) =
-            workspace.physical_spool.borrow().snapshot();
+            workspace.physical_spool_snapshot();
         Ok(VerificationWorkspaceState {
             spool_bytes: workspace.spool_bytes,
             spool_peak_bytes: workspace.spool_bytes_peak,
@@ -420,7 +422,8 @@ impl Workspaces {
             physical_spool_observation_errors: physical_errors,
             physical_spool_observation_count: physical_observations,
             mutation_generation: workspace.mutation_generation,
-            open_spool_files: workspace.open_spools.len(),
+            open_spool_files: workspace.spool_segments.len(),
+            spool_segment_bytes: workspace.segment_bytes,
         })
     }
 
@@ -1195,6 +1198,39 @@ mod tests {
     }
 
     #[test]
+    fn refreshed_workspace_keeps_held_segment_charge_until_read_finishes() {
+        let (root, workspaces, branch, store) = fixture("refresh-segment-charge");
+        drop(workspaces);
+        let mut workspace = Workspace::open_with_policy(
+            store,
+            branch,
+            root.join("spool"),
+            crate::ResourcePolicy {
+                max_spool_bytes: 4,
+                ..crate::ResourcePolicy::default()
+            },
+        )
+        .unwrap();
+        let file = lookup_path(&mut workspace, "file").unwrap();
+        workspace.write(file, 0, b"held").unwrap();
+        let read = workspace.read_plan(file, 0, 4).unwrap();
+        let (outcome, _) = workspace.commit().unwrap();
+        workspace
+            .refresh_reconciled(outcome, workspace.expected_base)
+            .unwrap();
+        assert_eq!(workspace.segment_bytes, 4);
+        assert!(workspace.current_spool.is_none());
+        let file = lookup_path(&mut workspace, "file").unwrap();
+        assert!(workspace.write(file, 0, b"x").is_err());
+        assert_eq!(read.read().unwrap(), b"held");
+        workspace.write(file, 0, b"x").unwrap();
+        assert_eq!(workspace.segment_bytes, 1);
+        workspace.discard().unwrap();
+        drop(workspace);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn owner_drop_discards_only_its_workspace_without_branch_exclusion() {
         let (root, first, branch, store) = fixture("owner-drop-isolation");
         let second = Workspaces::new(root.join("second-runtime"), store.clone()).unwrap();
@@ -1435,12 +1471,12 @@ mod tests {
         assert_eq!(workspace.nodes[&orphan].pins, 1);
         assert_eq!(workspace.read(orphan, 0, 64).unwrap(), b"pinned-data");
         assert_eq!(workspace.spool_bytes, 11);
-        assert_eq!(workspace.open_spools.len(), 1);
+        assert_eq!(workspace.spool_segments.len(), 1);
         assert!(workspace.dirty.is_empty() && workspace.mutation_paths.is_empty());
         assert_eq!(workspace.mutation_generation, 0);
         workspace.unpin(orphan).unwrap();
         assert_eq!(workspace.spool_bytes, 0);
-        assert!(workspace.open_spools.is_empty());
+        assert!(workspace.spool_segments.is_empty());
         drop(workspace);
         drop(store);
         std::fs::remove_dir_all(root).unwrap();
@@ -1683,6 +1719,7 @@ pub struct VerificationWorkspaceState {
     pub physical_spool_observation_count: u64,
     pub mutation_generation: u64,
     pub open_spool_files: usize,
+    pub spool_segment_bytes: u64,
 }
 #[cfg(feature = "test-instrumentation")]
 #[derive(Clone, Debug)]

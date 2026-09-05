@@ -1336,7 +1336,7 @@ struct WorkspaceFileReader<'a> {
 
 #[derive(Clone, Copy)]
 enum WorkspaceFileSource<'a> {
-    Direct(&'a File),
+    Direct(&'a File, u64),
     Mixed {
         workspace: &'a Workspace,
         node: NodeId,
@@ -1396,25 +1396,10 @@ impl<'a> WorkspaceFileReader<'a> {
             .data
         {
             Data::File(FileData::Edited {
-                base: None,
-                spool,
-                spool_high_water,
-                pieces,
-                ..
-            }) if *spool_high_water == len
-                && pieces
-                    .pieces()
-                    .iter()
-                    .try_fold(0_u64, |offset, piece| match piece {
-                        crate::file_edit::Piece::Spool {
-                            offset: source,
-                            len,
-                        } if *source == offset => offset.checked_add(*len),
-                        _ => None,
-                    })
-                    == Some(len) =>
-            {
-                WorkspaceFileSource::Direct(workspace.spool_file(node, spool)?)
+                base: None, pieces, ..
+            }) if pieces.compact_spool().is_some() => {
+                let slice = pieces.compact_spool().unwrap();
+                WorkspaceFileSource::Direct(&slice.segment.file, slice.offset)
             }
             Data::File(_) => WorkspaceFileSource::Mixed { workspace, node },
             _ => return Err(StorageError::InvalidInput("file")),
@@ -1434,10 +1419,11 @@ impl Read for WorkspaceFileReader<'_> {
         }
         let count = output.len().min((self.len - self.offset) as usize);
         match self.source {
-            WorkspaceFileSource::Direct(file) => {
+            WorkspaceFileSource::Direct(file, start) => {
                 let mut read = 0;
                 while read < count {
-                    let next = file.read_at(&mut output[read..count], self.offset + read as u64)?;
+                    let next =
+                        file.read_at(&mut output[read..count], start + self.offset + read as u64)?;
                     if next == 0 {
                         return Err(std::io::ErrorKind::UnexpectedEof.into());
                     }
@@ -1995,7 +1981,7 @@ mod tests {
         let file = workspace.create_file(ROOT, b"full", 0o600).unwrap();
         workspace.write(file.node, 0, &data).unwrap();
         let mut reader = WorkspaceFileReader::new(&workspace, file.node).unwrap();
-        assert!(matches!(reader.source, WorkspaceFileSource::Direct(_)));
+        assert!(matches!(reader.source, WorkspaceFileSource::Direct(..)));
         let mut actual = Vec::new();
         reader.read_to_end(&mut actual).unwrap();
         assert_eq!(actual, data);
@@ -2028,20 +2014,37 @@ mod tests {
         if let Data::File(FileData::Edited { pieces, .. }) =
             &mut workspace.nodes.get_mut(&file.node).unwrap().data
         {
+            let mut original = pieces.pieces().into_iter();
+            let crate::file_edit::Piece::Spool {
+                segment,
+                offset,
+                len,
+            } = original.next().unwrap()
+            else {
+                panic!("spool piece")
+            };
+            let count = pieces.count();
             *pieces = crate::file_edit::PieceTree::empty()
                 .replace(
                     0,
                     0,
                     [
-                        crate::file_edit::Piece::Spool { offset: 0, len: 1 },
                         crate::file_edit::Piece::Spool {
-                            offset: 1,
-                            len: data.len() as u64 - 1,
+                            segment: segment.clone(),
+                            offset,
+                            len: 1,
                         },
-                    ],
+                        crate::file_edit::Piece::Spool {
+                            segment,
+                            offset: offset + 1,
+                            len: len - 1,
+                        },
+                    ]
+                    .into_iter()
+                    .chain(original),
                 )
                 .unwrap();
-            assert_eq!(pieces.count(), 2);
+            assert_eq!(pieces.count(), count + 1);
         }
         let captured = workspace
             .take_capture()

@@ -35,6 +35,7 @@ pub(crate) enum Piece {
         len: u64,
     },
     Spool {
+        segment: Arc<crate::file_io::SpoolSegment>,
         offset: u64,
         len: u64,
     },
@@ -66,7 +67,10 @@ impl Piece {
                 len,
             },
             Self::Zero { .. } => Self::Zero { len },
-            Self::Spool { offset, .. } => Self::Spool {
+            Self::Spool {
+                segment, offset, ..
+            } => Self::Spool {
+                segment: segment.clone(),
                 offset: offset + start,
                 len,
             },
@@ -143,12 +147,19 @@ impl PieceNode {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SpoolSlice {
+    pub(crate) segment: Arc<crate::file_io::SpoolSegment>,
+    pub(crate) offset: u64,
+    pub(crate) len: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PieceTree {
     root: Link,
     serial: u64,
-    // A complete, contiguous spool beginning at zero needs only its length.
-    // Keep this record inline; allocate tree nodes only for fragmented edits.
-    contiguous_spool_len: u64,
+    // A compact physical-range handle replaces per-file path/descriptor ownership.
+    // Its one-word logical piece charge preserves the existing dense-file budget.
+    compact_spool: Option<Arc<SpoolSlice>>,
 }
 
 impl PieceTree {
@@ -156,7 +167,7 @@ impl PieceTree {
         Self {
             root: None,
             serial: 0,
-            contiguous_spool_len: 0,
+            compact_spool: None,
         }
     }
 
@@ -178,12 +189,20 @@ impl PieceTree {
         Ok(tree)
     }
 
+    pub(crate) fn compact_spool(&self) -> Option<&SpoolSlice> {
+        self.compact_spool.as_deref()
+    }
+
+    fn compact_len(&self) -> u64 {
+        self.compact_spool.as_ref().map_or(0, |slice| slice.len)
+    }
+
     pub(crate) fn len(&self) -> u64 {
-        self.contiguous_spool_len + link_len(&self.root)
+        self.compact_len() + link_len(&self.root)
     }
 
     pub(crate) fn count(&self) -> usize {
-        usize::from(self.contiguous_spool_len != 0) + link_count(&self.root)
+        usize::from(self.compact_len() != 0) + link_count(&self.root)
     }
 
     pub(crate) fn inline_len(&self) -> u64 {
@@ -191,15 +210,15 @@ impl PieceTree {
     }
 
     pub(crate) fn height(&self) -> usize {
-        usize::from(self.contiguous_spool_len != 0).max(link_height(&self.root))
+        usize::from(self.compact_len() != 0).max(link_height(&self.root))
     }
 
     pub(crate) fn spool_len(&self) -> u64 {
-        self.contiguous_spool_len + link_spool_len(&self.root)
+        self.compact_len() + link_spool_len(&self.root)
     }
 
     pub(crate) fn logical_allocation_charge(&self) -> Result<u64> {
-        if self.contiguous_spool_len != 0 {
+        if self.compact_len() != 0 {
             return Ok(std::mem::size_of::<u64>() as u64);
         }
         (self.count() as u64)
@@ -222,31 +241,42 @@ impl PieceTree {
         let mut replacement = replacement.into_iter();
         let first = replacement.next();
         let mut replacement = replacement.peekable();
-        if self.root.is_none() && start == self.contiguous_spool_len && delete_len == 0 {
-            if let Some(Piece::Spool { offset, len }) = &first {
-                if *offset == self.contiguous_spool_len && replacement.peek().is_none() {
-                    let len = offset
+        if self.root.is_none() && start == self.compact_len() && delete_len == 0 {
+            if let Some(Piece::Spool {
+                segment,
+                offset,
+                len,
+            }) = &first
+            {
+                if replacement.peek().is_none()
+                    && self.compact_spool.as_ref().is_none_or(|slice| {
+                        Arc::ptr_eq(&slice.segment, segment) && slice.offset + slice.len == *offset
+                    })
+                {
+                    let len = start
                         .checked_add(*len)
                         .filter(|len| *len <= MAX_RESULT_BYTES)
                         .ok_or(StoreError::InvalidInput("workspace piece limit"))?;
-                    // One contiguous spool has no inline/zero bytes and costs
-                    // at most one length record, regardless of write count.
                     let mut next = self.clone();
-                    next.contiguous_spool_len = len;
+                    next.compact_spool = Some(Arc::new(SpoolSlice {
+                        segment: segment.clone(),
+                        offset: offset - start,
+                        len,
+                    }));
                     check_logical_allocation_charge(next.logical_allocation_charge()?)?;
                     return Ok(next);
                 }
             }
         }
         let mut next = self.clone();
-        if next.contiguous_spool_len != 0 {
+        if let Some(slice) = next.compact_spool.take() {
             let piece = Piece::Spool {
-                offset: 0,
-                len: next.contiguous_spool_len,
+                segment: slice.segment.clone(),
+                offset: slice.offset,
+                len: slice.len,
             };
             let priority = next.priority()?;
             next.root = Some(PieceNode::new(piece, priority, None, None)?);
-            next.contiguous_spool_len = 0;
         }
         let root = next.root.clone();
         let (left, tail) = split(&root, start, &mut next)?;
@@ -263,8 +293,17 @@ impl PieceTree {
         next.root = merge(&merge(&left, &middle)?, &right)?;
         if let Some(node) = &next.root {
             if node.count == 1 {
-                if let Piece::Spool { offset: 0, len } = node.piece {
-                    next.contiguous_spool_len = len;
+                if let Piece::Spool {
+                    segment,
+                    offset,
+                    len,
+                } = &node.piece
+                {
+                    next.compact_spool = Some(Arc::new(SpoolSlice {
+                        segment: segment.clone(),
+                        offset: *offset,
+                        len: *len,
+                    }));
                     next.root = None;
                 }
             }
@@ -282,10 +321,11 @@ impl PieceTree {
     }
 
     pub(crate) fn pieces(&self) -> Vec<Piece> {
-        if self.contiguous_spool_len != 0 {
+        if let Some(slice) = &self.compact_spool {
             return vec![Piece::Spool {
-                offset: 0,
-                len: self.contiguous_spool_len,
+                segment: slice.segment.clone(),
+                offset: slice.offset,
+                len: slice.len,
             }];
         }
         let mut output = Vec::with_capacity(self.count());
@@ -301,12 +341,13 @@ impl PieceTree {
         if start > end || end > self.len() {
             return Err(StoreError::InvalidInput("file range"));
         }
-        if self.contiguous_spool_len != 0 {
+        if let Some(slice) = &self.compact_spool {
             let pieces = if start == end {
                 Vec::new()
             } else {
                 vec![Piece::Spool {
-                    offset: start,
+                    segment: slice.segment.clone(),
+                    offset: slice.offset + start,
                     len: end - start,
                 }]
             };
@@ -514,7 +555,15 @@ mod tests {
             .map(|index| {
                 let len = [1_024, 8_192, 49_152][index % 3];
                 let tree = PieceTree::empty()
-                    .replace(0, 0, [Piece::Spool { offset: 0, len }])
+                    .replace(
+                        0,
+                        0,
+                        [Piece::Spool {
+                            segment: crate::file_io::test_segment(),
+                            offset: 0,
+                            len,
+                        }],
+                    )
                     .unwrap();
                 assert!(tree.root.is_none(), "contiguous data allocated a tree node");
                 assert_eq!(tree.count(), 1);
@@ -529,7 +578,11 @@ mod tests {
         let original = &files[1];
         assert_eq!(
             original.range(98, 106).unwrap(),
-            vec![Piece::Spool { offset: 98, len: 8 }]
+            vec![Piece::Spool {
+                segment: crate::file_io::test_segment(),
+                offset: 98,
+                len: 8
+            }]
         );
         let edited = original
             .replace(
@@ -542,7 +595,7 @@ mod tests {
                 }],
             )
             .unwrap();
-        assert_eq!(edited.contiguous_spool_len, 0);
+        assert!(edited.compact_spool.is_none());
         assert_eq!(edited.count(), 3);
         assert_eq!(edited.len(), original.len());
         assert_eq!(edited.inline_len(), 4);
@@ -554,13 +607,18 @@ mod tests {
         assert_eq!(
             edited.range(98, 106).unwrap(),
             vec![
-                Piece::Spool { offset: 98, len: 2 },
+                Piece::Spool {
+                    segment: crate::file_io::test_segment(),
+                    offset: 98,
+                    len: 2
+                },
                 Piece::Inline {
                     bytes: Arc::from(&b"edit"[..]),
                     offset: 0,
                     len: 4
                 },
                 Piece::Spool {
+                    segment: crate::file_io::test_segment(),
                     offset: 104,
                     len: 2
                 },
@@ -574,6 +632,7 @@ mod tests {
         assert_eq!(
             truncated.pieces(),
             vec![Piece::Spool {
+                segment: crate::file_io::test_segment(),
                 offset: 0,
                 len: 1_024
             }]
@@ -588,6 +647,7 @@ mod tests {
                 0,
                 0,
                 [Piece::Spool {
+                    segment: crate::file_io::test_segment(),
                     offset: 0,
                     len: MAX_RESULT_BYTES + 1
                 }]
@@ -620,6 +680,7 @@ mod tests {
                     index * 1024,
                     0,
                     [Piece::Spool {
+                        segment: crate::file_io::test_segment(),
                         offset: index * 1024,
                         len: 1024,
                     }],
@@ -633,6 +694,7 @@ mod tests {
         assert_eq!(
             tree.pieces(),
             vec![Piece::Spool {
+                segment: crate::file_io::test_segment(),
                 offset: 0,
                 len: 512000
             }]
@@ -643,6 +705,7 @@ mod tests {
                     tree.len(),
                     0,
                     [Piece::Spool {
+                        segment: crate::file_io::test_segment(),
                         offset: source,
                         len: 1,
                     }],
@@ -653,10 +716,12 @@ mod tests {
                 next.range(tree.len() - 1, tree.len() + 1).unwrap(),
                 vec![
                     Piece::Spool {
+                        segment: crate::file_io::test_segment(),
                         offset: tree.len() - 1,
                         len: 1
                     },
                     Piece::Spool {
+                        segment: crate::file_io::test_segment(),
                         offset: source,
                         len: 1
                     },
@@ -668,6 +733,7 @@ mod tests {
                 7,
                 1,
                 [Piece::Spool {
+                    segment: crate::file_io::test_segment(),
                     offset: tree.len(),
                     len: 1,
                 }],
@@ -676,19 +742,25 @@ mod tests {
         assert_eq!(
             overwritten.range(7, 8).unwrap(),
             vec![Piece::Spool {
+                segment: crate::file_io::test_segment(),
                 offset: tree.len(),
                 len: 1
             }]
         );
         assert_eq!(
             tree.range(7, 8).unwrap(),
-            vec![Piece::Spool { offset: 7, len: 1 }]
+            vec![Piece::Spool {
+                segment: crate::file_io::test_segment(),
+                offset: 7,
+                len: 1
+            }]
         );
         assert!(tree
             .replace(
                 tree.len(),
                 0,
                 [Piece::Spool {
+                    segment: crate::file_io::test_segment(),
                     offset: tree.len(),
                     len: MAX_RESULT_BYTES,
                 }]

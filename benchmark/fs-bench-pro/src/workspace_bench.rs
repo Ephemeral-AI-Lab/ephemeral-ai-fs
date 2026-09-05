@@ -704,11 +704,16 @@ fn physical_spool_state(client: &Client, id: WorkspaceId, phase: &str) -> AnyRes
                 "observation_count",
                 state.physical_spool_observation_count.to_string(),
             ),
+            ("open_physical_files", state.open_spool_files.to_string()),
+            (
+                "retained_segment_bytes",
+                state.spool_segment_bytes.to_string(),
+            ),
             ("precision", quote("mutation-event-aggregate-allocation")),
             ("method", quote("verification_workspace_state")),
             (
                 "scope",
-                quote("passive counters before failure recovery; no independent verification"),
+                quote("passive maintained Workspace counters; no independent verification"),
             ),
         ],
     );
@@ -1042,7 +1047,7 @@ pub(crate) fn spool_observation(phase: &str) -> AnyResult<()> {
         }
     }
     let observer_ns = elapsed_ns(started);
-    emit("workspace-spool-observation",&[("phase",quote(phase)),("roots",format!("[{}]",roots.iter().map(|path|quote(&path.to_string_lossy())).collect::<Vec<_>>().join(","))),("scope",quote("owned process Workspace spool/capture/checkpoint regular files; excludes output logs and directory allocation")),("precision",quote("boundary-observation")),("logical_bytes",logical.to_string()),("allocated_bytes",allocated.to_string()),("file_count",files.to_string()),("observer_ns",observer_ns.to_string())]);
+    emit("workspace-spool-observation",&[("phase",quote(phase)),("roots",format!("[{}]",roots.iter().map(|path|quote(&path.to_string_lossy())).collect::<Vec<_>>().join(","))),("scope",quote("named Workspace backing files; anonymous segments are covered by maintained physical-spool counters; excludes output logs and directory allocation")),("precision",quote("boundary-observation")),("logical_bytes",logical.to_string()),("allocated_bytes",allocated.to_string()),("file_count",files.to_string()),("observer_ns",observer_ns.to_string())]);
     if logical > 2 * 1024 * 1024 * 1024 || allocated > 2 * 1024 * 1024 * 1024 {
         return Err("owned Workspace spool exceeds frozen 2 GiB bound".into());
     }
@@ -1519,6 +1524,7 @@ fn run_case(
                     );
                 }
                 spool_observation("after-workload-before-commit")?;
+                physical_spool_state(&client, session.id, "after-workload-before-commit")?;
                 if verification && case.kind == "git-tool" {
                     let receipt = execute(
                         &client,
@@ -1584,6 +1590,7 @@ fn run_case(
                 }
                 store_metrics(&store, "after-commit", step + 1)?;
                 spool_observation("after-commit")?;
+                physical_spool_state(&client, session.id, "after-commit")?;
                 let expected_created = !matches!(
                     case.kind,
                     "workspace-clean-commit"
