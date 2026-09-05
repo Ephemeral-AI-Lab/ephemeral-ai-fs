@@ -13,10 +13,25 @@ use std::io::Read;
 
 const STREAM_FLUSH_AT: usize = MAX_ENTRIES + 64;
 
+/// Facts established while emitting the final FileState; no root reread required.
+pub struct CompletedFile {
+    pub root: FileStateRoot,
+    pub logical_len: u64,
+    pub counters: RopeCounters,
+}
+
 pub fn build<S: ObjectStore, R: Read>(
     store: &mut S,
     source: R,
 ) -> CoreResult<(FileStateRoot, RopeCounters)> {
+    let completed = build_complete(store, source)?;
+    Ok((completed.root, completed.counters))
+}
+
+pub fn build_complete<S: ObjectStore, R: Read>(
+    store: &mut S,
+    source: R,
+) -> CoreResult<CompletedFile> {
     let (root, mut counters) = build_mapping(store, source)?;
     let root = match root {
         Some(root) => root,
@@ -31,7 +46,11 @@ pub fn build<S: ObjectStore, R: Read>(
     };
     let canonical = encode_file_state(state)?;
     let id = store.put_owned(canonical)?;
-    Ok((FileStateRoot(id), counters))
+    Ok(CompletedFile {
+        root: FileStateRoot(id),
+        logical_len: state.logical_len,
+        counters,
+    })
 }
 
 /// Builds a known byte slice without starting the streaming CDC scanner when

@@ -2635,6 +2635,20 @@ impl SpillDiskIndex {
     }
 }
 
+/// The same full-file completion check serves direct native output and private
+/// Workspace candidates; persistence/finality policy remains with the owner.
+pub(crate) fn build_checked_file(
+    objects: &mut impl ObjectStore,
+    source: impl Read,
+    expected_len: u64,
+) -> Result<layerfs_content::file::rope::CompletedFile> {
+    let completed = layerfs_content::file::rope::build_complete(objects, source)?;
+    if completed.logical_len != expected_len {
+        return Err(StoreError::Integrity("completed file length"));
+    }
+    Ok(completed)
+}
+
 pub struct ObjectBuffer<'a> {
     source: Option<&'a dyn ObjectSource>,
     objects: DeferredObjectStore,
@@ -2698,18 +2712,8 @@ impl<'a> ObjectBuffer<'a> {
     pub fn build_complete_file(source: impl Read, expected_len: u64) -> Result<BuiltRoot> {
         let mut objects = Self::bounded_output(None)?;
         objects.objects.references = None;
-        let (root, counters) = layerfs_content::file::rope::build(&mut objects, source)?;
-        if layerfs_content::file::rope::state(
-            &objects,
-            root,
-            &mut layerfs_content::file::rope::RopeCounters::default(),
-        )?
-        .logical_len
-            != expected_len
-        {
-            return Err(StoreError::Integrity("completed file length"));
-        }
-        objects.finish_all_reachable(root.0, counters.cdc_bytes_scanned)
+        let completed = build_checked_file(&mut objects, source, expected_len)?;
+        objects.finish_all_reachable(completed.root.0, completed.counters.cdc_bytes_scanned)
     }
 
     pub fn finish(self, root_id: ObjectId, cdc_bytes_scanned: u64) -> Result<BuiltRoot> {

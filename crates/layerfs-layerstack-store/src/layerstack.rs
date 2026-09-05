@@ -1976,10 +1976,6 @@ impl<'objects, 'structure, S: ObjectStore, T: ObjectStore>
         native: &std::path::Path,
         logical: &layerfs_content::CanonicalPath,
     ) -> Result<layerfs_content::tree::inode::InodeId> {
-        use layerfs_content::filesystem;
-        use layerfs_content::tree::inode::{InodeKind, InodeRecordV1};
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-
         self.source.symlink_metadata_calls += 1;
         let metadata = std::fs::symlink_metadata(native)?;
         if !metadata.file_type().is_file() {
@@ -1987,6 +1983,19 @@ impl<'objects, 'structure, S: ObjectStore, T: ObjectStore>
                 "Layer initialization regular file",
             ));
         }
+        self.regular_file_with_metadata(native, logical, &metadata)
+    }
+
+    fn regular_file_with_metadata(
+        &mut self,
+        native: &std::path::Path,
+        logical: &layerfs_content::CanonicalPath,
+        metadata: &std::fs::Metadata,
+    ) -> Result<layerfs_content::tree::inode::InodeId> {
+        use layerfs_content::filesystem;
+        use layerfs_content::tree::inode::{InodeKind, InodeRecordV1};
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
         let native_key = (metadata.dev(), metadata.ino());
         if metadata.nlink() > 1 {
             if let Some((linked_inode, record_index)) = self.hard_links.get(&native_key).copied() {
@@ -2014,7 +2023,8 @@ impl<'objects, 'structure, S: ObjectStore, T: ObjectStore>
             calls: 0,
             bytes: 0,
         };
-        let (content, counters) = layerfs_content::file::rope::build(self.objects, &mut source)?;
+        let completed =
+            crate::objects::build_checked_file(self.objects, &mut source, metadata.len())?;
         self.source.file_read_calls = self.source.file_read_calls.saturating_add(source.calls);
         self.source.file_read_bytes = self.source.file_read_bytes.saturating_add(source.bytes);
         self.source.streaming_files += 1;
@@ -2028,7 +2038,7 @@ impl<'objects, 'structure, S: ObjectStore, T: ObjectStore>
             .ok_or(StoreError::Integrity("Layer initialization scan counter"))?;
         self.scanned_bytes = self
             .scanned_bytes
-            .checked_add(counters.cdc_bytes_scanned)
+            .checked_add(completed.counters.cdc_bytes_scanned)
             .ok_or(StoreError::Integrity("Layer initialization scan counter"))?;
         let metadata_root = self.portable_metadata(
             InodeKind::RegularFile,
@@ -2043,7 +2053,7 @@ impl<'objects, 'structure, S: ObjectStore, T: ObjectStore>
                 InodeRecordV1 {
                     kind: InodeKind::RegularFile,
                     namespace_ref_count: 1,
-                    content_root: content.0,
+                    content_root: completed.root.0,
                     metadata_root,
                 },
             ),
@@ -2086,6 +2096,12 @@ impl<'objects, 'structure, S: ObjectStore, T: ObjectStore>
             let logical_path = child(logical, &name)?;
             self.source.symlink_metadata_calls += 1;
             let entry_metadata = std::fs::symlink_metadata(entry.path())?;
+            if entry_metadata.file_type().is_file() {
+                let inode =
+                    self.regular_file_with_metadata(&entry.path(), &logical_path, &entry_metadata)?;
+                children.push((name, inode));
+                continue;
+            }
             let native_key = (entry_metadata.dev(), entry_metadata.ino());
             if entry_metadata.nlink() > 1 {
                 if let Some((linked_inode, record_index)) =
@@ -2110,53 +2126,6 @@ impl<'objects, 'structure, S: ObjectStore, T: ObjectStore>
 
             let (child_inode, record_index) = if entry_metadata.file_type().is_dir() {
                 (self.directory(&entry.path(), &logical_path, false)?, None)
-            } else if entry_metadata.file_type().is_file() {
-                let child_inode = filesystem::allocated_inode(self.seed, &logical_path);
-                let record_index = self.reserve();
-                self.source.file_open_calls += 1;
-                let mut source = CountedSourceReader {
-                    file: std::fs::File::open(entry.path())?,
-                    calls: 0,
-                    bytes: 0,
-                };
-                let (content, counters) =
-                    layerfs_content::file::rope::build(self.objects, &mut source)?;
-                self.source.file_read_calls =
-                    self.source.file_read_calls.saturating_add(source.calls);
-                self.source.file_read_bytes =
-                    self.source.file_read_bytes.saturating_add(source.bytes);
-                self.source.streaming_files += 1;
-                self.source.cdc_scratch_peak_bytes = self
-                    .source
-                    .cdc_scratch_peak_bytes
-                    .max((layerfs_content::file::cdc::MAXIMUM_CHUNK_BYTES * 2) as u64);
-                self.scanned_files = self
-                    .scanned_files
-                    .checked_add(1)
-                    .ok_or(StoreError::Integrity("Layer initialization scan counter"))?;
-                self.scanned_bytes = self
-                    .scanned_bytes
-                    .checked_add(counters.cdc_bytes_scanned)
-                    .ok_or(StoreError::Integrity("Layer initialization scan counter"))?;
-                let metadata_root = self.portable_metadata(
-                    InodeKind::RegularFile,
-                    entry_metadata.permissions().mode(),
-                    entry_metadata.mtime(),
-                    entry_metadata.mtime_nsec() as u32,
-                )?;
-                self.set_record(
-                    record_index,
-                    (
-                        child_inode,
-                        InodeRecordV1 {
-                            kind: InodeKind::RegularFile,
-                            namespace_ref_count: 1,
-                            content_root: content.0,
-                            metadata_root,
-                        },
-                    ),
-                )?;
-                (child_inode, Some(record_index))
             } else if entry_metadata.file_type().is_symlink() {
                 let child_inode = filesystem::allocated_inode(self.seed, &logical_path);
                 let record_index = self.reserve();
