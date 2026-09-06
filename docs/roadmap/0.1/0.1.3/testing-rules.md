@@ -196,6 +196,18 @@ Metadata/content scans and Workspace-locality cases share the same fixture
 artifact when their complete identity matches. Hashes of the flat SDK payload
 are not hashes of this multi-file tree, even though the generator is shared.
 
+### workspace-mixed-v4 (high-tier shared tree)
+
+`workspace-shards-v1` remains the compact and historical high-tier tiny-file
+profile. It is not mutated in place. Outside `init_namespace`, active locality
+tiers 100 and 500 use the separate profile `workspace-mixed-v4` defined in
+[`workspace-mixed-v4.md`](workspace-mixed-v4.md): 2,000 files / 100 MiB with one
+50 MiB object, and 5,000 files / 500 MiB with one 300 MiB object and one 100 MiB
+object. Path shape (wide/regular/spine, empty `dest/`) is reused; wide-directory
+fan-out is 640 or 1,600 entries, not 32,000. Prepared-cache identity includes
+the profile string, so shards-v1 and compact masters cannot cache-hit mixed-v4.
+Tiers 1/10 stay `-compact-v2`. Old unversioned 100/500 IDs are historical.
+
 ## Make preparation reusable and lazy
 
 1. Resolve the selected case/seed/arm before building or preparing anything.

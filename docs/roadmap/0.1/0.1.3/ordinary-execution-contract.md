@@ -166,16 +166,21 @@ enumerating it in performance. Remove B in bytewise postorder. No moved-file
 metadata rewrite: rename preserves those inodes. Normalize surviving affected
 parents `source/` and `destination/`; their ancestors remain untouched.
 
-Locality uses canonical root shared profiles. Fixed move uses the exact
-`regular/s000/f064.dat` to `dest/moved.dat` endpoints and one rename.
-Distributed SDK schedule selects shard s=rank("workspace-distributed-sdk")[k],
-j=128+(s mod 64), offset zero, delete length 4096. Replacement is the original
-first 4096 bytes XOR 0x5a, constructed from input generator outside edit timers.
-This guarantees changed bytes and distinct eligible files without a FUSE read.
-The SDK preserves the input metadata; no extra metadata mutation is substituted.
-Dense order is rank("workspace-dense-rewrite"). For each selected shard visit
-j=0..199, rewrite every byte with bytes("workspace-dense-rewrite",path,L),
-using existing-file writes at offset zero without truncate or per-file sync.
+Locality compact 1/10 uses canonical root shared profiles. Mixed-v4 100/500
+uses [`workspace-mixed-v4`](workspace-mixed-v4.md) as the whole Workspace.
+Fixed move uses the exact `regular/s000/f064.dat` to `dest/moved.dat` endpoints
+and one rename (1 KiB compact; 4 KiB mixed-v4 ordinal 64). Compact distributed
+SDK schedule selects shard s=rank("workspace-distributed-sdk")[k],
+j=128+(s mod 64), offset zero, delete length 4096. Mixed-v4 SDK edits select N
+distinct small/medium files on the mixed tree and never the large blobs.
+Replacement is the original first 4096 bytes XOR 0x5a, constructed from input
+generator outside edit timers. This guarantees changed bytes and distinct
+eligible files without a FUSE read. The SDK preserves the input metadata; no
+extra metadata mutation is substituted. Compact dense order is
+rank("workspace-dense-rewrite") over selected shards. Mixed-v4 dense rewrite
+visits every mixed-v4 file, including the 50/300/100 MiB objects, and rewrites
+every byte with bytes("workspace-dense-rewrite",path,L), using existing-file
+writes at offset zero without truncate or per-file sync.
 Prepare replacement blocks outside measured file-write calls, but generation
 inside the composite workload remains included in its wall. No cached output
 Store is allowed. Verify every rewrite differs from its input during fixture

@@ -803,12 +803,23 @@ pub(crate) fn fixture_info(case: &Case, seed: u8, branch: Option<BranchId>) -> A
     };
     let profile = if workload_source::ordinary_workloads::mixed_bulk(case) {
         workload_source::ordinary_workloads::MIXED_BULK_PROFILE
+    } else if workload_source::ordinary_workloads::mixed_v4(case) {
+        workload_source::ordinary_workloads::MIXED_V4_PROFILE
     } else {
         "workspace-input-v1"
     };
+    if workload_source::ordinary_workloads::mixed_v4(case) {
+        plan = workload_source::sdk_edit_common::sha256_hex(
+            format!("workspace-mixed-v4\n{plan}").as_bytes(),
+        );
+    }
     print!("{{\"fixture_profile\":\"{profile}\",\"fixture_bytes\":{bytes},\"regular_files\":{files},\"input_plan_sha256\":{},\"input_mode\":{}", quote(&plan),quote(if registry::is_import(case) { "directory" } else { "store" }));
     if let Some((total_bytes, total_files, directories, manifest)) = populated_info {
         print!(",\"populated_bytes\":{total_bytes},\"populated_regular_files\":{total_files},\"populated_directories\":{directories},\"populated_manifest_sha256\":{}", quote(&manifest));
+    }
+    if workload_source::ordinary_workloads::mixed_v4(case) {
+        let (parent, dirty) = workload_source::ordinary_workloads::mixed_v4_peak_bytes(case)?;
+        print!(",\"peak_parent_bytes\":{parent},\"expected_dirty_bytes\":{dirty},\"peak_parent_plus_dirty_bytes\":{}", parent + dirty);
     }
     if let Some(branch) = branch {
         print!(",\"branch_id\":{}", quote(&branch.to_string()));
@@ -883,11 +894,7 @@ fn docker_output(args: &[&str]) -> AnyResult<std::process::Output> {
 fn docker_success(args: &[&str], context: &str) -> AnyResult<()> {
     let output = docker_output(args)?;
     if !output.status.success() {
-        return Err(format!(
-            "{context}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )
-        .into());
+        return Err(format!("{context}: {}", String::from_utf8_lossy(&output.stderr)).into());
     }
     Ok(())
 }
@@ -1269,7 +1276,9 @@ fn run_case(
 ) -> AnyResult<()> {
     let fast = mode == "fast-verify";
     let verification = mode == "verify" || fast;
-    let sampled = verification && case.family == "tiny_file_churn";
+    let sampled = verification
+        && (case.family == "tiny_file_churn"
+            || workload_source::ordinary_workloads::mixed_v4(case));
     if fast
         && (case.kind == "git-tool"
             || case.kind == "boundaries"
@@ -1844,7 +1853,7 @@ fn run_case(
             {
                 return Err("sampled publication/reconnect identity".into());
             }
-            let sample = workload_source::ordinary_workloads::tiny_sample(case, seed)?;
+            let sample = workload_source::ordinary_workloads::workspace_sample(case, seed)?;
             let receipt =
                 super::workspace_verify::verify_sample(&pinned.reader, pinned.root, &sample)?;
             emit(

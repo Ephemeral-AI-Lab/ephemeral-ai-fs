@@ -59,6 +59,8 @@ fn row(
     let smoke_supported = low_tier && bytes <= 50_000_000 && files <= 1_000 && !proof;
     let profile = if family == "tiny_file_churn" && id.ends_with("-mixed-v3") {
         workload_source::ordinary_workloads::MIXED_BULK_PROFILE
+    } else if id.ends_with("-mixed-v4") {
+        workload_source::ordinary_workloads::MIXED_V4_PROFILE
     } else if id.contains("compact-") || id.contains("low-v") {
         "compact-low-tier-v2"
     } else {

@@ -68,6 +68,14 @@ class RunnerTests(unittest.TestCase):
                 fourth = runner._host_acquire(args, selection, time.monotonic() + 5)
                 self.assertFalse(fourth["cache_hit"])
                 self.assertNotEqual(third["cache_key"], fourth["cache_key"])
+                fixture["fixture_profile"] = "workspace-mixed-v4"
+                fixture.pop("populated_manifest_sha256", None)
+                fifth = runner._host_acquire(args, selection, time.monotonic() + 5)
+                self.assertFalse(fifth["cache_hit"])
+                self.assertNotEqual(fourth["cache_key"], fifth["cache_key"])
+                shards = {"fixture_profile": "workspace-input-v1", "input_plan_sha256": "shards"}
+                mixed = {"fixture_profile": "workspace-mixed-v4", "input_plan_sha256": "shards"}
+                self.assertNotEqual(runner.digest(shards), runner.digest(mixed))
 
     def test_mixed_v3_strict_classifier_and_cache_invalidation(self):
         for operation in ("create", "delete"):

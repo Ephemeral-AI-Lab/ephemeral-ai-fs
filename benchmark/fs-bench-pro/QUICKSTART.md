@@ -55,6 +55,24 @@ Nine families: `payload_create_read`, `dedup_workspace_reuse`, `dedup_cross_file
 
 See the [baseline report and exact verification coverage](../../docs/roadmap/0.1/0.1.3/nine-family-fast-baseline.md). During normal iteration, rerun the affected case rather than replaying the whole baseline.
 
+## Workspace mixed-v4 locality (issue 62 Wave 1)
+
+The approved [workspace-mixed-v4 contract](../../docs/roadmap/0.1/0.1.3/workspace-mixed-v4.md) replaces active locality 100/500 IDs with `-mixed-v4`. Family membership remains 16. Compact 1/10 IDs are unchanged. Tier 100 is 2,000 files / 100 MiB including one 50 MiB object; tier 500 is 5,000 files / 500 MiB including one 300 MiB object and one 100 MiB object. Sparse cases use this mixed tree as the whole Workspace. Old unversioned 100k-file IDs and receipts are historical; fewer files do not establish a product speedup.
+
+After building the host binary and workload image, collect one seed-1 host-store sample per new ID, serially, in collection-mode:
+
+```bash
+python3 benchmark/fs-bench-pro/shared/runner.py --build-host
+export LAYERFS_BENCH_IMAGE="$(python3 benchmark/fs-bench-pro/shared/runner.py --build-image)"
+python3 benchmark/fs-bench-pro/shared/runner.py \
+  --topology host-store --family workspace_change_locality \
+  --case workspace-dense-rewrite-100-mixed-v4 --seed 1 --setup clone \
+  --collection-mode --product-timeout 300 --timeout 310 --setup-timeout 600 \
+  --output benchmark-results/host-store/campaigns/issue62-<id>/performance/workspace-dense-rewrite-100-mixed-v4
+```
+
+Then `workspace-dense-rewrite-500-mixed-v4`, then the other six locality 100/500 IDs. Compact 1/10 are not rerun. After performance, run sampled proofs only for cases whose performance completed. Proofs sample three 64 KiB ranges from every large file plus declared small/medium paths; do not rerun exhaustive walks at 300 s.
+
 ## Tiny-file churn mixed bulk v3
 
 The approved [mixed-v3 contract](../../docs/roadmap/0.1/0.1.3/tiny-file-churn-mixed-v3.md) replaces only the high-tier bulk rows with `tiny-bulk-create-100-mixed-v3`, `tiny-bulk-delete-100-mixed-v3`, `tiny-bulk-create-500-mixed-v3`, and `tiny-bulk-delete-500-mixed-v3`. Family membership remains 20. Tier 100 affects 1,000 files / 100 MiB; tier 500 affects 5,000 files / 500 MiB. Both retain the separate 200-file / 1 MiB witness. Low-tier compact and individual create/stat/unlink cases are unchanged. Old IDs and receipts are historical; fewer operations do not establish a product speedup.
