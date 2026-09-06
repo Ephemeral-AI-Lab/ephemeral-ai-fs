@@ -938,7 +938,7 @@ fn elapsed_ns(started: std::time::Instant) -> u64 {
     u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
 
-fn error_code(error: PortError) -> u8 {
+pub(crate) fn error_code(error: PortError) -> u8 {
     match error {
         PortError::NotFound => 0,
         PortError::NotEmpty => 1,
@@ -951,7 +951,7 @@ fn error_code(error: PortError) -> u8 {
     }
 }
 
-fn port_error(value: u8) -> std::io::Result<PortError> {
+pub(crate) fn port_error(value: u8) -> std::io::Result<PortError> {
     Ok(match value {
         0 => PortError::NotFound,
         1 => PortError::NotEmpty,

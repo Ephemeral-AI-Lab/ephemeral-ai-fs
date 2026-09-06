@@ -114,8 +114,8 @@ const SPOOL_SEGMENT_BYTES: u64 = 1024 * 1024;
 pub(crate) struct SpoolSegment {
     pub(crate) file: File,
     id: u64,
-    len: AtomicU64,
-    capacity: u64,
+    pub(crate) len: AtomicU64,
+    pub(crate) capacity: u64,
     physical: Arc<Mutex<PhysicalSpoolMetrics>>,
 }
 
@@ -157,7 +157,7 @@ impl SpoolSegment {
         }
     }
 
-    fn check(&self) -> Result<()> {
+    pub(crate) fn check(&self) -> Result<()> {
         let metadata = self.file.metadata().inspect_err(|_| {
             if let Ok(mut physical) = self.physical.lock() {
                 physical.error();

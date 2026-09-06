@@ -21,7 +21,8 @@ pub use adapter::LayerFs;
 #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
 pub use host_mount::{mount_host, HostMount};
 pub use port::{
-    Attr, FilesystemPort, KernelOperation, Kind, NodeId, PortError, PortResult, SharedPort, ROOT,
+    Attr, CallbackGuard, FilesystemPort, KernelOperation, Kind, NodeId, PortError, PortResult,
+    SharedPort, ROOT,
 };
 pub use proxy_client::ProxyClient;
 #[doc(hidden)]
@@ -34,3 +35,9 @@ pub use port::{ReadReply, WriteReply};
 
 #[cfg(feature = "live")]
 pub mod live_runtime;
+
+#[cfg(feature = "live")]
+pub mod live_wire;
+
+#[cfg(feature = "live")]
+pub mod live_transport;

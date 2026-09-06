@@ -55,6 +55,16 @@ impl Filesystem for LayerFs {
     fn lookup(&self, _request: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
         self.port
             .note_kernel_operation(crate::KernelOperation::Lookup);
+        let _callback = match self
+            .port
+            .admit_callback(crate::KernelOperation::Lookup, 0, false)
+        {
+            Ok(guard) => guard,
+            Err(error) => {
+                reply.error(errno(error));
+                return;
+            }
+        };
         let result = self.node(parent).and_then(|parent| {
             self.port
                 .lookup(parent, name.as_bytes())
@@ -76,6 +86,16 @@ impl Filesystem for LayerFs {
     ) {
         self.port
             .note_kernel_operation(crate::KernelOperation::Getattr);
+        let _callback = match self
+            .port
+            .admit_callback(crate::KernelOperation::Getattr, 0, false)
+        {
+            Ok(guard) => guard,
+            Err(error) => {
+                reply.error(errno(error));
+                return;
+            }
+        };
         let result = self.node(ino).and_then(|node| {
             self.port
                 .attr(node)
@@ -109,6 +129,16 @@ impl Filesystem for LayerFs {
     ) {
         self.port
             .note_kernel_operation(crate::KernelOperation::Setattr);
+        let _callback = match self
+            .port
+            .admit_callback(crate::KernelOperation::Setattr, 0, false)
+        {
+            Ok(guard) => guard,
+            Err(error) => {
+                reply.error(errno(error));
+                return;
+            }
+        };
         if uid.is_some_and(|value| value != self.uid)
             || gid.is_some_and(|value| value != self.gid)
             || flags.is_some()
@@ -146,6 +176,16 @@ impl Filesystem for LayerFs {
     fn readlink(&self, _request: &Request, ino: INodeNo, reply: ReplyData) {
         self.port
             .note_kernel_operation(crate::KernelOperation::Readlink);
+        let _callback = match self
+            .port
+            .admit_callback(crate::KernelOperation::Readlink, 0, false)
+        {
+            Ok(guard) => guard,
+            Err(error) => {
+                reply.error(errno(error));
+                return;
+            }
+        };
         match self
             .node(ino)
             .and_then(|node| self.port.readlink(node).map_err(errno))
@@ -167,6 +207,16 @@ impl Filesystem for LayerFs {
     ) {
         self.port
             .note_kernel_operation(crate::KernelOperation::Mknod);
+        let _callback = match self
+            .port
+            .admit_callback(crate::KernelOperation::Mknod, 0, false)
+        {
+            Ok(guard) => guard,
+            Err(error) => {
+                reply.error(errno(error));
+                return;
+            }
+        };
         if rdev != 0 || mode & 0o170000 != 0o100000 {
             reply.error(fuser::Errno::EOPNOTSUPP);
             return;
@@ -195,6 +245,16 @@ impl Filesystem for LayerFs {
     ) {
         self.port
             .note_kernel_operation(crate::KernelOperation::Mkdir);
+        let _callback = match self
+            .port
+            .admit_callback(crate::KernelOperation::Mkdir, 0, false)
+        {
+            Ok(guard) => guard,
+            Err(error) => {
+                reply.error(errno(error));
+                return;
+            }
+        };
         let result = self.node(parent).and_then(|parent| {
             let attr = self
                 .port
@@ -211,6 +271,16 @@ impl Filesystem for LayerFs {
     fn unlink(&self, _request: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
         self.port
             .note_kernel_operation(crate::KernelOperation::Unlink);
+        let _callback = match self
+            .port
+            .admit_callback(crate::KernelOperation::Unlink, 0, false)
+        {
+            Ok(guard) => guard,
+            Err(error) => {
+                reply.error(errno(error));
+                return;
+            }
+        };
         empty_reply(
             self.node(parent).and_then(|parent| {
                 self.port
@@ -224,6 +294,16 @@ impl Filesystem for LayerFs {
     fn rmdir(&self, _request: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
         self.port
             .note_kernel_operation(crate::KernelOperation::Rmdir);
+        let _callback = match self
+            .port
+            .admit_callback(crate::KernelOperation::Rmdir, 0, false)
+        {
+            Ok(guard) => guard,
+            Err(error) => {
+                reply.error(errno(error));
+                return;
+            }
+        };
         empty_reply(
             self.node(parent).and_then(|parent| {
                 self.port
@@ -244,6 +324,16 @@ impl Filesystem for LayerFs {
     ) {
         self.port
             .note_kernel_operation(crate::KernelOperation::Symlink);
+        let _callback = match self
+            .port
+            .admit_callback(crate::KernelOperation::Symlink, 0, false)
+        {
+            Ok(guard) => guard,
+            Err(error) => {
+                reply.error(errno(error));
+                return;
+            }
+        };
         let result = self.node(parent).and_then(|parent| {
             let attr = self
                 .port
@@ -273,6 +363,16 @@ impl Filesystem for LayerFs {
     ) {
         self.port
             .note_kernel_operation(crate::KernelOperation::Rename);
+        let _callback = match self
+            .port
+            .admit_callback(crate::KernelOperation::Rename, 0, false)
+        {
+            Ok(guard) => guard,
+            Err(error) => {
+                reply.error(errno(error));
+                return;
+            }
+        };
         if flags.intersects(RenameFlags::RENAME_EXCHANGE | RenameFlags::RENAME_WHITEOUT) {
             reply.error(fuser::Errno::EOPNOTSUPP);
             return;
@@ -304,6 +404,16 @@ impl Filesystem for LayerFs {
     ) {
         self.port
             .note_kernel_operation(crate::KernelOperation::Link);
+        let _callback = match self
+            .port
+            .admit_callback(crate::KernelOperation::Link, 0, false)
+        {
+            Ok(guard) => guard,
+            Err(error) => {
+                reply.error(errno(error));
+                return;
+            }
+        };
         let result = self.node(ino).and_then(|node| {
             let parent = self.node(new_parent)?;
             let attr = self
@@ -321,6 +431,16 @@ impl Filesystem for LayerFs {
     fn open(&self, _request: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
         self.port
             .note_kernel_operation(crate::KernelOperation::Open);
+        let _callback = match self
+            .port
+            .admit_callback(crate::KernelOperation::Open, 0, false)
+        {
+            Ok(guard) => guard,
+            Err(error) => {
+                reply.error(errno(error));
+                return;
+            }
+        };
         match self.node(ino).and_then(|node| {
             let writable = matches!(flags.0 & O_ACCMODE, O_WRONLY | O_RDWR);
             self.open_handle(node, flags.0 & O_TRUNC != 0, writable)
@@ -344,6 +464,17 @@ impl Filesystem for LayerFs {
     ) {
         self.port
             .note_kernel_operation(crate::KernelOperation::Read);
+        let _callback =
+            match self
+                .port
+                .admit_callback(crate::KernelOperation::Read, size as usize, false)
+            {
+                Ok(guard) => guard,
+                Err(error) => {
+                    reply.error(errno(error));
+                    return;
+                }
+            };
         match self.handle(handle) {
             Ok(node) => self.port.submit_read(
                 node,
@@ -351,6 +482,7 @@ impl Filesystem for LayerFs {
                 size as usize,
                 crate::ReadReply {
                     reply,
+                    _guard: _callback,
                     maximum: size as usize,
                 },
             ),
@@ -373,6 +505,17 @@ impl Filesystem for LayerFs {
     ) {
         self.port
             .note_kernel_operation(crate::KernelOperation::Write);
+        let _callback = match self.port.admit_callback(
+            crate::KernelOperation::Write,
+            data.len(),
+            write_flags.contains(WriteFlags::FUSE_WRITE_CACHE),
+        ) {
+            Ok(guard) => guard,
+            Err(error) => {
+                reply.error(errno(error));
+                return;
+            }
+        };
         match self.handle(handle) {
             Ok(node) => self.port.submit_write(
                 node,
@@ -381,6 +524,7 @@ impl Filesystem for LayerFs {
                 write_flags.contains(WriteFlags::FUSE_WRITE_CACHE),
                 crate::WriteReply {
                     reply,
+                    _guard: _callback,
                     maximum: data.len(),
                 },
             ),
@@ -398,6 +542,16 @@ impl Filesystem for LayerFs {
     ) {
         self.port
             .note_kernel_operation(crate::KernelOperation::Flush);
+        let _callback = match self
+            .port
+            .admit_callback(crate::KernelOperation::Flush, 0, false)
+        {
+            Ok(guard) => guard,
+            Err(error) => {
+                reply.error(errno(error));
+                return;
+            }
+        };
         reply.ok();
     }
 
@@ -413,6 +567,16 @@ impl Filesystem for LayerFs {
     ) {
         self.port
             .note_kernel_operation(crate::KernelOperation::Release);
+        let _callback = match self
+            .port
+            .admit_callback(crate::KernelOperation::Release, 0, false)
+        {
+            Ok(guard) => guard,
+            Err(error) => {
+                reply.error(errno(error));
+                return;
+            }
+        };
         let result = self
             .handles
             .remove(handle.0)
@@ -431,6 +595,16 @@ impl Filesystem for LayerFs {
     ) {
         self.port
             .note_kernel_operation(crate::KernelOperation::Fsync);
+        let _callback = match self
+            .port
+            .admit_callback(crate::KernelOperation::Fsync, 0, false)
+        {
+            Ok(guard) => guard,
+            Err(error) => {
+                reply.error(errno(error));
+                return;
+            }
+        };
         empty_reply(
             self.handle(handle)
                 .and_then(|node| self.port.fsync(Some(node)).map_err(errno)),
@@ -441,6 +615,16 @@ impl Filesystem for LayerFs {
     fn opendir(&self, _request: &Request, ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
         self.port
             .note_kernel_operation(crate::KernelOperation::Opendir);
+        let _callback = match self
+            .port
+            .admit_callback(crate::KernelOperation::Opendir, 0, false)
+        {
+            Ok(guard) => guard,
+            Err(error) => {
+                reply.error(errno(error));
+                return;
+            }
+        };
         match self.node(ino).and_then(|node| {
             if self.port.attr(node).map_err(errno)?.kind != Kind::Directory {
                 return Err(fuser::Errno::ENOTDIR);
@@ -462,6 +646,16 @@ impl Filesystem for LayerFs {
     ) {
         self.port
             .note_kernel_operation(crate::KernelOperation::Readdir);
+        let _callback = match self
+            .port
+            .admit_callback(crate::KernelOperation::Readdir, 0, false)
+        {
+            Ok(guard) => guard,
+            Err(error) => {
+                reply.error(errno(error));
+                return;
+            }
+        };
         let result = self
             .handle(handle)
             .and_then(|node| self.port.readdir_page(node, offset as usize).map_err(errno));
@@ -497,6 +691,17 @@ impl Filesystem for LayerFs {
     ) {
         self.port
             .note_kernel_operation(crate::KernelOperation::Readdirplus);
+        let _callback =
+            match self
+                .port
+                .admit_callback(crate::KernelOperation::Readdirplus, 0, false)
+            {
+                Ok(guard) => guard,
+                Err(error) => {
+                    reply.error(errno(error));
+                    return;
+                }
+            };
         let result = self.handle(handle).and_then(|node| {
             self.port
                 .readdirplus_page(node, offset as usize)
@@ -542,6 +747,16 @@ impl Filesystem for LayerFs {
     ) {
         self.port
             .note_kernel_operation(crate::KernelOperation::Releasedir);
+        let _callback = match self
+            .port
+            .admit_callback(crate::KernelOperation::Releasedir, 0, false)
+        {
+            Ok(guard) => guard,
+            Err(error) => {
+                reply.error(errno(error));
+                return;
+            }
+        };
         if self.handles.remove(handle.0).is_some() {
             reply.ok();
         } else {
@@ -559,18 +774,48 @@ impl Filesystem for LayerFs {
     ) {
         self.port
             .note_kernel_operation(crate::KernelOperation::Fsyncdir);
+        let _callback = match self
+            .port
+            .admit_callback(crate::KernelOperation::Fsyncdir, 0, false)
+        {
+            Ok(guard) => guard,
+            Err(error) => {
+                reply.error(errno(error));
+                return;
+            }
+        };
         empty_reply(self.port.fsync(None).map_err(errno), reply);
     }
 
     fn statfs(&self, _request: &Request, _ino: INodeNo, reply: ReplyStatfs) {
         self.port
             .note_kernel_operation(crate::KernelOperation::Statfs);
+        let _callback = match self
+            .port
+            .admit_callback(crate::KernelOperation::Statfs, 0, false)
+        {
+            Ok(guard) => guard,
+            Err(error) => {
+                reply.error(errno(error));
+                return;
+            }
+        };
         reply.statfs(1 << 30, 1 << 29, 1 << 29, 1 << 30, 1 << 29, 4096, 255, 4096);
     }
 
     fn access(&self, _request: &Request, ino: INodeNo, _mask: AccessFlags, reply: ReplyEmpty) {
         self.port
             .note_kernel_operation(crate::KernelOperation::Access);
+        let _callback = match self
+            .port
+            .admit_callback(crate::KernelOperation::Access, 0, false)
+        {
+            Ok(guard) => guard,
+            Err(error) => {
+                reply.error(errno(error));
+                return;
+            }
+        };
         match self
             .node(ino)
             .and_then(|node| self.port.attr(node).map_err(errno))
@@ -592,6 +837,16 @@ impl Filesystem for LayerFs {
     ) {
         self.port
             .note_kernel_operation(crate::KernelOperation::Create);
+        let _callback = match self
+            .port
+            .admit_callback(crate::KernelOperation::Create, 0, false)
+        {
+            Ok(guard) => guard,
+            Err(error) => {
+                reply.error(errno(error));
+                return;
+            }
+        };
         let result = self.node(parent).and_then(|parent| {
             let attr = self
                 .port

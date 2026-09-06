@@ -1219,7 +1219,7 @@ fn workspace_port_error(error: WorkspaceError) -> PortError {
     }
 }
 
-fn storage_port_error(error: layerfs_layerstack_store::StoreError) -> PortError {
+pub(crate) fn storage_port_error(error: layerfs_layerstack_store::StoreError) -> PortError {
     match error {
         layerfs_layerstack_store::StoreError::NotFound(_) => PortError::NotFound,
         layerfs_layerstack_store::StoreError::InvalidInput("directory not empty") => {

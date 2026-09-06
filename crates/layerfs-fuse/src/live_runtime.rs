@@ -18,10 +18,11 @@ pub struct LiveRuntime {
 
 #[derive(Clone)]
 pub struct Scheduler {
-    handle: Handle,
+    pub(crate) handle: Handle,
     requests: Arc<Semaphore>,
     transfer: Arc<Semaphore>,
     backing: Arc<Semaphore>,
+    live: Arc<Semaphore>,
 }
 
 pub struct RequestAdmission {
@@ -30,6 +31,15 @@ pub struct RequestAdmission {
 }
 
 impl LiveRuntime {
+    pub fn shared() -> io::Result<&'static Self> {
+        static RUNTIME: std::sync::OnceLock<Result<LiveRuntime, String>> =
+            std::sync::OnceLock::new();
+        RUNTIME
+            .get_or_init(|| Self::new().map_err(|error| error.to_string()))
+            .as_ref()
+            .map_err(|error| io::Error::other(error.clone()))
+    }
+
     pub fn new() -> io::Result<Self> {
         let runtime = Builder::new_multi_thread()
             .worker_threads(2)
@@ -43,6 +53,7 @@ impl LiveRuntime {
             requests: Arc::new(Semaphore::new(REQUESTS)),
             transfer: Arc::new(Semaphore::new(TRANSFER_BYTES)),
             backing: Arc::new(Semaphore::new(2)),
+            live: Arc::new(Semaphore::new(128 * 1024 * 1024)),
         };
         Ok(Self { runtime, scheduler })
     }
@@ -57,6 +68,13 @@ impl LiveRuntime {
 }
 
 impl Scheduler {
+    pub fn reserve_live(&self, bytes: usize) -> io::Result<OwnedSemaphorePermit> {
+        self.live
+            .clone()
+            .try_acquire_many_owned(u32::try_from(bytes).map_err(io::Error::other)?)
+            .map_err(io::Error::other)
+    }
+
     pub async fn admit(&self, bytes: usize) -> io::Result<RequestAdmission> {
         if bytes > TRANSFER_BYTES {
             return Err(io::Error::new(

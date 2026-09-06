@@ -10,6 +10,7 @@ mod execution;
 pub(crate) use layerfs_workspace_core::file_edit;
 mod file_io;
 mod lifecycle;
+mod live_backing;
 
 mod cow_tree;
 mod output;

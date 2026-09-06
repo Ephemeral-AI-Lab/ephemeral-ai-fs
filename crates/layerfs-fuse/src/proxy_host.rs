@@ -418,7 +418,7 @@ fn same_capability(left: [u8; 32], right: [u8; 32]) -> bool {
         == 0
 }
 
-fn capability() -> std::io::Result<[u8; 32]> {
+pub(crate) fn capability() -> std::io::Result<[u8; 32]> {
     let mut capability = [0; 32];
     std::fs::File::open("/dev/urandom")?.read_exact(&mut capability)?;
     Ok(capability)

@@ -48,7 +48,23 @@ pub enum KernelOperation {
     Create,
 }
 
+#[derive(Default)]
+pub struct CallbackGuard {
+    #[cfg(feature = "live")]
+    pub(crate) gate: Option<tokio::sync::OwnedRwLockReadGuard<()>>,
+    #[cfg(feature = "live")]
+    pub(crate) admission: Option<crate::live_runtime::RequestAdmission>,
+}
+
 pub trait FilesystemPort: Send + Sync {
+    fn admit_callback(
+        &self,
+        _operation: KernelOperation,
+        _bytes: usize,
+        _writeback: bool,
+    ) -> PortResult<CallbackGuard> {
+        Ok(CallbackGuard::default())
+    }
     fn note_kernel_operation(&self, _operation: KernelOperation) {}
     fn note_readdir_page(&self, _offset: u64, _entries: u64) {}
     fn note_fuse_max_write(&self, _bytes: u32) {}
@@ -188,6 +204,7 @@ pub type SharedPort = Arc<dyn FilesystemPort>;
 #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
 pub struct WriteReply {
     pub(crate) reply: fuser::ReplyWrite,
+    pub(crate) _guard: CallbackGuard,
     pub(crate) maximum: usize,
 }
 
@@ -207,6 +224,7 @@ impl WriteReply {
 #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
 pub struct ReadReply {
     pub(crate) reply: fuser::ReplyData,
+    pub(crate) _guard: CallbackGuard,
     pub(crate) maximum: usize,
 }
 
