@@ -7,6 +7,7 @@ use layerfs_content::file::rope::read_range;
 use layerfs_layerstack_store::{CoreReader, Result, SnapshotReader, StoreError};
 use layerfs_workspace_core::backing::{BackingId, BackingRef};
 use layerfs_workspace_core::ReadSource;
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 #[cfg(test)]
 use std::os::unix::fs::MetadataExt;
@@ -15,6 +16,95 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
+
+/// Event-boundary observations of owned regular spool inode allocation, not
+/// logical file lengths or a continuous filesystem allocator peak. Kept outside
+/// edit checkpoints so failed writes cannot erase resources they actually used.
+#[derive(Default, Debug)]
+pub(crate) struct PhysicalSpoolMetrics {
+    allocated: HashMap<u64, u64>,
+    current: u64,
+    peak: u64,
+    errors: u64,
+    observations: u64,
+}
+
+impl PhysicalSpoolMetrics {
+    pub(crate) fn observe(&mut self, node: u64, metadata: &std::fs::Metadata) {
+        use std::os::unix::fs::MetadataExt;
+        self.observations = self.observations.saturating_add(1);
+        let previous = self.allocated.get(&node).copied().unwrap_or(0);
+        let Some(allocated) = metadata.blocks().checked_mul(512) else {
+            self.error();
+            return;
+        };
+        let Some(current) = self
+            .current
+            .checked_sub(previous)
+            .and_then(|n| n.checked_add(allocated))
+        else {
+            self.error();
+            return;
+        };
+        self.allocated.insert(node, allocated);
+        self.current = current;
+        self.peak = self.peak.max(current);
+    }
+
+    pub(crate) fn removed(&mut self, node: u64) {
+        if let Some(bytes) = self.allocated.remove(&node) {
+            if let Some(current) = self.current.checked_sub(bytes) {
+                self.current = current;
+            } else {
+                self.error();
+            }
+        }
+    }
+
+    pub(crate) fn error(&mut self) {
+        self.errors = self.errors.saturating_add(1);
+    }
+
+    pub(crate) fn snapshot(&self) -> (Option<u64>, Option<u64>, u64, u64) {
+        (
+            (self.errors == 0).then_some(self.current),
+            (self.errors == 0).then_some(self.peak),
+            self.errors,
+            self.observations,
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct SpoolWriteMetrics {
+    pub(crate) write_bytes: u64,
+    pub(crate) write_open_count: u64,
+    pub(crate) write_ns: u64,
+    pub(crate) fence_count: u64,
+    pub(crate) fence_ns: u64,
+}
+
+pub(crate) struct HostSpool {
+    pub(crate) segments: HashMap<u64, BackingRef>,
+    pub(crate) current: Option<u64>,
+    pub(crate) next_id: u64,
+    pub(crate) bytes: u64,
+    pub(crate) physical: Arc<Mutex<PhysicalSpoolMetrics>>,
+    pub(crate) metrics: SpoolWriteMetrics,
+}
+
+impl Default for HostSpool {
+    fn default() -> Self {
+        Self {
+            segments: HashMap::new(),
+            current: None,
+            next_id: 1,
+            bytes: 0,
+            physical: Default::default(),
+            metrics: SpoolWriteMetrics::default(),
+        }
+    }
+}
 
 // Physical segments are shared by immutable piece/read-plan references. Only the
 // existing exclusive Workspace writer appends or rolls back an unpublished tail.
@@ -26,7 +116,7 @@ pub(crate) struct SpoolSegment {
     id: u64,
     len: AtomicU64,
     capacity: u64,
-    physical: Arc<Mutex<crate::cow_tree::PhysicalSpoolMetrics>>,
+    physical: Arc<Mutex<PhysicalSpoolMetrics>>,
 }
 
 impl SpoolSegment {
@@ -34,7 +124,7 @@ impl SpoolSegment {
         directory: &Path,
         id: u64,
         capacity: u64,
-        physical: Arc<Mutex<crate::cow_tree::PhysicalSpoolMetrics>>,
+        physical: Arc<Mutex<PhysicalSpoolMetrics>>,
     ) -> Result<Self> {
         let path = directory.join(format!("segment-{}", crate::WorkspaceId::new()));
         let file = OpenOptions::new()
@@ -105,7 +195,7 @@ pub(crate) struct EditCheckpoint {
     spool_bytes_peak: u64,
     inline_bytes: u64,
     piece_allocation_bytes: u64,
-    spool_write_metrics: crate::cow_tree::SpoolWriteMetrics,
+    spool_write_metrics: SpoolWriteMetrics,
     mutation_generation: u64,
     mutation_paths: std::collections::BTreeMap<String, u64>,
 }
@@ -236,7 +326,7 @@ impl Workspace {
             spool_bytes_peak: self.live.spool_bytes_peak,
             inline_bytes: self.live.inline_bytes,
             piece_allocation_bytes: self.live.piece_allocation_bytes,
-            spool_write_metrics: self.spool_write_metrics,
+            spool_write_metrics: self.backing.metrics,
             mutation_generation: self.live.mutation_generation,
             mutation_paths: self.live.mutation_paths.clone(),
         })
@@ -258,7 +348,7 @@ impl Workspace {
         self.live.spool_bytes_peak = checkpoint.spool_bytes_peak;
         self.live.inline_bytes = checkpoint.inline_bytes;
         self.live.piece_allocation_bytes = checkpoint.piece_allocation_bytes;
-        self.spool_write_metrics = checkpoint.spool_write_metrics;
+        self.backing.metrics = checkpoint.spool_write_metrics;
         self.live.mutation_generation = checkpoint.mutation_generation;
         self.live.mutation_paths = checkpoint.mutation_paths;
         self.retire_spool_segments();
@@ -321,6 +411,7 @@ impl Workspace {
                 }),
             )
             .map_err(crate::live_error)?;
+        #[cfg(feature = "test-instrumentation")]
         let appended = bytes.map_or(0, |bytes| bytes.len() as u64);
         #[cfg(feature = "test-instrumentation")]
         if appended > 0
@@ -342,7 +433,6 @@ impl Workspace {
                 .map_err(crate::live_error)?;
         }
         if let Some(bytes) = bytes {
-            let started = std::time::Instant::now();
             #[cfg(feature = "test-instrumentation")]
             let inject_short = crate::lifecycle::consume_verification_fault(
                 self.branch_id,
@@ -350,58 +440,13 @@ impl Workspace {
                 self.live.spool_bytes,
             );
             let (backing, physical_start) = physical.as_ref().unwrap();
-            let segment = spool_segment(backing)?;
-            segment.check()?;
-            let file = &segment.file;
-            #[cfg(feature = "test-instrumentation")]
-            let append = if inject_short {
-                file.write_all_at(&bytes[..bytes.len() / 2], *physical_start)
-                    .and_then(|_| Err(std::io::Error::other("injected short spool append")))
-            } else {
-                append_spool(file, bytes, *physical_start)
-            };
-            #[cfg(not(feature = "test-instrumentation"))]
-            let append = append_spool(file, bytes, *physical_start);
-            segment.observe();
-            if let Err(error) = append {
-                // No visible range references this tail; other files' earlier
-                // bytes in the shared segment must never be truncated.
-                #[cfg(test)]
-                let cleanup = if INJECT_APPEND_CLEANUP_FAILURE.with(|inject| inject.replace(false))
-                {
-                    Err(std::io::Error::other("injected spool rollback failure"))
-                } else {
-                    file.set_len(*physical_start)
-                };
-                #[cfg(not(test))]
-                let cleanup = file.set_len(*physical_start);
-                segment.observe();
-                if cleanup.is_err() {
-                    let retained = file.metadata()?.len();
-                    let extra = retained
-                        .checked_sub(*physical_start)
-                        .ok_or(StoreError::Integrity("spool append cleanup length"))?;
-                    segment.len.store(retained, Ordering::Relaxed);
-                    self.segment_bytes = self
-                        .segment_bytes
-                        .checked_add(extra)
-                        .ok_or(StoreError::Integrity("spool segment charge"))?;
-                    return Err(StoreError::Integrity("spool append cleanup failure"));
-                }
-                return Err(error.into());
-            }
-            segment
-                .len
-                .store(*physical_start + appended, Ordering::Relaxed);
-            self.segment_bytes += appended;
-            self.spool_write_metrics.write_bytes = self
-                .spool_write_metrics
-                .write_bytes
-                .saturating_add(appended);
-            self.spool_write_metrics.write_ns = self
-                .spool_write_metrics
-                .write_ns
-                .saturating_add(elapsed_ns(started));
+            self.backing.append(
+                backing,
+                *physical_start,
+                bytes,
+                #[cfg(feature = "test-instrumentation")]
+                inject_short,
+            )?;
         }
         #[cfg(test)]
         if INJECT_STALE_WRITE.with(|inject| inject.replace(false)) {
@@ -635,22 +680,22 @@ impl Workspace {
                 spool_segment(segment)?.observe();
             }
         } else {
-            for segment in self.spool_segments.values() {
+            for segment in self.backing.segments.values() {
                 spool_segment(segment)?.check()?;
                 spool_segment(segment)?.observe();
             }
         }
         self.finish_capture(node);
-        self.spool_write_metrics.fence_count =
-            self.spool_write_metrics.fence_count.saturating_add(1);
-        self.spool_write_metrics.fence_ns = self
-            .spool_write_metrics
+        self.backing.metrics.fence_count = self.backing.metrics.fence_count.saturating_add(1);
+        self.backing.metrics.fence_ns = self
+            .backing
+            .metrics
             .fence_ns
             .saturating_add(elapsed_ns(started));
         Ok(())
     }
-    pub(crate) fn take_spool_write_metrics(&mut self) -> crate::cow_tree::SpoolWriteMetrics {
-        std::mem::take(&mut self.spool_write_metrics)
+    pub(crate) fn take_spool_write_metrics(&mut self) -> SpoolWriteMetrics {
+        std::mem::take(&mut self.backing.metrics)
     }
     pub(crate) fn clear_spool(&mut self) -> Result<()> {
         self.invalidate_capture();
@@ -664,9 +709,9 @@ impl Workspace {
             }
         }
         self.live.edited_nodes.clear();
-        self.current_spool = None;
-        self.spool_segments.clear();
-        self.segment_bytes = 0;
+        self.backing.current = None;
+        self.backing.segments.clear();
+        self.backing.bytes = 0;
         self.live.spool_bytes = 0;
         self.live.spool_bytes_peak = 0;
         self.live.inline_bytes = 0;
@@ -703,90 +748,19 @@ impl Workspace {
         .ok_or(StoreError::InvalidInput("file"))
     }
     pub(crate) fn physical_spool_snapshot(&self) -> (Option<u64>, Option<u64>, u64, u64) {
-        self.physical_spool
+        self.backing
+            .physical
             .lock()
             .map_or((None, None, 1, 0), |metrics| metrics.snapshot())
     }
 
     fn append_segment(&mut self, bytes: u64) -> Result<(BackingRef, u64)> {
-        if self.segment_bytes.saturating_add(bytes) > self.live.policy.max_spool_bytes {
-            self.retire_spool_segments();
-        }
-        self.live
-            .policy
-            .check(
-                self.live
-                    .spool_bytes
-                    .max(self.segment_bytes)
-                    .checked_add(bytes)
-                    .ok_or(StoreError::InvalidInput("workspace spool limit"))?,
-            )
-            .map_err(crate::live_error)?;
-        if let Some(segment) = self
-            .current_spool
-            .and_then(|id| self.spool_segments.get(&id))
-        {
-            let physical = spool_segment(segment)?;
-            let offset = physical.len.load(Ordering::Relaxed);
-            if offset.saturating_add(bytes) <= physical.capacity {
-                return Ok((segment.clone(), offset));
-            }
-        }
-        self.retire_spool_segments();
-        let started = std::time::Instant::now();
-        let id = self.next_spool;
-        self.next_spool = id
-            .checked_add(1)
-            .ok_or(StoreError::Integrity("spool segment identity"))?;
-        let segment = BackingRef::new(
-            BackingId(id),
-            SpoolSegment::new(
-                &self.spool,
-                id,
-                SPOOL_SEGMENT_BYTES
-                    .max(bytes)
-                    .min(self.live.policy.max_spool_bytes),
-                self.physical_spool.clone(),
-            )?,
-        );
-        self.spool_segments.insert(id, segment.clone());
-        self.current_spool = Some(id);
-        self.note_spool_open(elapsed_ns(started));
-        Ok((segment, 0))
+        self.backing
+            .reserve_append(&self.spool, bytes, self.live.spool_bytes, self.live.policy)
     }
 
     pub(crate) fn retire_spool_segments(&mut self) {
-        let started = std::time::Instant::now();
-        let mut scan_ns = 0_u64;
-        let mut retired = 0_u64;
-        self.spool_segments.retain(|id, segment| {
-            let scan_started = std::time::Instant::now();
-            let keep = !segment.is_unique();
-            if !keep {
-                self.segment_bytes = self.segment_bytes.saturating_sub(
-                    spool_segment(segment)
-                        .expect("host segment registry")
-                        .len
-                        .load(Ordering::Relaxed),
-                );
-                if self.current_spool == Some(*id) {
-                    self.current_spool = None;
-                }
-                retired += 1;
-            }
-            scan_ns = scan_ns.saturating_add(elapsed_ns(scan_started));
-            keep
-        });
-        layerfs_layerstack_store::note_workspace_spool_retirement(
-            elapsed_ns(started),
-            scan_ns,
-            retired,
-        );
-    }
-    fn note_spool_open(&mut self, ns: u64) {
-        self.spool_write_metrics.write_open_count =
-            self.spool_write_metrics.write_open_count.saturating_add(1);
-        self.spool_write_metrics.write_ns = self.spool_write_metrics.write_ns.saturating_add(ns);
+        self.backing.retire();
     }
 }
 
@@ -850,6 +824,57 @@ mod tests {
     };
 
     #[test]
+    fn backing_service_appends_only_its_exact_reserved_range_without_live_state() {
+        let root =
+            std::env::temp_dir().join(format!("layerfs-host-spool-{}", crate::WorkspaceId::new()));
+        std::fs::create_dir(&root).unwrap();
+        let mut spool = HostSpool::default();
+        let mut foreign = HostSpool::default();
+        let (backing, start) = spool
+            .reserve_append(&root, 3, 0, crate::ResourcePolicy::default())
+            .unwrap();
+        assert!(foreign
+            .append(
+                &backing,
+                start,
+                b"bad",
+                #[cfg(feature = "test-instrumentation")]
+                false,
+            )
+            .is_err());
+        spool
+            .append(
+                &backing,
+                start,
+                b"abc",
+                #[cfg(feature = "test-instrumentation")]
+                false,
+            )
+            .unwrap();
+        assert!(spool
+            .append(
+                &backing,
+                start,
+                b"bad",
+                #[cfg(feature = "test-instrumentation")]
+                false,
+            )
+            .is_err());
+        assert_eq!(spool.bytes, 3);
+        let mut bytes = [0; 3];
+        read_exact_at(&spool_segment(&backing).unwrap().file, &mut bytes, 0).unwrap();
+        assert_eq!(&bytes, b"abc");
+        spool.retire();
+        assert_eq!(spool.bytes, 3);
+        drop(backing);
+        spool.retire();
+        assert_eq!(spool.bytes, 0);
+        assert!(spool.segments.is_empty());
+        drop(spool);
+        std::fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
     fn stale_prepared_append_is_not_repeated_and_keeps_its_physical_charge() {
         let (root, mut workspace) = workspace("stale-prepared-append");
         let file = workspace.create_file(ROOT, b"file", 0o600).unwrap().node;
@@ -863,17 +888,17 @@ mod tests {
         ));
         assert_eq!(workspace.read(file, 0, 5).unwrap(), b"hello");
         assert_eq!(workspace.live.spool_bytes, 5);
-        assert_eq!(workspace.segment_bytes, 8);
-        assert_eq!(workspace.spool_write_metrics.write_bytes, 8);
+        assert_eq!(workspace.backing.bytes, 8);
+        assert_eq!(workspace.backing.metrics.write_bytes, 8);
         assert!(workspace.write(file, 0, b"no").is_err());
         workspace.commit().unwrap();
         assert_eq!(
-            workspace.segment_bytes, 8,
+            workspace.backing.bytes, 8,
             "old reader retains the whole segment"
         );
         assert_eq!(held.read().unwrap(), b"hello");
         workspace.commit().unwrap();
-        assert_eq!(workspace.segment_bytes, 0);
+        assert_eq!(workspace.backing.bytes, 0);
         workspace.write(file, 0, b"ok").unwrap();
         assert_eq!(workspace.read(file, 0, 5).unwrap(), b"okllo");
         workspace.discard().unwrap();
@@ -959,11 +984,11 @@ mod tests {
         ));
         assert_eq!(workspace.read(file, 0, 2).unwrap(), b"ok");
         assert_eq!(workspace.live.spool_bytes, 2);
-        assert_eq!(workspace.segment_bytes, 4);
+        assert_eq!(workspace.backing.bytes, 4);
         workspace.live.policy.max_spool_bytes = 4;
         assert!(workspace.write(file, 2, b"x").is_err());
         workspace.commit().unwrap();
-        assert_eq!(workspace.segment_bytes, 0);
+        assert_eq!(workspace.backing.bytes, 0);
         workspace.write(file, 2, b"x").unwrap();
         assert_eq!(workspace.read(file, 0, 3).unwrap(), b"okx");
         workspace.discard().unwrap();
@@ -979,15 +1004,15 @@ mod tests {
         workspace.write(a, 0, b"abc").unwrap();
         workspace.write(b, 0, b"XYZ").unwrap();
         workspace.write(a, 3, b"def").unwrap();
-        assert_eq!(workspace.spool_segments.len(), 1);
+        assert_eq!(workspace.backing.segments.len(), 1);
         let held = workspace.read_plan(a, 0, 6).unwrap();
         workspace.write(a, 0, b"Q").unwrap();
         workspace.truncate(b, 2).unwrap();
         workspace.write(b, 5, b"R").unwrap();
-        let end = workspace.segment_bytes;
+        let end = workspace.backing.bytes;
         INJECT_SHORT_APPEND.with(|inject| inject.set(true));
         assert!(workspace.write(a, 6, b"failed tail").is_err());
-        assert_eq!(workspace.segment_bytes, end);
+        assert_eq!(workspace.backing.bytes, end);
         assert_eq!(workspace.read(a, 0, 6).unwrap(), b"Qbcdef");
         assert_eq!(workspace.read(b, 0, 6).unwrap(), b"XY\0\0\0R");
         workspace.pin(a, false).unwrap();
@@ -996,12 +1021,12 @@ mod tests {
         workspace
             .write(c, 0, &vec![7; SPOOL_SEGMENT_BYTES as usize])
             .unwrap();
-        assert_eq!(workspace.spool_segments.len(), 2);
+        assert_eq!(workspace.backing.segments.len(), 2);
         workspace.fsync(None).unwrap();
         workspace.commit().unwrap();
-        assert_eq!(workspace.spool_segments.len(), 1);
+        assert_eq!(workspace.backing.segments.len(), 1);
         assert_eq!(
-            workspace.segment_bytes, end,
+            workspace.backing.bytes, end,
             "retained segment dead bytes remain charged"
         );
         assert_eq!(workspace.read(a, 0, 6).unwrap(), b"Qbcdef");
@@ -1009,14 +1034,14 @@ mod tests {
         workspace.commit().unwrap();
         workspace.unpin(a).unwrap();
         assert_eq!(
-            workspace.spool_segments.len(),
+            workspace.backing.segments.len(),
             1,
             "prepared read owns old extents"
         );
         assert_eq!(held.read().unwrap(), b"abcdef");
         workspace.commit().unwrap();
-        assert!(workspace.spool_segments.is_empty());
-        assert_eq!(workspace.segment_bytes, 0);
+        assert!(workspace.backing.segments.is_empty());
+        assert_eq!(workspace.backing.bytes, 0);
         assert_eq!(workspace.physical_spool_snapshot().0, Some(0));
         workspace.end_clean().unwrap();
         drop(workspace);
@@ -1032,7 +1057,8 @@ mod tests {
         assert_eq!(workspace.live.spool_bytes, 1);
         assert_eq!(
             workspace
-                .spool_segments
+                .backing
+                .segments
                 .values()
                 .map(|segment| spool_segment(segment)
                     .unwrap()
@@ -1070,7 +1096,8 @@ mod tests {
         assert_eq!(workspace.live.spool_bytes_peak, before_peak);
         assert_eq!(
             workspace
-                .spool_segments
+                .backing
+                .segments
                 .values()
                 .map(|segment| spool_segment(segment)
                     .unwrap()
@@ -1098,14 +1125,15 @@ mod tests {
         workspace.write(second, 0, &[0x53; 8192]).unwrap();
         let actual = || {
             workspace
-                .spool_segments
+                .backing
+                .segments
                 .values()
                 .map(|f| spool_segment(f).unwrap().file.metadata().unwrap().blocks() * 512)
                 .sum::<u64>()
         };
         assert_eq!(workspace.physical_spool_snapshot().0, Some(actual()));
         assert_eq!(
-            workspace.spool_segments.len(),
+            workspace.backing.segments.len(),
             1,
             "two files share one physical segment"
         );
@@ -1121,7 +1149,8 @@ mod tests {
         assert_eq!(workspace.attr(failed).unwrap().size, 0);
         assert_eq!(
             workspace
-                .spool_segments
+                .backing
+                .segments
                 .values()
                 .map(|segment| spool_segment(segment)
                     .unwrap()
@@ -1134,7 +1163,8 @@ mod tests {
         );
         let (current, peak, errors, count) = workspace.physical_spool_snapshot();
         let actual = workspace
-            .spool_segments
+            .backing
+            .segments
             .values()
             .map(|f| spool_segment(f).unwrap().file.metadata().unwrap().blocks() * 512)
             .sum::<u64>();
@@ -1184,7 +1214,7 @@ mod tests {
         workspace.discard().unwrap();
         assert_eq!(workspace.physical_spool_snapshot().0, Some(0));
         assert_eq!(workspace.physical_spool_snapshot().1, peak);
-        workspace.physical_spool.lock().unwrap().error();
+        workspace.backing.physical.lock().unwrap().error();
         assert_eq!(workspace.physical_spool_snapshot().0, None);
         assert_eq!(workspace.physical_spool_snapshot().1, None);
         drop(workspace);
@@ -1288,7 +1318,7 @@ mod tests {
             .iter()
             .any(|piece| matches!(piece, Piece::Spool { .. })));
         drop(variants);
-        assert_eq!(workspace.spool_segments.len(), 1);
+        assert_eq!(workspace.backing.segments.len(), 1);
         workspace.discard().unwrap();
         assert_eq!(
             workspace.store.pin_branch(branch).unwrap().root,
@@ -1297,9 +1327,160 @@ mod tests {
         assert_eq!(workspace.live.spool_bytes, 0);
         assert_eq!(workspace.live.inline_bytes, 0);
         assert_eq!(workspace.live.piece_allocation_bytes, 0);
-        assert!(workspace.spool_segments.is_empty());
+        assert!(workspace.backing.segments.is_empty());
         assert_eq!(workspace.physical_spool_snapshot().0, Some(0));
         drop(workspace);
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+impl HostSpool {
+    pub(crate) fn reserve_append(
+        &mut self,
+        directory: &Path,
+        bytes: u64,
+        logical_bytes: u64,
+        policy: crate::ResourcePolicy,
+    ) -> Result<(BackingRef, u64)> {
+        if self.bytes.saturating_add(bytes) > policy.max_spool_bytes {
+            self.retire();
+        }
+        policy
+            .check(
+                logical_bytes
+                    .max(self.bytes)
+                    .checked_add(bytes)
+                    .ok_or(StoreError::InvalidInput("workspace spool limit"))?,
+            )
+            .map_err(crate::live_error)?;
+        if let Some(segment) = self.current.and_then(|id| self.segments.get(&id)) {
+            let physical = spool_segment(segment)?;
+            let offset = physical.len.load(Ordering::Relaxed);
+            if offset.saturating_add(bytes) <= physical.capacity {
+                return Ok((segment.clone(), offset));
+            }
+        }
+        self.retire();
+        let started = std::time::Instant::now();
+        let id = self.next_id;
+        self.next_id = id
+            .checked_add(1)
+            .ok_or(StoreError::Integrity("spool segment identity"))?;
+        let segment = BackingRef::new(
+            BackingId(id),
+            SpoolSegment::new(
+                directory,
+                id,
+                SPOOL_SEGMENT_BYTES.max(bytes).min(policy.max_spool_bytes),
+                self.physical.clone(),
+            )?,
+        );
+        self.segments.insert(id, segment.clone());
+        self.current = Some(id);
+        self.note_open(elapsed_ns(started));
+        Ok((segment, 0))
+    }
+
+    pub(crate) fn retire(&mut self) {
+        let started = std::time::Instant::now();
+        let mut scan_ns = 0_u64;
+        let mut retired = 0_u64;
+        self.segments.retain(|id, segment| {
+            let scan_started = std::time::Instant::now();
+            let keep = !segment.is_unique();
+            if !keep {
+                self.bytes = self.bytes.saturating_sub(
+                    spool_segment(segment)
+                        .expect("host segment registry")
+                        .len
+                        .load(Ordering::Relaxed),
+                );
+                if self.current == Some(*id) {
+                    self.current = None;
+                }
+                retired += 1;
+            }
+            scan_ns = scan_ns.saturating_add(elapsed_ns(scan_started));
+            keep
+        });
+        layerfs_layerstack_store::note_workspace_spool_retirement(
+            elapsed_ns(started),
+            scan_ns,
+            retired,
+        );
+    }
+    fn note_open(&mut self, ns: u64) {
+        self.metrics.write_open_count = self.metrics.write_open_count.saturating_add(1);
+        self.metrics.write_ns = self.metrics.write_ns.saturating_add(ns);
+    }
+}
+
+impl HostSpool {
+    pub(crate) fn append(
+        &mut self,
+        backing: &BackingRef,
+        physical_start: u64,
+        bytes: &[u8],
+        #[cfg(feature = "test-instrumentation")] inject_short: bool,
+    ) -> Result<()> {
+        let started = std::time::Instant::now();
+        let appended = bytes.len() as u64;
+        if self.segments.get(&backing.id().0) != Some(backing) {
+            return Err(StoreError::Integrity("spool append ownership"));
+        }
+        let segment = spool_segment(backing)?;
+        if physical_start != segment.len.load(Ordering::Relaxed)
+            || physical_start
+                .checked_add(appended)
+                .is_none_or(|end| end > segment.capacity)
+        {
+            return Err(StoreError::Integrity("spool append range"));
+        }
+
+        segment.check()?;
+        let file = &segment.file;
+        #[cfg(feature = "test-instrumentation")]
+        let append = if inject_short {
+            file.write_all_at(&bytes[..bytes.len() / 2], physical_start)
+                .and_then(|_| Err(std::io::Error::other("injected short spool append")))
+        } else {
+            append_spool(file, bytes, physical_start)
+        };
+        #[cfg(not(feature = "test-instrumentation"))]
+        let append = append_spool(file, bytes, physical_start);
+        segment.observe();
+        if let Err(error) = append {
+            // No visible range references this tail; other files' earlier
+            // bytes in the shared segment must never be truncated.
+            #[cfg(test)]
+            let cleanup = if INJECT_APPEND_CLEANUP_FAILURE.with(|inject| inject.replace(false)) {
+                Err(std::io::Error::other("injected spool rollback failure"))
+            } else {
+                file.set_len(physical_start)
+            };
+            #[cfg(not(test))]
+            let cleanup = file.set_len(physical_start);
+            segment.observe();
+            if cleanup.is_err() {
+                let retained = file.metadata()?.len();
+                let extra = retained
+                    .checked_sub(physical_start)
+                    .ok_or(StoreError::Integrity("spool append cleanup length"))?;
+                segment.len.store(retained, Ordering::Relaxed);
+                self.bytes = self
+                    .bytes
+                    .checked_add(extra)
+                    .ok_or(StoreError::Integrity("spool segment charge"))?;
+                return Err(StoreError::Integrity("spool append cleanup failure"));
+            }
+            return Err(error.into());
+        }
+        segment
+            .len
+            .store(physical_start + appended, Ordering::Relaxed);
+        self.bytes += appended;
+        self.metrics.write_bytes = self.metrics.write_bytes.saturating_add(appended);
+        self.metrics.write_ns = self.metrics.write_ns.saturating_add(elapsed_ns(started));
+        Ok(())
     }
 }

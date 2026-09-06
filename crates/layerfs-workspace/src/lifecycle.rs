@@ -225,13 +225,11 @@ impl Workspace {
             self.live.policy,
         )?;
         // Held read plans retain old segments and their admission charge across refresh.
-        let segments = std::mem::take(&mut self.spool_segments);
-        let segment_bytes = self.segment_bytes;
+        let mut backing = std::mem::take(&mut self.backing);
         self.clear_spool()?;
-        committed.spool_segments = segments;
-        committed.segment_bytes = segment_bytes;
-        committed.physical_spool = std::mem::take(&mut self.physical_spool);
-        committed.next_spool = self.next_spool;
+        backing.current = None;
+        backing.metrics = Default::default();
+        committed.backing = backing;
         *self = committed;
         self.retire_spool_segments();
         Ok(())
@@ -440,8 +438,8 @@ impl Workspaces {
             physical_spool_observation_errors: physical_errors,
             physical_spool_observation_count: physical_observations,
             mutation_generation: workspace.live.mutation_generation,
-            open_spool_files: workspace.spool_segments.len(),
-            spool_segment_bytes: workspace.segment_bytes,
+            open_spool_files: workspace.backing.segments.len(),
+            spool_segment_bytes: workspace.backing.bytes,
         })
     }
 
@@ -1236,13 +1234,13 @@ mod tests {
         workspace
             .refresh_reconciled(outcome, workspace.expected_base)
             .unwrap();
-        assert_eq!(workspace.segment_bytes, 4);
-        assert!(workspace.current_spool.is_none());
+        assert_eq!(workspace.backing.bytes, 4);
+        assert!(workspace.backing.current.is_none());
         let file = lookup_path(&mut workspace, "file").unwrap();
         assert!(workspace.write(file, 0, b"x").is_err());
         assert_eq!(read.read().unwrap(), b"held");
         workspace.write(file, 0, b"x").unwrap();
-        assert_eq!(workspace.segment_bytes, 1);
+        assert_eq!(workspace.backing.bytes, 1);
         workspace.discard().unwrap();
         drop(workspace);
         std::fs::remove_dir_all(root).unwrap();
@@ -1492,12 +1490,12 @@ mod tests {
         assert_eq!(workspace.live.nodes[&orphan].pins, 1);
         assert_eq!(workspace.read(orphan, 0, 64).unwrap(), b"pinned-data");
         assert_eq!(workspace.live.spool_bytes, 11);
-        assert_eq!(workspace.spool_segments.len(), 1);
+        assert_eq!(workspace.backing.segments.len(), 1);
         assert!(workspace.live.dirty.is_empty() && workspace.live.mutation_paths.is_empty());
         assert_eq!(workspace.live.mutation_generation, 0);
         workspace.unpin(orphan).unwrap();
         assert_eq!(workspace.live.spool_bytes, 0);
-        assert!(workspace.spool_segments.is_empty());
+        assert!(workspace.backing.segments.is_empty());
         drop(workspace);
         drop(store);
         std::fs::remove_dir_all(root).unwrap();
