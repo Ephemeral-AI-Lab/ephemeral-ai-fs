@@ -6,7 +6,7 @@ mod linux {
         self, CgroupResourceSample, DaemonTiming, ExecRequest, Exit, Kind, MountRequest,
         RemoteError, ResourceSampleFinishRequest, ResourceSampleRequest, ServerHello,
         AUTH_OK_BYTES, BOUND_AUTH_BYTES, BOUND_OK_BYTES, CAPABILITY_PATH, CGROUP_STAT_FIELDS,
-        CLIENT_AUTH_BYTES, MAX_CONTROL, SOCKET_PATH, WORKSPACE_ROOT,
+        CLIENT_AUTH_BYTES, SOCKET_PATH, WORKSPACE_ROOT,
     };
     use nix::mount::{umount2, MntFlags};
     use nix::sys::resource::{getrlimit, Resource};
@@ -18,7 +18,9 @@ mod linux {
     use std::collections::BTreeMap;
     use std::ffi::{OsStr, OsString};
     use std::fs;
-    use std::io::{self, BufRead, BufReader, Read, Seek, Write};
+    use std::io::{self, Read, Seek, Write};
+    #[cfg(test)]
+    use std::io::{BufRead, BufReader};
     use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
     use std::os::unix::ffi::{OsStrExt, OsStringExt};
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -29,8 +31,6 @@ mod linux {
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
     use std::sync::{Arc, Condvar, Mutex};
     use std::time::{Duration, Instant};
-
-    const FIXED_HELPER: &str = "/usr/local/bin/layerfs-fuse";
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     struct Peer {
@@ -88,8 +88,17 @@ mod linux {
         root: Vec<u8>,
         alive: bool,
         ready: bool,
-        pgid: i32,
-        termination: Arc<Termination>,
+        cancelled: Arc<AtomicBool>,
+        wake: Option<std::sync::mpsc::SyncSender<()>>,
+    }
+
+    impl ActiveMount {
+        fn cancel(&self) {
+            self.cancelled.store(true, Ordering::Release);
+            if let Some(wake) = &self.wake {
+                let _ = wake.try_send(());
+            }
+        }
     }
 
     struct Shared {
@@ -456,7 +465,7 @@ mod linux {
                     return;
                 };
                 state.owner_live = false;
-                let mut active = state
+                let active = state
                     .active
                     .values()
                     .filter_map(|active| {
@@ -467,12 +476,9 @@ mod linux {
                             .flatten()
                     })
                     .collect::<Vec<_>>();
-                active.extend(
-                    state
-                        .mounts
-                        .values()
-                        .filter_map(|mount| mount.termination.request(2).then_some(mount.pgid)),
-                );
+                for mount in state.mounts.values() {
+                    mount.cancel();
+                }
                 (active, std::mem::take(&mut state.samples))
             };
             for pgid in active {
@@ -1316,29 +1322,21 @@ mod linux {
     }
 
     enum MountEvent {
-        Ready(io::Result<Vec<u8>>),
         Close,
         Lost,
-        Exited(io::Result<std::process::ExitStatus>),
     }
 
     fn handle_mount(mut stream: ControlStream, payload: Vec<u8>, shared: Arc<Shared>) {
         let request = match MountRequest::decode(&payload) {
-            Ok(request) => request,
-            Err(_) => {
+            Ok(request) if validate_root(&request.root).is_ok() => request,
+            _ => {
                 send_error(&mut stream, RemoteError::InvalidRequest);
                 return;
             }
         };
-        if validate_root(&request.root).is_err() {
-            send_error(&mut stream, RemoteError::InvalidRequest);
-            return;
-        }
         let root = PathBuf::from(OsString::from_vec(request.root.clone()));
-        let endpoint = OsString::from_vec(request.endpoint);
-        let capability = hex(&request.capability);
-        let termination = Arc::new(Termination::new());
-        let (mut child, created_root) = {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let created_root = {
             let Ok(mut state) = shared.state.lock() else {
                 send_error(&mut stream, RemoteError::InfrastructureLost);
                 return;
@@ -1360,32 +1358,9 @@ mod linux {
                 send_error(&mut stream, RemoteError::InvalidRequest);
                 return;
             }
-            let created_root = match prepare_mount_root(&root) {
+            let created = match prepare_mount_root(&root) {
                 Ok(created) => created,
                 Err(_) => {
-                    send_error(&mut stream, RemoteError::InvalidRequest);
-                    return;
-                }
-            };
-            let mut command = Command::new(FIXED_HELPER);
-            command
-                .arg(endpoint)
-                .arg(&capability)
-                .arg(&root)
-                .env("LAYERFS_FIXED_HELPER", "1")
-                .env("LAYERFS_OWNED_HELPER", FIXED_HELPER)
-                .env("LAYERFS_OWNED_ROOT", &root)
-                .env("LAYERFS_OWNED_CAPABILITY", &capability)
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .process_group(0);
-            let child = match command.spawn() {
-                Ok(child) => child,
-                Err(_) => {
-                    if created_root {
-                        let _ = fs::remove_dir(&root);
-                    }
                     send_error(&mut stream, RemoteError::InvalidRequest);
                     return;
                 }
@@ -1396,58 +1371,58 @@ mod linux {
                     root: request.root.clone(),
                     alive: true,
                     ready: false,
-                    pgid: child.id() as i32,
-                    termination: termination.clone(),
+                    cancelled: cancelled.clone(),
+                    wake: None,
                 },
             );
-            (child, created_root)
+            created
         };
         let guard = MountGuard {
             shared: shared.clone(),
             id: request.workspace_id,
         };
-        let pgid = child.id() as i32;
-        let Some(stdout) = child.stdout.take() else {
-            termination.terminate(pgid, 2);
-            let status = child.wait();
-            let _ = finish_terminated_group(pgid, &termination, status);
-            let _ = cleanup_mount(&root, created_root);
-            send_error(&mut stream, RemoteError::InfrastructureLost);
-            return;
+        let mounted = (|| -> io::Result<_> {
+            let endpoint = String::from_utf8(request.endpoint)
+                .map_err(|_| protocol::invalid("backing endpoint"))?;
+            let runtime = layerfs_fuse::live_runtime::LiveRuntime::shared()?;
+            let owner = Arc::new(
+                runtime
+                    .block_on(layerfs_fuse::live_owner::LiveOwner::connect(
+                        endpoint.clone(),
+                        request.capability,
+                        runtime.scheduler(),
+                    ))
+                    .map_err(|error| io::Error::other(format!("live owner: {error:?}")))?,
+            );
+            let control = owner.serve_control(endpoint, request.capability)?;
+            let mount = layerfs_fuse::mount_host(owner.clone(), &root, 0, 0)?;
+            owner.set_notifier(mount.notifier()?)?;
+            owner.set_kernel_root(fs::File::open(&root)?)?;
+            let mountinfo = live_fuse_mount_line(&request.root)?
+                .ok_or_else(|| protocol::invalid("live FUSE mount"))?;
+            Ok((owner, control, mount, mountinfo))
+        })();
+        let (owner, control, mut mount, mountinfo) = match mounted {
+            Ok(mounted) => mounted,
+            Err(error) => {
+                eprintln!("layerfs-daemon: mount startup failed: {error}");
+                let _ = cleanup_mount(&root, created_root);
+                send_error(&mut stream, RemoteError::InfrastructureLost);
+                return;
+            }
         };
-        let stderr = child.stderr.take().map(drain_mount_output);
         let reader = match stream.try_clone() {
             Ok(reader) => reader,
             Err(_) => {
-                termination.terminate(pgid, 2);
-                let status = child.wait();
-                let _ = finish_terminated_group(pgid, &termination, status);
+                let _ = owner.prepare_shutdown();
+                let _ = mount.unmount();
+                let _ = control.cancel();
                 let _ = cleanup_mount(&root, created_root);
-                if let Some(stderr) = stderr {
-                    let _ = stderr.join();
-                }
-                send_error(&mut stream, RemoteError::InfrastructureLost);
                 return;
             }
         };
         let finished = Arc::new(AtomicBool::new(false));
         let (send, receive) = std::sync::mpsc::channel();
-        let ready_send = send.clone();
-        let ready_root = request.root.clone();
-        let stdout = std::thread::spawn(move || {
-            let mut stdout = BufReader::new(stdout);
-            let ready = read_helper_ready(&mut stdout, &ready_root);
-            let _ = ready_send.send(MountEvent::Ready(ready));
-            let _ = io::copy(&mut stdout, &mut io::sink());
-        });
-        let wait_send = send.clone();
-        let wait_shared = shared.clone();
-        let wait_workspace = request.workspace_id;
-        let waiter = std::thread::spawn(move || {
-            let exit = child.wait();
-            finish_mount(&wait_shared, wait_workspace);
-            let _ = wait_send.send(MountEvent::Exited(exit));
-        });
         let lifecycle = watch_mount(
             reader,
             send,
@@ -1455,135 +1430,83 @@ mod linux {
             shared.clone(),
             request.workspace_id,
         );
-
-        let mut status = None;
-        let mountinfo = match receive.recv_timeout(Duration::from_secs(10)) {
-            Ok(MountEvent::Ready(Ok(mountinfo))) => Some(mountinfo),
-            Ok(MountEvent::Exited(exit)) => {
-                status = Some(exit);
-                None
-            }
-            Ok(MountEvent::Ready(Err(_)) | MountEvent::Close | MountEvent::Lost) | Err(_) => None,
-        };
-        let Some(mountinfo) = mountinfo else {
-            termination.terminate(pgid, 2);
-            wait_mount_exit(&receive, &mut status);
-            if let Some(direct_status) = status.take() {
-                let _ = finish_terminated_group(pgid, &termination, direct_status);
-            }
-            terminate_workspace_execs(&shared, request.workspace_id);
-            let _ = cleanup_mount(&root, created_root);
-            termination.finished.store(true, Ordering::Release);
-            send_error(&mut stream, RemoteError::InfrastructureLost);
-            finished.store(true, Ordering::Release);
-            let _ = stream.shutdown(std::net::Shutdown::Both);
-            let _ = waiter.join();
-            let _ = stdout.join();
-            if let Some(stderr) = stderr {
-                let _ = stderr.join();
-            }
-            let _ = lifecycle.join();
-            return;
-        };
         let ready = shared.state.lock().is_ok_and(|mut state| {
-            if !state.owner_live || termination.reason.load(Ordering::Acquire) != 0 {
+            if !state.owner_live || cancelled.load(Ordering::Acquire) {
                 return false;
             }
             state
                 .mounts
                 .get_mut(&request.workspace_id)
                 .is_some_and(|mount| {
-                    if !mount.alive {
-                        return false;
-                    }
                     mount.ready = true;
+                    mount.wake = Some(control.shutdown_waker());
                     true
                 })
         });
-        if !ready || protocol::write_frame(&mut stream, Kind::WorkspaceReady, &mountinfo).is_err() {
-            termination.terminate(pgid, 2);
-            wait_mount_exit(&receive, &mut status);
-            if let Some(direct_status) = status.take() {
-                let _ = finish_terminated_group(pgid, &termination, direct_status);
-            }
-            terminate_workspace_execs(&shared, request.workspace_id);
-            let _ = cleanup_mount(&root, created_root);
-            termination.finished.store(true, Ordering::Release);
-            finished.store(true, Ordering::Release);
-            let _ = stream.shutdown(std::net::Shutdown::Both);
-            let _ = waiter.join();
-            let _ = stdout.join();
-            if let Some(stderr) = stderr {
-                let _ = stderr.join();
-            }
-            let _ = lifecycle.join();
-            return;
-        }
-
+        let mut lost =
+            !ready || protocol::write_frame(&mut stream, Kind::WorkspaceReady, &mountinfo).is_err();
         let mut close = false;
-        let mut lost = false;
-        while status.is_none() || (!close && !lost) {
-            let timeout = if close {
-                Duration::from_secs(10)
-            } else if status.is_some() {
-                Duration::from_secs(2)
-            } else {
-                Duration::from_secs(24 * 60 * 60)
-            };
-            match receive.recv_timeout(timeout) {
+        let mut requested = false;
+        let mut close_deadline = None;
+        while !lost && !requested {
+            match receive.try_recv() {
                 Ok(MountEvent::Close) if !close => {
-                    deactivate_mount(&shared, request.workspace_id);
                     close = true;
+                    close_deadline = Some(Instant::now() + Duration::from_secs(10));
                 }
-                Ok(MountEvent::Exited(exit)) => {
-                    deactivate_mount(&shared, request.workspace_id);
-                    status = Some(exit);
+                Ok(_) | Err(std::sync::mpsc::TryRecvError::Disconnected) => lost = true,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+            if cancelled.load(Ordering::Acquire)
+                || close_deadline.is_some_and(|deadline| Instant::now() >= deadline)
+            {
+                lost = true;
+            }
+            if !lost {
+                let timeout = close_deadline
+                    .map_or(Duration::from_secs(24 * 60 * 60), |deadline| {
+                        deadline.saturating_duration_since(Instant::now())
+                    });
+                match control.poll_shutdown(timeout) {
+                    Ok(_) => requested = control.shutdown_requested(),
+                    Err(_) => lost = true,
                 }
-                Ok(MountEvent::Lost) | Ok(MountEvent::Close) | Ok(MountEvent::Ready(_)) => {
-                    deactivate_mount(&shared, request.workspace_id);
+                if cancelled.load(Ordering::Acquire) {
                     lost = true;
-                    termination.terminate(pgid, 2);
-                }
-                Err(_) => {
-                    deactivate_mount(&shared, request.workspace_id);
-                    lost = true;
-                    termination.terminate(pgid, 2);
                 }
             }
+        }
+        deactivate_mount(&shared, request.workspace_id);
+        if lost {
+            terminate_workspace_execs(&shared, request.workspace_id);
+        }
+        let shutdown = owner.prepare_shutdown().and_then(|()| mount.unmount());
+        let acknowledged = if requested {
+            control.finish_shutdown(shutdown.is_ok())
+        } else {
+            control.cancel()
+        };
+        finish_mount(&shared, request.workspace_id);
+        if !lost && !close {
+            close = matches!(
+                receive.recv_timeout(Duration::from_secs(2)),
+                Ok(MountEvent::Close)
+            );
+            lost = !close;
         }
         terminate_workspace_execs(&shared, request.workspace_id);
         let cleanup = cleanup_mount(&root, created_root);
-        if let Some(direct_status) = status.take() {
-            status = Some(finish_terminated_group(pgid, &termination, direct_status));
-        }
-        let status_success = status
-            .as_ref()
-            .is_some_and(|status| status.as_ref().is_ok_and(|status| status.success()));
-        let success = close
-            && !lost
-            && termination.reason.load(Ordering::Acquire) == 0
-            && status_success
-            && cleanup.is_ok();
-        if !success {
-            eprintln!(
-                "layerfs-daemon: mount failed close={close} lost={lost} reason={} status={status:?} cleanup={cleanup:?}",
-                termination.reason.load(Ordering::Acquire),
-            );
-        }
-        termination.finished.store(true, Ordering::Release);
-        let _ = waiter.join();
-        let _ = stdout.join();
-        if let Some(stderr) = stderr {
-            let _ = stderr.join();
-        }
+        let success = close && !lost && shutdown.is_ok() && acknowledged.is_ok() && cleanup.is_ok();
         if success {
             acknowledge_mount_close(&mut stream, &finished, lifecycle, guard);
             return;
-        } else if close && !lost {
+        }
+        eprintln!("layerfs-daemon: mount failed close={close} lost={lost} shutdown={shutdown:?} ack={acknowledged:?} cleanup={cleanup:?}");
+        if close && !lost {
             send_error(&mut stream, RemoteError::InfrastructureLost);
         }
         finished.store(true, Ordering::Release);
-        let _ = stream.shutdown(std::net::Shutdown::Both);
+        let _ = stream.shutdown(Shutdown::Both);
         let _ = lifecycle.join();
     }
 
@@ -1620,29 +1543,30 @@ mod linux {
                         if send.send(MountEvent::Close).is_err() {
                             return;
                         }
+                        if let Ok(state) = shared.state.lock() {
+                            if let Some(wake) = state
+                                .mounts
+                                .get(&workspace_id)
+                                .and_then(|mount| mount.wake.as_ref())
+                            {
+                                let _ = wake.try_send(());
+                            }
+                        }
                     }
                     _ if !finished.load(Ordering::Acquire) => {
                         deactivate_mount(&shared, workspace_id);
                         let _ = send.send(MountEvent::Lost);
+                        if let Ok(state) = shared.state.lock() {
+                            if let Some(mount) = state.mounts.get(&workspace_id) {
+                                mount.cancel();
+                            }
+                        }
                         return;
                     }
                     _ => return,
                 }
             }
         })
-    }
-
-    fn wait_mount_exit(
-        receive: &std::sync::mpsc::Receiver<MountEvent>,
-        status: &mut Option<io::Result<std::process::ExitStatus>>,
-    ) {
-        while status.is_none() {
-            match receive.recv_timeout(Duration::from_secs(2)) {
-                Ok(MountEvent::Exited(exit)) => *status = Some(exit),
-                Err(_) => return,
-                _ => {}
-            }
-        }
     }
 
     fn watch_exec(
@@ -1698,59 +1622,6 @@ mod linux {
 
     fn send_error(stream: &mut ControlStream, error: RemoteError) {
         let _ = protocol::write_frame(stream, Kind::Error, &[error as u8]);
-    }
-
-    fn read_helper_ready(reader: &mut impl BufRead, root: &[u8]) -> io::Result<Vec<u8>> {
-        if read_bounded_line(reader, 32)? != b"READY" {
-            return Err(protocol::invalid("FUSE helper readiness"));
-        }
-        let line = read_bounded_line(reader, MAX_CONTROL)?;
-        let reported = line
-            .strip_prefix(b"MOUNTINFO\t")
-            .ok_or_else(|| protocol::invalid("FUSE helper mountinfo"))?;
-        let actual = live_fuse_mount_line(root)?
-            .ok_or_else(|| protocol::invalid("FUSE helper live mount"))?;
-        if reported != actual {
-            return Err(protocol::invalid("FUSE helper mount identity"));
-        }
-        Ok(actual)
-    }
-
-    fn read_bounded_line(reader: &mut impl BufRead, limit: usize) -> io::Result<Vec<u8>> {
-        let mut output = Vec::new();
-        loop {
-            let (consumed, done) = {
-                let bytes = reader.fill_buf()?;
-                if bytes.is_empty() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "FUSE helper line",
-                    ));
-                }
-                let newline = bytes.iter().position(|byte| *byte == b'\n');
-                let consumed = newline.map_or(bytes.len(), |index| index + 1);
-                let copied = newline.unwrap_or(bytes.len());
-                if output
-                    .len()
-                    .checked_add(copied)
-                    .is_none_or(|length| length > limit)
-                {
-                    return Err(protocol::invalid("FUSE helper line length"));
-                }
-                output.extend_from_slice(&bytes[..copied]);
-                (consumed, newline.is_some())
-            };
-            reader.consume(consumed);
-            if done {
-                return Ok(output);
-            }
-        }
-    }
-
-    fn drain_mount_output<R: Read + Send + 'static>(mut reader: R) -> std::thread::JoinHandle<()> {
-        std::thread::spawn(move || {
-            let _ = io::copy(&mut reader, &mut io::stderr().lock());
-        })
     }
 
     fn validate_root(bytes: &[u8]) -> io::Result<()> {
@@ -1837,15 +1708,6 @@ mod linux {
                 mount.ready = false;
             }
         }
-    }
-
-    fn hex(bytes: &[u8]) -> String {
-        let mut output = String::with_capacity(bytes.len() * 2);
-        for byte in bytes {
-            use std::fmt::Write as _;
-            let _ = write!(output, "{byte:02x}");
-        }
-        output
     }
 
     fn validate_cwd(bytes: &[u8]) -> io::Result<()> {
@@ -2024,8 +1886,8 @@ mod linux {
                             root: root.clone(),
                             alive: true,
                             ready: true,
-                            pgid: 0,
-                            termination: Arc::new(Termination::new()),
+                            cancelled: Arc::new(AtomicBool::new(false)),
+                            wake: None,
                         },
                     )]),
                     samples: BTreeMap::new(),
@@ -2190,8 +2052,8 @@ mod linux {
                             root: root.clone(),
                             alive: false,
                             ready: false,
-                            pgid: 0,
-                            termination: Arc::new(Termination::new()),
+                            cancelled: Arc::new(AtomicBool::new(false)),
+                            wake: None,
                         },
                     )]),
                     samples: BTreeMap::new(),

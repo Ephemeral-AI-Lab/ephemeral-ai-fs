@@ -15,3 +15,6 @@ path = "src/lib.rs"
 [[bin]]
 name = "layerfs-daemon"
 path = "src/main.rs"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+layerfs-fuse = { path = "../layerfs-fuse", default-features = false, features = ["host", "live"] }

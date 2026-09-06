@@ -58,7 +58,11 @@ fn managed_proof(
     manager.create(ContainerCreate {
         name: name.to_owned(),
         image: image.to_owned(),
-        limits: ContainerLimits::default(),
+        limits: ContainerLimits {
+            memory_bytes: 2 * 1024 * 1024 * 1024,
+            cpus: 2,
+            pids: 256,
+        },
     })?;
     let running = manager.start(name)?;
     let status = manager.status(name)?;
@@ -553,6 +557,24 @@ int main(int argc, char **argv) {
     let placement = format!("/workspace/cut-{}", std::process::id());
     let session =
         client.create_workspace_session(container_request(branch, &running.id, &placement))?;
+    let peer_branch = client.fork_branch(
+        EntityName::new("peer")?,
+        LocalForkSource::Layer {
+            layer_id: initialized.genesis_layer_id,
+        },
+    )?;
+    let peer = client.create_workspace_session(container_request(
+        peer_branch,
+        &running.id,
+        &format!("{placement}-peer"),
+    ))?;
+    require(
+        docker_status(
+            name,
+            ["/bin/sh", "-c", "! ps -e -o comm= | grep -qx layerfs-fuse"],
+        )?,
+        "daemon owns both mounts without helper processes",
+    )?;
     let (_, prepared) = execute(&client, session.id, ["/bin/sh", "-c", "dd if=/dev/zero of=held-a bs=4096 count=1 2>/dev/null; dd if=/dev/zero of=held-b bs=4096 count=1 2>/dev/null"])?;
     require(
         prepared
@@ -578,6 +600,16 @@ int main(int argc, char **argv) {
     for id in &executions {
         wait_live_marker(&client, *id, "ready")?;
     }
+    let (_, peer_write) = execute(&client, peer.id, ["/bin/sh", "-c", "set -e; printf peer > isolated; mkdir names; touch names/a; ln names/a names/b; mv names/b names/c; test $(ls names | wc -l) -eq 2; rm -r names"])?;
+    require(
+        peer_write
+            .receipt
+            .is_some_and(|receipt| receipt.exit_code == Some(0)),
+        "peer namespace operations",
+    )?;
+    client.commit_workspace_session(peer.id)?;
+    client.end_workspace_session(peer.id, EndWorkspaceMode::Clean)?;
+    eprintln!("live-cut stage=peer-ended-with-primary-mappings-live");
     eprintln!("live-cut stage=first-commit");
     require(
         client.active_execution_count()? == 2,

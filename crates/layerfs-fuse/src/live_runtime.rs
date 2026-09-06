@@ -10,6 +10,7 @@ pub type LiveReservation = OwnedSemaphorePermit;
 
 const REQUESTS: usize = 256;
 const TRANSFER_BYTES: usize = 32 * 1024 * 1024;
+const LIFECYCLE_BYTES: usize = 8 * 1024 * 1024;
 
 /// Process-owned runtime; destroy it only after mounts/services drain, outside
 /// their state locks. Mounted owners clone Scheduler, never the Runtime itself.
@@ -28,6 +29,8 @@ pub struct Scheduler {
     kernel: Arc<Semaphore>,
     control_requests: Arc<Semaphore>,
     control_transfer: Arc<Semaphore>,
+    lifecycle_requests: Arc<Semaphore>,
+    lifecycle_transfer: Arc<Semaphore>,
 }
 
 pub struct RequestAdmission {
@@ -62,6 +65,8 @@ impl LiveRuntime {
             kernel: Arc::new(Semaphore::new(1)),
             control_requests: Arc::new(Semaphore::new(32)),
             control_transfer: Arc::new(Semaphore::new(4 * 1024 * 1024)),
+            lifecycle_requests: Arc::new(Semaphore::new(2)),
+            lifecycle_transfer: Arc::new(Semaphore::new(LIFECYCLE_BYTES)),
         };
         Ok(Self { runtime, scheduler })
     }
@@ -133,20 +138,36 @@ impl Scheduler {
     }
 
     pub async fn admit(&self, bytes: usize) -> io::Result<RequestAdmission> {
-        if bytes > TRANSFER_BYTES {
+        self.admit_inner(bytes, false).await
+    }
+
+    /// Lifecycle frames must progress while filesystem callbacks are parked at a cut.
+    pub async fn admit_lifecycle(&self, bytes: usize) -> io::Result<RequestAdmission> {
+        self.admit_inner(bytes, true).await
+    }
+
+    async fn admit_inner(&self, bytes: usize, lifecycle: bool) -> io::Result<RequestAdmission> {
+        let (requests, transfer, limit) = if lifecycle {
+            (
+                &self.lifecycle_requests,
+                &self.lifecycle_transfer,
+                LIFECYCLE_BYTES,
+            )
+        } else {
+            (&self.requests, &self.transfer, TRANSFER_BYTES)
+        };
+        if bytes > limit {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "live transfer size",
             ));
         }
-        let slot = self
-            .requests
+        let slot = requests
             .clone()
             .acquire_owned()
             .await
             .map_err(io::Error::other)?;
-        let bytes = self
-            .transfer
+        let bytes = transfer
             .clone()
             .acquire_many_owned(bytes as u32)
             .await
@@ -321,6 +342,29 @@ mod tests {
         let runtime = LiveRuntime::new().unwrap();
         let scheduler = runtime.scheduler();
         runtime.block_on(async {
+            let ordinary = scheduler
+                .requests
+                .clone()
+                .acquire_many_owned(REQUESTS as u32)
+                .await
+                .unwrap();
+            let kernel = scheduler
+                .control_requests
+                .clone()
+                .acquire_many_owned(32)
+                .await
+                .unwrap();
+            let lifecycle =
+                tokio::time::timeout(Duration::from_secs(1), scheduler.admit_lifecycle(1024))
+                    .await
+                    .unwrap()
+                    .unwrap();
+            drop((ordinary, kernel, lifecycle));
+            assert_eq!(scheduler.lifecycle_requests.available_permits(), 2);
+            assert_eq!(
+                scheduler.lifecycle_transfer.available_permits(),
+                LIFECYCLE_BYTES
+            );
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let mut peers = Vec::new();
             let mut tasks = Vec::new();

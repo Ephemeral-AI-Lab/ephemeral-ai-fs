@@ -1639,63 +1639,89 @@ impl LiveOwner {
                 }
             });
         let (shutdown_send, shutdown) = std::sync::mpsc::sync_channel(1);
+        let wake = shutdown_send.clone();
+        let requested = Arc::new(AtomicBool::new(false));
+        let requested_control = requested.clone();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let stopped_control = stopped.clone();
+        let stopped_wake = wake.clone();
         let (finished, mut finish) = tokio::sync::oneshot::channel();
         let owner = self.clone();
         let thread = self.0.scheduler.handle.spawn(async move {
-            let mut stream = tokio::net::TcpStream::connect(address).await?;
-            stream.set_nodelay(true)?;
-            stream.write_all(&capability).await?;
-            stream.write_u8(b'c').await?;
-            if stream.read_u8().await? != 1 {
-                return Err(wire::invalid());
-            }
-            loop {
-                let len = stream.read_u32().await? as usize;
-                if len == 0 || len > wire::MAX_FRAME {
+            let result = async {
+                let mut stream = tokio::net::TcpStream::connect(address).await?;
+                stream.set_nodelay(true)?;
+                stream.write_all(&capability).await?;
+                stream.write_u8(b'c').await?;
+                if stream.read_u8().await? != 1 {
                     return Err(wire::invalid());
                 }
-                let _admitted = owner.0.scheduler.admit(len + wire::MAX_FRAME).await?;
-                let mut bytes = vec![0; len];
-                stream.read_exact(&mut bytes).await?;
-                let shutdown_requested = bytes == [wire::SHUTDOWN];
-                let result = if shutdown_requested {
-                    shutdown_send.send(()).map_err(|_| wire::invalid())?;
-                    if (&mut finish).await.map_err(|_| wire::invalid())? {
-                        Ok(Vec::new())
-                    } else {
-                        Err(PortError::Io)
+                loop {
+                    let len = stream.read_u32().await? as usize;
+                    if len == 0 || len > wire::MAX_FRAME {
+                        return Err(wire::invalid());
                     }
-                } else {
-                    owner.control_request(&bytes).await
-                };
-                if result.is_err()
-                    && matches!(
-                        bytes.first(),
-                        Some(&wire::EDIT_BEGIN) | Some(&wire::EDIT_PART) | Some(&wire::EDIT_END)
-                    )
-                {
-                    owner.0.edit.lock().map_err(|_| wire::invalid())?.take();
-                }
-                match result {
-                    Ok(bytes) => {
-                        crate::live_transport::write_frame(&mut stream, Some(0), &bytes).await?;
-                    }
-                    Err(error) => {
-                        crate::live_transport::write_frame(
-                            &mut stream,
-                            Some(1),
-                            &[crate::protocol::error_code(error)],
-                        )
+                    let _admitted = owner
+                        .0
+                        .scheduler
+                        .admit_lifecycle(len + wire::MAX_FRAME)
                         .await?;
+                    let mut bytes = vec![0; len];
+                    stream.read_exact(&mut bytes).await?;
+                    let shutdown_requested = bytes == [wire::SHUTDOWN];
+                    let result = if shutdown_requested {
+                        requested_control.store(true, Ordering::Release);
+                        match shutdown_send.try_send(()) {
+                            Ok(()) | Err(std::sync::mpsc::TrySendError::Full(())) => {}
+                            Err(_) => return Err(wire::invalid()),
+                        }
+                        if (&mut finish).await.map_err(|_| wire::invalid())? {
+                            Ok(Vec::new())
+                        } else {
+                            Err(PortError::Io)
+                        }
+                    } else {
+                        owner.control_request(&bytes).await
+                    };
+                    if result.is_err()
+                        && matches!(
+                            bytes.first(),
+                            Some(&wire::EDIT_BEGIN)
+                                | Some(&wire::EDIT_PART)
+                                | Some(&wire::EDIT_END)
+                        )
+                    {
+                        owner.0.edit.lock().map_err(|_| wire::invalid())?.take();
                     }
-                }
-                if shutdown_requested {
-                    return Ok(());
+                    match result {
+                        Ok(bytes) => {
+                            crate::live_transport::write_frame(&mut stream, Some(0), &bytes)
+                                .await?;
+                        }
+                        Err(error) => {
+                            crate::live_transport::write_frame(
+                                &mut stream,
+                                Some(1),
+                                &[crate::protocol::error_code(error)],
+                            )
+                            .await?;
+                        }
+                    }
+                    if shutdown_requested {
+                        return Ok(());
+                    }
                 }
             }
+            .await;
+            stopped_control.store(true, Ordering::Release);
+            let _ = stopped_wake.try_send(());
+            result
         });
         Ok(LiveControl {
             shutdown,
+            wake,
+            requested,
+            stopped,
             finished: Some(finished),
             thread: Some(thread),
             observer: Some(observer),
@@ -1705,14 +1731,50 @@ impl LiveOwner {
 
 pub struct LiveControl {
     shutdown: std::sync::mpsc::Receiver<()>,
+    wake: std::sync::mpsc::SyncSender<()>,
+    requested: Arc<AtomicBool>,
+    stopped: Arc<AtomicBool>,
     finished: Option<tokio::sync::oneshot::Sender<bool>>,
     thread: Option<tokio::task::JoinHandle<std::io::Result<()>>>,
     observer: Option<tokio::task::JoinHandle<std::io::Result<()>>>,
 }
 impl LiveControl {
     pub fn wait_for_shutdown(&self) -> std::io::Result<()> {
-        self.shutdown.recv().map_err(|_| wire::invalid())
+        self.shutdown.recv().map_err(|_| wire::invalid())?;
+        if self.shutdown_requested() {
+            Ok(())
+        } else {
+            Err(wire::invalid())
+        }
     }
+    pub fn shutdown_waker(&self) -> std::sync::mpsc::SyncSender<()> {
+        self.wake.clone()
+    }
+    pub fn shutdown_requested(&self) -> bool {
+        self.requested.load(Ordering::Acquire)
+    }
+    pub fn poll_shutdown(&self, timeout: std::time::Duration) -> std::io::Result<bool> {
+        match self.shutdown.recv_timeout(timeout) {
+            Ok(()) if self.stopped.load(Ordering::Acquire) && !self.shutdown_requested() => {
+                Err(wire::invalid())
+            }
+            Ok(()) => Ok(true),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(false),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(wire::invalid()),
+        }
+    }
+    pub fn cancel(mut self) -> std::io::Result<()> {
+        let runtime = LiveRuntime::shared()?;
+        for task in [self.thread.take(), self.observer.take()]
+            .into_iter()
+            .flatten()
+        {
+            task.abort();
+            let _ = runtime.block_on(task);
+        }
+        Ok(())
+    }
+
     pub fn finish_shutdown(mut self, success: bool) -> std::io::Result<()> {
         self.finished
             .take()

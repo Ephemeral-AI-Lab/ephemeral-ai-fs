@@ -336,6 +336,7 @@ name = "layerfs-daemon"
 version = "0.1.2"
 dependencies = [
  "blake3",
+ "layerfs-fuse",
  "nix 0.29.0",
 ]
 
