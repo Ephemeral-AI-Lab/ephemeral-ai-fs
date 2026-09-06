@@ -8,7 +8,7 @@ use layerfs_workspace_core::file_edit::{Piece, SpoolSlice};
 use layerfs_workspace_core::namespace::{AcquiredInode, NameLookup, ResolvedName};
 use layerfs_workspace_core::{Data, LiveWorkspace, ReadPlan, ReadSource, ResourcePolicy};
 use std::collections::HashMap;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -21,7 +21,9 @@ struct Owner {
     backing: BackingConnection,
     // Only physical append allocation is ordered across files. No state lock
     // is retained while a physical reservation or append waits.
-    append: tokio::sync::Mutex<Option<(BackingId, u64, u64)>>,
+    append: tokio::sync::Mutex<Option<AppendWindow>>,
+    failed: AtomicBool,
+    facts_sync: tokio::sync::Mutex<Option<(layerfs_content::ObjectId, u64)>>,
     ordering: Mutex<HashMap<NodeId, Arc<tokio::sync::Mutex<()>>>>,
     ranges: Mutex<HashMap<BackingId, BackingRef>>,
     gate: OperationGate,
@@ -45,6 +47,24 @@ struct Owner {
         )>,
     >,
 }
+
+struct AppendWindow {
+    backing: BackingRef,
+    start: u64,
+    reserved: u64,
+    filled: u64,
+}
+struct BufferedFrame {
+    bytes: Vec<u8>,
+    start: u64,
+    _charge: crate::live_runtime::LiveReservation,
+}
+enum PendingBytes {
+    Filling(BufferedFrame),
+    Sending(Arc<BufferedFrame>),
+    Backed,
+}
+struct PendingBacking(Mutex<PendingBytes>);
 
 fn core(error: layerfs_workspace_core::Error) -> PortError {
     use layerfs_workspace_core::Error;
@@ -92,6 +112,8 @@ impl LiveOwner {
             state: Mutex::new(LiveWorkspace::new(node, policy, root)),
             backing,
             append: Default::default(),
+            failed: AtomicBool::new(false),
+            facts_sync: Default::default(),
             ordering: Default::default(),
             ranges: Default::default(),
             gate: Default::default(),
@@ -154,6 +176,9 @@ impl LiveOwner {
     }
 
     pub async fn write_owned(&self, node: NodeId, offset: u64, bytes: &[u8]) -> PortResult<usize> {
+        if self.0.failed.load(Ordering::Acquire) {
+            return Err(PortError::Io);
+        }
         if bytes.is_empty() {
             return Ok(0);
         }
@@ -162,8 +187,11 @@ impl LiveOwner {
         }
         let _order = self.ordered(node).await?;
         let mut window = self.0.append.lock().await;
-        if window.is_some_and(|(_, _, remaining)| remaining < bytes.len() as u64) {
-            self.cancel_append(&mut window).await?;
+        if window
+            .as_ref()
+            .is_some_and(|window| window.reserved - window.filled < bytes.len() as u64)
+        {
+            self.flush_append(&mut window).await?;
         }
         if window.is_none() {
             let mut wanted = {
@@ -177,6 +205,12 @@ impl LiveOwner {
                     )
                     .max(bytes.len() as u64)
             };
+            // Own pending capacity before requesting physical space or copying payload.
+            let charge = self
+                .0
+                .scheduler
+                .reserve_transfer(wanted as usize + 21)
+                .map_err(|_| PortError::NoSpace)?;
             let mut reserve = vec![wire::RESERVE];
             wire::u64_out(&mut reserve, wanted);
             let response = match self.0.backing.call(&reserve).await {
@@ -196,17 +230,39 @@ impl LiveOwner {
             if start.checked_add(wanted).is_none_or(|end| end > capacity) {
                 return Err(PortError::Io);
             }
-            *window = Some((id, start, wanted));
+            let backing = self
+                .0
+                .ranges
+                .lock()
+                .map_err(|_| PortError::Io)?
+                .entry(id)
+                .or_insert_with(|| {
+                    BackingRef::new(id, PendingBacking(Mutex::new(PendingBytes::Backed)))
+                })
+                .clone();
+            let mut frame = Vec::with_capacity(wanted as usize + 21);
+            frame.push(wire::APPEND);
+            wire::u64_out(&mut frame, id.0);
+            wire::u64_out(&mut frame, start);
+            frame.extend_from_slice(&0u32.to_be_bytes());
+            *backing
+                .resource::<PendingBacking>()
+                .ok_or(PortError::Io)?
+                .0
+                .lock()
+                .map_err(|_| PortError::Io)? = PendingBytes::Filling(BufferedFrame {
+                bytes: frame,
+                start,
+                _charge: charge,
+            });
+            *window = Some(AppendWindow {
+                backing,
+                start,
+                reserved: wanted,
+                filled: 0,
+            });
         }
-        let (id, start, remaining) = window.ok_or(PortError::Io)?;
-        let reference = self
-            .0
-            .ranges
-            .lock()
-            .map_err(|_| PortError::Io)?
-            .entry(id)
-            .or_insert_with(|| BackingRef::new(id, ()))
-            .clone();
+        let window = window.as_mut().ok_or(PortError::Io)?;
         let preparing = Instant::now();
         let prepared = self
             .state()?
@@ -215,8 +271,8 @@ impl LiveOwner {
                 offset,
                 bytes.len(),
                 Some(SpoolSlice {
-                    segment: reference,
-                    offset: start,
+                    segment: window.backing.clone(),
+                    offset: window.start + window.filled,
                     len: bytes.len() as u64,
                 }),
             )
@@ -227,17 +283,23 @@ impl LiveOwner {
             .fetch_add(ns(preparing), Ordering::Relaxed);
         let prepared = prepared?;
         let encoding = Instant::now();
-        let mut append = vec![wire::APPEND];
-        wire::u64_out(&mut append, id.0);
-        wire::u64_out(&mut append, start);
-        wire::bytes_out(&mut append, bytes).map_err(io)?;
+        {
+            let mut pending = window
+                .backing
+                .resource::<PendingBacking>()
+                .ok_or(PortError::Io)?
+                .0
+                .lock()
+                .map_err(|_| PortError::Io)?;
+            let PendingBytes::Filling(frame) = &mut *pending else {
+                return Err(PortError::Io);
+            };
+            frame.bytes.extend_from_slice(bytes);
+        }
+        window.filled += bytes.len() as u64;
         self.0
             .writes
             .note_client_frame(0, bytes.len() as u64, ns(encoding), 0);
-        *window = None;
-        self.0.backing.call(&append).await?;
-        let remaining = remaining - bytes.len() as u64;
-        *window = (remaining != 0).then_some((id, start + bytes.len() as u64, remaining));
         let applying = Instant::now();
         let result = self.state()?.apply_edit(prepared).map_err(core);
         self.0
@@ -247,14 +309,50 @@ impl LiveOwner {
         result
     }
 
-    async fn cancel_append(&self, window: &mut Option<(BackingId, u64, u64)>) -> PortResult<()> {
-        if let Some((id, offset, _)) = window.take() {
-            let mut cancel = vec![wire::CANCEL_RESERVATION];
-            wire::u64_out(&mut cancel, id.0);
-            wire::u64_out(&mut cancel, offset);
-            self.0.backing.call(&cancel).await?;
+    async fn flush_append(&self, window: &mut Option<AppendWindow>) -> PortResult<()> {
+        if self.0.failed.load(Ordering::Acquire) {
+            return Err(PortError::Io);
         }
-        Ok(())
+        let Some(window) = window.take() else {
+            return Ok(());
+        };
+        let resource = window
+            .backing
+            .resource::<PendingBacking>()
+            .ok_or(PortError::Io)?;
+        let frame = {
+            let mut pending = resource.0.lock().map_err(|_| PortError::Io)?;
+            let PendingBytes::Filling(mut frame) =
+                std::mem::replace(&mut *pending, PendingBytes::Backed)
+            else {
+                return Err(PortError::Io);
+            };
+            frame.bytes[17..21].copy_from_slice(&(window.filled as u32).to_be_bytes());
+            let frame = Arc::new(frame);
+            *pending = PendingBytes::Sending(frame.clone());
+            frame
+        };
+        let result = async {
+            if window.filled != 0 {
+                self.0.backing.call(&frame.bytes).await?;
+            }
+            if window.filled < window.reserved {
+                let mut cancel = vec![wire::CANCEL_RESERVATION];
+                wire::u64_out(&mut cancel, window.backing.id().0);
+                wire::u64_out(&mut cancel, window.start + window.filled);
+                self.0.backing.call(&cancel).await?;
+            }
+            Ok(())
+        }
+        .await;
+        if result.is_ok() {
+            *resource.0.lock().map_err(|_| PortError::Io)? = PendingBytes::Backed;
+        } else {
+            // Preserve acknowledged local bytes and their charge after ambiguous
+            // backing failure. Never replay the append or discard its prefix.
+            self.0.failed.store(true, Ordering::Release);
+        }
+        result
     }
 
     pub async fn read_owned(&self, node: NodeId, offset: u64, size: usize) -> PortResult<Vec<u8>> {
@@ -300,6 +398,47 @@ impl LiveOwner {
                     offset,
                     len,
                 } => {
+                    let local = {
+                        let pending = segment
+                            .resource::<PendingBacking>()
+                            .ok_or(PortError::Io)?
+                            .0
+                            .lock()
+                            .map_err(|_| PortError::Io)?;
+                        let frame = match &*pending {
+                            PendingBytes::Filling(frame) => Some(frame),
+                            PendingBytes::Sending(frame) => Some(frame.as_ref()),
+                            PendingBytes::Backed => None,
+                        };
+                        frame
+                            .filter(|frame| offset + len > frame.start)
+                            .map(|frame| {
+                                let prefix = frame.start.saturating_sub(offset).min(len);
+                                let start = 21 + (offset + prefix - frame.start) as usize;
+                                let end = start + (len - prefix) as usize;
+                                frame
+                                    .bytes
+                                    .get(start..end)
+                                    .map(|bytes| (prefix, bytes.to_vec()))
+                                    .ok_or(PortError::Io)
+                            })
+                            .transpose()?
+                    };
+                    if let Some((prefix, local)) = local {
+                        if prefix != 0 {
+                            let mut request = vec![wire::READ_BACKING];
+                            wire::u64_out(&mut request, segment.id().0);
+                            wire::u64_out(&mut request, offset);
+                            request.extend_from_slice(&(prefix as u32).to_be_bytes());
+                            let prefix_bytes = self.0.backing.call(&request).await?;
+                            if prefix_bytes.len() as u64 != prefix {
+                                return Err(PortError::Io);
+                            }
+                            out.extend(prefix_bytes);
+                        }
+                        out.extend(local);
+                        continue;
+                    }
                     request = vec![wire::READ_BACKING];
                     wire::u64_out(&mut request, segment.id().0);
                     wire::u64_out(&mut request, offset);
@@ -472,7 +611,7 @@ impl FilesystemPort for LiveOwner {
             let _order = self.ordered(node).await?;
             let prepared = self.state()?.prepare_truncate(node, size).map_err(core)?;
             if let Some(prepared) = prepared {
-                let mut check = vec![wire::CHECK];
+                let mut check = vec![wire::CHECK, 0];
                 for range in prepared.backing_ranges() {
                     wire::u64_out(&mut check, range.segment.id().0);
                 }
@@ -497,12 +636,13 @@ impl FilesystemPort for LiveOwner {
     fn fsync(&self, _: Option<NodeId>) -> PortResult<()> {
         self.run(async {
             let mut window = self.0.append.lock().await;
-            self.cancel_append(&mut window).await?;
-            let mut check = vec![wire::CHECK];
+            self.flush_append(&mut window).await?;
+            let mut check = vec![wire::CHECK, 1];
             for id in self.0.ranges.lock().map_err(|_| PortError::Io)?.keys() {
                 wire::u64_out(&mut check, id.0);
             }
-            self.0.backing.call(&check).await.map(drop)
+            self.0.backing.call(&check).await?;
+            self.publish_facts().await
         })
     }
     fn readdir(&self, _: NodeId) -> PortResult<Vec<(NodeId, Kind, Vec<u8>)>> {
@@ -548,9 +688,17 @@ impl LiveOwner {
         }
         let cut = self.0.gate.cache_flush().await.finish().await;
         *self.0.cut.lock().map_err(|_| PortError::Io)? = Some(cut);
-        self.cancel_append(&mut *self.0.append.lock().await).await?;
-        let (generation, ids) = {
+        self.flush_append(&mut *self.0.append.lock().await).await?;
+        self.publish_facts().await
+    }
+
+    async fn publish_facts(&self) -> PortResult<()> {
+        let mut acknowledged = self.0.facts_sync.lock().await;
+        let (root, generation, count, pages, _charge) = {
             let state = self.state()?;
+            if *acknowledged == Some((state.base_root, state.mutation_generation)) {
+                return Ok(());
+            }
             let mut ids = state.dirty.clone();
             for id in &state.dirty {
                 if let Some(layerfs_workspace_core::Node {
@@ -561,43 +709,71 @@ impl LiveOwner {
                     ids.extend(directory.changes.values().flatten());
                 }
             }
-            (state.mutation_generation, ids)
-        };
-        let mut begin = vec![wire::FACTS_BEGIN];
-        wire::u64_out(&mut begin, generation);
-        self.0.backing.call(&begin).await?;
-        let mut page = vec![wire::FACTS_NODE];
-        let mut count = 0;
-        for id in &ids {
-            let record = {
-                let state = self.state()?;
+            let mut charge = 0usize;
+            for id in &ids {
+                let node = state.nodes.get(id).ok_or(PortError::Io)?;
+                charge = charge
+                    .checked_add(
+                        wire::node_encoded_bound(node)
+                            .map_err(io)?
+                            .checked_mul(8)
+                            .and_then(|n| n.checked_add(1024))
+                            .ok_or(PortError::NoSpace)?,
+                    )
+                    .filter(|n| *n <= 16 * 1024 * 1024)
+                    .ok_or(PortError::NoSpace)?;
+            }
+            let reservation = self
+                .0
+                .scheduler
+                .reserve_live(charge)
+                .map_err(|_| PortError::NoSpace)?;
+            // Capture one coherent changed-record generation. Encoding holds the
+            // short state lock, but no network/physical wait occurs under it.
+            let mut pages = Vec::new();
+            let mut page = vec![wire::FACTS_NODE];
+            let mut count = 0;
+            for id in &ids {
                 let node = state.nodes.get(id).ok_or(PortError::Io)?;
                 let mut record = vec![u8::from(state.dirty.contains(id))];
                 wire::bytes_out(&mut record, &wire::node_out(*id, node).map_err(io)?)
                     .map_err(io)?;
-                record
-            };
-            if count != 0
-                && (count == wire::FACT_PAGE_NODES
-                    || page.len() + record.len() > wire::FACT_PAGE_BYTES)
-            {
-                self.0.backing.call(&page).await?;
-                page.truncate(1);
-                count = 0;
+                if count != 0
+                    && (count == wire::FACT_PAGE_NODES
+                        || page.len() + record.len() > wire::FACT_PAGE_BYTES)
+                {
+                    pages.push(std::mem::replace(&mut page, vec![wire::FACTS_NODE]));
+                    count = 0;
+                }
+                if record.len() + 1 > wire::MAX_FRAME {
+                    return Err(PortError::NoSpace);
+                }
+                page.extend(record);
+                count += 1;
             }
-            if record.len() + 1 > wire::MAX_FRAME {
-                return Err(PortError::NoSpace);
+            if count != 0 {
+                pages.push(page);
             }
-            page.extend(record);
-            count += 1;
-        }
-        if count != 0 {
+            (
+                state.base_root,
+                state.mutation_generation,
+                ids.len(),
+                pages,
+                reservation,
+            )
+        };
+        let mut begin = vec![wire::FACTS_BEGIN];
+        wire::u64_out(&mut begin, generation);
+        self.0.backing.call(&begin).await?;
+        for page in pages {
             self.0.backing.call(&page).await?;
         }
         let mut end = vec![wire::FACTS_END];
         wire::u64_out(&mut end, generation);
-        wire::u64_out(&mut end, ids.len() as u64);
-        self.0.backing.call(&end).await.map(drop)
+        wire::u64_out(&mut end, count as u64);
+        self.0.backing.call(&end).await?;
+        *acknowledged = Some((root, generation));
+        Ok(())
     }
 
     async fn control_request(&self, bytes: &[u8]) -> PortResult<Vec<u8>> {

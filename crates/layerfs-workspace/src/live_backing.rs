@@ -212,15 +212,31 @@ impl BackingOwner {
                 )?;
             }
             wire::CHECK => {
+                let started = std::time::Instant::now();
+                let synchronize = match input.byte()? {
+                    0 => false,
+                    1 => true,
+                    _ => return Err(StoreError::InvalidInput("backing check")),
+                };
                 while !input.0.is_empty() {
                     let id = input.u64()?;
-                    spool_segment(
+                    let segment = spool_segment(
                         self.spool
                             .segments
                             .get(&id)
                             .ok_or(StoreError::NotFound("backing"))?,
-                    )?
-                    .check()?;
+                    )?;
+                    segment.check()?;
+                    if synchronize {
+                        segment.observe();
+                    }
+                }
+                if synchronize {
+                    self.spool.metrics.fence_count += 1;
+                    self.spool.metrics.fence_ns =
+                        self.spool.metrics.fence_ns.saturating_add(
+                            started.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+                        );
                 }
             }
             wire::RELEASE => {
@@ -384,7 +400,9 @@ mod tests {
             .unwrap()
             .node;
         owner.write(file, 0, b"first").unwrap();
+        assert_eq!(owner.read(file, 0, 100).unwrap(), b"first");
         owner.fsync(None).unwrap();
+        assert_eq!(remote.backing.lock().unwrap().generation, 3);
         for index in 0..130 {
             let id = owner
                 .create_file(directory_id, format!("sibling-{index}").as_bytes(), 0o600)
@@ -393,10 +411,14 @@ mod tests {
             owner
                 .write(id, 0, b"retained across a fact page boundary")
                 .unwrap();
+            assert_eq!(
+                owner.read(id, 0, 100).unwrap(),
+                b"retained across a fact page boundary"
+            );
         }
         assert_eq!(remote.observe().unwrap().0, 263);
         let metrics = remote.server.take_write_metrics().unwrap();
-        assert!(metrics.live_backing_calls > 130);
+        assert!(metrics.live_backing_calls > 0 && metrics.live_backing_calls < 130);
         assert!(metrics.live_backing_wait_ns > 0);
         assert!(metrics.live_backing_queue_ns > 0);
         assert!(metrics.host_dispatch_ns > 0);
@@ -415,6 +437,16 @@ mod tests {
         remote.server.control("resume").unwrap();
         assert_ne!(first, second);
         assert_eq!(owner.read(file, 0, 20).unwrap(), b"later");
+        owner
+            .write(file, 0, b"retained after host failure")
+            .unwrap();
+        remote.backing.lock().unwrap().append_reservation = None;
+        assert!(owner.fsync(None).is_err());
+        assert_eq!(
+            owner.read(file, 0, 100).unwrap(),
+            b"retained after host failure"
+        );
+        assert!(owner.write(file, 0, b"must not replay").is_err());
         owner.unpin(file, true).unwrap();
         let server = remote.server.clone();
         let ending = std::thread::spawn(move || server.control("shutdown"));

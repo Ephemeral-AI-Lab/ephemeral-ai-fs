@@ -97,7 +97,7 @@ impl<'a> Input<'a> {
     }
 }
 
-pub fn node_out(id: NodeId, node: &Node) -> io::Result<Vec<u8>> {
+pub fn node_encoded_bound(node: &Node) -> io::Result<usize> {
     let paths = node
         .paths
         .iter()
@@ -124,7 +124,11 @@ pub fn node_out(id: NodeId, node: &Node) -> io::Result<Vec<u8>> {
         .and_then(|n| n.checked_add(data))
         .filter(|n| *n <= MAX_FRAME)
         .ok_or_else(invalid)?;
-    let mut out = Vec::with_capacity(capacity);
+    Ok(capacity)
+}
+
+pub fn node_out(id: NodeId, node: &Node) -> io::Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(node_encoded_bound(node)?);
     u64_out(&mut out, id.0);
     u64_out(&mut out, node.revision);
     out.push(u8::from(node.canonical.is_some()));

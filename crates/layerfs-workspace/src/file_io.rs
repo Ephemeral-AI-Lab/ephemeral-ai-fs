@@ -147,7 +147,7 @@ impl SpoolSegment {
         Ok(segment)
     }
 
-    fn observe(&self) {
+    pub(crate) fn observe(&self) {
         let metadata = self.file.metadata();
         if let Ok(mut physical) = self.physical.lock() {
             match metadata {

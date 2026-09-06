@@ -70,6 +70,13 @@ impl LiveRuntime {
 }
 
 impl Scheduler {
+    pub fn reserve_transfer(&self, bytes: usize) -> io::Result<LiveReservation> {
+        self.transfer
+            .clone()
+            .try_acquire_many_owned(u32::try_from(bytes).map_err(io::Error::other)?)
+            .map_err(io::Error::other)
+    }
+
     pub fn reserve_live(&self, bytes: usize) -> io::Result<OwnedSemaphorePermit> {
         self.live
             .clone()
