@@ -322,11 +322,15 @@ fn mixed_v4_sample(case: &Case, seed: u8) -> Result<common::TreeSample> {
         .map(|entry| (entry.path.as_str(), entry))
         .collect::<BTreeMap<_, _>>();
     let mut sample = common::TreeSample {
-        entries: vec![
-            Entry::directory("."),
-            Entry::directory("dest"),
-            Entry::directory("wide"),
-        ],
+        entries: if mixed_v4_git(case) {
+            vec![Entry::directory("dest"), Entry::directory("wide")]
+        } else {
+            vec![
+                Entry::directory("."),
+                Entry::directory("dest"),
+                Entry::directory("wide"),
+            ]
+        },
         absent: vec![],
         ranges: BTreeMap::new(),
     };
