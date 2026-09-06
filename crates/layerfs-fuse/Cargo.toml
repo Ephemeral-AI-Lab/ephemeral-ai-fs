@@ -8,7 +8,7 @@ license.workspace = true
 [features]
 default = ["host"]
 host = ["dep:fuser"]
-proxy = ["dep:fuser"]
+proxy = ["dep:fuser", "live"]
 live = ["dep:tokio"]
 
 [dependencies]

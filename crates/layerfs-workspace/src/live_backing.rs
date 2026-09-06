@@ -22,9 +22,13 @@ pub(crate) struct BackingOwner {
     pub(crate) policy: ResourcePolicy,
     // Remote references and acknowledged facts keep physical ranges owned.
     retained: HashMap<BackingId, BackingRef>,
+    append_reservation: Option<(BackingId, u64, u64)>,
     pub(crate) facts: HashMap<NodeId, Node>,
     pub(crate) dirty: BTreeSet<NodeId>,
     pub(crate) generation: u64,
+    fact_reservations: Vec<layerfs_fuse::live_runtime::LiveReservation>,
+    incoming_reservations: Vec<layerfs_fuse::live_runtime::LiveReservation>,
+    incoming_charge: usize,
     incoming: Option<(u64, HashMap<NodeId, Node>, BTreeSet<NodeId>)>,
 }
 
@@ -42,10 +46,14 @@ impl BackingOwner {
             directory,
             policy,
             retained: HashMap::new(),
+            append_reservation: None,
             facts: HashMap::new(),
             dirty: BTreeSet::new(),
             generation: 0,
             incoming: None,
+            fact_reservations: Vec::new(),
+            incoming_reservations: Vec::new(),
+            incoming_charge: 0,
         }
     }
 
@@ -99,6 +107,9 @@ impl BackingOwner {
                 if len == 0 || len > 1024 * 1024 {
                     return Err(StoreError::InvalidInput("backing reservation"));
                 }
+                if self.append_reservation.is_some() {
+                    return Err(StoreError::Integrity("unfinished backing reservation"));
+                }
                 let (segment, offset) =
                     self.spool
                         .reserve_append(&self.directory, len, 0, self.policy)?;
@@ -106,6 +117,7 @@ impl BackingOwner {
                 wire::u64_out(&mut out, segment.id().0);
                 wire::u64_out(&mut out, offset);
                 wire::u64_out(&mut out, capacity);
+                self.append_reservation = Some((segment.id(), offset, len));
                 self.retained.insert(segment.id(), segment);
             }
             wire::APPEND => {
@@ -116,11 +128,17 @@ impl BackingOwner {
                 if data.len() > 1024 * 1024 {
                     return Err(StoreError::InvalidInput("backing append"));
                 }
+                if self.append_reservation != Some((id, offset, data.len() as u64)) {
+                    return Err(StoreError::Integrity("backing append reservation"));
+                }
                 let segment = self
                     .retained
                     .get(&id)
                     .ok_or(StoreError::NotFound("backing"))?
                     .clone();
+                // Consume before physical I/O: an uncertain/failed append cannot
+                // be replayed. Earlier acknowledged ranges stay retained.
+                self.append_reservation = None;
                 self.spool.append(
                     &segment,
                     offset,
@@ -128,6 +146,18 @@ impl BackingOwner {
                     #[cfg(feature = "test-instrumentation")]
                     false,
                 )?;
+            }
+            wire::CANCEL_RESERVATION => {
+                let id = BackingId(input.u64()?);
+                let offset = input.u64()?;
+                input.done()?;
+                if !self
+                    .append_reservation
+                    .is_some_and(|held| held.0 == id && held.1 == offset)
+                {
+                    return Err(StoreError::Integrity("backing cancellation reservation"));
+                }
+                self.append_reservation = None;
             }
             wire::READ_BACKING => {
                 let id = BackingId(input.u64()?);
@@ -184,7 +214,11 @@ impl BackingOwner {
             }
             wire::RELEASE => {
                 while !input.0.is_empty() {
-                    self.retained.remove(&BackingId(input.u64()?));
+                    let id = BackingId(input.u64()?);
+                    if self.append_reservation.is_some_and(|held| held.0 == id) {
+                        self.append_reservation = None;
+                    }
+                    self.retained.remove(&id);
                 }
                 self.spool.retire();
             }
@@ -194,6 +228,8 @@ impl BackingOwner {
                 if self.incoming.is_some() {
                     return Err(StoreError::Integrity("unfinished backing group"));
                 }
+                self.incoming_charge = 0;
+                self.incoming_reservations.clear();
                 self.incoming = Some((generation, HashMap::new(), BTreeSet::new()));
             }
             wire::FACTS_NODE => {
@@ -203,7 +239,21 @@ impl BackingOwner {
                         1 => true,
                         _ => return Err(StoreError::Integrity("backing dirty flag")),
                     };
-                    let (id, node) = wire::node_in(input.bytes()?, |id, offset, len| {
+                    let encoded = input.bytes()?;
+                    let charge = encoded
+                        .len()
+                        .checked_mul(8)
+                        .and_then(|n| n.checked_add(1024))
+                        .ok_or(StoreError::InvalidInput("backing fact limit"))?;
+                    let total = self
+                        .incoming_charge
+                        .checked_add(charge)
+                        .filter(|n| *n <= 16 * 1024 * 1024)
+                        .ok_or(StoreError::InvalidInput("backing fact limit"))?;
+                    let reservation = layerfs_fuse::live_runtime::LiveRuntime::shared()?
+                        .scheduler()
+                        .reserve_live(charge)?;
+                    let (id, node) = wire::node_in(encoded, |id, offset, len| {
                         let reference = self
                             .retained
                             .get(&id)
@@ -221,7 +271,12 @@ impl BackingOwner {
                         .incoming
                         .as_mut()
                         .ok_or(StoreError::Integrity("missing backing group"))?;
+                    if nodes.contains_key(&id) {
+                        return Err(StoreError::Integrity("duplicate backing fact"));
+                    }
                     nodes.insert(id, node);
+                    self.incoming_charge = total;
+                    self.incoming_reservations.push(reservation);
                     if dirty {
                         changed.insert(id);
                     }
@@ -251,11 +306,341 @@ impl BackingOwner {
                     }
                 }
                 self.facts = nodes;
+                self.fact_reservations = std::mem::take(&mut self.incoming_reservations);
                 self.dirty = dirty;
                 self.generation = generation;
             }
             _ => return Err(StoreError::InvalidInput("backing request")),
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use layerfs_layerstack_store::{
+        EntityName, LayerStackInitialization, LayerStackStore, LocalForkSource,
+    };
+
+    #[test]
+    fn live_owner_builds_and_checkpoints_through_real_host_backing() {
+        use layerfs_fuse::{live_owner::LiveOwner, live_runtime::LiveRuntime, FilesystemPort};
+        use std::sync::Mutex;
+        let directory = std::env::temp_dir().join(format!(
+            "layerfs-live-integrated-{}",
+            crate::WorkspaceId::new()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let store = LayerStackStore::create(directory.join("store.sqlite")).unwrap();
+        let layer = store
+            .initialize_layerstack(
+                EntityName::new("project").unwrap(),
+                LayerStackInitialization::Empty,
+            )
+            .unwrap()
+            .genesis_layer_id;
+        let branch = store
+            .fork_branch(
+                EntityName::new("main").unwrap(),
+                LocalForkSource::Layer { layer_id: layer },
+            )
+            .unwrap();
+        let mut workspace = crate::Workspace::open(store, branch, directory.join("spool")).unwrap();
+        let remote = RemoteWorkspace::start(&workspace).unwrap();
+        let runtime = LiveRuntime::shared().unwrap();
+        let endpoint = format!("127.0.0.1:{}", remote.server.port());
+        let owner = runtime
+            .block_on(LiveOwner::connect(
+                endpoint.clone(),
+                remote.server.capability(),
+                runtime.scheduler(),
+            ))
+            .unwrap();
+        let control = owner
+            .serve_control(endpoint, remote.server.capability())
+            .unwrap();
+        workspace.remote = Some(remote.clone());
+        let workspace = Mutex::new(workspace);
+        let directory_id = owner.mkdir(crate::ROOT, b"bulk", 0o755).unwrap().node;
+        let file = owner
+            .create_file_open(directory_id, b"file", 0o600)
+            .unwrap()
+            .node;
+        owner.write(file, 0, b"first").unwrap();
+        owner.fsync(None).unwrap();
+        assert_eq!(remote.observe().unwrap().0, 3);
+        remote.server.control("pause").unwrap();
+        let (first, _) = workspace.lock().unwrap().commit().unwrap();
+        install_checkpoint(&workspace).unwrap();
+        remote.server.control("resume").unwrap();
+        assert_eq!(owner.lookup(directory_id, b"file").unwrap().node, file);
+        assert_eq!(owner.read(file, 0, 20).unwrap(), b"first");
+        assert_eq!(remote.observe().unwrap().0, 0);
+        owner.write(file, 0, b"later").unwrap();
+        remote.server.control("pause").unwrap();
+        let (second, _) = workspace.lock().unwrap().commit().unwrap();
+        install_checkpoint(&workspace).unwrap();
+        remote.server.control("resume").unwrap();
+        assert_ne!(first, second);
+        assert_eq!(owner.read(file, 0, 20).unwrap(), b"later");
+        owner.unpin(file, true).unwrap();
+        let server = remote.server.clone();
+        let ending = std::thread::spawn(move || server.control("shutdown"));
+        control.wait_for_shutdown().unwrap();
+        control.finish_shutdown(true).unwrap();
+        ending.join().unwrap().unwrap();
+        drop(owner);
+        drop(workspace);
+        drop(remote);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn append_consumes_only_its_exact_reservation() {
+        let directory = std::env::temp_dir().join(format!(
+            "layerfs-live-backing-{}",
+            crate::WorkspaceId::new()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let store = LayerStackStore::create(directory.join("store.sqlite")).unwrap();
+        let layer = store
+            .initialize_layerstack(
+                EntityName::new("project").unwrap(),
+                LayerStackInitialization::Empty,
+            )
+            .unwrap()
+            .genesis_layer_id;
+        let branch = store
+            .fork_branch(
+                EntityName::new("main").unwrap(),
+                LocalForkSource::Layer { layer_id: layer },
+            )
+            .unwrap();
+        let workspace = crate::Workspace::open(store, branch, directory.join("spool")).unwrap();
+        let mut owner = BackingOwner::new(
+            WorkspaceSnapshot {
+                store: workspace.store.clone(),
+                workspace_id: workspace.workspace_id,
+                branch_id: workspace.branch_id,
+                expected_head: workspace.expected_head,
+                expected_base: workspace.expected_base,
+                root: workspace.base_root,
+                reader: workspace.reader.clone(),
+            },
+            workspace.live.nodes[&crate::ROOT].clone(),
+            workspace.spool.clone(),
+            workspace.live.policy,
+        );
+        let mut reserve = vec![wire::RESERVE];
+        wire::u64_out(&mut reserve, 3);
+        let response = owner.request(&reserve).unwrap();
+        let mut input = Input(&response);
+        let id = input.u64().unwrap();
+        let offset = input.u64().unwrap();
+        assert!(
+            owner.request(&reserve).is_err(),
+            "second reservation aliases an outstanding tail"
+        );
+        let append = |bytes: &[u8]| {
+            let mut out = vec![wire::APPEND];
+            wire::u64_out(&mut out, id);
+            wire::u64_out(&mut out, offset);
+            wire::bytes_out(&mut out, bytes).unwrap();
+            out
+        };
+        assert!(owner.request(&append(b"oversized")).is_err());
+        owner.request(&append(b"abc")).unwrap();
+        assert!(
+            owner.request(&append(b"abc")).is_err(),
+            "completed append replayed"
+        );
+        let mut read = vec![wire::READ_BACKING];
+        wire::u64_out(&mut read, id);
+        wire::u64_out(&mut read, offset);
+        read.extend_from_slice(&3u32.to_be_bytes());
+        assert_eq!(owner.request(&read).unwrap(), b"abc");
+        assert!(owner.request(&reserve).is_ok());
+        drop(owner);
+        drop(workspace);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct RemoteWorkspace {
+    pub(crate) backing: std::sync::Arc<std::sync::Mutex<BackingOwner>>,
+    pub(crate) server: std::sync::Arc<layerfs_fuse::live_transport::BackingServer>,
+}
+
+impl RemoteWorkspace {
+    pub(crate) fn start(workspace: &crate::Workspace) -> Result<Self> {
+        use std::sync::{Arc, Mutex};
+        let backing = Arc::new(Mutex::new(BackingOwner::new(
+            WorkspaceSnapshot {
+                store: workspace.store.clone(),
+                workspace_id: workspace.workspace_id,
+                branch_id: workspace.branch_id,
+                expected_head: workspace.expected_head,
+                expected_base: workspace.expected_base,
+                root: workspace.base_root,
+                reader: workspace.reader.clone(),
+            },
+            workspace.live.nodes[&crate::ROOT].clone(),
+            workspace.spool.clone(),
+            workspace.live.policy,
+        )));
+        let handler = backing.clone();
+        let server = layerfs_fuse::live_transport::BackingServer::start(move |bytes| {
+            handler
+                .lock()
+                .map_err(|_| layerfs_fuse::PortError::Io)?
+                .request(bytes)
+                .map_err(crate::projection::storage_port_error)
+        })?;
+        Ok(Self {
+            backing,
+            server: Arc::new(server),
+        })
+    }
+
+    pub(crate) fn observe(&self) -> crate::WorkspaceResult<(u64, u64, u64)> {
+        let response = self
+            .server
+            .request(&[wire::OBSERVE])
+            .map_err(|_| crate::WorkspaceError::InvalidExecution)?;
+        let mut input = Input(&response);
+        let result = (input.u64()?, input.u64()?, input.u64()?);
+        input.done()?;
+        Ok(result)
+    }
+}
+
+pub(crate) fn install_checkpoint(
+    workspace: &std::sync::Mutex<crate::Workspace>,
+) -> crate::WorkspaceResult<()> {
+    use crate::WorkspaceError;
+    use layerfs_layerstack_store::CommitOutcome;
+    let pending = {
+        let mut workspace = workspace
+            .lock()
+            .map_err(|_| WorkspaceError::WorkspaceBusy)?;
+        let Some(remote) = workspace.remote.clone() else {
+            return Ok(());
+        };
+        let Some((outcome, base, _)) = workspace.pending_publication else {
+            return Ok(());
+        };
+        (remote, outcome, base, workspace.pending_checkpoint.take())
+    };
+    let (remote, outcome, base, checkpoint) = pending;
+    let root = match outcome {
+        CommitOutcome::Committed { root_id, .. } | CommitOutcome::UpToDate { root_id } => root_id,
+    };
+    let installed = (|| -> crate::WorkspaceResult<()> {
+        if let Some(checkpoint) = &checkpoint {
+            let mut begin = vec![wire::INSTALL_BEGIN];
+            begin.extend_from_slice(root.as_bytes());
+            wire::u64_out(&mut begin, checkpoint.generation);
+            remote
+                .server
+                .request(&begin)
+                .map_err(|_| WorkspaceError::InvalidExecution)?;
+            let mut count = 0;
+            checkpoint.visit(|id, inode, content, attr| {
+                let mut node = remote
+                    .backing
+                    .lock()
+                    .map_err(|_| StoreError::Integrity("live backing lock"))?
+                    .facts
+                    .get(&id)
+                    .ok_or(StoreError::Integrity("checkpoint fact"))?
+                    .clone();
+                node.canonical = Some(inode);
+                if node.attr(id) != attr {
+                    return Err(StoreError::Integrity("checkpoint fact attr"));
+                }
+                let mut frame = vec![wire::INSTALL_NODE];
+                frame.extend_from_slice(content.as_bytes());
+                // No mutable ranges are needed to validate/install a canonical checkpoint.
+                match &mut node.data {
+                    layerfs_workspace_core::Data::File(data) => {
+                        *data = layerfs_workspace_core::FileData::Base {
+                            root: FileStateRoot(content),
+                            len: attr.size,
+                        }
+                    }
+                    layerfs_workspace_core::Data::Directory(directory) => {
+                        directory.base = Some(DirectoryStateRoot(content));
+                        directory.changes.clear();
+                    }
+                    _ => {}
+                }
+                frame.extend(wire::node_out(id, &node)?);
+                remote
+                    .server
+                    .request(&frame)
+                    .map_err(|_| StoreError::Integrity("remote checkpoint record"))?;
+                count += 1;
+                Ok(())
+            })?;
+            let mut end = vec![wire::INSTALL_END];
+            end.extend_from_slice(root.as_bytes());
+            wire::u64_out(&mut end, count);
+            remote
+                .server
+                .request(&end)
+                .map_err(|_| WorkspaceError::InvalidExecution)?;
+        }
+        let mut workspace = workspace
+            .lock()
+            .map_err(|_| WorkspaceError::WorkspaceBusy)?;
+        let reader = workspace
+            .store
+            .snapshot_reader(root)
+            .with_read_metrics_from(&workspace.reader);
+        let namespace = layerfs_content::filesystem::namespace(&CoreReader(&reader), root)
+            .map_err(StoreError::from)?;
+        workspace.reader = reader.clone();
+        workspace.base_root = root;
+        workspace.base_inodes = InodeTableRoot(namespace.inode_table_root);
+        workspace.expected_base = base;
+        if let CommitOutcome::Committed { commit_id, .. } = outcome {
+            workspace.expected_head = Some(commit_id);
+        }
+        let mut backing = remote
+            .backing
+            .lock()
+            .map_err(|_| WorkspaceError::WorkspaceBusy)?;
+        backing.snapshot.reader = reader;
+        backing.snapshot.root = root;
+        backing.facts.clear();
+        backing.fact_reservations.clear();
+        backing.dirty.clear();
+        backing.generation = 0;
+        backing.spool.retire();
+        workspace.pending_publication = None;
+        Ok(())
+    })();
+    if installed.is_err() {
+        workspace
+            .lock()
+            .map_err(|_| WorkspaceError::WorkspaceBusy)?
+            .pending_checkpoint = checkpoint;
+    }
+    installed
+}
+
+pub(crate) fn generation(worker: &crate::worker::WorkspaceWorker) -> crate::WorkspaceResult<u64> {
+    let (remote, generation) = {
+        let workspace = worker
+            .workspace
+            .lock()
+            .map_err(|_| crate::WorkspaceError::WorkspaceBusy)?;
+        (workspace.remote.clone(), workspace.live.mutation_generation)
+    };
+    match remote {
+        Some(remote) => remote.observe().map(|values| values.0),
+        None => Ok(generation),
     }
 }

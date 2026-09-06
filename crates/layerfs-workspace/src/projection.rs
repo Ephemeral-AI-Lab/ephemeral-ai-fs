@@ -27,20 +27,25 @@ pub(crate) fn attach(
         if worker.projection != crate::WorkspaceProjection::Fuse {
             return Err(WorkspaceError::InvalidPlacement);
         }
-        let port: Arc<dyn FilesystemPort> = Arc::new(FuseView(Arc::downgrade(worker)));
-        let runtime = worker
-            .workspace
-            .lock()
-            .map_err(|_| WorkspaceError::WorkspaceBusy)?
-            .spool
-            .parent()
-            .ok_or(WorkspaceError::InvalidPlacement)?
-            .to_owned();
+        let (remote, runtime) = {
+            let mut workspace = worker
+                .workspace
+                .lock()
+                .map_err(|_| WorkspaceError::WorkspaceBusy)?;
+            let runtime = workspace
+                .spool
+                .parent()
+                .ok_or(WorkspaceError::InvalidPlacement)?
+                .to_owned();
+            let remote = crate::live_backing::RemoteWorkspace::start(&workspace)?;
+            workspace.remote = Some(remote.clone());
+            (remote, runtime)
+        };
         return crate::docker::DockerProjection::attach(
             worker.id,
             container_id.clone(),
             root.clone(),
-            port,
+            remote.server,
             &runtime,
             daemon,
         )
@@ -169,11 +174,24 @@ pub(crate) fn record_write_metrics(worker: &WorkspaceWorker) -> WorkspaceResult<
     let Some(transport) = transport else {
         return Ok(());
     };
-    let spool = worker
-        .workspace
-        .lock()
-        .map_err(|_| WorkspaceError::WorkspaceBusy)?
-        .take_spool_write_metrics();
+    let spool = {
+        let mut workspace = worker
+            .workspace
+            .lock()
+            .map_err(|_| WorkspaceError::WorkspaceBusy)?;
+        if let Some(remote) = &workspace.remote {
+            std::mem::take(
+                &mut remote
+                    .backing
+                    .lock()
+                    .map_err(|_| WorkspaceError::WorkspaceBusy)?
+                    .spool
+                    .metrics,
+            )
+        } else {
+            workspace.take_spool_write_metrics()
+        }
+    };
     layerfs_layerstack_store::record_fuse_write(layerfs_layerstack_store::FuseWriteReceipt {
         max_write_bytes: transport.max_write_bytes,
         kernel_write_requests: transport.kernel_write_requests,
@@ -320,13 +338,7 @@ pub(crate) fn is_dirty(worker: &Arc<WorkspaceWorker>) -> WorkspaceResult<bool> {
             .map(|matches| !matches)
             .map_err(materialization_error);
     }
-    Ok(worker
-        .workspace
-        .lock()
-        .map_err(|_| WorkspaceError::WorkspaceBusy)?
-        .live
-        .mutation_generation
-        != 0)
+    Ok(crate::live_backing::generation(worker)? != 0)
 }
 
 pub(crate) fn end(worker: &WorkspaceWorker) -> WorkspaceResult<()> {

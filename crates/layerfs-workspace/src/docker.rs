@@ -1,8 +1,9 @@
 use crate::{ContainerId, WorkspaceError, WorkspaceId, WorkspaceResult};
-use layerfs_fuse::{ProxyHost, SharedPort};
+use layerfs_fuse::live_transport::BackingServer;
 use std::io::{BufRead, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 
 #[cfg(target_os = "macos")]
 const DEFAULT_DAEMON_ENDPOINT_HOST: &str = "host.docker.internal";
@@ -48,7 +49,7 @@ if test "${created_root:-0}" = 1; then rmdir -- "$root" 2>/dev/null || true; fi
 ! mounted"#;
 
 pub(crate) struct DockerProjection {
-    proxy: ProxyHost,
+    proxy: Arc<BackingServer>,
     launcher: ProjectionLauncher,
     container: ContainerId,
     root: PathBuf,
@@ -82,7 +83,7 @@ impl DockerProjection {
         id: WorkspaceId,
         container: ContainerId,
         root: PathBuf,
-        port: SharedPort,
+        proxy: Arc<BackingServer>,
         runtime: &Path,
         daemon: Option<&crate::daemon::DaemonOwner>,
     ) -> WorkspaceResult<Self> {
@@ -91,7 +92,7 @@ impl DockerProjection {
             if !daemon.accepts(&container) {
                 return Err(WorkspaceError::InvalidPlacement);
             }
-            return Self::attach_daemon(id, container, root, port, runtime, daemon);
+            return Self::attach_daemon(id, container, root, proxy, runtime, daemon);
         }
         #[cfg(not(unix))]
         if daemon.is_some() {
@@ -99,7 +100,6 @@ impl DockerProjection {
         }
         let total_started = std::time::Instant::now();
         let started = std::time::Instant::now();
-        let proxy = ProxyHost::start(port)?;
         let proxy_ns = elapsed_ns(started);
         let helper = format!("/var/tmp/layerfs-owned/layerfs-fuse-{id}");
         let identity = format!("{helper}.identity");
@@ -231,13 +231,12 @@ impl DockerProjection {
         id: WorkspaceId,
         container: ContainerId,
         root: PathBuf,
-        port: SharedPort,
+        proxy: Arc<BackingServer>,
         runtime: &Path,
         daemon: &crate::daemon::DaemonOwner,
     ) -> WorkspaceResult<Self> {
         let total_started = std::time::Instant::now();
         let started = std::time::Instant::now();
-        let proxy = ProxyHost::start(port)?;
         let proxy_ns = elapsed_ns(started);
         let endpoint = format!(
             "{}:{}",

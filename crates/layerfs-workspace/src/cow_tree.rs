@@ -35,6 +35,7 @@ pub(crate) struct WorkspaceSnapshot {
 }
 
 pub struct Workspace {
+    pub(crate) remote: Option<crate::live_backing::RemoteWorkspace>,
     pub(crate) live: layerfs_workspace_core::LiveWorkspace,
     pub(crate) store: LayerStackStore,
     pub(crate) workspace_id: [u8; 16],
@@ -169,6 +170,7 @@ impl Workspace {
             pending_checkpoint: None,
             pending_stage: None,
             pending_publication: None,
+            remote: None,
         })
     }
 

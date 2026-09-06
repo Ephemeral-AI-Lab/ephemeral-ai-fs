@@ -45,8 +45,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Err("unexpected argument".into());
     }
     let endpoint = endpoint.to_str().ok_or("endpoint text")?;
-    let client = Arc::new(layerfs_fuse::ProxyClient::connect(endpoint, capability)?);
-    let control = layerfs_fuse::serve_remote_control(endpoint, capability, client.clone())?;
+    let runtime = layerfs_fuse::live_runtime::LiveRuntime::shared()?;
+    let client = Arc::new(
+        runtime
+            .block_on(layerfs_fuse::live_owner::LiveOwner::connect(
+                endpoint.to_owned(),
+                capability,
+                runtime.scheduler(),
+            ))
+            .map_err(|error| std::io::Error::other(format!("live owner: {error:?}")))?,
+    );
+    let control = client.serve_control(endpoint.to_owned(), capability)?;
     let mut mount = layerfs_fuse::mount_host(client.clone(), &mountpoint, 0, 0)?;
     client.set_notifier(mount.notifier()?)?;
     println!("READY");

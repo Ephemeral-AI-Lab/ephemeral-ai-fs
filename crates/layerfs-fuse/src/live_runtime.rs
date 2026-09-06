@@ -6,6 +6,8 @@ use tokio::sync::{
     OwnedRwLockReadGuard, OwnedRwLockWriteGuard, OwnedSemaphorePermit, RwLock, Semaphore,
 };
 
+pub type LiveReservation = OwnedSemaphorePermit;
+
 const REQUESTS: usize = 256;
 const TRANSFER_BYTES: usize = 32 * 1024 * 1024;
 

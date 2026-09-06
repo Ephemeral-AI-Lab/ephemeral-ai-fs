@@ -353,6 +353,33 @@ impl Workspace {
         purpose: CandidatePurpose,
         worker_limit: usize,
     ) -> Result<PreparedCommit> {
+        if let Some(remote) = &self.remote {
+            let backing = remote
+                .backing
+                .lock()
+                .map_err(|_| StorageError::Integrity("live backing lock"))?;
+            let canonical_nodes = backing
+                .facts
+                .iter()
+                .filter_map(|(id, node)| node.canonical.map(|inode| (inode, *id)))
+                .collect();
+            return CandidateInputs {
+                live: layerfs_workspace_core::FrozenWorkspaceChanges {
+                    nodes: &backing.facts,
+                    dirty: &backing.dirty,
+                    canonical_nodes: &canonical_nodes,
+                    base_root: self.base_root,
+                    mutation_generation: backing.generation,
+                    policy: self.live.policy,
+                },
+                store: &self.store,
+                workspace_id: self.workspace_id,
+                reader: self.reader.clone(),
+                base_inodes: self.base_inodes,
+                spool: &self.spool,
+            }
+            .build(purpose, worker_limit, None);
+        }
         let captured = self.take_capture();
         self.candidate_inputs()
             .build(purpose, worker_limit, captured)

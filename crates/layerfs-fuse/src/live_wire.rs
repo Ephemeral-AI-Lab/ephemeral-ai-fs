@@ -20,6 +20,7 @@ pub const RELEASE: u8 = 8;
 pub const FACTS_BEGIN: u8 = 9;
 pub const FACTS_NODE: u8 = 10;
 pub const FACTS_END: u8 = 11;
+pub const CANCEL_RESERVATION: u8 = 12;
 
 pub fn invalid() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "live owner transport")
@@ -358,3 +359,14 @@ pub fn node_in(
         },
     ))
 }
+
+pub const FREEZE: u8 = 32;
+pub const RESUME: u8 = 33;
+pub const OBSERVE: u8 = 34;
+pub const INSTALL_BEGIN: u8 = 35;
+pub const INSTALL_NODE: u8 = 36;
+pub const INSTALL_END: u8 = 37;
+pub const SHUTDOWN: u8 = 38;
+pub const WRITE_METRICS: u8 = 39;
+pub const READ_METRICS: u8 = 40;
+pub const INVALIDATE: u8 = 41;

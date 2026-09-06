@@ -51,9 +51,9 @@ pub enum KernelOperation {
 #[derive(Default)]
 pub struct CallbackGuard {
     #[cfg(feature = "live")]
-    pub(crate) gate: Option<tokio::sync::OwnedRwLockReadGuard<()>>,
+    pub(crate) _gate: Option<tokio::sync::OwnedRwLockReadGuard<()>>,
     #[cfg(feature = "live")]
-    pub(crate) admission: Option<crate::live_runtime::RequestAdmission>,
+    pub(crate) _admission: Option<crate::live_runtime::RequestAdmission>,
 }
 
 pub trait FilesystemPort: Send + Sync {

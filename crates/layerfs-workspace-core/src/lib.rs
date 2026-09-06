@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod backing;
+mod checkpoint;
 pub mod file_edit;
 mod limits;
 pub mod namespace;

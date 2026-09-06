@@ -100,7 +100,16 @@ impl Workspace {
         ) {
             crate::changes::inject_candidate_failure_once();
         }
-        let (candidate, admission) = if self.live.mutation_generation == 0 {
+        let generation = if let Some(remote) = &self.remote {
+            remote
+                .backing
+                .lock()
+                .map_err(|_| StorageError::Integrity("live backing lock"))?
+                .generation
+        } else {
+            self.live.mutation_generation
+        };
+        let (candidate, admission) = if generation == 0 {
             (
                 ObjectBuffer::new(&self.reader)?.finish(self.base_root, 0)?,
                 self.store.workspace_admission(self.workspace_id)?,
@@ -153,6 +162,15 @@ impl Workspace {
         expected_base: layerfs_layerstack_store::LayerId,
         refresh: bool,
     ) -> Result<CommitTransition> {
+        if self.remote.is_some() {
+            if refresh {
+                return Err(StorageError::InvalidInput(
+                    "remote reconciliation installation",
+                ));
+            }
+            self.pending_publication = Some((outcome, expected_base, false));
+            return Ok(CommitTransition::Checkpointed);
+        }
         if matches!(outcome, CommitOutcome::UpToDate { .. }) && self.live.mutation_generation == 0 {
             let started = Instant::now();
             self.retire_spool_segments();
@@ -240,7 +258,6 @@ impl Workspace {
         outcome: CommitOutcome,
         expected_base: layerfs_layerstack_store::LayerId,
     ) -> Result<()> {
-        use crate::cow_tree::{Data, FileData};
         let (head, root) = match outcome {
             CommitOutcome::Committed {
                 commit_id, root_id, ..
@@ -258,28 +275,9 @@ impl Workspace {
             // Validate every handoff before changing any live backing. Retry also
             // accepts already installed nodes because paths, attributes and IDs stay stable.
             checkpoint.visit(|id, inode, _, attr| {
-                let node = self
-                    .live
-                    .nodes
-                    .get(&id)
-                    .ok_or(StorageError::Integrity("checkpoint node"))?;
-                if (node.paths.is_empty() && node.links == 0)
-                    || self.attr(id)? != attr
-                    || node.canonical.is_some_and(|old| old != inode)
-                    || self
-                        .live
-                        .canonical_nodes
-                        .get(&inode)
-                        .is_some_and(|old| *old != id)
-                {
-                    return Err(StorageError::Integrity("checkpoint presentation"));
-                }
-                if matches!(&node.data, Data::File(FileData::Edited { .. }))
-                    && !self.live.edited_nodes.contains(&id)
-                {
-                    return Err(StorageError::Integrity("spool descriptor"));
-                }
-                Ok(())
+                self.live
+                    .validate_checkpoint_record(id, inode, attr)
+                    .map_err(crate::live_error)
             })?;
             let reader = self
                 .store
@@ -292,29 +290,9 @@ impl Workspace {
             // The descriptor remains readable if unlink succeeds but a later step
             // fails. Each installed node then owns canonical backing; retries skip its spool.
             checkpoint.visit(|id, inode, content, attr| {
-                let node = self
-                    .live
-                    .nodes
-                    .get_mut(&id)
-                    .expect("validated checkpoint node");
-                match &mut node.data {
-                    Data::File(data) => {
-                        *data = FileData::Base {
-                            root: layerfs_content::file::rope::FileStateRoot(content),
-                            len: attr.size,
-                        }
-                    }
-                    Data::Directory(directory) => {
-                        directory.base = Some(
-                            layerfs_content::tree::directory::DirectoryStateRoot(content),
-                        );
-                        directory.changes.clear();
-                    }
-                    Data::Symlink(_) => {}
-                }
-                self.live.edited_nodes.remove(&id);
-                node.canonical = Some(inode);
-                self.live.canonical_nodes.insert(inode, id);
+                self.live
+                    .install_checkpoint_record(id, inode, content, attr)
+                    .map_err(crate::live_error)?;
                 #[cfg(test)]
                 if INJECT_PARTIAL_INSTALL_FAILURE.with(|inject| inject.replace(false)) {
                     return Err(StorageError::Integrity(
@@ -323,53 +301,17 @@ impl Workspace {
                 }
                 Ok(())
             })?;
-            self.live.spool_bytes = 0;
-            self.live.inline_bytes = 0;
-            self.live.piece_allocation_bytes = 0;
-            for id in &self.live.dirty {
-                if let Some(node) = self
-                    .live
-                    .nodes
-                    .get_mut(id)
-                    .filter(|node| node.paths.is_empty() && node.links == 0)
-                {
-                    if let Some(inode) = node.canonical.take() {
-                        self.live.canonical_nodes.remove(&inode);
-                    }
-                }
-            }
-            // Includes inline/zero-only state and rejected writes that established
-            // editable backing without applying a semantic mutation.
-            for id in &self.live.edited_nodes {
-                let Data::File(FileData::Edited {
-                    spool_high_water,
-                    pieces,
-                    ..
-                }) = &self.live.nodes[id].data
-                else {
-                    return Err(StorageError::Integrity("checkpoint retained spool"));
-                };
-                self.live.spool_bytes = self.live.spool_bytes.saturating_add(*spool_high_water);
-                self.live.inline_bytes = self.live.inline_bytes.saturating_add(pieces.inline_len());
-                self.live.piece_allocation_bytes = self.live.piece_allocation_bytes.saturating_add(
-                    pieces
-                        .logical_allocation_charge()
-                        .map_err(crate::live_error)?,
-                );
-            }
+            self.live
+                .finish_checkpoint(root)
+                .map_err(crate::live_error)?;
             self.retire_spool_segments();
             self.reader = reader;
             self.expected_head = head;
             self.expected_base = expected_base;
             self.base_root = root;
-            self.live.base_root = root;
             self.base_inodes =
                 layerfs_content::tree::inode::InodeTableRoot(namespace.inode_table_root);
             self.directory_lookup_cache = Default::default();
-            self.live.spool_bytes_peak = self.live.spool_bytes;
-            self.live.mutation_generation = 0;
-            self.live.mutation_paths.clear();
-            self.live.dirty.clear();
             self.capture = crate::capture::CaptureState::default();
             self.resolution = None;
             self.state = WorkspaceState::Active;
@@ -550,7 +492,13 @@ impl Workspaces {
             WorkspaceProjection::Fuse => layerfs_layerstack_store::CaptureMode::Live,
             WorkspaceProjection::Materialize => layerfs_layerstack_store::CaptureMode::Materialized,
         })?;
-        if worker.has_executions()? {
+        let remote = worker
+            .workspace
+            .lock()
+            .map_err(|_| WorkspaceError::WorkspaceBusy)?
+            .remote
+            .clone();
+        if remote.is_none() && worker.has_executions()? {
             return Ok(WorkspaceCommitStatus {
                 result: WorkspaceCommitResult::Busy,
                 presentation_failed: false,
@@ -582,7 +530,11 @@ impl Workspaces {
             return Err(error);
         }
         let started = Instant::now();
-        let quiesced = worker.wait_for_writers().and_then(|()| worker.quiesce());
+        let quiesced = if remote.is_some() {
+            worker.quiesce()
+        } else {
+            worker.wait_for_writers().and_then(|()| worker.quiesce())
+        };
         layerfs_layerstack_store::note_workspace_commit_phase(
             WorkspaceCommitPhase::Quiesce,
             elapsed_ns(started),
@@ -670,7 +622,8 @@ impl Workspaces {
             )) => match transition {
                 CommitTransition::Checkpointed => {
                     let started = Instant::now();
-                    let resumed = crate::projection::resume(&worker);
+                    let resumed = crate::live_backing::install_checkpoint(&worker.workspace)
+                        .and_then(|()| crate::projection::resume(&worker));
                     layerfs_layerstack_store::note_workspace_commit_phase(
                         WorkspaceCommitPhase::Resume,
                         elapsed_ns(started),
@@ -971,6 +924,7 @@ impl Workspaces {
                 .workspace
                 .lock()
                 .map_err(|_| WorkspaceError::WorkspaceBusy)?;
+            workspace.remote = None;
             match mode {
                 EndWorkspaceMode::Discard => {
                     workspace.discard()?;
@@ -1039,13 +993,14 @@ impl Workspaces {
         let executions = self.execution_summaries(id)?;
         match record {
             crate::registry::SessionRecord::Active(worker) => {
+                let generation = crate::live_backing::generation(&worker)?;
                 let workspace = worker
                     .workspace
                     .lock()
                     .map_err(|_| WorkspaceError::WorkspaceBusy)?;
                 Ok(WorkspaceDetail {
                     session: session_locked(&worker, &workspace),
-                    mutation_generation: workspace.live.mutation_generation,
+                    mutation_generation: generation,
                     executions,
                 })
             }
@@ -1069,14 +1024,11 @@ impl Workspaces {
         match record {
             crate::registry::SessionRecord::Active(worker) => {
                 let dirty = crate::projection::is_dirty(&worker)?;
-                let workspace = worker
-                    .workspace
-                    .lock()
-                    .map_err(|_| WorkspaceError::WorkspaceBusy)?;
+                let generation = crate::live_backing::generation(&worker)?;
                 Ok(WorkspaceDiff {
                     session_id: id,
                     dirty,
-                    mutation_generation: workspace.live.mutation_generation,
+                    mutation_generation: generation,
                 })
             }
             crate::registry::SessionRecord::Retained(retained) => Ok(WorkspaceDiff {

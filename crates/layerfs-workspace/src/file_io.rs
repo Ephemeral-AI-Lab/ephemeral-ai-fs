@@ -268,12 +268,37 @@ impl Workspace {
         let mut charge = 0_u64;
         let mut spool_live = 0_u64;
         let mut metric_nodes_scanned = 0_u64;
-        for node in self
-            .live
-            .dirty
-            .iter()
-            .filter_map(|node| self.live.nodes.get(node))
-        {
+        let remote = self
+            .remote
+            .as_ref()
+            .map(|remote| {
+                remote
+                    .backing
+                    .lock()
+                    .map_err(|_| StoreError::Integrity("live backing lock"))
+            })
+            .transpose()?;
+        let (nodes, dirty, spool_bytes, spool_peak) = if let Some(backing) = &remote {
+            let bytes = backing
+                .facts
+                .values()
+                .filter_map(|node| match &node.data {
+                    Data::File(FileData::Edited {
+                        spool_high_water, ..
+                    }) => Some(*spool_high_water),
+                    _ => None,
+                })
+                .sum();
+            (&backing.facts, &backing.dirty, bytes, bytes)
+        } else {
+            (
+                &self.live.nodes,
+                &self.live.dirty,
+                self.live.spool_bytes,
+                self.live.spool_bytes_peak,
+            )
+        };
+        for node in dirty.iter().filter_map(|node| nodes.get(node)) {
             metric_nodes_scanned = metric_nodes_scanned.saturating_add(1);
             if let Data::File(FileData::Edited {
                 pieces: tree,
@@ -296,12 +321,13 @@ impl Workspace {
             pieces,
             height,
             charge,
-            self.live.spool_bytes,
-            self.live.spool_bytes_peak,
+            spool_bytes,
+            spool_peak,
             spool_live,
-            self.live.spool_bytes.saturating_sub(spool_live),
+            spool_bytes.saturating_sub(spool_live),
             metric_nodes_scanned,
         );
+        drop(remote);
         let (current, peak, errors, observations) = self.physical_spool_snapshot();
         layerfs_layerstack_store::note_workspace_physical_spool(
             current,
@@ -721,6 +747,15 @@ impl Workspace {
         .ok_or(StoreError::InvalidInput("file"))
     }
     pub(crate) fn physical_spool_snapshot(&self) -> (Option<u64>, Option<u64>, u64, u64) {
+        if let Some(remote) = &self.remote {
+            return remote.backing.lock().map_or((None, None, 1, 0), |backing| {
+                backing
+                    .spool
+                    .physical
+                    .lock()
+                    .map_or((None, None, 1, 0), |metrics| metrics.snapshot())
+            });
+        }
         self.backing
             .physical
             .lock()
