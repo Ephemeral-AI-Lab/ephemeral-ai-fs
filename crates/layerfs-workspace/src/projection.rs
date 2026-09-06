@@ -1226,9 +1226,9 @@ fn storage_port_error(error: layerfs_layerstack_store::StoreError) -> PortError 
             PortError::NotEmpty
         }
         layerfs_layerstack_store::StoreError::InvalidInput("name exists") => PortError::Exists,
-        layerfs_layerstack_store::StoreError::InvalidInput("workspace spool limit") => {
-            PortError::NoSpace
-        }
+        layerfs_layerstack_store::StoreError::InvalidInput(
+            "workspace spool limit" | "workspace live allocation",
+        ) => PortError::NoSpace,
         layerfs_layerstack_store::StoreError::InvalidInput("workspace inactive") => {
             PortError::ReadOnly
         }

@@ -269,6 +269,7 @@ impl Workspace {
                     || self.attr(id)? != attr
                     || node.canonical.is_some_and(|old| old != inode)
                     || self
+                        .live
                         .canonical_nodes
                         .get(&inode)
                         .is_some_and(|old| *old != id)
@@ -315,7 +316,7 @@ impl Workspace {
                 }
                 self.live.edited_nodes.remove(&id);
                 node.canonical = Some(inode);
-                self.canonical_nodes.insert(inode, id);
+                self.live.canonical_nodes.insert(inode, id);
                 #[cfg(test)]
                 if INJECT_PARTIAL_INSTALL_FAILURE.with(|inject| inject.replace(false)) {
                     return Err(StorageError::Integrity(
@@ -335,7 +336,7 @@ impl Workspace {
                     .filter(|node| node.paths.is_empty() && node.links == 0)
                 {
                     if let Some(inode) = node.canonical.take() {
-                        self.canonical_nodes.remove(&inode);
+                        self.live.canonical_nodes.remove(&inode);
                     }
                 }
             }

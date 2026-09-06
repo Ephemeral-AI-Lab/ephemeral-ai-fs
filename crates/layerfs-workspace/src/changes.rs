@@ -630,7 +630,7 @@ impl Workspace {
                 );
                 // Only existing inodes need an added reference; new records already
                 // carry every final alias. Original bindings always belong to base.
-                let after = after.filter(|inode| self.canonical_nodes.contains_key(inode));
+                let after = after.filter(|inode| self.live.canonical_nodes.contains_key(inode));
                 references.push(before, after).map_err(|error| {
                     edge_error = Some(error);
                     layerfs_content::CoreError::Io
@@ -667,7 +667,7 @@ impl Workspace {
                         )?;
                         references.push(
                             before,
-                            after.filter(|inode| self.canonical_nodes.contains_key(inode)),
+                            after.filter(|inode| self.live.canonical_nodes.contains_key(inode)),
                         )?;
                     }
                     batch.push((name, after));

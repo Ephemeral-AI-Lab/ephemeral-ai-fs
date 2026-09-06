@@ -111,8 +111,6 @@ pub struct Workspace {
     pub(crate) current_spool: Option<u64>,
     pub(crate) next_spool: u64,
     pub(crate) segment_bytes: u64,
-    pub(crate) canonical_nodes: HashMap<InodeId, NodeId>,
-    directory_parents: HashMap<NodeId, NodeId>,
     pub(crate) state: WorkspaceState,
     pub(crate) presentation_failed: bool,
     pub(crate) resolution: Option<crate::reconcile::ResolutionState>,
@@ -242,8 +240,6 @@ impl Workspace {
             current_spool: None,
             next_spool: 1,
             segment_bytes: 0,
-            canonical_nodes: HashMap::from([(resolved.inode, ROOT)]),
-            directory_parents: HashMap::from([(ROOT, ROOT)]),
             state: WorkspaceState::Active,
             presentation_failed: false,
             resolution: None,
@@ -293,10 +289,6 @@ impl Workspace {
             output.push_back((self.attr(child)?, name));
         }
         Ok(output.into())
-    }
-
-    pub(crate) fn allocate(&mut self, node: Node) -> Result<NodeId> {
-        self.live.allocate_node(node).map_err(crate::live_error)
     }
 
     pub(crate) fn reserve_nodes(&mut self, count: u32) -> Result<NodeId> {
@@ -386,7 +378,7 @@ impl Workspace {
     }
 
     fn materialize(&mut self, inode: InodeId, path: String) -> Result<NodeId> {
-        if let Some(node) = self.canonical_nodes.get(&inode).copied() {
+        if let Some(node) = self.live.canonical_nodes.get(&inode).copied() {
             self.live.nodes.get_mut(&node).unwrap().paths.insert(path);
             return Ok(node);
         }
@@ -409,7 +401,7 @@ impl Workspace {
         record: layerfs_content::tree::inode::InodeRecordV1,
         file_len: Option<u64>,
     ) -> Result<NodeId> {
-        if let Some(node) = self.canonical_nodes.get(&inode).copied() {
+        if let Some(node) = self.live.canonical_nodes.get(&inode).copied() {
             self.live.nodes.get_mut(&node).unwrap().paths.insert(path);
             return Ok(node);
         }
@@ -443,22 +435,24 @@ impl Workspace {
                     .target,
             ),
         };
-        let node = self.allocate(Node {
-            revision: 0,
-            canonical: Some(inode),
-            paths: BTreeSet::from([path]),
-            mode: portable.permission_mode,
-            links: if record.kind == InodeKind::Directory {
-                2
-            } else {
-                record.namespace_ref_count as u32
-            },
-            pins: 0,
-            mtime_seconds: portable.mtime_seconds,
-            mtime_nanoseconds: portable.mtime_nanoseconds,
-            data,
-        })?;
-        self.canonical_nodes.insert(inode, node);
+        let node = self
+            .live
+            .install_immutable_node(Node {
+                revision: 0,
+                canonical: Some(inode),
+                paths: BTreeSet::from([path]),
+                mode: portable.permission_mode,
+                links: if record.kind == InodeKind::Directory {
+                    2
+                } else {
+                    record.namespace_ref_count as u32
+                },
+                pins: 0,
+                mtime_seconds: portable.mtime_seconds,
+                mtime_nanoseconds: portable.mtime_nanoseconds,
+                data,
+            })
+            .map_err(crate::live_error)?;
         Ok(node)
     }
 
@@ -493,7 +487,7 @@ impl Workspace {
                 continue;
             }
             let path = join(&prefix, name.as_bytes())?;
-            if let Some(child) = self.canonical_nodes.get(&inode).copied() {
+            if let Some(child) = self.live.canonical_nodes.get(&inode).copied() {
                 self.live.nodes.get_mut(&child).unwrap().paths.insert(path);
                 self.remember_directory_parent(child, parent)?;
                 entries.insert(name.as_bytes().to_vec(), child);
@@ -611,31 +605,13 @@ impl Workspace {
     }
 
     fn parent_of(&self, node: NodeId) -> Result<NodeId> {
-        self.directory_parents
-            .get(&node)
-            .copied()
-            .ok_or(StorageError::Integrity("Workspace parent"))
+        self.live.parent_of(node).map_err(crate::live_error)
     }
 
     fn remember_directory_parent(&mut self, node: NodeId, parent: NodeId) -> Result<()> {
-        if !matches!(
-            self.live
-                .nodes
-                .get(&node)
-                .ok_or(StorageError::NotFound("node"))?
-                .data,
-            Data::Directory(_)
-        ) {
-            return Ok(());
-        }
-        match self.directory_parents.get(&node).copied() {
-            Some(known) if known != parent => Err(StorageError::Integrity("Workspace parent")),
-            Some(_) => Ok(()),
-            None => {
-                self.directory_parents.insert(node, parent);
-                Ok(())
-            }
-        }
+        self.live
+            .remember_directory_parent(node, parent)
+            .map_err(crate::live_error)
     }
 }
 
@@ -708,11 +684,8 @@ impl Workspace {
 
     pub fn mkdir(&mut self, parent: NodeId, name: &[u8], mode: u32) -> Result<Attr> {
         self.ensure_active()?;
-        let path = self.child_path(parent, name)?;
-        let node = self.allocate(new_directory(path.clone(), mode))?;
-        self.insert_name(parent, name, node)?;
-        self.note_mutation([path])?;
-        self.attr(node)
+        let name = self.acquire_name(parent, name)?;
+        self.live.mkdir(name, mode, None).map_err(crate::live_error)
     }
 
     pub(crate) fn mkdir_reserved(
@@ -723,38 +696,16 @@ impl Workspace {
         node: NodeId,
     ) -> Result<Attr> {
         self.ensure_active()?;
-        let path = self.child_path(parent, name)?;
-        if !self.live.reserved.remove(&node) {
-            return Err(StorageError::Integrity("reserved node"));
-        }
+        let name = self.acquire_name(parent, name)?;
         self.live
-            .nodes
-            .insert(node, new_directory(path.clone(), mode));
-        self.insert_name(parent, name, node)?;
-        self.note_mutation([path])?;
-        self.attr(node)
+            .mkdir(name, mode, Some(node))
+            .map_err(crate::live_error)
     }
 
     pub fn symlink(&mut self, parent: NodeId, name: &[u8], target: Vec<u8>) -> Result<Attr> {
         self.ensure_active()?;
-        if target.len() > 4096 || target.contains(&0) {
-            return Err(StorageError::InvalidInput("symlink"));
-        }
-        let path = self.child_path(parent, name)?;
-        let node = self.allocate(Node {
-            revision: 0,
-            canonical: None,
-            paths: BTreeSet::from([path.clone()]),
-            mode: 0o777,
-            links: 1,
-            pins: 0,
-            mtime_seconds: 0,
-            mtime_nanoseconds: 0,
-            data: Data::Symlink(target.clone()),
-        })?;
-        self.insert_name(parent, name, node)?;
-        self.note_mutation([path])?;
-        self.attr(node)
+        let name = self.acquire_name(parent, name)?;
+        self.live.symlink(name, target).map_err(crate::live_error)
     }
 
     pub fn link(&mut self, node: NodeId, parent: NodeId, name: &[u8]) -> Result<Attr> {
@@ -865,7 +816,7 @@ impl Workspace {
             .insert(target.to_vec(), Some(node));
         self.replace_path_prefix(&source, &destination);
         if source_directory {
-            self.directory_parents.insert(node, target_parent);
+            self.live.directory_parents.insert(node, target_parent);
         }
         self.note_mutation([source, destination])?;
         Ok(())
@@ -958,11 +909,11 @@ impl Workspace {
                     && self.live.dirty.contains(&node))
         }) {
             self.live.dirty.remove(&node);
-            self.directory_parents.remove(&node);
+            self.live.directory_parents.remove(&node);
             if let Some(value) = self.live.nodes.remove(&node) {
                 self.live.edited_nodes.remove(&node);
                 if let Some(inode) = value.canonical {
-                    self.canonical_nodes.remove(&inode);
+                    self.live.canonical_nodes.remove(&inode);
                 }
                 if let Data::File(FileData::Edited {
                     spool_high_water,
@@ -982,23 +933,6 @@ impl Workspace {
                 }
             }
         }
-    }
-}
-
-fn new_directory(path: String, mode: u32) -> Node {
-    Node {
-        revision: 0,
-        canonical: None,
-        paths: BTreeSet::from([path]),
-        mode: mode & 0o1777,
-        links: 2,
-        pins: 0,
-        mtime_seconds: 0,
-        mtime_nanoseconds: 0,
-        data: Data::Directory(DirectoryData {
-            base: None,
-            changes: BTreeMap::new(),
-        }),
     }
 }
 
@@ -1025,8 +959,8 @@ mod tests {
     fn snapshot(workspace: &Workspace) -> Snapshot {
         Snapshot {
             nodes: workspace.live.nodes.clone(),
-            canonical_nodes: workspace.canonical_nodes.clone(),
-            directory_parents: workspace.directory_parents.clone(),
+            canonical_nodes: workspace.live.canonical_nodes.clone(),
+            directory_parents: workspace.live.directory_parents.clone(),
             dirty: workspace.live.dirty.clone(),
             next_node: workspace.live.next_node,
             spool_bytes: workspace.live.spool_bytes,

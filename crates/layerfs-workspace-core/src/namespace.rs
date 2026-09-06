@@ -20,9 +20,8 @@ mod tests {
     use crate::{ResourcePolicy, ROOT};
     use std::collections::BTreeMap;
 
-    #[test]
-    fn resolved_create_revalidates_and_rejects_before_consuming_identity() {
-        let mut live = LiveWorkspace::new(
+    fn fixture() -> LiveWorkspace {
+        let live = LiveWorkspace::new(
             Node {
                 revision: 0,
                 canonical: None,
@@ -39,6 +38,55 @@ mod tests {
             },
             ResourcePolicy::default(),
         );
+        live
+    }
+
+    #[test]
+    fn directories_symlinks_and_acquired_aliases_use_the_same_live_nodes() {
+        use layerfs_content::file::rope::FileStateRoot;
+        use layerfs_content::tree::inode::InodeId;
+        let mut live = fixture();
+        let NameLookup::Ready(name) = live.prepare_name(ROOT, b"dir").unwrap() else {
+            panic!("owned root")
+        };
+        let directory = live.mkdir(name, 0o1750, None).unwrap();
+        assert_eq!(directory.mode, 0o1750);
+        assert_eq!(live.parent_of(directory.node).unwrap(), ROOT);
+        let NameLookup::Ready(name) = live.prepare_name(directory.node, b"link").unwrap() else {
+            panic!("owned directory")
+        };
+        let link = live.symlink(name, b"target".to_vec()).unwrap();
+        assert_eq!(link.kind, crate::Kind::Symlink);
+        let mut acquired = Node {
+            revision: 0,
+            canonical: Some(InodeId([9; 32])),
+            paths: ["cold".to_owned()].into(),
+            mode: 0o600,
+            links: 2,
+            pins: 0,
+            mtime_seconds: 0,
+            mtime_nanoseconds: 0,
+            data: Data::File(FileData::Base {
+                root: FileStateRoot(layerfs_content::ObjectId::for_bytes(b"base")),
+                len: 8,
+            }),
+        };
+        let node = live.install_immutable_node(acquired.clone()).unwrap();
+        let write = live.prepare_write(node, 0, 1, None).unwrap();
+        live.apply_write(write).unwrap();
+        let changed = live.nodes[&node].data.clone();
+        acquired.paths = ["alias".to_owned()].into();
+        assert_eq!(live.install_immutable_node(acquired.clone()).unwrap(), node);
+        assert_eq!(live.nodes[&node].data, changed);
+        assert_eq!(live.nodes[&node].paths.len(), 2);
+        acquired.mtime_nanoseconds = 1_000_000_000;
+        assert!(live.install_immutable_node(acquired).is_err());
+        assert_eq!(live.nodes[&node].data, changed);
+    }
+
+    #[test]
+    fn resolved_create_revalidates_and_rejects_before_consuming_identity() {
+        let mut live = fixture();
         let NameLookup::Ready(first) = live.prepare_name(ROOT, b"first").unwrap() else {
             panic!("owned directory")
         };
@@ -220,6 +268,126 @@ impl LiveWorkspace {
         mode: u32,
         reserved: Option<NodeId>,
     ) -> Result<Attr> {
+        self.create_node(
+            name,
+            mode & 0o777,
+            Data::File(FileData::Edited {
+                base: None,
+                spool_high_water: 0,
+                pieces: PieceTree::empty(),
+                edits: 0,
+            }),
+            reserved,
+        )
+    }
+
+    pub fn mkdir(
+        &mut self,
+        name: ResolvedName,
+        mode: u32,
+        reserved: Option<NodeId>,
+    ) -> Result<Attr> {
+        self.create_node(
+            name,
+            mode & 0o1777,
+            Data::Directory(DirectoryData {
+                base: None,
+                changes: Default::default(),
+            }),
+            reserved,
+        )
+    }
+
+    pub fn symlink(&mut self, name: ResolvedName, target: Vec<u8>) -> Result<Attr> {
+        if target.len() > 4096 || target.contains(&0) {
+            return Err(Error::InvalidInput("symlink"));
+        }
+        self.create_node(name, 0o777, Data::Symlink(target), None)
+    }
+
+    pub fn parent_of(&self, node: NodeId) -> Result<NodeId> {
+        self.directory_parents
+            .get(&node)
+            .copied()
+            .ok_or(Error::Integrity("Workspace parent"))
+    }
+
+    pub fn remember_directory_parent(&mut self, node: NodeId, parent: NodeId) -> Result<()> {
+        if !matches!(
+            self.nodes.get(&node).ok_or(Error::NotFound("node"))?.data,
+            Data::Directory(_)
+        ) {
+            return Ok(());
+        }
+        match self.directory_parents.get(&node).copied() {
+            Some(known) if known != parent => Err(Error::Integrity("Workspace parent")),
+            Some(_) => Ok(()),
+            None => {
+                self.directory_parents
+                    .try_reserve(1)
+                    .map_err(|_| Error::InvalidInput("workspace live allocation"))?;
+                self.directory_parents.insert(node, parent);
+                Ok(())
+            }
+        }
+    }
+
+    pub fn install_immutable_node(&mut self, node: Node) -> Result<NodeId> {
+        use layerfs_content::tree::inode::InodeKind;
+        use layerfs_content::tree::metadata::PortableMetadataV1;
+        let inode = node
+            .canonical
+            .ok_or(Error::Integrity("acquired inode identity"))?;
+        if node.revision != 0
+            || node.pins != 0
+            || matches!(node.data, Data::File(FileData::Edited { .. }))
+        {
+            return Err(Error::Integrity("acquired mutable inode"));
+        }
+        let kind = match &node.data {
+            Data::File(FileData::Base { .. }) => InodeKind::RegularFile,
+            Data::Directory(directory)
+                if directory.base.is_some() && directory.changes.is_empty() =>
+            {
+                InodeKind::Directory
+            }
+            Data::Symlink(target) if target.len() <= 4096 && !target.contains(&0) => {
+                InodeKind::Symlink
+            }
+            _ => return Err(Error::Integrity("acquired inode data")),
+        };
+        PortableMetadataV1 {
+            permission_mode: node.mode,
+            mtime_seconds: node.mtime_seconds,
+            mtime_nanoseconds: node.mtime_nanoseconds,
+        }
+        .validate(kind)?;
+        if let Some(id) = self.canonical_nodes.get(&inode).copied() {
+            let live = self
+                .nodes
+                .get_mut(&id)
+                .ok_or(Error::Integrity("Workspace inode"))?;
+            if live.attr(id).kind != node.attr(id).kind {
+                return Err(Error::Integrity("acquired inode kind"));
+            }
+            live.paths.extend(node.paths);
+            return Ok(id);
+        }
+        self.canonical_nodes
+            .try_reserve(1)
+            .map_err(|_| Error::InvalidInput("workspace live allocation"))?;
+        let id = self.allocate_node(node)?;
+        self.canonical_nodes.insert(inode, id);
+        Ok(id)
+    }
+
+    fn create_node(
+        &mut self,
+        name: ResolvedName,
+        mode: u32,
+        data: Data,
+        reserved: Option<NodeId>,
+    ) -> Result<Attr> {
         if self.nodes.get(&name.parent).map(|node| node.revision) != Some(name.revision) {
             return Err(Error::Integrity("stale name acquisition"));
         }
@@ -240,21 +408,23 @@ impl LiveWorkspace {
         self.nodes
             .try_reserve(1)
             .map_err(|_| Error::InvalidInput("workspace live allocation"))?;
+        let directory = matches!(data, Data::Directory(_));
+        let file = matches!(data, Data::File(_));
+        if directory {
+            self.directory_parents
+                .try_reserve(1)
+                .map_err(|_| Error::InvalidInput("workspace live allocation"))?;
+        }
         let value = Node {
             revision: 0,
             canonical: None,
             paths: [path.clone()].into(),
-            mode: mode & 0o777,
-            links: 1,
+            mode,
+            links: if directory { 2 } else { 1 },
             pins: 0,
             mtime_seconds: 0,
             mtime_nanoseconds: 0,
-            data: Data::File(FileData::Edited {
-                base: None,
-                spool_high_water: 0,
-                pieces: PieceTree::empty(),
-                edits: 0,
-            }),
+            data,
         };
         let node = match reserved {
             Some(node) => {
@@ -267,7 +437,12 @@ impl LiveWorkspace {
         self.directory_mut(name.parent)?
             .changes
             .insert(name.name.as_bytes().to_vec(), Some(node));
-        self.edited_nodes.insert(node);
+        if file {
+            self.edited_nodes.insert(node);
+        }
+        if directory {
+            self.directory_parents.insert(node, name.parent);
+        }
         self.dirty.insert(node);
         self.mutation_generation = generation;
         self.mutation_paths.insert(path, generation);

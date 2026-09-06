@@ -283,6 +283,8 @@ mod tests {
 /// The live inode table and its coherent change generation. Native and daemon
 /// adapters own one instance per writable Workspace lifetime.
 pub struct LiveWorkspace {
+    pub canonical_nodes: HashMap<InodeId, NodeId>,
+    pub directory_parents: HashMap<NodeId, NodeId>,
     pub next_node: u64,
     pub reserved: BTreeSet<NodeId>,
     pub inline_bytes: u64,
@@ -299,7 +301,14 @@ pub struct LiveWorkspace {
 
 impl LiveWorkspace {
     pub fn new(root: Node, policy: ResourcePolicy) -> Self {
+        let canonical_nodes = root
+            .canonical
+            .map(|inode| (inode, ROOT))
+            .into_iter()
+            .collect();
         Self {
+            canonical_nodes,
+            directory_parents: HashMap::from([(ROOT, ROOT)]),
             next_node: 2,
             reserved: BTreeSet::new(),
             inline_bytes: 0,
