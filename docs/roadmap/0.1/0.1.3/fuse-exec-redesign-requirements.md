@@ -65,7 +65,7 @@ The portable principle is to execute ordinary operations beside the application'
 
 ## 4. Concurrent access and multiple mounted workspaces
 
-- [ ] Multiple processes can use one workspace concurrently.
+- [ ] Multiple processes can use one workspace concurrently and remain alive across a successful Commit; command activity and ordinary open file handles must not gate Commit success.
 - [ ] Independent operations can progress concurrently; conflicting operations have defined ordering and atomicity.
 - [ ] Design for at least 100 independent live agent workspaces with isolated state/handles/errors/accounting and shared bounded execution resources; assess this scale using source accounting and existing lower-volume evidence for now, with physical 100-workspace qualification deferred and not a current completion gate.
 - [ ] Mutable cache and handle keys distinguish workspace and mount lifetime; NodeId alone must not accidentally alias state across workspaces.
@@ -95,7 +95,7 @@ The portable principle is to execute ordinary operations beside the application'
 - [ ] Temporary and overwritten intermediate states need not become published objects.
 - [ ] Only valid final objects enter the published snapshot; incremental provisional state retains required readable storage and finality checks.
 - [ ] Commit consumes known changed state without rediscovering the entire workspace.
-- [ ] Commit establishes a consistent boundary. Active writes are either correctly separated into generations or explicitly excluded; never publish a torn state.
+- [ ] Commit establishes a consistent filesystem-operation boundary independently of shell/Exec tracking. Order or pause conflicting mutations, drain admitted work, preserve process/mount/handle continuity and later dirty writes; never require command exit or publish torn state.
 - [ ] Clearing published changes cannot clear post-boundary changes.
 - [ ] Successful Commit advances existing live nodes/handles instead of reconstructing the Workspace.
 - [ ] Expected-head/base checks prevent silent overwrites by competing workspaces. Final references preserve unseen aliases and add/remove ordering.

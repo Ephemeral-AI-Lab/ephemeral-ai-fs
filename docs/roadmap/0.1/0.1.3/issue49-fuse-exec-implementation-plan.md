@@ -108,8 +108,8 @@ Fewer requests alone are not a performance result. The retained #48 grant/replay
 | B4 | Success and backing | Reserve before dependent mutation. ACK only complete resolved-fact groups whose referenced bytes are retained. Preserve range ownership across reads, partial writes, failure and checkpoint |
 | B5 | Logical observation | Current `session()`/`diff()` fields need a coherent owner metadata/generation read, not payload transfer or a global backing fence. `sessions()` releases registry lock before contacting owners |
 | B6 | Actual synchronization | File reads order relevant inode/alias changes. Required fsync/Exec completion/Commit backing fences retain the actual existing error/durability contract. Do not turn every observer into a global drain |
-| B7 | Commit | Preserve existing managed-Exec Busy contract initially. One owner closes mutation admission and drains admitted work. Host constructs from known frozen changes; install exact retained outcome into same nodes |
-| B8 | Handles / SDK edits | Read-only handles and idle processes are not automatically Busy. Preserve open-unlinked reads. Exclude an incompatible writer/mapping only where safe capture/invalidation requires it; invalidation failure retains exact result and failed presentation |
+| B7 | Commit | Commands may remain running while Commit succeeds. One owner orders filesystem mutations at a consistent cut; no has_executions/command-exit or ordinary-open-fd gate. Host constructs from frozen changes and installs into the same nodes; later mutations continue |
+| B8 | Handles / SDK edits | Running processes and ordinary open read/write handles remain valid across Commit and SDK operations. Use filesystem operation ordering and required kernel coherence, not command lifetime or waiting for close. Preserve open-unlinked reads; actual invalidation failures retain exact result and failed presentation |
 | B9 | Concurrency | Short per-Workspace namespace writer plus sorted affected-inode ordering initially; independent data/other Workspace operations can progress. No state lock across I/O, capacity waits, joins or publication |
 | B10 | Runtime | One small fuser receive loop per mount; shared lifecycle/auth/control/transport. Reuse decoder/replies. No custom FUSE multiplexer solely to defend the earlier 256 MiB estimate |
 | B11 | Portable boundary | Core contains canonical byte identities, names, validation, ranges and state only. Linux mount/credentials/readiness, Unix File, SQLite and Docker stay outside it |
@@ -118,6 +118,16 @@ Fewer requests alone are not a performance result. The retained #48 grant/replay
 Known ceiling: one namespace writer serializes namespace mutations within a Workspace. Mark it in the implementation with a `ponytail:` comment naming the ceiling; change to finer directory locks only if actual contention justifies it. Do not introduce global all-mount ordering.
 
 Consolidating helper processes changes process-crash containment: one daemon crash can affect its mounts. Preserve logical state/error isolation and documented recovery; do not claim identical process isolation. No universal lock-free/risk-free or complete future-platform compatibility claim.
+
+### Commands are not the Commit boundary
+
+The user's filesystem contract supersedes the earlier instruction to preserve managed-Exec Busy. Shell/Exec is a launcher and benchmark surface; Commit must work regardless of whether a process was launched through that API or externally. Multiple commands can stay alive and continue using the same cwd, mount and handles across a successful Commit.
+
+The minimum implementation pauses conflicting filesystem mutations, drains admitted operations without state locks, captures known state and its required backing, publishes/checkpoints, and resumes queued mutations. Holding that mutation pause through publication/install is acceptable initially; a more complex concurrent-generation Commit is not required. Processes are not killed, suspended as process groups, or awaited to exit. Supported mutation calls wait at the boundary rather than receiving Busy solely because Commit is active. Post-cut mutations execute afterward and remain dirty for the next Commit.
+
+Remove command-count coupling in `commit_workspace_session_with_status`, `WorkspaceWorker::quiesce`/writer draining, ordinary SDK edits and admission/start paths. `note_execution` may remain for resource/output/teardown accounting, not to define snapshot consistency. Do not require all writable fds to close. Supported kernel dirty pages/mappings must participate in the real synchronization contract; do not blindly remove checks or silently drop supported behavior. Legitimate head conflicts, failures, cancellation/deadline and resource errors remain. End/discard/unmount/owner-loss cleanup is separate.
+
+A Commit captures filesystem state at an operation cut, not an entire shell command's transaction. A long command can have some completed writes in this snapshot and later writes in the next. Add focused checks with two live commands/handles, writes before and after the cut, direct external access, and unchanged cwd/mount/handle identity. These small correctness checks do not introduce a 100-workspace experiment.
 
 ## 3. Explicit folder, type and method plan
 
@@ -218,8 +228,8 @@ Do not drop capture or canonical deduplication to make the extraction easier. Re
 |---|---|---|
 | SDK `client.rs::commit_workspace_session_with_status` | Preserve public result/status contract | H. No user-facing API rewrite needed solely for placement |
 | `workspace/src/worker.rs::WorkspaceWorker`, `enter_callback`, `note_writer`, `note_execution`, `quiesce`, `wait_for_writers` | Actual live owner tracks callback/writer cut; host routes control and retains only actual host responsibilities | H/M. Avoid host + daemon independently counting/draining the same work |
-| `lifecycle.rs::Workspaces::commit_workspace_session_with_status` | Request one owner cut/frozen input, preserve managed-Exec Busy and failure/resume contract | H/M. No live state/Store/registry lock across owner request or backing drain |
-| `edit_workspace_file_ranges` | Call existing shared edit validation/operation at owner; preserve exact rollback/exclusion and kernel invalidation | H/M. Read-only handles do not become a blanket Busy rule; unsafe mappings remain excluded |
+| `lifecycle.rs::Workspaces::commit_workspace_session_with_status` | Request one filesystem-operation cut/frozen input; remove managed-command Busy gating, preserve actual failure/resume and publication recovery | H/M. No live state/Store/registry lock across owner request or backing drain |
+| `edit_workspace_file_ranges` | Call existing shared edit validation/operation at owner; preserve exact rollback/exclusion and kernel invalidation | H/M. No blanket command/open-fd rejection; supported mapping/dirty-page coherence requires a real capture boundary |
 | `session`, `diff`, `sessions` | Owner metadata/generation reads; copy registry references before contacting owners | H. No payload flush/global freeze just to report dirty/generation/execution summary |
 | `projection.rs::pause`, `resume`, `refresh_file`; `docker.rs::DockerProjection::{pause,resume,invalidate_file}` | Thin control/notification adapters; remove duplicate host live mutation decisions | H/M. Failed invalidation/presentation cannot silently resume stale cached access |
 | `recover_workspace_presentation`, `end_workspace_session` | Reuse exact recovery, retained-summary/discard and bounded retirement semantics | H/M. No blind reconnect/replay; release/forget/cancellation remain admissible while draining |
