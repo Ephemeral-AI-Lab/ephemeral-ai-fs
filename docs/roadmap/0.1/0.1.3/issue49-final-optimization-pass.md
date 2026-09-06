@@ -85,3 +85,8 @@ Use current host SQLite + Docker/FUSE topology, matching sealed cached builds, e
 - A formal lifecycle MISS or correctness failure is never terminal PASS. Replan within this final scope for a concrete demonstrated defect; if the formal result remains unmet without a justified bounded correction, report that condition rather than silently broaden scope or fabricate success.
 
 Update the final implementation ledger with accepted/rejected changes, exact source and receipts, remaining margins and deferred scale evidence. No automatic parent issue closure.
+
+
+## Accepted integration observation — 2026-09-06
+
+The user explicitly accepted the final measured `tiny-bulk-create-100-mixed-v3` complete lifecycle of **1.037675209 s** (displayed1.0377 s) and requested publication to remote main after the all-family refresh. This acceptance supersedes further tuning of that observation against the earlier working/subsecond target. It does not define a new universal numerical threshold. Preserve the original classifier in raw receipts and report the explicit acceptance alongside it. Both current-source tier100 selected proofs passed; the complete corrected refresh has138performance cases and36selected proofs. See [the final report](issue38-main-refresh-results.md).
