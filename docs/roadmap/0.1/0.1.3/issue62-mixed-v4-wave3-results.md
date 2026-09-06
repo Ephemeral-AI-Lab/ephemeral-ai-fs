@@ -81,6 +81,6 @@ Proofs ran only after COMPLETE performance. Coverage: every large file, three 64
 
 ## What this does not close
 
-- Background-only `tiny-{create,stat,unlink}-{100,500}-mixed-v4` is still later work.
+- Background-only tiny ops are reported in [issue62-mixed-v4-tiny-background-results.md](issue62-mixed-v4-tiny-background-results.md).
 - [#61](https://github.com/Ephemeral-AI-Lab/layerfs/issues/61) remains the home of old 100k-file ENOSPC/presentation leftovers.
 - Product Exec/Commit optimization remains #46 / #47 / #48 / #50.
