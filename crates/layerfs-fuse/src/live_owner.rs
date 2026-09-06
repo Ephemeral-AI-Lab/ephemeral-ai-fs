@@ -1629,9 +1629,15 @@ impl LiveOwner {
                 #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
                 let _cache_charge = self
                     .0
-                    .scheduler
-                    .reserve_live(2 * 1024 * 1024)
-                    .map_err(|_| PortError::NoSpace)?;
+                    .notifier
+                    .get()
+                    .map(|_| {
+                        self.0
+                            .scheduler
+                            .reserve_live(2 * 1024 * 1024)
+                            .map_err(|_| PortError::NoSpace)
+                    })
+                    .transpose()?;
                 self.state()?
                     .apply_edit(pending.prepared.ok_or(PortError::Invalid)?)
                     .map_err(core)?;
@@ -1649,9 +1655,8 @@ impl LiveOwner {
                 // notification can wait for their locked kernel folios.
                 drop(pending.cut);
                 #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
-                {
+                if let Some(notifier) = self.0.notifier.get().cloned() {
                     let updated = async {
-                        let notifier = self.0.notifier.get().ok_or(PortError::Io)?.clone();
                         let mut ranges = pending.cache_ranges;
                         ranges.sort_unstable_by_key(|range| range.start);
                         let mut end = 0;
