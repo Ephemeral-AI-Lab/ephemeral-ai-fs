@@ -161,7 +161,7 @@ impl CheckpointJournal {
         let file = anonymous_journal(&workspace.spool)?;
         Ok(Self {
             writer: BufWriter::with_capacity(
-                journal_io_bytes(workspace.policy.max_final_delta_memory_bytes),
+                journal_io_bytes(workspace.live.policy.max_final_delta_memory_bytes),
                 file,
             ),
             count: 0,
@@ -354,13 +354,16 @@ impl Workspace {
         worker_limit: usize,
     ) -> Result<PreparedCommit> {
         let started = Instant::now();
-        self.policy
+        self.live
+            .policy
             .check_final_delta(1024)
             .map_err(crate::live_error)?;
-        let batch_size = (self.policy.max_final_delta_memory_bytes / 4096).clamp(1, 128) as usize;
-        let io_bytes = journal_io_bytes(self.policy.max_final_delta_memory_bytes);
+        let batch_size =
+            (self.live.policy.max_final_delta_memory_bytes / 4096).clamp(1, 128) as usize;
+        let io_bytes = journal_io_bytes(self.live.policy.max_final_delta_memory_bytes);
         // Task-index and all worker-result buffers split one existing journal allowance.
         let frontier_budget = self
+            .live
             .policy
             .max_final_delta_memory_bytes
             .saturating_sub(4 * io_bytes.saturating_sub(256) as u64);
@@ -696,8 +699,9 @@ impl Workspace {
             .first()
             .ok_or(StorageError::Integrity("frontier path"))?;
         let batch_allowance =
-            (self.policy.max_final_delta_memory_bytes / 4096).clamp(1, 128) * 1024;
-        self.policy
+            (self.live.policy.max_final_delta_memory_bytes / 4096).clamp(1, 128) * 1024;
+        self.live
+            .policy
             .check_final_delta(batch_allowance.saturating_add(path_charge(path)))
             .map_err(crate::live_error)?;
         layerfs_layerstack_store::note_workspace_namespace_visits(0, 1, 0, 0, 0);
@@ -803,7 +807,8 @@ impl Workspace {
                             record: resolved.record,
                         },
                     );
-                    self.policy
+                    self.live
+                        .policy
                         .check_final_delta(charge)
                         .map_err(crate::live_error)?;
                 }
@@ -838,7 +843,8 @@ impl Workspace {
                 let attr = self.attr(node)?;
                 charge = charge.saturating_add(path_charge(&path));
                 output.insert(path.clone(), FinalEntry { node, attr });
-                self.policy
+                self.live
+                    .policy
                     .check_final_delta(charge)
                     .map_err(crate::live_error)?;
                 if attr.kind == Kind::Directory {
@@ -2436,7 +2442,7 @@ mod tests {
         drop(serial);
         drop(parallel);
         drop(old);
-        workspace.policy.max_final_delta_memory_bytes = 1024;
+        workspace.live.policy.max_final_delta_memory_bytes = 1024;
         let result = workspace.build_frontier_candidate_with_workers(CandidatePurpose::Preview, 4);
         // Existing tiny-budget fallback is allowed to reject, never to exceed its policy.
         if let Err(error) = result {
@@ -2636,7 +2642,7 @@ mod tests {
         );
         drop(objects);
         // A single-file deletion remains supported at the existing minimum budget.
-        workspace.policy.max_final_delta_memory_bytes = 1024;
+        workspace.live.policy.max_final_delta_memory_bytes = 1024;
         workspace.unlink(ROOT, b"other", false).unwrap();
         workspace.commit().unwrap();
         assert!(workspace.lookup(ROOT, b"other").is_err());
@@ -2756,11 +2762,11 @@ mod tests {
             let mut workspace = Workspace::open(store, branch, root.join("again")).unwrap();
             let a = workspace.lookup(ROOT, b"a").unwrap().node;
             let b = workspace.lookup(ROOT, b"b").unwrap().node;
-            workspace.policy.max_spool_bytes = 0;
+            workspace.live.policy.max_spool_bytes = 0;
             assert!(workspace.write(a, 0, b"x").is_err());
             workspace.chmod(b, 0o640).unwrap();
             workspace.commit().unwrap();
-            workspace.policy.max_spool_bytes = 1024;
+            workspace.live.policy.max_spool_bytes = 1024;
             workspace.write(a, 0, b"x").unwrap();
             if pinned {
                 workspace.pin(a, false).unwrap();
@@ -2789,11 +2795,11 @@ mod tests {
     #[test]
     fn checkpoint_checks_final_references_and_preserves_payload_limit() {
         let (root, mut workspace) = empty_workspace("checkpoint-checks");
-        workspace.policy.max_spool_bytes = 3;
+        workspace.live.policy.max_spool_bytes = 3;
         let file = workspace.create_file(ROOT, b"file", 0o640).unwrap().node;
         workspace.write(file, 0, b"abc").unwrap();
         workspace.commit().unwrap();
-        workspace.policy.max_spool_bytes = 0;
+        workspace.live.policy.max_spool_bytes = 0;
         workspace.set_mtime(file, 17, 3).unwrap();
         workspace.commit().unwrap();
         let mut journal = CheckpointJournal::new(&workspace).unwrap();
@@ -2982,7 +2988,7 @@ mod tests {
         assert_eq!(entries.len(), 329);
         // A valid long path still must fit the transient planner allocation,
         // together with its pending inode batch, under a custom small policy.
-        workspace.policy.max_final_delta_memory_bytes = 4096;
+        workspace.live.policy.max_final_delta_memory_bytes = 4096;
         let name = "x".repeat(250);
         let mut parent = ROOT;
         for _ in 0..4 {
@@ -3026,7 +3032,7 @@ mod tests {
             .iter()
             .map(|(_, node)| workspace.live.nodes[node].canonical.unwrap())
             .collect::<Vec<_>>();
-        workspace.policy.max_final_delta_memory_bytes = 4096;
+        workspace.live.policy.max_final_delta_memory_bytes = 4096;
         for (index, (_, node)) in files.iter().enumerate() {
             workspace
                 .write(*node, 0, format!("changed-{index:02}").as_bytes())
@@ -3046,7 +3052,7 @@ mod tests {
                 .keys()
                 .map(|path| path_charge(path))
                 .sum::<u64>()
-                > workspace.policy.max_final_delta_memory_bytes
+                > workspace.live.policy.max_final_delta_memory_bytes
         );
         workspace.commit().unwrap();
         let reader = workspace.store.snapshot_reader(workspace.base_root);

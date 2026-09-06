@@ -77,6 +77,7 @@ pub struct DirectoryData {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Node {
+    pub revision: u64,
     pub canonical: Option<InodeId>,
     pub paths: BTreeSet<String>,
     pub mode: u32,
@@ -144,25 +145,28 @@ impl ReadPlan {
 }
 
 #[cfg(test)]
-mod read_tests {
+mod tests {
     use super::*;
     use crate::file_edit::{Piece, PieceTree};
 
-    #[test]
-    fn metadata_changes_share_aliases_and_reject_before_generation_overflow() {
-        let mut live = LiveWorkspace::new(Node {
-            canonical: None,
-            paths: BTreeSet::from([String::new()]),
-            mode: 0o755,
-            links: 2,
-            pins: 0,
-            mtime_seconds: 0,
-            mtime_nanoseconds: 0,
-            data: Data::Directory(DirectoryData {
-                base: None,
-                changes: BTreeMap::new(),
-            }),
-        });
+    fn live_file() -> (LiveWorkspace, NodeId) {
+        let mut live = LiveWorkspace::new(
+            Node {
+                revision: 0,
+                canonical: None,
+                paths: BTreeSet::from([String::new()]),
+                mode: 0o755,
+                links: 2,
+                pins: 0,
+                mtime_seconds: 0,
+                mtime_nanoseconds: 0,
+                data: Data::Directory(DirectoryData {
+                    base: None,
+                    changes: BTreeMap::new(),
+                }),
+            },
+            ResourcePolicy::default(),
+        );
         let file = NodeId(2);
         let mut node = live.nodes[&ROOT].clone();
         node.data = Data::File(FileData::Edited {
@@ -173,6 +177,12 @@ mod read_tests {
         });
         node.paths = BTreeSet::from(["a".to_owned(), "b".to_owned()]);
         live.nodes.insert(file, node);
+        (live, file)
+    }
+
+    #[test]
+    fn metadata_changes_share_aliases_and_reject_before_generation_overflow() {
+        let (mut live, file) = live_file();
         live.chmod(file, 0o6750).unwrap();
         live.set_mtime(file, 123, 456).unwrap();
         assert_eq!(live.attr(file).unwrap().mode, 0o750);
@@ -186,6 +196,56 @@ mod read_tests {
         assert!(live.set_mtime(file, 999, 0).is_err());
         assert_eq!(live.nodes[&file], before);
         assert_eq!(live.mutation_paths["a"], 2);
+    }
+
+    #[test]
+    fn prepared_write_is_exact_once_and_unrelated_inode_metadata_can_progress() {
+        use crate::backing::{BackingId, BackingRef};
+        use crate::file_edit::SpoolSlice;
+        let (mut live, file) = live_file();
+        let backing = BackingRef::new(BackingId(7), b"owned".to_vec());
+        let range = || {
+            Some(SpoolSlice {
+                segment: backing.clone(),
+                offset: 0,
+                len: 5,
+            })
+        };
+        let before = live.nodes[&file].clone();
+        let prepared = live.prepare_write(file, 3, 5, range()).unwrap();
+        assert_eq!(live.nodes[&file], before, "prepare mutated live state");
+        assert_eq!(live.spool_bytes, 0);
+        live.chmod(ROOT, 0o700).unwrap();
+        assert_eq!(live.apply_write(prepared).unwrap(), 5);
+        assert_eq!(live.attr(file).unwrap().size, 8);
+        assert_eq!(live.spool_bytes, 5);
+        let revision = live.nodes[&file].revision;
+        let stale = live.prepare_write(file, 0, 5, range()).unwrap();
+        let newer = live.prepare_write(file, 0, 1, None).unwrap();
+        live.apply_write(newer).unwrap();
+        let installed = live.nodes[&file].clone();
+        assert_eq!(
+            live.apply_write(stale),
+            Err(Error::Integrity("stale prepared write"))
+        );
+        assert_eq!(live.nodes[&file], installed);
+        assert_eq!(live.nodes[&file].revision, revision + 1);
+        assert_eq!(
+            live.spool_bytes, 5,
+            "unused append never becomes logical data"
+        );
+        assert!(!backing.is_unique(), "live file retains its backing");
+        let stale_metadata = live.prepare_write(file, 0, 5, range()).unwrap();
+        let mode = live.attr(file).unwrap().mode;
+        live.chmod(file, mode).unwrap();
+        assert_eq!(
+            live.apply_write(stale_metadata),
+            Err(Error::Integrity("stale prepared write"))
+        );
+        live.policy.max_spool_bytes = 5;
+        assert!(live.prepare_write(file, 0, 5, range()).is_err());
+        assert!(live.prepare_write(file, u64::MAX, 5, range()).is_err());
+        assert!(live.prepare_write(file, 0, 4, range()).is_err());
     }
 
     #[test]
@@ -214,6 +274,12 @@ mod read_tests {
 /// The live inode table and its coherent change generation. Native and daemon
 /// adapters own one instance per writable Workspace lifetime.
 pub struct LiveWorkspace {
+    pub inline_bytes: u64,
+    pub piece_allocation_bytes: u64,
+    pub spool_bytes: u64,
+    pub spool_bytes_peak: u64,
+    pub edited_nodes: BTreeSet<NodeId>,
+    pub policy: ResourcePolicy,
     pub nodes: HashMap<NodeId, Node>,
     pub dirty: BTreeSet<NodeId>,
     pub mutation_generation: u64,
@@ -221,8 +287,14 @@ pub struct LiveWorkspace {
 }
 
 impl LiveWorkspace {
-    pub fn new(root: Node) -> Self {
+    pub fn new(root: Node, policy: ResourcePolicy) -> Self {
         Self {
+            inline_bytes: 0,
+            piece_allocation_bytes: 0,
+            spool_bytes: 0,
+            spool_bytes_peak: 0,
+            edited_nodes: BTreeSet::new(),
+            policy,
             nodes: HashMap::from([(ROOT, root)]),
             dirty: BTreeSet::new(),
             mutation_generation: 0,
@@ -255,7 +327,12 @@ impl LiveWorkspace {
     pub fn chmod(&mut self, node: NodeId, mode: u32) -> Result<()> {
         let generation = self.next_generation()?;
         let value = self.nodes.get_mut(&node).ok_or(Error::NotFound("node"))?;
+        let revision = value
+            .revision
+            .checked_add(1)
+            .ok_or(Error::Integrity("inode revision"))?;
         value.mode = mode & 0o1777;
+        value.revision = revision;
         self.dirty.insert(node);
         self.mutation_generation = generation;
         for path in &value.paths {
@@ -270,6 +347,11 @@ impl LiveWorkspace {
         }
         let generation = self.next_generation()?;
         let value = self.nodes.get_mut(&node).ok_or(Error::NotFound("node"))?;
+        let revision = value
+            .revision
+            .checked_add(1)
+            .ok_or(Error::Integrity("inode revision"))?;
+        value.revision = revision;
         value.mtime_seconds = seconds;
         value.mtime_nanoseconds = nanos;
         self.dirty.insert(node);

@@ -73,3 +73,23 @@ Moved metadata bodies check generation capacity before changing attributes and u
 Verification after inode-table transfer: 50 native Workspace tests and 11 portable-core tests PASS (Rust 1.85.1, build 6.62 s; test execution 1.09 s / 0.05 s). The field migration initially exposed two retained capture accesses and a chained projection observer access; all now use the same live table. Rust 1.96.0 affected-package Clippy with warnings denied PASS. An earlier Clippy invocation used the wrong 1.85.1 toolchain and reported two unchanged Store findings; CI specifies 1.96.0, and no Store algorithm was changed for those findings. Added conventional `is_empty` methods for the newly public piece types and removed two redundant native borrows.
 
 Remaining P1 exit: exact prepared inode/version, range and resource ownership across backing work. P2–P6 remain open. No rewritten-product performance result or terminal PASS.
+
+## P1c — exact prepared writes through the native caller
+
+`LiveWorkspace` now also owns the existing logical spool/peak, inline/piece charges, edited-inode set and ResourcePolicy; physical segment bytes, descriptors, files and capture remain host-side. `Node.revision` advances on shared metadata and file edits and is retained by exact rollback. Native write preparation no longer converts Base to Edited before validation/backing success.
+
+Concrete boundary:
+
+```rust
+LiveWorkspace::prepare_write(&self, node: NodeId, offset: u64,
+    bytes: usize, backing: Option<SpoolSlice>) -> Result<PreparedWrite>
+LiveWorkspace::apply_write(&mut self, prepared: PreparedWrite) -> Result<usize>
+```
+
+PreparedWrite owns the exact inode/revision/value and chosen range, is not Clone, and is consumed on installation. The existing PieceTree splice, zero gap, edit/inline/allocation/length/spool checks are shared. Apply checks exact prepared state before installation; unrelated inode metadata can progress without invalidating the prepared file. Native write keeps physical append/check/rollback and capture feed, then calls shared apply once. Failed/stale installation never repeats the append. Full old node comparison additionally covers current native alias/pin changes while remaining namespace algorithms transfer; native namespace revision stamping and daemon ordering/admission still belong to P3/P5.
+
+The adapter must retain affected-inode ordering and resource admission across prepare/acquire/apply. The native caller currently has exclusive Workspace access. This checkpoint does **not** claim concurrent daemon reservations or worker suspension is implemented; those must exist before activating the remote caller. Resource checks at apply preserve safe rejection if limits/state changed. Existing host segment_bytes counts an appended unused tail until retirement, independently of logical spool bytes.
+
+Verification under the shared lock: 50 native Workspace tests and 12 core tests PASS (Rust 1.85.1; build 6.48 s; tests 1.10 s / 0.05 s). New core test checks no preparation mutation, unrelated-inode progress, revision rejection including a same-value metadata mutation, exact byte/range/overflow/quota checks and retained backing. Additional native stale-append injection PASS (0.02 s): physical append occurs once, old content survives, all 8 physical bytes remain charged versus 5 logical bytes, further over-quota write is rejected, an old read pins the complete segment across Commit, and retirement occurs after its final release. Affected-package Rust 1.96.0 Clippy with warnings denied PASS (2.17 s). Two constructor call sites needed the moved policy parameter; no test semantics were weakened.
+
+No performance candidate yet. Next is P2's minimal safe ingress/runtime entry, then P3 cold parent acquisition/create/metadata/backing/frozen Commit/SDK/continue on the same owner. Truncate and multi-edit still use the retained native body and will transfer with their actual exclusion/rollback callers before enabling the supported rewrite.

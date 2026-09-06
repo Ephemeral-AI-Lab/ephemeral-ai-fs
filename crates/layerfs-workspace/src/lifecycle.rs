@@ -96,7 +96,7 @@ impl Workspace {
         if consume_verification_fault(
             self.branch_id,
             VerificationFault::Candidate,
-            self.spool_bytes,
+            self.live.spool_bytes,
         ) {
             crate::changes::inject_candidate_failure_once();
         }
@@ -222,7 +222,7 @@ impl Workspace {
                     .with_read_metrics_from(&self.reader),
             },
             &self.spool,
-            self.policy,
+            self.live.policy,
         )?;
         // Held read plans retain old segments and their admission charge across refresh.
         let segments = std::mem::take(&mut self.spool_segments);
@@ -276,7 +276,7 @@ impl Workspace {
                     return Err(StorageError::Integrity("checkpoint presentation"));
                 }
                 if matches!(&node.data, Data::File(FileData::Edited { .. }))
-                    && !self.edited_nodes.contains(&id)
+                    && !self.live.edited_nodes.contains(&id)
                 {
                     return Err(StorageError::Integrity("spool descriptor"));
                 }
@@ -313,7 +313,7 @@ impl Workspace {
                     }
                     Data::Symlink(_) => {}
                 }
-                self.edited_nodes.remove(&id);
+                self.live.edited_nodes.remove(&id);
                 node.canonical = Some(inode);
                 self.canonical_nodes.insert(inode, id);
                 #[cfg(test)]
@@ -324,9 +324,9 @@ impl Workspace {
                 }
                 Ok(())
             })?;
-            self.spool_bytes = 0;
-            self.inline_bytes = 0;
-            self.piece_allocation_bytes = 0;
+            self.live.spool_bytes = 0;
+            self.live.inline_bytes = 0;
+            self.live.piece_allocation_bytes = 0;
             for id in &self.live.dirty {
                 if let Some(node) = self
                     .live
@@ -341,7 +341,7 @@ impl Workspace {
             }
             // Includes inline/zero-only state and rejected writes that established
             // editable backing without applying a semantic mutation.
-            for id in &self.edited_nodes {
+            for id in &self.live.edited_nodes {
                 let Data::File(FileData::Edited {
                     spool_high_water,
                     pieces,
@@ -350,9 +350,9 @@ impl Workspace {
                 else {
                     return Err(StorageError::Integrity("checkpoint retained spool"));
                 };
-                self.spool_bytes = self.spool_bytes.saturating_add(*spool_high_water);
-                self.inline_bytes = self.inline_bytes.saturating_add(pieces.inline_len());
-                self.piece_allocation_bytes = self.piece_allocation_bytes.saturating_add(
+                self.live.spool_bytes = self.live.spool_bytes.saturating_add(*spool_high_water);
+                self.live.inline_bytes = self.live.inline_bytes.saturating_add(pieces.inline_len());
+                self.live.piece_allocation_bytes = self.live.piece_allocation_bytes.saturating_add(
                     pieces
                         .logical_allocation_charge()
                         .map_err(crate::live_error)?,
@@ -366,7 +366,7 @@ impl Workspace {
             self.base_inodes =
                 layerfs_content::tree::inode::InodeTableRoot(namespace.inode_table_root);
             self.directory_lookup_cache = Default::default();
-            self.spool_bytes_peak = self.spool_bytes;
+            self.live.spool_bytes_peak = self.live.spool_bytes;
             self.live.mutation_generation = 0;
             self.live.mutation_paths.clear();
             self.live.dirty.clear();
@@ -432,8 +432,8 @@ impl Workspaces {
         let (physical_current, physical_peak, physical_errors, physical_observations) =
             workspace.physical_spool_snapshot();
         Ok(VerificationWorkspaceState {
-            spool_bytes: workspace.spool_bytes,
-            spool_peak_bytes: workspace.spool_bytes_peak,
+            spool_bytes: workspace.live.spool_bytes,
+            spool_peak_bytes: workspace.live.spool_bytes_peak,
             physical_spool_allocated_bytes: physical_current,
             physical_spool_peak_bytes: physical_peak,
             physical_spool_observation_errors: physical_errors,
@@ -1490,12 +1490,12 @@ mod tests {
         assert!(workspace.live.nodes[&orphan].paths.is_empty());
         assert_eq!(workspace.live.nodes[&orphan].pins, 1);
         assert_eq!(workspace.read(orphan, 0, 64).unwrap(), b"pinned-data");
-        assert_eq!(workspace.spool_bytes, 11);
+        assert_eq!(workspace.live.spool_bytes, 11);
         assert_eq!(workspace.spool_segments.len(), 1);
         assert!(workspace.live.dirty.is_empty() && workspace.live.mutation_paths.is_empty());
         assert_eq!(workspace.live.mutation_generation, 0);
         workspace.unpin(orphan).unwrap();
-        assert_eq!(workspace.spool_bytes, 0);
+        assert_eq!(workspace.live.spool_bytes, 0);
         assert!(workspace.spool_segments.is_empty());
         drop(workspace);
         drop(store);
@@ -1569,9 +1569,9 @@ mod tests {
                 workspace.live.dirty.clone(),
                 workspace.live.mutation_generation,
                 workspace.live.mutation_paths.clone(),
-                workspace.spool_bytes,
-                workspace.inline_bytes,
-                workspace.piece_allocation_bytes,
+                workspace.live.spool_bytes,
+                workspace.live.inline_bytes,
+                workspace.live.piece_allocation_bytes,
             )
         };
         let branch_before = store.pin_branch(branch).unwrap().root;
@@ -1583,9 +1583,9 @@ mod tests {
             assert_eq!(workspace.live.dirty, before.1);
             assert_eq!(workspace.live.mutation_generation, before.2);
             assert_eq!(workspace.live.mutation_paths, before.3);
-            assert_eq!(workspace.spool_bytes, before.4);
-            assert_eq!(workspace.inline_bytes, before.5);
-            assert_eq!(workspace.piece_allocation_bytes, before.6);
+            assert_eq!(workspace.live.spool_bytes, before.4);
+            assert_eq!(workspace.live.inline_bytes, before.5);
+            assert_eq!(workspace.live.piece_allocation_bytes, before.6);
         }
         assert_eq!(std::fs::read(root.join("mount/file")).unwrap(), b"abcdef");
         assert_eq!(store.pin_branch(branch).unwrap().root, branch_before);
@@ -1616,9 +1616,9 @@ mod tests {
                 workspace.live.dirty.clone(),
                 workspace.live.mutation_generation,
                 workspace.live.mutation_paths.clone(),
-                workspace.spool_bytes,
-                workspace.inline_bytes,
-                workspace.piece_allocation_bytes,
+                workspace.live.spool_bytes,
+                workspace.live.inline_bytes,
+                workspace.live.piece_allocation_bytes,
                 store.pin_branch(branch).unwrap().root,
             )
         };
@@ -1632,9 +1632,9 @@ mod tests {
             assert_eq!(workspace.live.dirty, before.1);
             assert_eq!(workspace.live.mutation_generation, before.2);
             assert_eq!(workspace.live.mutation_paths, before.3);
-            assert_eq!(workspace.spool_bytes, before.4);
-            assert_eq!(workspace.inline_bytes, before.5);
-            assert_eq!(workspace.piece_allocation_bytes, before.6);
+            assert_eq!(workspace.live.spool_bytes, before.4);
+            assert_eq!(workspace.live.inline_bytes, before.5);
+            assert_eq!(workspace.live.piece_allocation_bytes, before.6);
         }
         assert_eq!(store.pin_branch(branch).unwrap().root, before.7);
         assert!(worker.projection_handle.lock().unwrap().is_some());
@@ -1683,9 +1683,9 @@ mod tests {
                 workspace.live.nodes.clone(),
                 workspace.live.dirty.clone(),
                 workspace.live.mutation_generation,
-                workspace.spool_bytes,
-                workspace.inline_bytes,
-                workspace.piece_allocation_bytes,
+                workspace.live.spool_bytes,
+                workspace.live.inline_bytes,
+                workspace.live.piece_allocation_bytes,
                 store.pin_branch(branch).unwrap().root,
             )
         };
@@ -1706,9 +1706,9 @@ mod tests {
             assert_eq!(workspace.live.nodes, before.0);
             assert_eq!(workspace.live.dirty, before.1);
             assert_eq!(workspace.live.mutation_generation, before.2);
-            assert_eq!(workspace.spool_bytes, before.3);
-            assert_eq!(workspace.inline_bytes, before.4);
-            assert_eq!(workspace.piece_allocation_bytes, before.5);
+            assert_eq!(workspace.live.spool_bytes, before.3);
+            assert_eq!(workspace.live.inline_bytes, before.4);
+            assert_eq!(workspace.live.piece_allocation_bytes, before.5);
         }
         assert_eq!(store.pin_branch(branch).unwrap().root, before.6);
         assert_eq!(std::fs::read(root.join("mount/file")).unwrap(), b"abcdef");

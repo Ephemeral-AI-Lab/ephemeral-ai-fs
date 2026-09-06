@@ -1,7 +1,7 @@
 use crate::cow_tree::{Data, FileData, Node, NodeId, Workspace};
 use crate::file_edit::{
-    Piece, PieceTree, MAX_EDITS_PER_FILE, MAX_INLINE_PER_EDIT, MAX_INLINE_PER_WORKSPACE,
-    MAX_PIECE_ALLOCATION,
+    Piece, PieceTree, SpoolSlice, MAX_EDITS_PER_FILE, MAX_INLINE_PER_EDIT,
+    MAX_INLINE_PER_WORKSPACE, MAX_PIECE_ALLOCATION,
 };
 use layerfs_content::file::rope::read_range;
 use layerfs_layerstack_store::{CoreReader, Result, SnapshotReader, StoreError};
@@ -206,10 +206,10 @@ impl Workspace {
             pieces,
             height,
             charge,
-            self.spool_bytes,
-            self.spool_bytes_peak,
+            self.live.spool_bytes,
+            self.live.spool_bytes_peak,
             spool_live,
-            self.spool_bytes.saturating_sub(spool_live),
+            self.live.spool_bytes.saturating_sub(spool_live),
             metric_nodes_scanned,
         );
         let (current, peak, errors, observations) = self.physical_spool_snapshot();
@@ -232,10 +232,10 @@ impl Workspace {
                 .ok_or(StoreError::NotFound("node"))?
                 .clone(),
             dirty: self.live.dirty.contains(&node),
-            spool_bytes: self.spool_bytes,
-            spool_bytes_peak: self.spool_bytes_peak,
-            inline_bytes: self.inline_bytes,
-            piece_allocation_bytes: self.piece_allocation_bytes,
+            spool_bytes: self.live.spool_bytes,
+            spool_bytes_peak: self.live.spool_bytes_peak,
+            inline_bytes: self.live.inline_bytes,
+            piece_allocation_bytes: self.live.piece_allocation_bytes,
             spool_write_metrics: self.spool_write_metrics,
             mutation_generation: self.live.mutation_generation,
             mutation_paths: self.live.mutation_paths.clone(),
@@ -244,9 +244,9 @@ impl Workspace {
 
     pub(crate) fn restore_edit(&mut self, checkpoint: EditCheckpoint) -> Result<()> {
         if matches!(checkpoint.value.data, Data::File(FileData::Base { .. })) {
-            self.edited_nodes.remove(&checkpoint.node);
+            self.live.edited_nodes.remove(&checkpoint.node);
         } else {
-            self.edited_nodes.insert(checkpoint.node);
+            self.live.edited_nodes.insert(checkpoint.node);
         }
         self.live.nodes.insert(checkpoint.node, checkpoint.value);
         if checkpoint.dirty {
@@ -254,10 +254,10 @@ impl Workspace {
         } else {
             self.live.dirty.remove(&checkpoint.node);
         }
-        self.spool_bytes = checkpoint.spool_bytes;
-        self.spool_bytes_peak = checkpoint.spool_bytes_peak;
-        self.inline_bytes = checkpoint.inline_bytes;
-        self.piece_allocation_bytes = checkpoint.piece_allocation_bytes;
+        self.live.spool_bytes = checkpoint.spool_bytes;
+        self.live.spool_bytes_peak = checkpoint.spool_bytes_peak;
+        self.live.inline_bytes = checkpoint.inline_bytes;
+        self.live.piece_allocation_bytes = checkpoint.piece_allocation_bytes;
         self.spool_write_metrics = checkpoint.spool_write_metrics;
         self.live.mutation_generation = checkpoint.mutation_generation;
         self.live.mutation_paths = checkpoint.mutation_paths;
@@ -303,76 +303,51 @@ impl Workspace {
         let end = offset
             .checked_add(byte_len as u64)
             .ok_or(StoreError::InvalidInput("write length"))?;
-        self.ensure_edited(node)?;
-        let (high_water, old, edits) = self.edited_state(node)?;
         let physical = if bytes.is_some() {
             Some(self.append_segment(byte_len as u64)?)
         } else {
             None
         };
-        let start = offset.min(old_len);
-        let delete_len = if offset < old_len {
-            (old_len - offset).min(byte_len as u64)
-        } else {
-            0
-        };
-        let mut replacement = Vec::with_capacity(2);
-        if offset > old_len {
-            replacement.push(Piece::Zero {
-                len: offset - old_len,
-            });
-        }
-        replacement.push(if bytes.is_some() {
-            Piece::Spool {
-                segment: physical.as_ref().unwrap().0.clone(),
-                offset: physical.as_ref().unwrap().1,
-                len: byte_len as u64,
-            }
-        } else {
-            Piece::Zero {
-                len: byte_len as u64,
-            }
-        });
-        let next = old
-            .replace(start, delete_len, replacement)
+        let prepared = self
+            .live
+            .prepare_write(
+                node,
+                offset,
+                byte_len,
+                physical.as_ref().map(|(segment, offset)| SpoolSlice {
+                    segment: segment.clone(),
+                    offset: *offset,
+                    len: byte_len as u64,
+                }),
+            )
             .map_err(crate::live_error)?;
-        let next_edits = next_edit(edits)?;
-        let generation = self.next_generation()?;
-        let paths = self.live.nodes[&node].paths.iter().cloned().collect();
         let appended = bytes.map_or(0, |bytes| bytes.len() as u64);
         #[cfg(feature = "test-instrumentation")]
         if appended > 0
             && crate::lifecycle::consume_verification_fault(
                 self.branch_id,
                 crate::lifecycle::VerificationFault::NoSpace,
-                self.spool_bytes,
+                self.live.spool_bytes,
             )
         {
-            let mut lowered = self.policy;
-            lowered.max_spool_bytes = self.spool_bytes;
+            let mut lowered = self.live.policy;
+            lowered.max_spool_bytes = self.live.spool_bytes;
             lowered
                 .check(
-                    self.spool_bytes
+                    self.live
+                        .spool_bytes
                         .checked_add(appended)
                         .ok_or(StoreError::InvalidInput("workspace spool limit"))?,
                 )
                 .map_err(crate::live_error)?;
         }
-        self.policy
-            .check(
-                self.spool_bytes
-                    .checked_add(appended)
-                    .ok_or(StoreError::InvalidInput("workspace spool limit"))?,
-            )
-            .map_err(crate::live_error)?;
-        self.check_piece_resources(&old, &next)?;
         if let Some(bytes) = bytes {
             let started = std::time::Instant::now();
             #[cfg(feature = "test-instrumentation")]
             let inject_short = crate::lifecycle::consume_verification_fault(
                 self.branch_id,
                 crate::lifecycle::VerificationFault::ShortAppend,
-                self.spool_bytes,
+                self.live.spool_bytes,
             );
             let (backing, physical_start) = physical.as_ref().unwrap();
             let segment = spool_segment(backing)?;
@@ -428,16 +403,13 @@ impl Workspace {
                 .write_ns
                 .saturating_add(elapsed_ns(started));
         }
-        self.install_edit(
-            node,
-            old,
-            next,
-            next_edits,
-            high_water + appended,
-            appended,
-            generation,
-            paths,
-        )?;
+        #[cfg(test)]
+        if INJECT_STALE_WRITE.with(|inject| inject.replace(false)) {
+            self.live
+                .set_mtime(node, 123, 0)
+                .map_err(crate::live_error)?;
+        }
+        self.live.apply_write(prepared).map_err(crate::live_error)?;
         if let Some(bytes) = bytes {
             self.capture_write(node, offset, old_len, bytes);
         }
@@ -496,11 +468,13 @@ impl Workspace {
                 .replace(start, delete_len, piece)
                 .map_err(crate::live_error)?;
             if was_base {
-                self.inline_bytes
+                self.live
+                    .inline_bytes
                     .checked_add(next.inline_len())
                     .filter(|value| *value <= MAX_INLINE_PER_WORKSPACE)
                     .ok_or(StoreError::InvalidInput("workspace inline limit"))?;
-                self.piece_allocation_bytes
+                self.live
+                    .piece_allocation_bytes
                     .checked_add(
                         next.logical_allocation_charge()
                             .map_err(crate::live_error)?,
@@ -571,10 +545,7 @@ impl Workspace {
     }
 
     fn next_generation(&self) -> Result<u64> {
-        self.live
-            .mutation_generation
-            .checked_add(1)
-            .ok_or(StoreError::Integrity("Workspace mutation generation"))
+        self.live.next_generation().map_err(crate::live_error)
     }
     fn edited_state(&self, node: NodeId) -> Result<(u64, PieceTree, u32)> {
         match &self.live.nodes[&node].data {
@@ -588,17 +559,10 @@ impl Workspace {
         }
     }
     fn check_piece_resources(&self, old: &PieceTree, next: &PieceTree) -> Result<()> {
-        self.inline_bytes
-            .checked_sub(old.inline_len())
-            .and_then(|v| v.checked_add(next.inline_len()))
-            .filter(|v| *v <= MAX_INLINE_PER_WORKSPACE)
-            .ok_or(StoreError::InvalidInput("workspace inline limit"))?;
-        self.piece_allocation_bytes
-            .checked_sub(old.logical_allocation_charge().map_err(crate::live_error)?)
-            .and_then(|v| v.checked_add(next.logical_allocation_charge().ok()?))
-            .filter(|v| *v <= MAX_PIECE_ALLOCATION)
-            .ok_or(StoreError::InvalidInput("workspace piece allocation limit"))?;
-        Ok(())
+        self.live
+            .check_piece_resources(Some(old), next)
+            .map(|_| ())
+            .map_err(crate::live_error)
     }
     #[allow(clippy::too_many_arguments)]
     fn install_edit(
@@ -612,18 +576,22 @@ impl Workspace {
         generation: u64,
         paths: Vec<String>,
     ) -> Result<()> {
+        let revision = self.live.nodes[&node]
+            .revision
+            .checked_add(1)
+            .ok_or(StoreError::Integrity("inode revision"))?;
         // A successful explicit empty state retires the prior logical edit
         // generation. Keep spool history for in-flight reads; only subsequent
         // mutations receive a fresh edit budget, after existing admission checks.
         let emptied = !old.is_empty() && next.is_empty();
-        self.inline_bytes = self.inline_bytes - old.inline_len() + next.inline_len();
-        self.piece_allocation_bytes = self.piece_allocation_bytes
+        self.live.inline_bytes = self.live.inline_bytes - old.inline_len() + next.inline_len();
+        self.live.piece_allocation_bytes = self.live.piece_allocation_bytes
             - old.logical_allocation_charge().map_err(crate::live_error)?
             + next
                 .logical_allocation_charge()
                 .map_err(crate::live_error)?;
-        self.spool_bytes += appended;
-        self.spool_bytes_peak = self.spool_bytes_peak.max(self.spool_bytes);
+        self.live.spool_bytes += appended;
+        self.live.spool_bytes_peak = self.live.spool_bytes_peak.max(self.live.spool_bytes);
         let Data::File(FileData::Edited {
             pieces,
             edits: current_edits,
@@ -636,6 +604,7 @@ impl Workspace {
         *pieces = next;
         *current_edits = if emptied { 0 } else { edits };
         *spool_high_water = high_water;
+        self.live.nodes.get_mut(&node).unwrap().revision = revision;
         self.live.dirty.insert(node);
         self.live.mutation_generation = generation;
         for path in paths {
@@ -685,7 +654,7 @@ impl Workspace {
     }
     pub(crate) fn clear_spool(&mut self) -> Result<()> {
         self.invalidate_capture();
-        for id in &self.edited_nodes {
+        for id in &self.live.edited_nodes {
             if let Some(Node {
                 data: Data::File(FileData::Edited { pieces, .. }),
                 ..
@@ -694,14 +663,14 @@ impl Workspace {
                 *pieces = PieceTree::empty();
             }
         }
-        self.edited_nodes.clear();
+        self.live.edited_nodes.clear();
         self.current_spool = None;
         self.spool_segments.clear();
         self.segment_bytes = 0;
-        self.spool_bytes = 0;
-        self.spool_bytes_peak = 0;
-        self.inline_bytes = 0;
-        self.piece_allocation_bytes = 0;
+        self.live.spool_bytes = 0;
+        self.live.spool_bytes_peak = 0;
+        self.live.inline_bytes = 0;
+        self.live.piece_allocation_bytes = 0;
         Ok(())
     }
     pub(crate) fn new_spool_node(&mut self, mode: u32, path: String) -> Result<NodeId> {
@@ -731,6 +700,7 @@ impl Workspace {
             edits: 0,
         });
         let value = Node {
+            revision: 0,
             canonical: None,
             paths: [path].into(),
             mode,
@@ -748,13 +718,14 @@ impl Workspace {
             let allocated = self.allocate(value);
             debug_assert_eq!(allocated, node);
         }
-        self.edited_nodes.insert(node);
+        self.live.edited_nodes.insert(node);
         Ok(())
     }
     fn ensure_edited(&mut self, node: NodeId) -> Result<()> {
         if let Data::File(FileData::Base { root, len }) = self.live.nodes[&node].data {
             let pieces = PieceTree::base(root, len).map_err(crate::live_error)?;
             let next_allocation = self
+                .live
                 .piece_allocation_bytes
                 .checked_add(
                     pieces
@@ -769,8 +740,8 @@ impl Workspace {
                 pieces,
                 edits: 0,
             });
-            self.piece_allocation_bytes = next_allocation;
-            self.edited_nodes.insert(node);
+            self.live.piece_allocation_bytes = next_allocation;
+            self.live.edited_nodes.insert(node);
         }
         matches!(
             self.live.nodes[&node].data,
@@ -786,12 +757,14 @@ impl Workspace {
     }
 
     fn append_segment(&mut self, bytes: u64) -> Result<(BackingRef, u64)> {
-        if self.segment_bytes.saturating_add(bytes) > self.policy.max_spool_bytes {
+        if self.segment_bytes.saturating_add(bytes) > self.live.policy.max_spool_bytes {
             self.retire_spool_segments();
         }
-        self.policy
+        self.live
+            .policy
             .check(
-                self.spool_bytes
+                self.live
+                    .spool_bytes
                     .max(self.segment_bytes)
                     .checked_add(bytes)
                     .ok_or(StoreError::InvalidInput("workspace spool limit"))?,
@@ -820,7 +793,7 @@ impl Workspace {
                 id,
                 SPOOL_SEGMENT_BYTES
                     .max(bytes)
-                    .min(self.policy.max_spool_bytes),
+                    .min(self.live.policy.max_spool_bytes),
                 self.physical_spool.clone(),
             )?,
         );
@@ -866,10 +839,7 @@ impl Workspace {
 }
 
 fn next_edit(edits: u32) -> Result<u32> {
-    edits
-        .checked_add(1)
-        .filter(|v| *v <= MAX_EDITS_PER_FILE)
-        .ok_or(StoreError::InvalidInput("workspace edit limit"))
+    crate::file_edit::next_edit(edits).map_err(crate::live_error)
 }
 fn elapsed_ns(started: std::time::Instant) -> u64 {
     u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
@@ -887,6 +857,7 @@ fn append_spool(file: &File, bytes: &[u8], offset: u64) -> std::io::Result<()> {
 thread_local! {
     static INJECT_SHORT_APPEND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static INJECT_APPEND_CLEANUP_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static INJECT_STALE_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 fn read_base(
     reader: &SnapshotReader,
@@ -925,6 +896,38 @@ mod tests {
     use layerfs_layerstack_store::{
         EntityName, LayerStackInitialization, LayerStackStore, LocalForkSource,
     };
+
+    #[test]
+    fn stale_prepared_append_is_not_repeated_and_keeps_its_physical_charge() {
+        let (root, mut workspace) = workspace("stale-prepared-append");
+        let file = workspace.create_file(ROOT, b"file", 0o600).unwrap().node;
+        workspace.live.policy.max_spool_bytes = 9;
+        workspace.write(file, 0, b"hello").unwrap();
+        let held = workspace.read_plan(file, 0, 5).unwrap();
+        INJECT_STALE_WRITE.with(|inject| inject.set(true));
+        assert!(matches!(
+            workspace.write(file, 0, b"bad"),
+            Err(StoreError::Integrity("stale prepared write"))
+        ));
+        assert_eq!(workspace.read(file, 0, 5).unwrap(), b"hello");
+        assert_eq!(workspace.live.spool_bytes, 5);
+        assert_eq!(workspace.segment_bytes, 8);
+        assert_eq!(workspace.spool_write_metrics.write_bytes, 8);
+        assert!(workspace.write(file, 0, b"no").is_err());
+        workspace.commit().unwrap();
+        assert_eq!(
+            workspace.segment_bytes, 8,
+            "old reader retains the whole segment"
+        );
+        assert_eq!(held.read().unwrap(), b"hello");
+        workspace.commit().unwrap();
+        assert_eq!(workspace.segment_bytes, 0);
+        workspace.write(file, 0, b"ok").unwrap();
+        assert_eq!(workspace.read(file, 0, 5).unwrap(), b"okllo");
+        workspace.discard().unwrap();
+        drop(workspace);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     fn workspace(label: &str) -> (std::path::PathBuf, Workspace) {
         let root = std::env::temp_dir().join(format!(
@@ -993,7 +996,7 @@ mod tests {
     #[test]
     fn failed_tail_cleanup_keeps_discarded_physical_bytes_charged() {
         let (root, mut workspace) = workspace("failed-tail-cleanup");
-        workspace.policy.max_spool_bytes = 6;
+        workspace.live.policy.max_spool_bytes = 6;
         let file = workspace.create_file(ROOT, b"file", 0o600).unwrap().node;
         workspace.write(file, 0, b"ok").unwrap();
         INJECT_SHORT_APPEND.with(|inject| inject.set(true));
@@ -1003,9 +1006,9 @@ mod tests {
             Err(StoreError::Integrity("spool append cleanup failure"))
         ));
         assert_eq!(workspace.read(file, 0, 2).unwrap(), b"ok");
-        assert_eq!(workspace.spool_bytes, 2);
+        assert_eq!(workspace.live.spool_bytes, 2);
         assert_eq!(workspace.segment_bytes, 4);
-        workspace.policy.max_spool_bytes = 4;
+        workspace.live.policy.max_spool_bytes = 4;
         assert!(workspace.write(file, 2, b"x").is_err());
         workspace.commit().unwrap();
         assert_eq!(workspace.segment_bytes, 0);
@@ -1074,7 +1077,7 @@ mod tests {
         let sparse = workspace.create_file(ROOT, b"sparse", 0o600).unwrap().node;
         workspace.write(sparse, 60 * 1024, b"x").unwrap();
         assert_eq!(workspace.attr(sparse).unwrap().size, 60 * 1024 + 1);
-        assert_eq!(workspace.spool_bytes, 1);
+        assert_eq!(workspace.live.spool_bytes, 1);
         assert_eq!(
             workspace
                 .spool_segments
@@ -1106,13 +1109,13 @@ mod tests {
         let file = workspace.create_file(ROOT, b"file", 0o600).unwrap().node;
         workspace.write(file, 0, b"base").unwrap();
         let before = workspace.live.nodes[&file].clone();
-        let before_charge = workspace.spool_bytes;
-        let before_peak = workspace.spool_bytes_peak;
+        let before_charge = workspace.live.spool_bytes;
+        let before_peak = workspace.live.spool_bytes_peak;
         INJECT_SHORT_APPEND.with(|inject| inject.set(true));
         assert!(workspace.write(file, 4, b"failure").is_err());
         assert_eq!(workspace.live.nodes[&file], before);
-        assert_eq!(workspace.spool_bytes, before_charge);
-        assert_eq!(workspace.spool_bytes_peak, before_peak);
+        assert_eq!(workspace.live.spool_bytes, before_charge);
+        assert_eq!(workspace.live.spool_bytes_peak, before_peak);
         assert_eq!(
             workspace
                 .spool_segments
@@ -1127,9 +1130,9 @@ mod tests {
             before_charge
         );
         assert_eq!(workspace.read(file, 0, 16).unwrap(), b"base");
-        workspace.policy.max_spool_bytes = before_charge;
+        workspace.live.policy.max_spool_bytes = before_charge;
         assert!(workspace.write(file, 4, b"x").is_err());
-        assert_eq!(workspace.spool_bytes, before_charge);
+        assert_eq!(workspace.live.spool_bytes, before_charge);
         drop(workspace);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -1156,11 +1159,11 @@ mod tests {
         );
         let initial_peak = workspace.physical_spool_snapshot().1.unwrap();
         let failed = workspace.create_file(ROOT, b"failed", 0o600).unwrap().node;
-        let logical_before = (workspace.spool_bytes, workspace.spool_bytes_peak);
+        let logical_before = (workspace.live.spool_bytes, workspace.live.spool_bytes_peak);
         INJECT_SHORT_APPEND.with(|inject| inject.set(true));
         assert!(workspace.write(failed, 0, &vec![0xa5; 256 * 1024]).is_err());
         assert_eq!(
-            (workspace.spool_bytes, workspace.spool_bytes_peak),
+            (workspace.live.spool_bytes, workspace.live.spool_bytes_peak),
             logical_before
         );
         assert_eq!(workspace.attr(failed).unwrap().size, 0);
@@ -1256,7 +1259,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        assert_eq!(workspace.inline_bytes, MAX_INLINE_PER_WORKSPACE);
+        assert_eq!(workspace.live.inline_bytes, MAX_INLINE_PER_WORKSPACE);
         let extra = workspace.create_file(ROOT, b"extra", 0o600).unwrap().node;
         assert!(workspace
             .edit_many(
@@ -1264,7 +1267,7 @@ mod tests {
                 vec![(0, 0, crate::WorkspaceFileReplacement::Inline(vec![0]),)],
             )
             .is_err());
-        assert_eq!(workspace.inline_bytes, MAX_INLINE_PER_WORKSPACE);
+        assert_eq!(workspace.live.inline_bytes, MAX_INLINE_PER_WORKSPACE);
         assert_eq!(workspace.attr(extra).unwrap().size, 0);
         drop(workspace);
         std::fs::remove_dir_all(root).unwrap();
@@ -1277,9 +1280,9 @@ mod tests {
         workspace.live.mutation_generation = u64::MAX;
         let before = workspace.live.nodes[&file].clone();
         let charges = (
-            workspace.spool_bytes,
-            workspace.inline_bytes,
-            workspace.piece_allocation_bytes,
+            workspace.live.spool_bytes,
+            workspace.live.inline_bytes,
+            workspace.live.piece_allocation_bytes,
         );
         assert!(workspace
             .edit_many(
@@ -1290,9 +1293,9 @@ mod tests {
         assert_eq!(workspace.live.nodes[&file], before);
         assert_eq!(
             (
-                workspace.spool_bytes,
-                workspace.inline_bytes,
-                workspace.piece_allocation_bytes,
+                workspace.live.spool_bytes,
+                workspace.live.inline_bytes,
+                workspace.live.piece_allocation_bytes,
             ),
             charges
         );
@@ -1339,9 +1342,9 @@ mod tests {
             workspace.store.pin_branch(branch).unwrap().root,
             branch_root
         );
-        assert_eq!(workspace.spool_bytes, 0);
-        assert_eq!(workspace.inline_bytes, 0);
-        assert_eq!(workspace.piece_allocation_bytes, 0);
+        assert_eq!(workspace.live.spool_bytes, 0);
+        assert_eq!(workspace.live.inline_bytes, 0);
+        assert_eq!(workspace.live.piece_allocation_bytes, 0);
         assert!(workspace.spool_segments.is_empty());
         assert_eq!(workspace.physical_spool_snapshot().0, Some(0));
         drop(workspace);

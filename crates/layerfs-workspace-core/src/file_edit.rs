@@ -1,4 +1,4 @@
-use crate::{Error, Result};
+use crate::{Data, Error, FileData, LiveWorkspace, Node, NodeId, Result};
 use layerfs_content::file::rope::FileStateRoot;
 use std::sync::Arc;
 
@@ -10,6 +10,168 @@ pub const MAX_PIECE_ALLOCATION: u64 = 2 * 1024 * 1024;
 pub const MAX_RESULT_BYTES: u64 = 1024 * 1024 * 1024 * 1024;
 pub const MAX_LOGICAL_ZERO_BYTES: u64 = 1024 * 1024 * 1024;
 pub const MAX_PREDICTED_ZERO_EXTENTS: u64 = 131_072;
+
+/// One prepared inode revision and exact backing range. Consumed once at apply;
+/// the adapter retains and charges any unused append if revalidation fails.
+#[derive(Debug)]
+pub struct PreparedWrite {
+    node: NodeId,
+    expected: Node,
+    next: FileData,
+    appended: u64,
+    bytes: usize,
+}
+
+impl LiveWorkspace {
+    /// Does no I/O and changes no live state. The adapter must hold affected-inode
+    /// ordering and resource admission across preparation, acquisition and apply.
+    pub fn prepare_write(
+        &self,
+        node: NodeId,
+        offset: u64,
+        bytes: usize,
+        backing: Option<SpoolSlice>,
+    ) -> Result<PreparedWrite> {
+        self.next_generation()?;
+        let expected = self.nodes.get(&node).ok_or(Error::NotFound("node"))?;
+        expected
+            .revision
+            .checked_add(1)
+            .ok_or(Error::Integrity("inode revision"))?;
+        if bytes == 0 {
+            return Err(Error::InvalidInput("empty prepared write"));
+        }
+        offset
+            .checked_add(bytes as u64)
+            .ok_or(Error::InvalidInput("write length"))?;
+        let (base, high_water, old, edits) = match &expected.data {
+            Data::File(FileData::Base { root, len }) => {
+                (Some((*root, *len)), 0, PieceTree::base(*root, *len)?, 0)
+            }
+            Data::File(FileData::Edited {
+                base,
+                spool_high_water,
+                pieces,
+                edits,
+            }) => (*base, *spool_high_water, pieces.clone(), *edits),
+            _ => return Err(Error::InvalidInput("file")),
+        };
+        let appended = if backing.is_some() { bytes as u64 } else { 0 };
+        let piece = match backing {
+            Some(slice) => {
+                if slice.len != bytes as u64 || slice.offset.checked_add(slice.len).is_none() {
+                    return Err(Error::InvalidInput("write backing range"));
+                }
+                Piece::Spool {
+                    segment: slice.segment,
+                    offset: slice.offset,
+                    len: slice.len,
+                }
+            }
+            None => Piece::Zero { len: bytes as u64 },
+        };
+        let gap = (offset > old.len()).then(|| Piece::Zero {
+            len: offset - old.len(),
+        });
+        let start = offset.min(old.len());
+        let delete_len = old.len().saturating_sub(offset).min(bytes as u64);
+        let next = old.replace(start, delete_len, gap.into_iter().chain([piece]))?;
+        let prepared = PreparedWrite {
+            node,
+            expected: expected.clone(),
+            next: FileData::Edited {
+                base,
+                spool_high_water: high_water
+                    .checked_add(appended)
+                    .ok_or(Error::InvalidInput("workspace spool limit"))?,
+                pieces: next,
+                edits: next_edit(edits)?,
+            },
+            appended,
+            bytes,
+        };
+        self.write_resources(&prepared)?;
+        Ok(prepared)
+    }
+
+    pub fn apply_write(&mut self, prepared: PreparedWrite) -> Result<usize> {
+        if self.nodes.get(&prepared.node) != Some(&prepared.expected) {
+            return Err(Error::Integrity("stale prepared write"));
+        }
+        let generation = self.next_generation()?;
+        let revision = prepared
+            .expected
+            .revision
+            .checked_add(1)
+            .ok_or(Error::Integrity("inode revision"))?;
+        let (inline, allocation, spool) = self.write_resources(&prepared)?;
+        let node = self
+            .nodes
+            .get_mut(&prepared.node)
+            .expect("validated prepared inode");
+        node.data = Data::File(prepared.next);
+        node.revision = revision;
+        self.inline_bytes = inline;
+        self.piece_allocation_bytes = allocation;
+        self.spool_bytes = spool;
+        self.spool_bytes_peak = self.spool_bytes_peak.max(spool);
+        self.edited_nodes.insert(prepared.node);
+        self.dirty.insert(prepared.node);
+        self.mutation_generation = generation;
+        for path in &node.paths {
+            self.mutation_paths.insert(path.clone(), generation);
+        }
+        Ok(prepared.bytes)
+    }
+
+    fn write_resources(&self, prepared: &PreparedWrite) -> Result<(u64, u64, u64)> {
+        let old = match &prepared.expected.data {
+            Data::File(FileData::Edited { pieces, .. }) => Some(pieces),
+            _ => None,
+        };
+        let FileData::Edited { pieces: next, .. } = &prepared.next else {
+            unreachable!("prepared write is edited data")
+        };
+        let (inline, allocation) = self.check_piece_resources(old, next)?;
+        let spool = self
+            .spool_bytes
+            .checked_add(prepared.appended)
+            .ok_or(Error::InvalidInput("workspace spool limit"))?;
+        self.policy.check(spool)?;
+        Ok((inline, allocation, spool))
+    }
+
+    pub fn check_piece_resources(
+        &self,
+        old: Option<&PieceTree>,
+        next: &PieceTree,
+    ) -> Result<(u64, u64)> {
+        let inline = self
+            .inline_bytes
+            .checked_sub(old.map_or(0, PieceTree::inline_len))
+            .and_then(|v| v.checked_add(next.inline_len()))
+            .filter(|v| *v <= MAX_INLINE_PER_WORKSPACE)
+            .ok_or(Error::InvalidInput("workspace inline limit"))?;
+        let allocation = self
+            .piece_allocation_bytes
+            .checked_sub(
+                old.map(PieceTree::logical_allocation_charge)
+                    .transpose()?
+                    .unwrap_or(0),
+            )
+            .and_then(|v| v.checked_add(next.logical_allocation_charge().ok()?))
+            .filter(|v| *v <= MAX_PIECE_ALLOCATION)
+            .ok_or(Error::InvalidInput("workspace piece allocation limit"))?;
+        Ok((inline, allocation))
+    }
+}
+
+pub fn next_edit(edits: u32) -> Result<u32> {
+    edits
+        .checked_add(1)
+        .filter(|v| *v <= MAX_EDITS_PER_FILE)
+        .ok_or(Error::InvalidInput("workspace edit limit"))
+}
 
 pub fn check_logical_allocation_charge(bytes: u64) -> Result<()> {
     if bytes <= MAX_PIECE_ALLOCATION {

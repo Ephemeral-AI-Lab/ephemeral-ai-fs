@@ -104,19 +104,13 @@ pub struct Workspace {
     pub(crate) base_inodes: InodeTableRoot,
     pub(crate) directory_lookup_cache: layerfs_content::tree::directory::DirectoryLookupCache,
     pub(crate) spool: PathBuf,
-    pub(crate) spool_bytes: u64,
-    pub(crate) spool_bytes_peak: u64,
     pub(crate) physical_spool: std::sync::Arc<std::sync::Mutex<PhysicalSpoolMetrics>>,
-    pub(crate) inline_bytes: u64,
-    pub(crate) piece_allocation_bytes: u64,
     pub(crate) spool_write_metrics: SpoolWriteMetrics,
     pub(crate) capture: crate::capture::CaptureState,
-    pub(crate) edited_nodes: BTreeSet<NodeId>,
     pub(crate) spool_segments: HashMap<u64, layerfs_workspace_core::backing::BackingRef>,
     pub(crate) current_spool: Option<u64>,
     pub(crate) next_spool: u64,
     pub(crate) segment_bytes: u64,
-    pub(crate) policy: ResourcePolicy,
     pub(crate) canonical_nodes: HashMap<InodeId, NodeId>,
     directory_parents: HashMap<NodeId, NodeId>,
     pub(crate) reserved: BTreeSet<NodeId>,
@@ -187,7 +181,7 @@ impl Workspace {
                 reader: self.reader.clone(),
             },
             spool.as_ref(),
-            self.policy,
+            self.live.policy,
         )
     }
 
@@ -218,6 +212,7 @@ impl Workspace {
         let spool = spool.to_owned();
         std::fs::create_dir_all(&spool)?;
         let root = Node {
+            revision: 0,
             canonical: Some(resolved.inode),
             paths: BTreeSet::from([String::new()]),
             mode: portable.permission_mode,
@@ -231,7 +226,7 @@ impl Workspace {
             }),
         };
         Ok(Self {
-            live: layerfs_workspace_core::LiveWorkspace::new(root),
+            live: layerfs_workspace_core::LiveWorkspace::new(root, policy),
             store,
             workspace_id,
             reader,
@@ -242,19 +237,13 @@ impl Workspace {
             base_inodes: InodeTableRoot(namespace.inode_table_root),
             directory_lookup_cache: Default::default(),
             spool,
-            spool_bytes: 0,
-            spool_bytes_peak: 0,
             physical_spool: Default::default(),
-            inline_bytes: 0,
-            piece_allocation_bytes: 0,
             spool_write_metrics: SpoolWriteMetrics::default(),
             capture: crate::capture::CaptureState::default(),
-            edited_nodes: BTreeSet::new(),
             spool_segments: HashMap::new(),
             current_spool: None,
             next_spool: 1,
             segment_bytes: 0,
-            policy,
             canonical_nodes: HashMap::from([(resolved.inode, ROOT)]),
             directory_parents: HashMap::from([(ROOT, ROOT)]),
             reserved: BTreeSet::new(),
@@ -438,6 +427,7 @@ impl Workspace {
             ),
         };
         let node = self.allocate(Node {
+            revision: 0,
             canonical: Some(inode),
             paths: BTreeSet::from([path]),
             mode: portable.permission_mode,
@@ -761,6 +751,7 @@ impl Workspace {
         }
         let path = self.child_path(parent, name)?;
         let node = self.allocate(Node {
+            revision: 0,
             canonical: None,
             paths: BTreeSet::from([path.clone()]),
             mode: 0o777,
@@ -978,7 +969,7 @@ impl Workspace {
             self.live.dirty.remove(&node);
             self.directory_parents.remove(&node);
             if let Some(value) = self.live.nodes.remove(&node) {
-                self.edited_nodes.remove(&node);
+                self.live.edited_nodes.remove(&node);
                 if let Some(inode) = value.canonical {
                     self.canonical_nodes.remove(&inode);
                 }
@@ -988,9 +979,11 @@ impl Workspace {
                     ..
                 }) = value.data
                 {
-                    self.spool_bytes = self.spool_bytes.saturating_sub(spool_high_water);
-                    self.inline_bytes = self.inline_bytes.saturating_sub(pieces.inline_len());
-                    self.piece_allocation_bytes = self
+                    self.live.spool_bytes = self.live.spool_bytes.saturating_sub(spool_high_water);
+                    self.live.inline_bytes =
+                        self.live.inline_bytes.saturating_sub(pieces.inline_len());
+                    self.live.piece_allocation_bytes = self
+                        .live
                         .piece_allocation_bytes
                         .saturating_sub(pieces.logical_allocation_charge().unwrap_or(0));
                     drop(pieces);
@@ -1003,6 +996,7 @@ impl Workspace {
 
 fn new_directory(path: String, mode: u32) -> Node {
     Node {
+        revision: 0,
         canonical: None,
         paths: BTreeSet::from([path]),
         mode: mode & 0o1777,
@@ -1044,9 +1038,9 @@ mod tests {
             directory_parents: workspace.directory_parents.clone(),
             dirty: workspace.live.dirty.clone(),
             next_node: workspace.next_node,
-            spool_bytes: workspace.spool_bytes,
-            inline_bytes: workspace.inline_bytes,
-            piece_allocation_bytes: workspace.piece_allocation_bytes,
+            spool_bytes: workspace.live.spool_bytes,
+            inline_bytes: workspace.live.inline_bytes,
+            piece_allocation_bytes: workspace.live.piece_allocation_bytes,
         }
     }
 
