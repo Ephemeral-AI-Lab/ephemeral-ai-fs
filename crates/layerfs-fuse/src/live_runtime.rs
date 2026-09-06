@@ -25,6 +25,9 @@ pub struct Scheduler {
     transfer: Arc<Semaphore>,
     backing: Arc<Semaphore>,
     live: Arc<Semaphore>,
+    kernel: Arc<Semaphore>,
+    control_requests: Arc<Semaphore>,
+    control_transfer: Arc<Semaphore>,
 }
 
 pub struct RequestAdmission {
@@ -56,6 +59,9 @@ impl LiveRuntime {
             transfer: Arc::new(Semaphore::new(TRANSFER_BYTES)),
             backing: Arc::new(Semaphore::new(2)),
             live: Arc::new(Semaphore::new(128 * 1024 * 1024)),
+            kernel: Arc::new(Semaphore::new(1)),
+            control_requests: Arc::new(Semaphore::new(32)),
+            control_transfer: Arc::new(Semaphore::new(4 * 1024 * 1024)),
         };
         Ok(Self { runtime, scheduler })
     }
@@ -70,6 +76,48 @@ impl LiveRuntime {
 }
 
 impl Scheduler {
+    /// Poll ready local work on ingress; only pending work enters the existing
+    /// runtime. The owned future retains its admission and reply until completion.
+    pub fn submit(&self, future: impl Future<Output = ()> + Send + 'static) {
+        struct Wake;
+        impl std::task::Wake for Wake {
+            fn wake(self: Arc<Self>) {}
+        }
+        static WAKE: std::sync::OnceLock<Arc<Wake>> = std::sync::OnceLock::new();
+        let waker = std::task::Waker::from(WAKE.get_or_init(|| Arc::new(Wake)).clone());
+        let mut context = std::task::Context::from_waker(&waker);
+        let mut future = Box::pin(future);
+        let entered = self.handle.enter();
+        let pending = future.as_mut().poll(&mut context).is_pending();
+        drop(entered);
+        if pending {
+            self.handle.spawn(future);
+        }
+    }
+
+    /// Ingress cannot wait behind a full ordinary queue: that would hide kernel
+    /// writeback/release requests from the one receiver. Capacity failure is explicit.
+    pub fn try_admit_from_receiver(
+        &self,
+        bytes: usize,
+        control: bool,
+    ) -> io::Result<RequestAdmission> {
+        let (requests, transfer) = if control {
+            (&self.control_requests, &self.control_transfer)
+        } else {
+            (&self.requests, &self.transfer)
+        };
+        let slot = requests
+            .clone()
+            .try_acquire_owned()
+            .map_err(io::Error::other)?;
+        let bytes = transfer
+            .clone()
+            .try_acquire_many_owned(u32::try_from(bytes).map_err(io::Error::other)?)
+            .map_err(io::Error::other)?;
+        Ok(RequestAdmission { slot, bytes })
+    }
+
     pub fn reserve_transfer(&self, bytes: usize) -> io::Result<LiveReservation> {
         self.transfer
             .clone()
@@ -121,6 +169,27 @@ impl Scheduler {
             let _slot = slot;
             future.await
         })
+    }
+
+    /// A kernel invalidation can wait for FUSE writeback. Keep only one such
+    /// job active, leaving the second blocking worker for backing/other progress.
+    pub async fn kernel<T: Send + 'static>(
+        &self,
+        work: impl FnOnce() -> io::Result<T> + Send + 'static,
+    ) -> io::Result<T> {
+        let permit = self
+            .kernel
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(io::Error::other)?;
+        self.handle
+            .spawn_blocking(move || {
+                let _permit = permit;
+                work()
+            })
+            .await
+            .map_err(io::Error::other)?
     }
 
     /// Admission precedes Tokio's blocking queue and any physical job creation.

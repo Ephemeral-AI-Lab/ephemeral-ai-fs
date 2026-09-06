@@ -1,6 +1,6 @@
 use crate::NodeId;
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct InodeTable;
 
 impl InodeTable {

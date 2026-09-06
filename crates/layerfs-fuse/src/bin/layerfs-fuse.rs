@@ -58,6 +58,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let control = client.serve_control(endpoint.to_owned(), capability)?;
     let mut mount = layerfs_fuse::mount_host(client.clone(), &mountpoint, 0, 0)?;
     client.set_notifier(mount.notifier()?)?;
+    client.set_kernel_root(std::fs::File::open(&mountpoint)?)?;
     println!("READY");
     let mountpoint_text = mountpoint.to_string_lossy();
     let mountinfo_text = std::fs::read_to_string("/proc/self/mountinfo")?;
@@ -68,9 +69,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     println!("MOUNTINFO\t{mountinfo}");
     std::io::stdout().flush()?;
     if let Err(error) = control.wait_for_shutdown() {
+        let _ = client.prepare_shutdown();
         let _ = mount.unmount();
         return Err(error.into());
     }
+    client.prepare_shutdown()?;
     let shutdown = mount
         .unmount()
         .and_then(|()| cleanup_owned(&mountpoint, &capability_text));

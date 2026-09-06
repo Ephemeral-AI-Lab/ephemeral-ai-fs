@@ -7,7 +7,7 @@ license.workspace = true
 
 [features]
 default = ["host"]
-host = ["dep:fuser"]
+host = ["dep:fuser", "live"]
 proxy = ["dep:fuser", "live"]
 live = ["dep:tokio"]
 
@@ -16,3 +16,6 @@ tokio = { version = "=1.48.0", default-features = false, features = ["rt-multi-t
 layerfs-workspace-core = { path = "../layerfs-workspace-core" }
 fuser = { version = "=0.18.0", default-features = false, optional = true }
 layerfs-content = { path = "../layerfs-content" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { version = "=0.29.0", default-features = false, features = ["fs"] }

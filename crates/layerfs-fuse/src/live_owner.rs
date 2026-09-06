@@ -23,6 +23,8 @@ struct Owner {
     // is retained while a physical reservation or append waits.
     append: tokio::sync::Mutex<Option<AppendWindow>>,
     failed: AtomicBool,
+    closing: AtomicBool,
+    cached: Mutex<std::collections::BTreeSet<NodeId>>,
     facts_sync: tokio::sync::Mutex<Option<(layerfs_content::ObjectId, u64)>>,
     ordering: Mutex<HashMap<NodeId, Arc<tokio::sync::Mutex<()>>>>,
     ranges: Mutex<HashMap<BackingId, BackingRef>>,
@@ -31,6 +33,8 @@ struct Owner {
     reads: crate::write_metrics::AtomicFuseReadMetrics,
     #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
     notifier: std::sync::OnceLock<fuser::Notifier>,
+    #[cfg(target_os = "linux")]
+    kernel_root: Mutex<Option<Arc<std::fs::File>>>,
     cut: Mutex<Option<crate::live_runtime::OperationCut>>,
     install: Mutex<
         Option<(
@@ -109,10 +113,14 @@ impl LiveOwner {
             reads: Default::default(),
             #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
             notifier: Default::default(),
+            #[cfg(target_os = "linux")]
+            kernel_root: Default::default(),
             state: Mutex::new(LiveWorkspace::new(node, policy, root)),
             backing,
             append: Default::default(),
             failed: AtomicBool::new(false),
+            closing: AtomicBool::new(false),
+            cached: Default::default(),
             facts_sync: Default::default(),
             ordering: Default::default(),
             ranges: Default::default(),
@@ -464,6 +472,12 @@ impl LiveOwner {
 }
 
 impl FilesystemPort for LiveOwner {
+    fn note_cached_open(&self, node: NodeId) {
+        if let Ok(mut cached) = self.0.cached.lock() {
+            cached.insert(node);
+        }
+    }
+
     fn note_kernel_operation(&self, operation: crate::KernelOperation) {
         self.0.reads.note_kernel_operation(operation);
     }
@@ -483,70 +497,143 @@ impl FilesystemPort for LiveOwner {
         bytes: usize,
         writeback: bool,
     ) -> PortResult<crate::CallbackGuard> {
+        if matches!(
+            _operation,
+            crate::KernelOperation::Release | crate::KernelOperation::Releasedir
+        ) {
+            return Ok(crate::CallbackGuard::default());
+        }
+        if self.0.closing.load(Ordering::Acquire) {
+            return Err(PortError::Io);
+        }
         match _operation {
             crate::KernelOperation::Write => self.0.writes.note_kernel_write(bytes as u64),
             crate::KernelOperation::Read => self.0.reads.note_kernel_read(bytes as u64),
             _ => {}
         }
+        let control = writeback
+            || matches!(
+                _operation,
+                crate::KernelOperation::Fsync
+                    | crate::KernelOperation::Fsyncdir
+                    | crate::KernelOperation::Flush
+            );
         let admission = self
             .0
             .scheduler
-            .admit_from_receiver(
+            .try_admit_from_receiver(
                 bytes
                     .checked_mul(3)
                     .and_then(|n| n.checked_add(65536))
                     .ok_or(PortError::NoSpace)?,
+                control,
             )
-            .map_err(io)?;
-        let gate = if matches!(
-            _operation,
-            crate::KernelOperation::Release | crate::KernelOperation::Releasedir
-        ) {
-            None
-        } else {
-            Some(
-                self.0
-                    .scheduler
-                    .handle
-                    .block_on(self.0.gate.enter(writeback)),
-            )
-        };
+            .map_err(|_| PortError::NoSpace)?;
         Ok(crate::CallbackGuard {
-            _gate: gate,
+            _gate: None,
             _admission: Some(admission),
         })
     }
+    fn callback_gate(
+        &self,
+        operation: crate::KernelOperation,
+        writeback: bool,
+    ) -> crate::PortFuture<'_, Option<tokio::sync::OwnedRwLockReadGuard<()>>> {
+        Box::pin(async move {
+            if matches!(
+                operation,
+                crate::KernelOperation::Release | crate::KernelOperation::Releasedir
+            ) {
+                return Ok(None);
+            }
+            if self.0.failed.load(Ordering::Acquire)
+                && !matches!(
+                    operation,
+                    crate::KernelOperation::Read
+                        | crate::KernelOperation::Getattr
+                        | crate::KernelOperation::Lookup
+                        | crate::KernelOperation::Readlink
+                        | crate::KernelOperation::Readdir
+                        | crate::KernelOperation::Readdirplus
+                        | crate::KernelOperation::Access
+                        | crate::KernelOperation::Statfs
+                )
+            {
+                return Err(PortError::Io);
+            }
+            let writeback = writeback
+                || matches!(
+                    operation,
+                    crate::KernelOperation::Fsync
+                        | crate::KernelOperation::Fsyncdir
+                        | crate::KernelOperation::Flush
+                );
+            let gate = self.0.gate.enter(writeback).await;
+            if self.0.closing.load(Ordering::Acquire) {
+                return Err(PortError::Io);
+            }
+            Ok(Some(gate))
+        })
+    }
+
     #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
     fn submit_write(
         &self,
         node: NodeId,
         offset: u64,
         bytes: &[u8],
-        _: bool,
-        reply: crate::WriteReply,
+        writeback: bool,
+        mut reply: crate::WriteReply,
     ) {
         let owner = self.clone();
         let bytes = bytes.to_vec();
         self.0.writes.note_client_copy(bytes.len() as u64);
         let queued = Instant::now();
-        self.0.scheduler.handle.spawn(async move {
+        self.0.scheduler.submit(async move {
             owner
                 .0
                 .writes
                 .live_write_dispatch_ns
                 .fetch_add(ns(queued), Ordering::Relaxed);
-            reply.complete(owner.write_owned(node, offset, &bytes).await);
+            reply._guard._gate = match owner
+                .callback_gate(crate::KernelOperation::Write, writeback)
+                .await
+            {
+                Ok(gate) => gate,
+                Err(error) => {
+                    reply.complete(Err(error));
+                    return;
+                }
+            };
+            let result = owner.write_owned(node, offset, &bytes).await;
+            if writeback && result.is_err() {
+                owner.0.failed.store(true, Ordering::Release);
+            }
+            reply.complete(result);
         });
     }
     #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
-    fn submit_read(&self, node: NodeId, offset: u64, size: usize, reply: crate::ReadReply) {
+    fn submit_read(&self, node: NodeId, offset: u64, size: usize, mut reply: crate::ReadReply) {
         let owner = self.clone();
-        self.0.scheduler.handle.spawn(async move {
+        self.0.scheduler.submit(async move {
+            reply._guard._gate = match owner
+                .callback_gate(crate::KernelOperation::Read, false)
+                .await
+            {
+                Ok(gate) => gate,
+                Err(error) => {
+                    reply.complete(Err(error));
+                    return;
+                }
+            };
             reply.complete(owner.read_owned(node, offset, size).await);
         });
     }
     fn lookup(&self, parent: NodeId, name: &[u8]) -> PortResult<Attr> {
-        self.run(async {
+        self.run(self.lookup_async(parent, name))
+    }
+    fn lookup_async<'a>(&'a self, parent: NodeId, name: &'a [u8]) -> crate::PortFuture<'a, Attr> {
+        Box::pin(async move {
             let _order = self.ordered(parent).await?;
             let name = self.name(parent, name).await?;
             self.state()?
@@ -554,6 +641,7 @@ impl FilesystemPort for LiveOwner {
                 .map_err(core)
         })
     }
+
     fn attr(&self, node: NodeId) -> PortResult<Attr> {
         self.state()?.attr(node).map_err(core)
     }
@@ -570,21 +658,45 @@ impl FilesystemPort for LiveOwner {
         }
     }
     fn create_file(&self, parent: NodeId, name: &[u8], mode: u32) -> PortResult<Attr> {
-        self.run(async {
+        self.run(self.create_file_async(parent, name, mode))
+    }
+    fn create_file_async<'a>(
+        &'a self,
+        parent: NodeId,
+        name: &'a [u8],
+        mode: u32,
+    ) -> crate::PortFuture<'a, Attr> {
+        Box::pin(async move {
             let _order = self.ordered(parent).await?;
             let name = self.name(parent, name).await?;
             self.state()?.create_file(name, mode, None).map_err(core)
         })
     }
     fn mkdir(&self, parent: NodeId, name: &[u8], mode: u32) -> PortResult<Attr> {
-        self.run(async {
+        self.run(self.mkdir_async(parent, name, mode))
+    }
+    fn mkdir_async<'a>(
+        &'a self,
+        parent: NodeId,
+        name: &'a [u8],
+        mode: u32,
+    ) -> crate::PortFuture<'a, Attr> {
+        Box::pin(async move {
             let _order = self.ordered(parent).await?;
             let name = self.name(parent, name).await?;
             self.state()?.mkdir(name, mode, None).map_err(core)
         })
     }
     fn symlink(&self, parent: NodeId, name: &[u8], target: Vec<u8>) -> PortResult<Attr> {
-        self.run(async {
+        self.run(self.symlink_async(parent, name, target))
+    }
+    fn symlink_async<'a>(
+        &'a self,
+        parent: NodeId,
+        name: &'a [u8],
+        target: Vec<u8>,
+    ) -> crate::PortFuture<'a, Attr> {
+        Box::pin(async move {
             let _order = self.ordered(parent).await?;
             let name = self.name(parent, name).await?;
             self.state()?.symlink(name, target).map_err(core)
@@ -596,18 +708,47 @@ impl FilesystemPort for LiveOwner {
     fn write(&self, node: NodeId, offset: u64, bytes: &[u8]) -> PortResult<usize> {
         self.run(self.write_owned(node, offset, bytes))
     }
-    fn pin(&self, node: NodeId, truncate: bool, _: bool) -> PortResult<()> {
-        self.state()?.check_pin(node).map_err(core)?;
-        if truncate {
-            self.truncate(node, 0)?;
-        }
-        self.state()?.pin(node).map_err(core)
+    fn pin(&self, node: NodeId, truncate: bool, writable: bool) -> PortResult<()> {
+        self.run(self.pin_async(node, truncate, writable))
+    }
+    fn pin_async<'a>(&'a self, node: NodeId, truncate: bool, _: bool) -> crate::PortFuture<'a, ()> {
+        Box::pin(async move {
+            self.state()?.pin(node).map_err(core)?;
+            if truncate {
+                if let Err(error) = self.truncate_async(node, 0).await {
+                    self.state()?.unpin(node).map_err(core)?;
+                    return Err(error);
+                }
+            }
+            Ok(())
+        })
+    }
+    fn create_file_open(&self, parent: NodeId, name: &[u8], mode: u32) -> PortResult<Attr> {
+        self.run(self.create_file_open_async(parent, name, mode))
+    }
+    fn create_file_open_async<'a>(
+        &'a self,
+        parent: NodeId,
+        name: &'a [u8],
+        mode: u32,
+    ) -> crate::PortFuture<'a, Attr> {
+        Box::pin(async move {
+            let _order = self.ordered(parent).await?;
+            let name = self.name(parent, name).await?;
+            let mut state = self.state()?;
+            let attr = state.create_file(name, mode, None).map_err(core)?;
+            state.pin(attr.node).map_err(core)?;
+            Ok(attr)
+        })
     }
     fn unpin(&self, node: NodeId, _: bool) -> PortResult<()> {
         self.state()?.unpin(node).map(drop).map_err(core)
     }
     fn truncate(&self, node: NodeId, size: u64) -> PortResult<()> {
-        self.run(async {
+        self.run(self.truncate_async(node, size))
+    }
+    fn truncate_async<'a>(&'a self, node: NodeId, size: u64) -> crate::PortFuture<'a, ()> {
+        Box::pin(async move {
             let _order = self.ordered(node).await?;
             let prepared = self.state()?.prepare_truncate(node, size).map_err(core)?;
             if let Some(prepared) = prepared {
@@ -622,19 +763,33 @@ impl FilesystemPort for LiveOwner {
         })
     }
     fn chmod(&self, node: NodeId, mode: u32) -> PortResult<()> {
-        self.run(async {
+        self.run(self.chmod_async(node, mode))
+    }
+    fn chmod_async<'a>(&'a self, node: NodeId, mode: u32) -> crate::PortFuture<'a, ()> {
+        Box::pin(async move {
             let _order = self.ordered(node).await?;
             self.state()?.chmod(node, mode).map_err(core)
         })
     }
     fn set_mtime(&self, node: NodeId, seconds: i64, nanos: u32) -> PortResult<()> {
-        self.run(async {
+        self.run(self.set_mtime_async(node, seconds, nanos))
+    }
+    fn set_mtime_async<'a>(
+        &'a self,
+        node: NodeId,
+        seconds: i64,
+        nanos: u32,
+    ) -> crate::PortFuture<'a, ()> {
+        Box::pin(async move {
             let _order = self.ordered(node).await?;
             self.state()?.set_mtime(node, seconds, nanos).map_err(core)
         })
     }
-    fn fsync(&self, _: Option<NodeId>) -> PortResult<()> {
-        self.run(async {
+    fn fsync(&self, node: Option<NodeId>) -> PortResult<()> {
+        self.run(self.fsync_async(node))
+    }
+    fn fsync_async<'a>(&'a self, _node: Option<NodeId>) -> crate::PortFuture<'a, ()> {
+        Box::pin(async move {
             let mut window = self.0.append.lock().await;
             self.flush_append(&mut window).await?;
             let mut check = vec![wire::CHECK, 1];
@@ -665,6 +820,71 @@ impl LiveOwner {
         self.0.notifier.set(notifier).map_err(|_| wire::invalid())
     }
 
+    #[cfg(target_os = "linux")]
+    pub fn set_kernel_root(&self, root: std::fs::File) -> std::io::Result<()> {
+        let mut slot = self.0.kernel_root.lock().map_err(|_| wire::invalid())?;
+        if slot.is_some() {
+            return Err(wire::invalid());
+        }
+        *slot = Some(Arc::new(root));
+        Ok(())
+    }
+
+    pub fn prepare_shutdown(&self) -> std::io::Result<()> {
+        self.0.closing.store(true, Ordering::Release);
+        self.0.cut.lock().map_err(|_| wire::invalid())?.take();
+        #[cfg(target_os = "linux")]
+        self.0
+            .kernel_root
+            .lock()
+            .map_err(|_| wire::invalid())?
+            .take();
+        Ok(())
+    }
+
+    async fn flush_kernel_cache(&self) -> PortResult<()> {
+        #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
+        {
+            use std::os::fd::AsRawFd;
+            let cached = self.0.cached.lock().map_err(|_| PortError::Io)?.clone();
+            let nodes: Vec<_> = {
+                let state = self.state()?;
+                cached
+                    .into_iter()
+                    .filter(|id| state.nodes.get(id).is_some_and(|node| node.pins != 0))
+                    .collect()
+            };
+            if nodes.is_empty() {
+                return Ok(());
+            }
+            let notifier = self.0.notifier.get().ok_or(PortError::Io)?.clone();
+            let root = self
+                .0
+                .kernel_root
+                .lock()
+                .map_err(|_| PortError::Io)?
+                .clone()
+                .ok_or(PortError::Io)?;
+            self.0
+                .scheduler
+                .kernel(move || {
+                    for node in nodes {
+                        notifier.inval_inode(fuser::INodeNo(node.0), 0, 0)?;
+                    }
+                    // Linux invalidation does not propagate every laundering error.
+                    // This descriptor predates writes, so syncfs observes the mount's
+                    // writeback error sequence, including kernel-side allocation errors.
+                    nix::unistd::syncfs(root.as_raw_fd()).map_err(std::io::Error::from)
+                })
+                .await
+                .map_err(io)?;
+        }
+        if self.0.failed.load(Ordering::Acquire) {
+            return Err(PortError::Io);
+        }
+        Ok(())
+    }
+
     fn invalidate(&self, node: NodeId) -> PortResult<()> {
         #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
         {
@@ -686,7 +906,9 @@ impl LiveOwner {
         if self.0.cut.lock().map_err(|_| PortError::Io)?.is_some() {
             return Ok(());
         }
-        let cut = self.0.gate.cache_flush().await.finish().await;
+        let flush = self.0.gate.cache_flush().await;
+        self.flush_kernel_cache().await?;
+        let cut = flush.finish().await;
         *self.0.cut.lock().map_err(|_| PortError::Io)? = Some(cut);
         self.flush_append(&mut *self.0.append.lock().await).await?;
         self.publish_facts().await

@@ -22,6 +22,7 @@ pub(crate) struct WorkspaceIdentity {
 #[derive(Default)]
 struct Admission {
     accepting: bool,
+    closing: bool,
     callbacks: u32,
     writers: u32,
     executions: u32,
@@ -85,7 +86,7 @@ impl WorkspaceWorker {
             .lock()
             .map_err(|_| WorkspaceError::WorkspaceBusy)?;
         if started {
-            if !admission.accepting {
+            if admission.closing {
                 return Err(WorkspaceError::WorkspaceBusy);
             }
             admission.executions += 1;
@@ -105,6 +106,18 @@ impl WorkspaceWorker {
             .map_err(|_| WorkspaceError::WorkspaceBusy)?
             .executions
             != 0)
+    }
+
+    pub(crate) fn begin_end(&self) -> Result<Ending<'_>, WorkspaceError> {
+        let mut admission = self
+            .admission
+            .lock()
+            .map_err(|_| WorkspaceError::WorkspaceBusy)?;
+        if admission.closing || admission.executions != 0 {
+            return Err(WorkspaceError::WorkspaceBusy);
+        }
+        admission.closing = true;
+        Ok(Ending { worker: self })
     }
 
     pub(crate) fn quiesce(&self) -> Result<Quiesced<'_>, WorkspaceError> {
@@ -129,10 +142,6 @@ impl WorkspaceWorker {
                 admission.accepting = true;
                 return Err(WorkspaceError::WorkspaceBusy);
             }
-        }
-        if admission.writers != 0 || admission.executions != 0 {
-            admission.accepting = true;
-            return Err(WorkspaceError::WorkspaceBusy);
         }
         Ok(Quiesced { worker: self })
     }
@@ -185,6 +194,17 @@ impl Drop for Quiesced<'_> {
         if let Ok(mut admission) = self.worker.admission.lock() {
             admission.accepting = true;
             self.worker.drained.notify_all();
+        }
+    }
+}
+
+pub(crate) struct Ending<'a> {
+    worker: &'a WorkspaceWorker,
+}
+impl Drop for Ending<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut admission) = self.worker.admission.lock() {
+            admission.closing = false;
         }
     }
 }

@@ -44,3 +44,6 @@ pub mod live_transport;
 
 #[cfg(feature = "live")]
 pub mod live_owner;
+
+#[cfg(feature = "live")]
+pub use port::PortFuture;

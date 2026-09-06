@@ -865,9 +865,7 @@ impl Workspaces {
         mode: EndWorkspaceMode,
     ) -> WorkspaceResult<WorkspaceEndResult> {
         let worker = self.worker(id)?;
-        if worker.has_executions()? {
-            return Err(WorkspaceError::WorkspaceBusy);
-        }
+        let _ending = worker.begin_end()?;
         let workspace = worker
             .workspace
             .lock()

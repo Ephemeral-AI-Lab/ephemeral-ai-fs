@@ -56,7 +56,125 @@ pub struct CallbackGuard {
     pub(crate) _admission: Option<crate::live_runtime::RequestAdmission>,
 }
 
+#[cfg(feature = "live")]
+pub type PortFuture<'a, T> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = PortResult<T>> + Send + 'a>>;
+
 pub trait FilesystemPort: Send + Sync {
+    #[cfg(feature = "live")]
+    fn callback_gate(
+        &self,
+        _operation: KernelOperation,
+        _writeback: bool,
+    ) -> PortFuture<'_, Option<tokio::sync::OwnedRwLockReadGuard<()>>> {
+        Box::pin(async { Ok(None) })
+    }
+    #[cfg(feature = "live")]
+    fn lookup_async<'a>(&'a self, parent: NodeId, name: &'a [u8]) -> PortFuture<'a, Attr> {
+        Box::pin(async move { self.lookup(parent, name) })
+    }
+    #[cfg(feature = "live")]
+    fn create_file_async<'a>(
+        &'a self,
+        parent: NodeId,
+        name: &'a [u8],
+        mode: u32,
+    ) -> PortFuture<'a, Attr> {
+        Box::pin(async move { self.create_file(parent, name, mode) })
+    }
+    #[cfg(feature = "live")]
+    fn create_file_open_async<'a>(
+        &'a self,
+        parent: NodeId,
+        name: &'a [u8],
+        mode: u32,
+    ) -> PortFuture<'a, Attr> {
+        Box::pin(async move { self.create_file_open(parent, name, mode) })
+    }
+    #[cfg(feature = "live")]
+    fn mkdir_async<'a>(
+        &'a self,
+        parent: NodeId,
+        name: &'a [u8],
+        mode: u32,
+    ) -> PortFuture<'a, Attr> {
+        Box::pin(async move { self.mkdir(parent, name, mode) })
+    }
+    #[cfg(feature = "live")]
+    fn symlink_async<'a>(
+        &'a self,
+        parent: NodeId,
+        name: &'a [u8],
+        target: Vec<u8>,
+    ) -> PortFuture<'a, Attr> {
+        Box::pin(async move { self.symlink(parent, name, target) })
+    }
+    #[cfg(feature = "live")]
+    fn link_async<'a>(
+        &'a self,
+        node: NodeId,
+        parent: NodeId,
+        name: &'a [u8],
+    ) -> PortFuture<'a, Attr> {
+        Box::pin(async move { self.link(node, parent, name) })
+    }
+    #[cfg(feature = "live")]
+    fn unlink_async<'a>(
+        &'a self,
+        parent: NodeId,
+        name: &'a [u8],
+        directory: bool,
+    ) -> PortFuture<'a, ()> {
+        Box::pin(async move { self.unlink(parent, name, directory) })
+    }
+    #[cfg(feature = "live")]
+    fn rename_async<'a>(
+        &'a self,
+        parent: NodeId,
+        name: &'a [u8],
+        new_parent: NodeId,
+        new_name: &'a [u8],
+        no_replace: bool,
+    ) -> PortFuture<'a, ()> {
+        Box::pin(async move { self.rename(parent, name, new_parent, new_name, no_replace) })
+    }
+    #[cfg(feature = "live")]
+    fn pin_async<'a>(&'a self, node: NodeId, truncate: bool, writable: bool) -> PortFuture<'a, ()> {
+        Box::pin(async move { self.pin(node, truncate, writable) })
+    }
+    #[cfg(feature = "live")]
+    fn truncate_async<'a>(&'a self, node: NodeId, size: u64) -> PortFuture<'a, ()> {
+        Box::pin(async move { self.truncate(node, size) })
+    }
+    #[cfg(feature = "live")]
+    fn chmod_async<'a>(&'a self, node: NodeId, mode: u32) -> PortFuture<'a, ()> {
+        Box::pin(async move { self.chmod(node, mode) })
+    }
+    #[cfg(feature = "live")]
+    fn set_mtime_async<'a>(&'a self, node: NodeId, seconds: i64, nanos: u32) -> PortFuture<'a, ()> {
+        Box::pin(async move { self.set_mtime(node, seconds, nanos) })
+    }
+    #[cfg(feature = "live")]
+    fn fsync_async<'a>(&'a self, node: Option<NodeId>) -> PortFuture<'a, ()> {
+        Box::pin(async move { self.fsync(node) })
+    }
+    #[cfg(feature = "live")]
+    fn readdir_page_async<'a>(
+        &'a self,
+        node: NodeId,
+        offset: usize,
+    ) -> PortFuture<'a, Vec<(NodeId, Kind, Vec<u8>)>> {
+        Box::pin(async move { self.readdir_page(node, offset) })
+    }
+    #[cfg(feature = "live")]
+    fn readdirplus_page_async<'a>(
+        &'a self,
+        node: NodeId,
+        offset: usize,
+    ) -> PortFuture<'a, Vec<(Attr, Vec<u8>)>> {
+        Box::pin(async move { self.readdirplus_page(node, offset) })
+    }
+
     fn admit_callback(
         &self,
         _operation: KernelOperation,
@@ -65,6 +183,7 @@ pub trait FilesystemPort: Send + Sync {
     ) -> PortResult<CallbackGuard> {
         Ok(CallbackGuard::default())
     }
+    fn note_cached_open(&self, _node: NodeId) {}
     fn note_kernel_operation(&self, _operation: KernelOperation) {}
     fn note_readdir_page(&self, _offset: u64, _entries: u64) {}
     fn note_fuse_max_write(&self, _bytes: u32) {}

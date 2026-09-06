@@ -353,6 +353,7 @@ dependencies = [
  "fuser",
  "layerfs-content",
  "layerfs-workspace-core",
+ "nix 0.29.0",
  "tokio",
 ]
 

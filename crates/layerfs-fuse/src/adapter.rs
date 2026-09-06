@@ -10,20 +10,28 @@ pub(crate) const O_ACCMODE: i32 = 0o3;
 pub(crate) const O_WRONLY: i32 = 0o1;
 pub(crate) const O_RDWR: i32 = 0o2;
 
+#[derive(Clone)]
 pub struct LayerFs {
     pub(crate) port: SharedPort,
     pub(crate) inodes: InodeTable,
-    pub(crate) handles: Handles,
+    pub(crate) handles: std::sync::Arc<Handles>,
     pub(crate) uid: u32,
     pub(crate) gid: u32,
 }
 
 impl LayerFs {
+    pub(crate) fn dispatch(&self, future: impl std::future::Future<Output = ()> + Send + 'static) {
+        if let Ok(runtime) = crate::live_runtime::LiveRuntime::shared() {
+            runtime.scheduler().submit(future);
+        }
+        // On runtime creation failure, dropping the owned reply returns EIO.
+    }
+
     pub fn new(port: SharedPort, uid: u32, gid: u32) -> Self {
         Self {
             port,
             inodes: InodeTable,
-            handles: Handles::default(),
+            handles: std::sync::Arc::new(Handles::default()),
             uid,
             gid,
         }
@@ -59,13 +67,16 @@ impl LayerFs {
         })
     }
 
-    pub(crate) fn open_handle(
+    pub(crate) async fn open_handle_async(
         &self,
         node: NodeId,
         truncate: bool,
         writable: bool,
     ) -> std::result::Result<u64, fuser::Errno> {
-        self.port.pin(node, truncate, writable).map_err(errno)?;
+        self.port
+            .pin_async(node, truncate, writable)
+            .await
+            .map_err(errno)?;
         Ok(self.handles.insert(node, writable))
     }
 

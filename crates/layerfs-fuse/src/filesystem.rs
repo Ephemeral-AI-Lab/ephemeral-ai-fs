@@ -65,16 +65,38 @@ impl Filesystem for LayerFs {
                 return;
             }
         };
-        let result = self.node(parent).and_then(|parent| {
-            self.port
-                .lookup(parent, name.as_bytes())
-                .map_err(errno)
-                .and_then(|attr| self.attr(attr))
+        let name = name.to_owned();
+        let this = self.clone();
+        self.dispatch(async move {
+            let mut _callback = _callback;
+            _callback._gate = match this
+                .port
+                .callback_gate(crate::KernelOperation::Lookup, false)
+                .await
+            {
+                Ok(gate) => gate,
+                Err(error) => {
+                    reply.error(errno(error));
+                    return;
+                }
+            };
+
+            let result = async {
+                let parent = this.node(parent)?;
+                {
+                    this.port
+                        .lookup_async(parent, name.as_bytes())
+                        .await
+                        .map_err(errno)
+                        .and_then(|attr| this.attr(attr))
+                }
+            }
+            .await;
+            match result {
+                Ok(attr) => reply.entry(&TTL, &attr, Generation(0)),
+                Err(error) => reply.error(error),
+            }
         });
-        match result {
-            Ok(attr) => reply.entry(&TTL, &attr, Generation(0)),
-            Err(error) => reply.error(error),
-        }
     }
 
     fn getattr(
@@ -96,16 +118,33 @@ impl Filesystem for LayerFs {
                 return;
             }
         };
-        let result = self.node(ino).and_then(|node| {
-            self.port
-                .attr(node)
-                .map_err(errno)
-                .and_then(|attr| self.attr(attr))
+
+        let this = self.clone();
+        self.dispatch(async move {
+            let mut _callback = _callback;
+            _callback._gate = match this
+                .port
+                .callback_gate(crate::KernelOperation::Getattr, false)
+                .await
+            {
+                Ok(gate) => gate,
+                Err(error) => {
+                    reply.error(errno(error));
+                    return;
+                }
+            };
+
+            let result = this.node(ino).and_then(|node| {
+                this.port
+                    .attr(node)
+                    .map_err(errno)
+                    .and_then(|attr| this.attr(attr))
+            });
+            match result {
+                Ok(attr) => reply.attr(&TTL, &attr),
+                Err(error) => reply.error(error),
+            }
         });
-        match result {
-            Ok(attr) => reply.attr(&TTL, &attr),
-            Err(error) => reply.error(error),
-        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -129,48 +168,72 @@ impl Filesystem for LayerFs {
     ) {
         self.port
             .note_kernel_operation(crate::KernelOperation::Setattr);
-        let _callback = match self
-            .port
-            .admit_callback(crate::KernelOperation::Setattr, 0, false)
-        {
-            Ok(guard) => guard,
-            Err(error) => {
-                reply.error(errno(error));
+        let writeback = _request.pid() == 0;
+        let _callback =
+            match self
+                .port
+                .admit_callback(crate::KernelOperation::Setattr, 0, writeback)
+            {
+                Ok(guard) => guard,
+                Err(error) => {
+                    reply.error(errno(error));
+                    return;
+                }
+            };
+
+        let this = self.clone();
+        self.dispatch(async move {
+            let mut _callback = _callback;
+            _callback._gate = match this
+                .port
+                .callback_gate(crate::KernelOperation::Setattr, writeback)
+                .await
+            {
+                Ok(gate) => gate,
+                Err(error) => {
+                    reply.error(errno(error));
+                    return;
+                }
+            };
+
+            if uid.is_some_and(|value| value != this.uid)
+                || gid.is_some_and(|value| value != this.gid)
+                || flags.is_some()
+            {
+                reply.error(fuser::Errno::EOPNOTSUPP);
                 return;
             }
-        };
-        if uid.is_some_and(|value| value != self.uid)
-            || gid.is_some_and(|value| value != self.gid)
-            || flags.is_some()
-        {
-            reply.error(fuser::Errno::EOPNOTSUPP);
-            return;
-        }
-        let result = self.node(ino).and_then(|node| {
-            if let Some(size) = size {
-                self.port.truncate(node, size).map_err(errno)?;
+            let result = async {
+                let node = this.node(ino)?;
+                {
+                    if let Some(size) = size {
+                        this.port.truncate_async(node, size).await.map_err(errno)?;
+                    }
+                    if let Some(mode) = mode {
+                        this.port.chmod_async(node, mode).await.map_err(errno)?;
+                    }
+                    if let Some(value) = mtime {
+                        let value = match value {
+                            TimeOrNow::SpecificTime(value) => value,
+                            TimeOrNow::Now => SystemTime::now(),
+                        };
+                        let value = value
+                            .duration_since(UNIX_EPOCH)
+                            .map_err(|_| fuser::Errno::EINVAL)?;
+                        this.port
+                            .set_mtime_async(node, value.as_secs() as i64, value.subsec_nanos())
+                            .await
+                            .map_err(errno)?;
+                    }
+                    this.attr(this.port.attr(node).map_err(errno)?)
+                }
             }
-            if let Some(mode) = mode {
-                self.port.chmod(node, mode).map_err(errno)?;
+            .await;
+            match result {
+                Ok(attr) => reply.attr(&TTL, &attr),
+                Err(error) => reply.error(error),
             }
-            if let Some(value) = mtime {
-                let value = match value {
-                    TimeOrNow::SpecificTime(value) => value,
-                    TimeOrNow::Now => SystemTime::now(),
-                };
-                let value = value
-                    .duration_since(UNIX_EPOCH)
-                    .map_err(|_| fuser::Errno::EINVAL)?;
-                self.port
-                    .set_mtime(node, value.as_secs() as i64, value.subsec_nanos())
-                    .map_err(errno)?;
-            }
-            self.attr(self.port.attr(node).map_err(errno)?)
         });
-        match result {
-            Ok(attr) => reply.attr(&TTL, &attr),
-            Err(error) => reply.error(error),
-        }
     }
 
     fn readlink(&self, _request: &Request, ino: INodeNo, reply: ReplyData) {
@@ -186,13 +249,30 @@ impl Filesystem for LayerFs {
                 return;
             }
         };
-        match self
-            .node(ino)
-            .and_then(|node| self.port.readlink(node).map_err(errno))
-        {
-            Ok(target) => reply.data(&target),
-            Err(error) => reply.error(error),
-        }
+
+        let this = self.clone();
+        self.dispatch(async move {
+            let mut _callback = _callback;
+            _callback._gate = match this
+                .port
+                .callback_gate(crate::KernelOperation::Readlink, false)
+                .await
+            {
+                Ok(gate) => gate,
+                Err(error) => {
+                    reply.error(errno(error));
+                    return;
+                }
+            };
+
+            match this
+                .node(ino)
+                .and_then(|node| this.port.readlink(node).map_err(errno))
+            {
+                Ok(target) => reply.data(&target),
+                Err(error) => reply.error(error),
+            }
+        });
     }
 
     fn mknod(
@@ -217,21 +297,43 @@ impl Filesystem for LayerFs {
                 return;
             }
         };
-        if rdev != 0 || mode & 0o170000 != 0o100000 {
-            reply.error(fuser::Errno::EOPNOTSUPP);
-            return;
-        }
-        let result = self.node(parent).and_then(|parent| {
-            let attr = self
+        let name = name.to_owned();
+        let this = self.clone();
+        self.dispatch(async move {
+            let mut _callback = _callback;
+            _callback._gate = match this
                 .port
-                .create_file(parent, name.as_bytes(), mode & !umask)
-                .map_err(errno)?;
-            self.attr(attr)
+                .callback_gate(crate::KernelOperation::Mknod, false)
+                .await
+            {
+                Ok(gate) => gate,
+                Err(error) => {
+                    reply.error(errno(error));
+                    return;
+                }
+            };
+
+            if rdev != 0 || mode & 0o170000 != 0o100000 {
+                reply.error(fuser::Errno::EOPNOTSUPP);
+                return;
+            }
+            let result = async {
+                let parent = this.node(parent)?;
+                {
+                    let attr = this
+                        .port
+                        .create_file_async(parent, name.as_bytes(), mode & !umask)
+                        .await
+                        .map_err(errno)?;
+                    this.attr(attr)
+                }
+            }
+            .await;
+            match result {
+                Ok(attr) => reply.entry(&TTL, &attr, Generation(0)),
+                Err(error) => reply.error(error),
+            }
         });
-        match result {
-            Ok(attr) => reply.entry(&TTL, &attr, Generation(0)),
-            Err(error) => reply.error(error),
-        }
     }
 
     fn mkdir(
@@ -255,17 +357,39 @@ impl Filesystem for LayerFs {
                 return;
             }
         };
-        let result = self.node(parent).and_then(|parent| {
-            let attr = self
+        let name = name.to_owned();
+        let this = self.clone();
+        self.dispatch(async move {
+            let mut _callback = _callback;
+            _callback._gate = match this
                 .port
-                .mkdir(parent, name.as_bytes(), mode & !umask)
-                .map_err(errno)?;
-            self.attr(attr)
+                .callback_gate(crate::KernelOperation::Mkdir, false)
+                .await
+            {
+                Ok(gate) => gate,
+                Err(error) => {
+                    reply.error(errno(error));
+                    return;
+                }
+            };
+
+            let result = async {
+                let parent = this.node(parent)?;
+                {
+                    let attr = this
+                        .port
+                        .mkdir_async(parent, name.as_bytes(), mode & !umask)
+                        .await
+                        .map_err(errno)?;
+                    this.attr(attr)
+                }
+            }
+            .await;
+            match result {
+                Ok(attr) => reply.entry(&TTL, &attr, Generation(0)),
+                Err(error) => reply.error(error),
+            }
         });
-        match result {
-            Ok(attr) => reply.entry(&TTL, &attr, Generation(0)),
-            Err(error) => reply.error(error),
-        }
     }
 
     fn unlink(&self, _request: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
@@ -281,14 +405,36 @@ impl Filesystem for LayerFs {
                 return;
             }
         };
-        empty_reply(
-            self.node(parent).and_then(|parent| {
-                self.port
-                    .unlink(parent, name.as_bytes(), false)
-                    .map_err(errno)
-            }),
-            reply,
-        );
+        let name = name.to_owned();
+        let this = self.clone();
+        self.dispatch(async move {
+            let mut _callback = _callback;
+            _callback._gate = match this
+                .port
+                .callback_gate(crate::KernelOperation::Unlink, false)
+                .await
+            {
+                Ok(gate) => gate,
+                Err(error) => {
+                    reply.error(errno(error));
+                    return;
+                }
+            };
+
+            empty_reply(
+                async {
+                    let parent = this.node(parent)?;
+                    {
+                        this.port
+                            .unlink_async(parent, name.as_bytes(), false)
+                            .await
+                            .map_err(errno)
+                    }
+                }
+                .await,
+                reply,
+            );
+        });
     }
 
     fn rmdir(&self, _request: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
@@ -304,14 +450,36 @@ impl Filesystem for LayerFs {
                 return;
             }
         };
-        empty_reply(
-            self.node(parent).and_then(|parent| {
-                self.port
-                    .unlink(parent, name.as_bytes(), true)
-                    .map_err(errno)
-            }),
-            reply,
-        );
+        let name = name.to_owned();
+        let this = self.clone();
+        self.dispatch(async move {
+            let mut _callback = _callback;
+            _callback._gate = match this
+                .port
+                .callback_gate(crate::KernelOperation::Rmdir, false)
+                .await
+            {
+                Ok(gate) => gate,
+                Err(error) => {
+                    reply.error(errno(error));
+                    return;
+                }
+            };
+
+            empty_reply(
+                async {
+                    let parent = this.node(parent)?;
+                    {
+                        this.port
+                            .unlink_async(parent, name.as_bytes(), true)
+                            .await
+                            .map_err(errno)
+                    }
+                }
+                .await,
+                reply,
+            );
+        });
     }
 
     fn symlink(
@@ -334,21 +502,44 @@ impl Filesystem for LayerFs {
                 return;
             }
         };
-        let result = self.node(parent).and_then(|parent| {
-            let attr = self
+        let name = name.to_owned();
+        let target = target.to_owned();
+        let this = self.clone();
+        self.dispatch(async move {
+            let mut _callback = _callback;
+            _callback._gate = match this
                 .port
-                .symlink(
-                    parent,
-                    name.as_bytes(),
-                    target.as_os_str().as_bytes().to_vec(),
-                )
-                .map_err(errno)?;
-            self.attr(attr)
+                .callback_gate(crate::KernelOperation::Symlink, false)
+                .await
+            {
+                Ok(gate) => gate,
+                Err(error) => {
+                    reply.error(errno(error));
+                    return;
+                }
+            };
+
+            let result = async {
+                let parent = this.node(parent)?;
+                {
+                    let attr = this
+                        .port
+                        .symlink_async(
+                            parent,
+                            name.as_bytes(),
+                            target.as_os_str().as_bytes().to_vec(),
+                        )
+                        .await
+                        .map_err(errno)?;
+                    this.attr(attr)
+                }
+            }
+            .await;
+            match result {
+                Ok(attr) => reply.entry(&TTL, &attr, Generation(0)),
+                Err(error) => reply.error(error),
+            }
         });
-        match result {
-            Ok(attr) => reply.entry(&TTL, &attr, Generation(0)),
-            Err(error) => reply.error(error),
-        }
     }
 
     fn rename(
@@ -373,25 +564,48 @@ impl Filesystem for LayerFs {
                 return;
             }
         };
-        if flags.intersects(RenameFlags::RENAME_EXCHANGE | RenameFlags::RENAME_WHITEOUT) {
-            reply.error(fuser::Errno::EOPNOTSUPP);
-            return;
-        }
-        empty_reply(
-            self.node(parent).and_then(|parent| {
-                let target = self.node(new_parent)?;
-                self.port
-                    .rename(
-                        parent,
-                        name.as_bytes(),
-                        target,
-                        new_name.as_bytes(),
-                        flags.contains(RenameFlags::RENAME_NOREPLACE),
-                    )
-                    .map_err(errno)
-            }),
-            reply,
-        );
+        let name = name.to_owned();
+        let new_name = new_name.to_owned();
+        let this = self.clone();
+        self.dispatch(async move {
+            let mut _callback = _callback;
+            _callback._gate = match this
+                .port
+                .callback_gate(crate::KernelOperation::Rename, false)
+                .await
+            {
+                Ok(gate) => gate,
+                Err(error) => {
+                    reply.error(errno(error));
+                    return;
+                }
+            };
+
+            if flags.intersects(RenameFlags::RENAME_EXCHANGE | RenameFlags::RENAME_WHITEOUT) {
+                reply.error(fuser::Errno::EOPNOTSUPP);
+                return;
+            }
+            empty_reply(
+                async {
+                    let parent = this.node(parent)?;
+                    {
+                        let target = this.node(new_parent)?;
+                        this.port
+                            .rename_async(
+                                parent,
+                                name.as_bytes(),
+                                target,
+                                new_name.as_bytes(),
+                                flags.contains(RenameFlags::RENAME_NOREPLACE),
+                            )
+                            .await
+                            .map_err(errno)
+                    }
+                }
+                .await,
+                reply,
+            );
+        });
     }
 
     fn link(
@@ -414,18 +628,40 @@ impl Filesystem for LayerFs {
                 return;
             }
         };
-        let result = self.node(ino).and_then(|node| {
-            let parent = self.node(new_parent)?;
-            let attr = self
+        let new_name = new_name.to_owned();
+        let this = self.clone();
+        self.dispatch(async move {
+            let mut _callback = _callback;
+            _callback._gate = match this
                 .port
-                .link(node, parent, new_name.as_bytes())
-                .map_err(errno)?;
-            self.attr(attr)
+                .callback_gate(crate::KernelOperation::Link, false)
+                .await
+            {
+                Ok(gate) => gate,
+                Err(error) => {
+                    reply.error(errno(error));
+                    return;
+                }
+            };
+
+            let result = async {
+                let node = this.node(ino)?;
+                {
+                    let parent = this.node(new_parent)?;
+                    let attr = this
+                        .port
+                        .link_async(node, parent, new_name.as_bytes())
+                        .await
+                        .map_err(errno)?;
+                    this.attr(attr)
+                }
+            }
+            .await;
+            match result {
+                Ok(attr) => reply.entry(&TTL, &attr, Generation(0)),
+                Err(error) => reply.error(error),
+            }
         });
-        match result {
-            Ok(attr) => reply.entry(&TTL, &attr, Generation(0)),
-            Err(error) => reply.error(error),
-        }
     }
 
     fn open(&self, _request: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
@@ -441,14 +677,40 @@ impl Filesystem for LayerFs {
                 return;
             }
         };
-        match self.node(ino).and_then(|node| {
-            let writable = matches!(flags.0 & O_ACCMODE, O_WRONLY | O_RDWR);
-            self.open_handle(node, flags.0 & O_TRUNC != 0, writable)
-                .map(|handle| (handle, writable))
-        }) {
-            Ok((handle, _)) => reply.opened(FileHandle(handle), FopenFlags::FOPEN_KEEP_CACHE),
-            Err(error) => reply.error(error),
-        }
+
+        let this = self.clone();
+        self.dispatch(async move {
+            let mut _callback = _callback;
+            _callback._gate = match this
+                .port
+                .callback_gate(crate::KernelOperation::Open, false)
+                .await
+            {
+                Ok(gate) => gate,
+                Err(error) => {
+                    reply.error(errno(error));
+                    return;
+                }
+            };
+
+            match async {
+                let node = this.node(ino)?;
+                {
+                    let writable = matches!(flags.0 & O_ACCMODE, O_WRONLY | O_RDWR);
+                    this.open_handle_async(node, flags.0 & O_TRUNC != 0, writable)
+                        .await
+                        .map(|handle| (handle, node))
+                }
+            }
+            .await
+            {
+                Ok((handle, node)) => {
+                    this.port.note_cached_open(node);
+                    reply.opened(FileHandle(handle), FopenFlags::FOPEN_KEEP_CACHE)
+                }
+                Err(error) => reply.error(error),
+            }
+        });
     }
 
     fn read(
@@ -552,7 +814,24 @@ impl Filesystem for LayerFs {
                 return;
             }
         };
-        reply.ok();
+
+        let this = self.clone();
+        self.dispatch(async move {
+            let mut _callback = _callback;
+            _callback._gate = match this
+                .port
+                .callback_gate(crate::KernelOperation::Flush, false)
+                .await
+            {
+                Ok(gate) => gate,
+                Err(error) => {
+                    reply.error(errno(error));
+                    return;
+                }
+            };
+
+            reply.ok();
+        });
     }
 
     fn release(
@@ -577,12 +856,29 @@ impl Filesystem for LayerFs {
                 return;
             }
         };
-        let result = self
-            .handles
-            .remove(handle.0)
-            .ok_or(fuser::Errno::EBADF)
-            .and_then(|handle| self.port.unpin(handle.node, handle.writable).map_err(errno));
-        empty_reply(result, reply);
+
+        let this = self.clone();
+        self.dispatch(async move {
+            let mut _callback = _callback;
+            _callback._gate = match this
+                .port
+                .callback_gate(crate::KernelOperation::Release, false)
+                .await
+            {
+                Ok(gate) => gate,
+                Err(error) => {
+                    reply.error(errno(error));
+                    return;
+                }
+            };
+
+            let result = this
+                .handles
+                .remove(handle.0)
+                .ok_or(fuser::Errno::EBADF)
+                .and_then(|handle| this.port.unpin(handle.node, handle.writable).map_err(errno));
+            empty_reply(result, reply);
+        });
     }
 
     fn fsync(
@@ -605,11 +901,31 @@ impl Filesystem for LayerFs {
                 return;
             }
         };
-        empty_reply(
-            self.handle(handle)
-                .and_then(|node| self.port.fsync(Some(node)).map_err(errno)),
-            reply,
-        );
+
+        let this = self.clone();
+        self.dispatch(async move {
+            let mut _callback = _callback;
+            _callback._gate = match this
+                .port
+                .callback_gate(crate::KernelOperation::Fsync, false)
+                .await
+            {
+                Ok(gate) => gate,
+                Err(error) => {
+                    reply.error(errno(error));
+                    return;
+                }
+            };
+
+            empty_reply(
+                async {
+                    let node = this.handle(handle)?;
+                    this.port.fsync_async(Some(node)).await.map_err(errno)
+                }
+                .await,
+                reply,
+            );
+        });
     }
 
     fn opendir(&self, _request: &Request, ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
@@ -625,15 +941,32 @@ impl Filesystem for LayerFs {
                 return;
             }
         };
-        match self.node(ino).and_then(|node| {
-            if self.port.attr(node).map_err(errno)?.kind != Kind::Directory {
-                return Err(fuser::Errno::ENOTDIR);
+
+        let this = self.clone();
+        self.dispatch(async move {
+            let mut _callback = _callback;
+            _callback._gate = match this
+                .port
+                .callback_gate(crate::KernelOperation::Opendir, false)
+                .await
+            {
+                Ok(gate) => gate,
+                Err(error) => {
+                    reply.error(errno(error));
+                    return;
+                }
+            };
+
+            match this.node(ino).and_then(|node| {
+                if this.port.attr(node).map_err(errno)?.kind != Kind::Directory {
+                    return Err(fuser::Errno::ENOTDIR);
+                }
+                Ok(this.handles.insert(node, false))
+            }) {
+                Ok(handle) => reply.opened(FileHandle(handle), FopenFlags::empty()),
+                Err(error) => reply.error(error),
             }
-            Ok(self.handles.insert(node, false))
-        }) {
-            Ok(handle) => reply.opened(FileHandle(handle), FopenFlags::empty()),
-            Err(error) => reply.error(error),
-        }
+        });
     }
 
     fn readdir(
@@ -656,29 +989,53 @@ impl Filesystem for LayerFs {
                 return;
             }
         };
-        let result = self
-            .handle(handle)
-            .and_then(|node| self.port.readdir_page(node, offset as usize).map_err(errno));
-        match result {
-            Ok(entries) => {
-                let mut returned_entries = 0;
-                for (index, (node, kind, name)) in entries.into_iter().enumerate() {
-                    let ino = self.inodes.kernel(node);
-                    if reply.add(
-                        INodeNo(ino),
-                        offset + (index + 1) as u64,
-                        file_type(kind),
-                        OsStr::from_bytes(&name),
-                    ) {
-                        break;
-                    }
-                    returned_entries += 1;
+
+        let this = self.clone();
+        self.dispatch(async move {
+            let mut _callback = _callback;
+            _callback._gate = match this
+                .port
+                .callback_gate(crate::KernelOperation::Readdir, false)
+                .await
+            {
+                Ok(gate) => gate,
+                Err(error) => {
+                    reply.error(errno(error));
+                    return;
                 }
-                self.port.note_readdir_page(offset, returned_entries);
-                reply.ok();
+            };
+
+            let result = async {
+                let node = this.handle(handle)?;
+                {
+                    this.port
+                        .readdir_page_async(node, offset as usize)
+                        .await
+                        .map_err(errno)
+                }
             }
-            Err(error) => reply.error(error),
-        }
+            .await;
+            match result {
+                Ok(entries) => {
+                    let mut returned_entries = 0;
+                    for (index, (node, kind, name)) in entries.into_iter().enumerate() {
+                        let ino = this.inodes.kernel(node);
+                        if reply.add(
+                            INodeNo(ino),
+                            offset + (index + 1) as u64,
+                            file_type(kind),
+                            OsStr::from_bytes(&name),
+                        ) {
+                            break;
+                        }
+                        returned_entries += 1;
+                    }
+                    this.port.note_readdir_page(offset, returned_entries);
+                    reply.ok();
+                }
+                Err(error) => reply.error(error),
+            }
+        });
     }
 
     fn readdirplus(
@@ -702,39 +1059,61 @@ impl Filesystem for LayerFs {
                     return;
                 }
             };
-        let result = self.handle(handle).and_then(|node| {
-            self.port
-                .readdirplus_page(node, offset as usize)
-                .map_err(errno)
-        });
-        match result {
-            Ok(entries) => {
-                let mut returned_entries = 0;
-                for (index, (attr, name)) in entries.into_iter().enumerate() {
-                    let attr = match self.attr(attr) {
-                        Ok(attr) => attr,
-                        Err(error) => {
-                            reply.error(error);
-                            return;
-                        }
-                    };
-                    if reply.add(
-                        attr.ino,
-                        offset + (index + 1) as u64,
-                        OsStr::from_bytes(&name),
-                        &TTL,
-                        &attr,
-                        Generation(0),
-                    ) {
-                        break;
-                    }
-                    returned_entries += 1;
+
+        let this = self.clone();
+        self.dispatch(async move {
+            let mut _callback = _callback;
+            _callback._gate = match this
+                .port
+                .callback_gate(crate::KernelOperation::Readdirplus, false)
+                .await
+            {
+                Ok(gate) => gate,
+                Err(error) => {
+                    reply.error(errno(error));
+                    return;
                 }
-                self.port.note_readdir_page(offset, returned_entries);
-                reply.ok();
+            };
+
+            let result = async {
+                let node = this.handle(handle)?;
+                {
+                    this.port
+                        .readdirplus_page_async(node, offset as usize)
+                        .await
+                        .map_err(errno)
+                }
             }
-            Err(error) => reply.error(error),
-        }
+            .await;
+            match result {
+                Ok(entries) => {
+                    let mut returned_entries = 0;
+                    for (index, (attr, name)) in entries.into_iter().enumerate() {
+                        let attr = match this.attr(attr) {
+                            Ok(attr) => attr,
+                            Err(error) => {
+                                reply.error(error);
+                                return;
+                            }
+                        };
+                        if reply.add(
+                            attr.ino,
+                            offset + (index + 1) as u64,
+                            OsStr::from_bytes(&name),
+                            &TTL,
+                            &attr,
+                            Generation(0),
+                        ) {
+                            break;
+                        }
+                        returned_entries += 1;
+                    }
+                    this.port.note_readdir_page(offset, returned_entries);
+                    reply.ok();
+                }
+                Err(error) => reply.error(error),
+            }
+        });
     }
 
     fn releasedir(
@@ -757,11 +1136,28 @@ impl Filesystem for LayerFs {
                 return;
             }
         };
-        if self.handles.remove(handle.0).is_some() {
-            reply.ok();
-        } else {
-            reply.error(fuser::Errno::EBADF);
-        }
+
+        let this = self.clone();
+        self.dispatch(async move {
+            let mut _callback = _callback;
+            _callback._gate = match this
+                .port
+                .callback_gate(crate::KernelOperation::Releasedir, false)
+                .await
+            {
+                Ok(gate) => gate,
+                Err(error) => {
+                    reply.error(errno(error));
+                    return;
+                }
+            };
+
+            if this.handles.remove(handle.0).is_some() {
+                reply.ok();
+            } else {
+                reply.error(fuser::Errno::EBADF);
+            }
+        });
     }
 
     fn fsyncdir(
@@ -784,7 +1180,24 @@ impl Filesystem for LayerFs {
                 return;
             }
         };
-        empty_reply(self.port.fsync(None).map_err(errno), reply);
+
+        let this = self.clone();
+        self.dispatch(async move {
+            let mut _callback = _callback;
+            _callback._gate = match this
+                .port
+                .callback_gate(crate::KernelOperation::Fsyncdir, false)
+                .await
+            {
+                Ok(gate) => gate,
+                Err(error) => {
+                    reply.error(errno(error));
+                    return;
+                }
+            };
+
+            empty_reply(this.port.fsync_async(None).await.map_err(errno), reply);
+        });
     }
 
     fn statfs(&self, _request: &Request, _ino: INodeNo, reply: ReplyStatfs) {
@@ -800,7 +1213,24 @@ impl Filesystem for LayerFs {
                 return;
             }
         };
-        reply.statfs(1 << 30, 1 << 29, 1 << 29, 1 << 30, 1 << 29, 4096, 255, 4096);
+
+        let this = self.clone();
+        self.dispatch(async move {
+            let mut _callback = _callback;
+            _callback._gate = match this
+                .port
+                .callback_gate(crate::KernelOperation::Statfs, false)
+                .await
+            {
+                Ok(gate) => gate,
+                Err(error) => {
+                    reply.error(errno(error));
+                    return;
+                }
+            };
+
+            reply.statfs(1 << 30, 1 << 29, 1 << 29, 1 << 30, 1 << 29, 4096, 255, 4096);
+        });
     }
 
     fn access(&self, _request: &Request, ino: INodeNo, _mask: AccessFlags, reply: ReplyEmpty) {
@@ -816,13 +1246,30 @@ impl Filesystem for LayerFs {
                 return;
             }
         };
-        match self
-            .node(ino)
-            .and_then(|node| self.port.attr(node).map_err(errno))
-        {
-            Ok(_) => reply.ok(),
-            Err(error) => reply.error(error),
-        }
+
+        let this = self.clone();
+        self.dispatch(async move {
+            let mut _callback = _callback;
+            _callback._gate = match this
+                .port
+                .callback_gate(crate::KernelOperation::Access, false)
+                .await
+            {
+                Ok(gate) => gate,
+                Err(error) => {
+                    reply.error(errno(error));
+                    return;
+                }
+            };
+
+            match this
+                .node(ino)
+                .and_then(|node| this.port.attr(node).map_err(errno))
+            {
+                Ok(_) => reply.ok(),
+                Err(error) => reply.error(error),
+            }
+        });
     }
 
     fn create(
@@ -847,26 +1294,48 @@ impl Filesystem for LayerFs {
                 return;
             }
         };
-        let result = self.node(parent).and_then(|parent| {
-            let attr = self
+        let name = name.to_owned();
+        let this = self.clone();
+        self.dispatch(async move {
+            let mut _callback = _callback;
+            _callback._gate = match this
                 .port
-                .create_file_open(parent, name.as_bytes(), mode & !umask)
-                .map_err(errno)?;
-            let handle = self.handles.insert(attr.node, true);
-            Ok((self.attr(attr)?, handle))
+                .callback_gate(crate::KernelOperation::Create, false)
+                .await
+            {
+                Ok(gate) => gate,
+                Err(error) => {
+                    reply.error(errno(error));
+                    return;
+                }
+            };
+
+            let result = async {
+                let parent = this.node(parent)?;
+                {
+                    let attr = this
+                        .port
+                        .create_file_open_async(parent, name.as_bytes(), mode & !umask)
+                        .await
+                        .map_err(errno)?;
+                    let handle = this.handles.insert(attr.node, true);
+                    Ok((this.attr(attr)?, handle))
+                }
+            }
+            .await;
+            match result {
+                // Created files bypass the kernel page cache so large sequential writes stay
+                // memory-bounded. These handles are coherent but not mmapable; a later open uses
+                // FOPEN_KEEP_CACHE and supports mmap after the create handle closes.
+                Ok((attr, handle)) => reply.created(
+                    &TTL,
+                    &attr,
+                    Generation(0),
+                    FileHandle(handle),
+                    FopenFlags::FOPEN_DIRECT_IO,
+                ),
+                Err(error) => reply.error(error),
+            }
         });
-        match result {
-            // Created files bypass the kernel page cache so large sequential writes stay
-            // memory-bounded. These handles are coherent but not mmapable; a later open uses
-            // FOPEN_KEEP_CACHE and supports mmap after the create handle closes.
-            Ok((attr, handle)) => reply.created(
-                &TTL,
-                &attr,
-                Generation(0),
-                FileHandle(handle),
-                FopenFlags::FOPEN_DIRECT_IO,
-            ),
-            Err(error) => reply.error(error),
-        }
     }
 }

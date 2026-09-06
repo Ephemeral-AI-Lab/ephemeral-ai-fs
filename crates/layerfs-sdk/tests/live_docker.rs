@@ -418,3 +418,289 @@ fn temp() -> PathBuf {
     std::fs::create_dir_all(&path).unwrap();
     path
 }
+
+#[test]
+fn running_commands_and_dirty_mappings_continue_across_commit() {
+    run_live_cut(false);
+}
+
+#[test]
+fn ordinary_writes_queue_during_mapped_commit() {
+    run_live_cut(true);
+}
+
+fn run_live_cut(ordinary_writes: bool) {
+    if std::env::var_os("LAYERFS_LIVE_DOCKER").is_none() {
+        return;
+    }
+    let image = std::env::var("LAYERFS_LIVE_DOCKER_IMAGE").unwrap();
+    let root = temp();
+    let manager = ContainerManager::open(root.join("containers")).unwrap();
+    let name = format!("layerfs-live-cut-{}", std::process::id());
+    eprintln!("focused live cut container={name}");
+    let result = live_cut_check(&manager, &name, &image, &root, ordinary_writes);
+    let cleanup = cleanup_container(&manager, &name);
+    match (result, cleanup) {
+        (Ok(()), Ok(())) => std::fs::remove_dir_all(root).unwrap(),
+        (result, cleanup) => panic!("live cut result={result:?}; cleanup={cleanup:?}"),
+    }
+}
+
+fn live_cut_check(
+    manager: &ContainerManager,
+    name: &str,
+    image: &str,
+    root: &Path,
+    ordinary_writes: bool,
+) -> AnyResult<()> {
+    use std::io::Write;
+    manager.create(ContainerCreate {
+        name: name.to_owned(),
+        image: image.to_owned(),
+        limits: ContainerLimits {
+            memory_bytes: 2 * 1024 * 1024 * 1024,
+            cpus: 2,
+            pids: 256,
+        },
+    })?;
+    let running = manager.start(name)?;
+    // A focused ordinary mmap/fd client, compiled during test preparation.
+    // It does not implement filesystem/storage behavior or benchmark mutation.
+    let program = r#"
+#include <assert.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
+int main(int argc, char **argv) {
+    assert(argc == 4);
+    int fd = open(argv[1], O_RDWR); assert(fd >= 0);
+    struct stat before, after; assert(fstat(fd, &before) == 0);
+    char cwd[4096], later[4096]; assert(getcwd(cwd, sizeof cwd));
+    assert(lseek(fd, 19, SEEK_SET) == 19);
+    volatile unsigned char *p = mmap(0, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    assert((void *)p != MAP_FAILED);
+    p[0] = 'A'; p[4095] = 'B';
+    puts("ready"); fflush(stdout);
+    struct timespec delay = {0, 1000000};
+    while (access(argv[2], F_OK) != 0) {
+        p[128]++;
+#ifdef ORDINARY_WRITES
+        assert(pwrite(fd, "Q", 1, 129) == 1);
+#else
+        nanosleep(&delay, 0);
+#endif
+    }
+    assert(p[0] == 'A' && p[4095] == 'B');
+    assert(fstat(fd, &after) == 0 && before.st_ino == after.st_ino && before.st_dev == after.st_dev);
+    assert(lseek(fd, 0, SEEK_CUR) == 19);
+    assert(getcwd(later, sizeof later) && strcmp(cwd, later) == 0);
+    p[0] = 'C'; p[4095] = 'D';
+    assert(pwrite(fd, "F", 1, 2048) == 1);
+    puts("after"); fflush(stdout);
+    while (access(argv[3], F_OK) != 0) {
+        p[128]++;
+#ifdef ORDINARY_WRITES
+        assert(pwrite(fd, "Q", 1, 129) == 1);
+#else
+        nanosleep(&delay, 0);
+#endif
+    }
+    assert(p[0] == 'C' && p[4095] == 'D' && p[2048] == 'F');
+    assert(munmap((void *)p, 4096) == 0); assert(close(fd) == 0);
+    puts("done"); return 0;
+}
+"#;
+    let mut compiler = Command::new("docker")
+        .args([
+            "exec",
+            "-i",
+            name,
+            "cc",
+            "-O2",
+            "-x",
+            "c",
+            "-",
+            "-o",
+            "/var/tmp/layerfs-cut-check",
+        ])
+        .args(if ordinary_writes {
+            vec!["-DORDINARY_WRITES"]
+        } else {
+            vec![]
+        })
+        .stdin(std::process::Stdio::piped())
+        .spawn()?;
+    compiler
+        .stdin
+        .take()
+        .ok_or("compiler stdin")?
+        .write_all(program.as_bytes())?;
+    require(compiler.wait()?.success(), "compile focused mmap client")?;
+    let store = Arc::new(LayerStackStore::create(root.join("store.sqlite"))?);
+    let client = Client::connect_with_container(store.clone(), running.binding())?;
+    let initialized =
+        client.initialize_layerstack(EntityName::new("cut")?, LayerStackInitialization::Empty)?;
+    let branch = client.fork_branch(
+        EntityName::new("main")?,
+        LocalForkSource::Layer {
+            layer_id: initialized.genesis_layer_id,
+        },
+    )?;
+    let placement = format!("/workspace/cut-{}", std::process::id());
+    let session =
+        client.create_workspace_session(container_request(branch, &running.id, &placement))?;
+    let (_, prepared) = execute(&client, session.id, ["/bin/sh", "-c", "dd if=/dev/zero of=held-a bs=4096 count=1 2>/dev/null; dd if=/dev/zero of=held-b bs=4096 count=1 2>/dev/null"])?;
+    require(
+        prepared
+            .receipt
+            .is_some_and(|receipt| receipt.exit_code == Some(0)),
+        "prepare mapped files",
+    )?;
+    let go = format!("/var/tmp/cut-{}-go", session.id);
+    let done = format!("/var/tmp/cut-{}-done", session.id);
+    let mut executions = Vec::new();
+    for file in ["held-a", "held-b"] {
+        let execution = client.exec_workspace_session(
+            session.id,
+            NonEmpty::new(vec![
+                OsString::from("/var/tmp/layerfs-cut-check"),
+                OsString::from(file),
+                OsString::from(&go),
+                OsString::from(&done),
+            ])?,
+        )?;
+        executions.push(execution.id);
+    }
+    for id in &executions {
+        wait_live_marker(&client, *id, "ready")?;
+    }
+    require(
+        client.active_execution_count()? == 2,
+        "two commands live before Commit",
+    )?;
+    require(
+        matches!(
+            client.commit_workspace_session(session.id)?,
+            WorkspaceCommitResult::Created { .. }
+        ),
+        "Commit with running mappings",
+    )?;
+    require(
+        client.active_execution_count()? == 2,
+        "commands survive first Commit",
+    )?;
+    let first_root = store.pin_branch(branch)?.root;
+    check_mapped_snapshot(&store, first_root, false)?;
+    require(
+        docker_status(name, ["touch", go.as_str()])?,
+        "release after-cut writes",
+    )?;
+    for id in &executions {
+        wait_live_marker(&client, *id, "after")?;
+    }
+    require(
+        matches!(
+            client.commit_workspace_session(session.id)?,
+            WorkspaceCommitResult::Created { .. }
+        ),
+        "second live Commit",
+    )?;
+    require(
+        client.active_execution_count()? == 2,
+        "commands survive second Commit",
+    )?;
+    check_mapped_snapshot(&store, store.pin_branch(branch)?.root, true)?;
+    check_mapped_snapshot(&store, first_root, false)?;
+    require(
+        docker_status(name, ["touch", done.as_str()])?,
+        "release retained handles",
+    )?;
+    for id in executions {
+        wait_for(Duration::from_secs(5), || {
+            client
+                .workspace_output(id)
+                .is_ok_and(|reader| reader.read(0, false).is_ok_and(|page| page.exited))
+        })?;
+        let page = client.workspace_output(id)?.read(0, false)?;
+        require(
+            page.receipt
+                .is_some_and(|receipt| receipt.exit_code == Some(0)),
+            "mapping/fd/cwd client assertions",
+        )?;
+    }
+    // The continuously updated counter can be dirty after the second cut.
+    client.commit_workspace_session(session.id)?;
+    client.end_workspace_session(session.id, EndWorkspaceMode::Clean)?;
+    require(!mounted(name, &placement)?, "same mount eventually cleaned")?;
+    Ok(())
+}
+
+fn wait_live_marker(client: &Client, id: ExecutionId, marker: &str) -> AnyResult<()> {
+    let reader = client.workspace_output(id)?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let page = reader.read(0, false)?;
+        let bytes: Vec<u8> = page
+            .chunks
+            .into_iter()
+            .flat_map(|chunk| chunk.bytes)
+            .collect();
+        if String::from_utf8_lossy(&bytes).contains(marker) {
+            return Ok(());
+        }
+        if page.exited || Instant::now() >= deadline {
+            return Err(format!(
+                "live client marker {marker}: {}",
+                String::from_utf8_lossy(&bytes)
+            )
+            .into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn check_mapped_snapshot(
+    store: &LayerStackStore,
+    root: layerfs_content::ObjectId,
+    later: bool,
+) -> AnyResult<()> {
+    let reader = store.snapshot_reader(root);
+    for path in ["held-a", "held-b"] {
+        let mut bytes = Vec::new();
+        layerfs_content::filesystem::read_range(
+            &layerfs_layerstack_store::CoreReader(&reader),
+            root,
+            &layerfs_content::CanonicalPath::new(path)?,
+            0..4096,
+            &mut bytes,
+        )?;
+        require(bytes.len() == 4096, "mapped snapshot length")?;
+        for (index, byte) in bytes.into_iter().enumerate() {
+            let expected = match index {
+                0 => {
+                    if later {
+                        b'C'
+                    } else {
+                        b'A'
+                    }
+                }
+                4095 => {
+                    if later {
+                        b'D'
+                    } else {
+                        b'B'
+                    }
+                }
+                2048 if later => b'F',
+                128 | 129 => continue,
+                _ => 0,
+            };
+            require(byte == expected, "mapped snapshot exact stable bytes")?;
+        }
+    }
+    Ok(())
+}
