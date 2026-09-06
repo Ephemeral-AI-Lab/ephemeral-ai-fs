@@ -365,3 +365,10 @@ With the correction and the same widened race window, `live-cut-1788694261492203
 - `cache-store-linux-check-1788694550757377000`: Linux native host-fuse compilation, five daemon tests, owned reply test and two live-runtime tests PASS.
 
 These are focused correction checks, not completion of every remaining #49 transfer/resource/recovery requirement or final create/delete qualification. No new performance campaign was run. The final commit differs from the tested source only by this documentation update.
+
+
+### User-requested full tiny-churn run and issue closure handoff
+
+The user requested the entire tiny-file-churn family, per-case statistics, GitHub publication and closure, then explicitly clarified **only #49**. The resulting [full report](issue49-tiny-final-results.md) and [machine-readable statistics](issue49-tiny-final-results.json) contain all 20 registered seed-1 performance observations (19 new, one matching create100 receipt reused), all phase/resource/source/custody details, and seven matching independent sampled proofs. Performance20/20 and selected proofs7/7 PASS within their respective family/deadline contracts. All27 owned sample containers and host sample directories were confirmed removed; compatible masters remain protected.
+
+The current upstream-only create100 measurement is 1.069666876 s and remains a strict subsecond TARGET_MISS; delete100 is 0.325349709 s. This supersedes historical patched-source timing headlines, not their raw receipts. Closing #49 at the user's request records delivery of this requested benchmark/report scope. It does not claim that every earlier redesign, resource/recovery matrix or 100-workspace obligation has been independently qualified, and does not close #46, #47, #50, #51 or other issues. The remaining limitations in this ledger and the separate strict target remain explicit.
