@@ -103,3 +103,13 @@ P2's narrow maintained fuser patch is under `crates/vendor/fuser`, selected thro
 Shared-lock focused results: socket-backed INIT/decode/reply/direct-run/exactly-once-destroy PASS; aligned buffer and negotiated/max/default-page/overflow checks 2 PASS. Initial dependency compilation took 29.96 s; revised INIT test build 4.08 s; buffer test launch 0.06 s, test bodies <0.01 s. These are native component checks with macos-no-mount, not real-FUSE or future-platform support evidence. Root native Workspace check after patch resolution PASS (1.22 s); root Cargo.lock selects the vendored package. An initial root `-p fuser --features` test invocation was rejected because it is deliberately excluded from workspace membership; the standalone package command fixed the invocation without changing membership or product behavior.
 
 P2 runtime admission/mount integration and P3 ownership transfer remain pending. No new performance sample or proof, and no 100-workspace run.
+
+### P2 build custody
+
+Matching sealed host and Linux image build PASS at product-source commit `09d9325b6d5a39a2f3567978a61c1f4c497a7f18`:
+- Source seal `5cf1d381534e03e6d0c0bf9f1ecf69285cd6557534faf753d86b8465e9ee3e85`.
+- Product seal `b537c90f3d16e117d58f3b5e246825f9b7bad835024aaa7d6df9e6b4952908b5`.
+- Host binary SHA-256 `201c1c68c15ad6546efa404ee5acc5d97e75aa2d51e898fe945ab3bfb9887b5a` and identity at `target/release/fs-benchmark-pro.identity.json`.
+- Image `layerfs-bench-infra:5cf1d381534e03e6`; inspected labels match both host seals. The existing runner records source-dirty=true even for a clean checkout; preserve that producer field.
+
+The first image-build invocation failed before building because the configured desktop-linux Docker socket was absent. Docker Desktop was stopped (only vmnetd remained); started the existing application with `docker desktop start`, without restart/reset/prune or context changes. Retained runtime reports Docker 29.5.2 / Linux 6.12.76-linuxkit, VM 8 CPUs / 4,108,828,672 bytes; these VM settings are not the sample container's required 2-CPU/2-GiB/no-swap/256-PID limits. The subsequent image build passed through the existing measurement-lock runner. No performance/fixture/proof was run.
