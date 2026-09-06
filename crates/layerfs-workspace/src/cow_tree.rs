@@ -93,6 +93,7 @@ impl PhysicalSpoolMetrics {
 }
 
 pub struct Workspace {
+    pub(crate) live: layerfs_workspace_core::LiveWorkspace,
     pub(crate) store: LayerStackStore,
     pub(crate) workspace_id: [u8; 16],
     pub(crate) reader: SnapshotReader,
@@ -115,13 +116,9 @@ pub struct Workspace {
     pub(crate) current_spool: Option<u64>,
     pub(crate) next_spool: u64,
     pub(crate) segment_bytes: u64,
-    pub(crate) mutation_generation: u64,
-    pub(crate) mutation_paths: BTreeMap<String, u64>,
     pub(crate) policy: ResourcePolicy,
-    pub(crate) nodes: HashMap<NodeId, Node>,
     pub(crate) canonical_nodes: HashMap<InodeId, NodeId>,
     directory_parents: HashMap<NodeId, NodeId>,
-    pub(crate) dirty: BTreeSet<NodeId>,
     pub(crate) reserved: BTreeSet<NodeId>,
     pub(crate) next_node: u64,
     pub(crate) state: WorkspaceState,
@@ -234,6 +231,7 @@ impl Workspace {
             }),
         };
         Ok(Self {
+            live: layerfs_workspace_core::LiveWorkspace::new(root),
             store,
             workspace_id,
             reader,
@@ -256,13 +254,9 @@ impl Workspace {
             current_spool: None,
             next_spool: 1,
             segment_bytes: 0,
-            mutation_generation: 0,
-            mutation_paths: BTreeMap::new(),
             policy,
-            nodes: HashMap::from([(ROOT, root)]),
             canonical_nodes: HashMap::from([(resolved.inode, ROOT)]),
             directory_parents: HashMap::from([(ROOT, ROOT)]),
-            dirty: BTreeSet::new(),
             reserved: BTreeSet::new(),
             next_node: 2,
             state: WorkspaceState::Active,
@@ -275,11 +269,7 @@ impl Workspace {
     }
 
     pub fn attr(&self, node: NodeId) -> Result<Attr> {
-        let value = self
-            .nodes
-            .get(&node)
-            .ok_or(StorageError::NotFound("node"))?;
-        Ok(value.attr(node))
+        self.live.attr(node).map_err(crate::live_error)
     }
 
     pub fn lookup(&mut self, parent: NodeId, name: &[u8]) -> Result<Attr> {
@@ -289,6 +279,7 @@ impl Workspace {
 
     pub fn readlink(&self, node: NodeId) -> Result<Vec<u8>> {
         match &self
+            .live
             .nodes
             .get(&node)
             .ok_or(StorageError::NotFound("node"))?
@@ -322,7 +313,7 @@ impl Workspace {
     pub(crate) fn allocate(&mut self, node: Node) -> NodeId {
         let id = NodeId(self.next_node);
         self.next_node += 1;
-        self.nodes.insert(id, node);
+        self.live.nodes.insert(id, node);
         id
     }
 
@@ -362,14 +353,7 @@ impl Workspace {
         if self.pending_stage.is_some() {
             return Err(StorageError::InvalidInput("workspace stage pending"));
         }
-        self.mutation_generation = self
-            .mutation_generation
-            .checked_add(1)
-            .ok_or(StorageError::Integrity("Workspace mutation generation"))?;
-        for path in paths {
-            self.mutation_paths.insert(path, self.mutation_generation);
-        }
-        Ok(())
+        self.live.note_mutation(paths).map_err(crate::live_error)
     }
 
     pub(crate) fn lookup_node(&mut self, parent: NodeId, name: &[u8]) -> Result<NodeId> {
@@ -397,7 +381,7 @@ impl Workspace {
 
     fn materialize(&mut self, inode: InodeId, path: String) -> Result<NodeId> {
         if let Some(node) = self.canonical_nodes.get(&inode).copied() {
-            self.nodes.get_mut(&node).unwrap().paths.insert(path);
+            self.live.nodes.get_mut(&node).unwrap().paths.insert(path);
             return Ok(node);
         }
         let reader = CoreReader(&self.reader);
@@ -420,7 +404,7 @@ impl Workspace {
         file_len: Option<u64>,
     ) -> Result<NodeId> {
         if let Some(node) = self.canonical_nodes.get(&inode).copied() {
-            self.nodes.get_mut(&node).unwrap().paths.insert(path);
+            self.live.nodes.get_mut(&node).unwrap().paths.insert(path);
             return Ok(node);
         }
         let reader = CoreReader(&self.reader);
@@ -503,7 +487,7 @@ impl Workspace {
             }
             let path = join(&prefix, name.as_bytes())?;
             if let Some(child) = self.canonical_nodes.get(&inode).copied() {
-                self.nodes.get_mut(&child).unwrap().paths.insert(path);
+                self.live.nodes.get_mut(&child).unwrap().paths.insert(path);
                 self.remember_directory_parent(child, parent)?;
                 entries.insert(name.as_bytes().to_vec(), child);
             } else {
@@ -603,6 +587,7 @@ impl Workspace {
 
     fn directory(&self, node: NodeId) -> Result<&DirectoryData> {
         match &self
+            .live
             .nodes
             .get(&node)
             .ok_or(StorageError::NotFound("node"))?
@@ -615,13 +600,14 @@ impl Workspace {
 
     pub(crate) fn directory_mut(&mut self, node: NodeId) -> Result<&mut DirectoryData> {
         match &mut self
+            .live
             .nodes
             .get_mut(&node)
             .ok_or(StorageError::NotFound("node"))?
             .data
         {
             Data::Directory(directory) => {
-                self.dirty.insert(node);
+                self.live.dirty.insert(node);
                 Ok(directory)
             }
             _ => Err(StorageError::InvalidInput("directory")),
@@ -629,7 +615,8 @@ impl Workspace {
     }
 
     pub(crate) fn path_of(&self, node: NodeId) -> Result<String> {
-        self.nodes
+        self.live
+            .nodes
             .get(&node)
             .and_then(|node| node.paths.first())
             .cloned()
@@ -650,7 +637,8 @@ impl Workspace {
 
     fn remember_directory_parent(&mut self, node: NodeId, parent: NodeId) -> Result<()> {
         if !matches!(
-            self.nodes
+            self.live
+                .nodes
                 .get(&node)
                 .ok_or(StorageError::NotFound("node"))?
                 .data,
@@ -758,7 +746,9 @@ impl Workspace {
         if !self.reserved.remove(&node) {
             return Err(StorageError::Integrity("reserved node"));
         }
-        self.nodes.insert(node, new_directory(path.clone(), mode));
+        self.live
+            .nodes
+            .insert(node, new_directory(path.clone(), mode));
         self.insert_name(parent, name, node)?;
         self.note_mutation([path])?;
         self.attr(node)
@@ -788,7 +778,8 @@ impl Workspace {
     pub fn link(&mut self, node: NodeId, parent: NodeId, name: &[u8]) -> Result<Attr> {
         self.ensure_active()?;
         if matches!(
-            self.nodes
+            self.live
+                .nodes
                 .get(&node)
                 .ok_or(StorageError::NotFound("node"))?
                 .data,
@@ -798,7 +789,7 @@ impl Workspace {
         }
         let target = self.child_path(parent, name)?;
         self.insert_name(parent, name, node)?;
-        let value = self.nodes.get_mut(&node).unwrap();
+        let value = self.live.nodes.get_mut(&node).unwrap();
         value.links += 1;
         value.paths.insert(target.clone());
         let paths = value.paths.iter().cloned().collect::<Vec<_>>();
@@ -810,7 +801,7 @@ impl Workspace {
         self.ensure_active()?;
         let node = self.lookup_node(parent, name)?;
         let (is_directory, mut paths) = {
-            let value = self.nodes.get(&node).unwrap();
+            let value = self.live.nodes.get(&node).unwrap();
             (
                 matches!(value.data, Data::Directory(_)),
                 value.paths.iter().cloned().collect::<Vec<_>>(),
@@ -827,10 +818,10 @@ impl Workspace {
         self.directory_mut(parent)?
             .changes
             .insert(name.to_vec(), None);
-        let value = self.nodes.get_mut(&node).unwrap();
+        let value = self.live.nodes.get_mut(&node).unwrap();
         value.links = value.links.saturating_sub(1);
         value.paths.remove(&path);
-        self.dirty.insert(node);
+        self.live.dirty.insert(node);
         self.reclaim(node);
         self.note_mutation(paths)?;
         Ok(())
@@ -851,7 +842,7 @@ impl Workspace {
         if source == destination {
             return Ok(());
         }
-        let source_directory = matches!(self.nodes[&node].data, Data::Directory(_));
+        let source_directory = matches!(self.live.nodes[&node].data, Data::Directory(_));
         let existing = match self.lookup_node(target_parent, target) {
             Ok(existing) if existing == node => return Ok(()),
             Ok(existing) => Some(existing),
@@ -862,7 +853,7 @@ impl Workspace {
             return Err(StorageError::InvalidInput("rename target"));
         }
         if let Some(existing) = existing {
-            let target_directory = matches!(self.nodes[&existing].data, Data::Directory(_));
+            let target_directory = matches!(self.live.nodes[&existing].data, Data::Directory(_));
             if source_directory != target_directory {
                 return Err(StorageError::InvalidInput("rename type"));
             }
@@ -900,7 +891,8 @@ impl Workspace {
 
     pub fn pin(&mut self, node: NodeId, truncate: bool) -> Result<()> {
         if !matches!(
-            self.nodes
+            self.live
+                .nodes
                 .get(&node)
                 .ok_or(StorageError::NotFound("node"))?
                 .data,
@@ -911,13 +903,14 @@ impl Workspace {
         if truncate {
             self.truncate(node, 0)?;
         }
-        self.nodes.get_mut(&node).unwrap().pins += 1;
+        self.live.nodes.get_mut(&node).unwrap().pins += 1;
         Ok(())
     }
 
     pub fn unpin(&mut self, node: NodeId) -> Result<()> {
         self.finish_capture(Some(node));
         let value = self
+            .live
             .nodes
             .get_mut(&node)
             .ok_or(StorageError::NotFound("node"))?;
@@ -931,32 +924,14 @@ impl Workspace {
 
     pub fn chmod(&mut self, node: NodeId, mode: u32) -> Result<()> {
         self.ensure_active()?;
-        let value = self
-            .nodes
-            .get_mut(&node)
-            .ok_or(StorageError::NotFound("node"))?;
-        value.mode = mode & 0o1777;
-        let paths = value.paths.iter().cloned().collect::<Vec<_>>();
-        self.dirty.insert(node);
-        self.note_mutation(paths)?;
-        Ok(())
+        self.live.chmod(node, mode).map_err(crate::live_error)
     }
 
     pub fn set_mtime(&mut self, node: NodeId, seconds: i64, nanos: u32) -> Result<()> {
         self.ensure_active()?;
-        if nanos > 999_999_999 {
-            return Err(StorageError::InvalidInput("mtime"));
-        }
-        let value = self
-            .nodes
-            .get_mut(&node)
-            .ok_or(StorageError::NotFound("node"))?;
-        value.mtime_seconds = seconds;
-        value.mtime_nanoseconds = nanos;
-        let paths = value.paths.iter().cloned().collect::<Vec<_>>();
-        self.dirty.insert(node);
-        self.note_mutation(paths)?;
-        Ok(())
+        self.live
+            .set_mtime(node, seconds, nanos)
+            .map_err(crate::live_error)
     }
 
     fn insert_name(&mut self, parent: NodeId, name: &[u8], node: NodeId) -> Result<()> {
@@ -968,12 +943,12 @@ impl Workspace {
         self.directory_mut(parent)?
             .changes
             .insert(name.to_vec(), Some(node));
-        self.dirty.insert(node);
+        self.live.dirty.insert(node);
         self.remember_directory_parent(node, parent)
     }
 
     fn replace_path_prefix(&mut self, source: &str, target: &str) {
-        for node in self.nodes.values_mut() {
+        for node in self.live.nodes.values_mut() {
             node.paths = node
                 .paths
                 .iter()
@@ -993,16 +968,16 @@ impl Workspace {
     }
 
     fn reclaim(&mut self, node: NodeId) {
-        if self.nodes.get(&node).is_some_and(|value| {
+        if self.live.nodes.get(&node).is_some_and(|value| {
             value.paths.is_empty()
                 && value.pins == 0
                 && !(value.links != 0
                     && !matches!(value.data, Data::Directory(_))
-                    && self.dirty.contains(&node))
+                    && self.live.dirty.contains(&node))
         }) {
-            self.dirty.remove(&node);
+            self.live.dirty.remove(&node);
             self.directory_parents.remove(&node);
-            if let Some(value) = self.nodes.remove(&node) {
+            if let Some(value) = self.live.nodes.remove(&node) {
                 self.edited_nodes.remove(&node);
                 if let Some(inode) = value.canonical {
                     self.canonical_nodes.remove(&inode);
@@ -1064,10 +1039,10 @@ mod tests {
 
     fn snapshot(workspace: &Workspace) -> Snapshot {
         Snapshot {
-            nodes: workspace.nodes.clone(),
+            nodes: workspace.live.nodes.clone(),
             canonical_nodes: workspace.canonical_nodes.clone(),
             directory_parents: workspace.directory_parents.clone(),
-            dirty: workspace.dirty.clone(),
+            dirty: workspace.live.dirty.clone(),
             next_node: workspace.next_node,
             spool_bytes: workspace.spool_bytes,
             inline_bytes: workspace.inline_bytes,

@@ -42,6 +42,10 @@ pub enum Piece {
 }
 
 impl Piece {
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn len(&self) -> u64 {
         match self {
             Self::Base { len, .. }
@@ -163,6 +167,10 @@ pub struct PieceTree {
 }
 
 impl PieceTree {
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn empty() -> Self {
         Self {
             root: None,
@@ -283,7 +291,7 @@ impl PieceTree {
         let (_, right) = split(&tail, delete_len, &mut next)?;
         let mut middle = None;
         for piece in first.into_iter().chain(replacement) {
-            if piece.len() == 0 {
+            if piece.is_empty() {
                 continue;
             }
             let priority = next.priority()?;

@@ -166,7 +166,7 @@ impl CheckpointJournal {
             ),
             count: 0,
             // Metadata facts are candidate scratch, not payload spool bytes.
-            byte_limit: (workspace.nodes.len() as u64).saturating_mul(104),
+            byte_limit: (workspace.live.nodes.len() as u64).saturating_mul(104),
         })
     }
 
@@ -372,11 +372,11 @@ impl Workspace {
             layerfs_layerstack_store::note_workspace_capture(1, captured.len);
         }
         let inputs = StableFileInputs {
-            nodes: &self.nodes,
-            dirty: &self.dirty,
+            nodes: &self.live.nodes,
+            dirty: &self.live.dirty,
             reader: self.reader.clone(),
             base_inodes: self.base_inodes,
-            generation: self.mutation_generation,
+            generation: self.live.mutation_generation,
             spool: &self.spool,
             io_bytes: io_bytes / 2,
             captured: std::sync::Mutex::new(captured),
@@ -434,8 +434,9 @@ impl Workspace {
         let mut references = ReferenceJournal::new(&self.spool, io_bytes / 2);
         note_commit_phase(WorkspaceCommitPhase::CandidatePlan, started);
         let started = Instant::now();
-        for &node in &self.dirty {
+        for &node in &self.live.dirty {
             let value = self
+                .live
                 .nodes
                 .get(&node)
                 .ok_or(StorageError::Integrity("dirty node"))?;
@@ -445,7 +446,7 @@ impl Workspace {
             }
             let inode = self.frontier_inode(node)?;
             let file_result = if matches!(value.data, Data::File(_)) {
-                Some(files.next(node, self.mutation_generation, self.attr(node)?.size)?)
+                Some(files.next(node, self.live.mutation_generation, self.attr(node)?.size)?)
             } else {
                 None
             };
@@ -565,7 +566,7 @@ impl Workspace {
         let mut built = objects.finish(inodes.root, 0)?;
         add_build_counters(&mut built.counters, file_counters);
         let built = checkpoint
-            .finish(built, self.mutation_generation)
+            .finish(built, self.live.mutation_generation)
             .map(|mut prepared| {
                 prepared.admission = admission;
                 prepared
@@ -683,6 +684,7 @@ impl Workspace {
 
     fn frontier_inode(&self, node: NodeId) -> Result<InodeId> {
         let value = self
+            .live
             .nodes
             .get(&node)
             .ok_or(StorageError::Integrity("frontier node"))?;
@@ -737,6 +739,7 @@ impl Workspace {
                 digest.write_all(&entry.attr.mtime_seconds.to_be_bytes())?;
                 digest.write_all(&entry.attr.mtime_nanoseconds.to_be_bytes())?;
                 let node = self
+                    .live
                     .nodes
                     .get(&entry.node)
                     .ok_or(StorageError::Integrity("resolution node"))?;
@@ -817,7 +820,7 @@ impl Workspace {
         let mut pending = vec![(ROOT, String::new())];
         while let Some((directory, prefix)) = pending.pop() {
             for (name, node) in self.directory_entries(directory)? {
-                let dirty = self.dirty.contains(&node);
+                let dirty = self.live.dirty.contains(&node);
                 layerfs_layerstack_store::note_workspace_namespace_visits(
                     0,
                     1,
@@ -2210,6 +2213,7 @@ impl WorkspaceFileReader {
         Ok(FrozenFile::from_node(
             &workspace.reader,
             workspace
+                .live
                 .nodes
                 .get(&node)
                 .ok_or(StorageError::NotFound("node"))?,
@@ -2365,7 +2369,8 @@ mod tests {
         drop(serial);
         // Corrupt only the captured inode's backing to prove that its completed
         // output is reused, rather than silently rebuilding it for either alias.
-        let Data::File(FileData::Edited { pieces, .. }) = &workspace.nodes[&files[0].0].data else {
+        let Data::File(FileData::Edited { pieces, .. }) = &workspace.live.nodes[&files[0].0].data
+        else {
             unreachable!()
         };
         let captured_slice = pieces.compact_spool().unwrap();
@@ -2452,11 +2457,11 @@ mod tests {
             workspace.write(node, 0, &[index as u8; 17]).unwrap();
         }
         let inputs = StableFileInputs {
-            nodes: &workspace.nodes,
-            dirty: &workspace.dirty,
+            nodes: &workspace.live.nodes,
+            dirty: &workspace.live.dirty,
             reader: workspace.reader.clone(),
             base_inodes: workspace.base_inodes,
-            generation: workspace.mutation_generation,
+            generation: workspace.live.mutation_generation,
             spool: &workspace.spool,
             io_bytes: 1024,
             captured: std::sync::Mutex::new(None),
@@ -2599,7 +2604,7 @@ mod tests {
         workspace.commit().unwrap();
         let ids = nodes
             .iter()
-            .map(|node| workspace.nodes[node].canonical.unwrap())
+            .map(|node| workspace.live.nodes[node].canonical.unwrap())
             .collect::<Vec<_>>();
         let mut journal = ReferenceJournal::new(&workspace.spool, 128);
         journal.push(Some(ids[0]), None).unwrap();
@@ -2659,16 +2664,18 @@ mod tests {
             let mut inodes =
                 FrontierInodes::new(workspace.base_root, capacity, scratch, &workspace.spool);
             let first = inodes
-                .record(&objects, workspace.nodes[&nodes[0]].canonical.unwrap())
+                .record(&objects, workspace.live.nodes[&nodes[0]].canonical.unwrap())
                 .unwrap();
-            let first_inode = workspace.nodes[&nodes[0]].canonical.unwrap();
+            let first_inode = workspace.live.nodes[&nodes[0]].canonical.unwrap();
             inodes
                 .set_checkpoint(first_inode, first, nodes[0], first.content_root)
                 .unwrap();
-            let discarded = workspace.nodes[nodes.last().unwrap()].canonical.unwrap();
+            let discarded = workspace.live.nodes[nodes.last().unwrap()]
+                .canonical
+                .unwrap();
             inodes.set(discarded, Some(first)).unwrap();
             for node in &nodes {
-                let inode = workspace.nodes[node].canonical.unwrap();
+                let inode = workspace.live.nodes[node].canonical.unwrap();
                 let mut record = inodes.record(&objects, inode).unwrap();
                 record.content_root = first.content_root;
                 inodes.set(inode, Some(record)).unwrap();
@@ -2702,7 +2709,7 @@ mod tests {
         workspace.write(file, 0, b"data").unwrap();
         workspace.commit().unwrap();
         let objects = ObjectBuffer::new(&workspace.reader).unwrap();
-        let inode = workspace.nodes[&file].canonical.unwrap();
+        let inode = workspace.live.nodes[&file].canonical.unwrap();
         let mut inodes = FrontierInodes::new(workspace.base_root, 1, 0, &workspace.spool);
         let mut record = inodes.record(&objects, inode).unwrap();
         record.namespace_ref_count = 3;
@@ -2791,7 +2798,7 @@ mod tests {
         workspace.commit().unwrap();
         let mut journal = CheckpointJournal::new(&workspace).unwrap();
         let attr = workspace.attr(file).unwrap();
-        let inode = workspace.nodes[&file].canonical.unwrap();
+        let inode = workspace.live.nodes[&file].canonical.unwrap();
         let objects = ObjectBuffer::new(&workspace.reader).unwrap();
         let mut record = FrontierInodes::new(workspace.base_root, 1, 0, &workspace.spool)
             .record(&objects, inode)
@@ -2984,7 +2991,7 @@ mod tests {
                 .unwrap()
                 .node;
         }
-        let path = workspace.nodes[&parent].paths.first().unwrap();
+        let path = workspace.live.nodes[&parent].paths.first().unwrap();
         assert!(CanonicalPath::new(path).is_ok());
         assert!(matches!(
             workspace.frontier_inode(parent),
@@ -3017,7 +3024,7 @@ mod tests {
         workspace.commit().unwrap();
         let original_inodes = files
             .iter()
-            .map(|(_, node)| workspace.nodes[node].canonical.unwrap())
+            .map(|(_, node)| workspace.live.nodes[node].canonical.unwrap())
             .collect::<Vec<_>>();
         workspace.policy.max_final_delta_memory_bytes = 4096;
         for (index, (_, node)) in files.iter().enumerate() {
@@ -3026,10 +3033,15 @@ mod tests {
                 .unwrap();
             workspace.set_mtime(*node, 1700000001, 123).unwrap();
         }
-        assert!(workspace.nodes.values().all(|node| !matches!(&node.data,
+        assert!(workspace
+            .live
+            .nodes
+            .values()
+            .all(|node| !matches!(&node.data,
             Data::Directory(directory) if !directory.changes.is_empty())));
         assert!(
             workspace
+                .live
                 .mutation_paths
                 .keys()
                 .map(|path| path_charge(path))
@@ -3145,7 +3157,7 @@ mod tests {
         }
         workspace.fsync(Some(file.node)).unwrap();
         if let Data::File(FileData::Edited { pieces, .. }) =
-            &mut workspace.nodes.get_mut(&file.node).unwrap().data
+            &mut workspace.live.nodes.get_mut(&file.node).unwrap().data
         {
             let mut original = pieces.pieces().into_iter();
             let crate::file_edit::Piece::Spool {
@@ -3313,7 +3325,7 @@ mod tests {
                 Workspace::open_with_policy(store.clone(), branch, root.join("spool"), policy)
                     .unwrap();
             let file = workspace.lookup(ROOT, b"payload").unwrap().node;
-            let original_inode = workspace.nodes[&file].canonical.unwrap();
+            let original_inode = workspace.live.nodes[&file].canonical.unwrap();
             let mut expected = base.clone();
             let (expected_cdc, expected_path) = match case {
                 "overwrite" => {
@@ -3443,7 +3455,7 @@ mod tests {
             .unwrap();
         let mut workspace = Workspace::open(store.clone(), branch, root.join("spool")).unwrap();
         let file = workspace.lookup(ROOT, b"payload").unwrap().node;
-        let base_root = match workspace.nodes[&file].data {
+        let base_root = match workspace.live.nodes[&file].data {
             Data::File(FileData::Base { root, .. }) => root,
             _ => panic!("base file"),
         };

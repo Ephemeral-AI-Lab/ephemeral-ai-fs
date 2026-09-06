@@ -129,13 +129,14 @@ pub(crate) fn capture(worker: &Arc<WorkspaceWorker>) -> WorkspaceResult<()> {
         return Err(materialization_error(error));
     }
     layerfs_layerstack_store::note_workspace_capture(sink.files, sink.bytes);
-    captured.mutation_generation = workspace
+    captured.live.mutation_generation = workspace
+        .live
         .mutation_generation
         .checked_add(u64::from(changed))
         .ok_or(WorkspaceError::Storage(
             layerfs_layerstack_store::StoreError::Integrity("Workspace mutation generation"),
         ))?;
-    captured.mutation_paths = workspace.mutation_paths.clone();
+    captured.live.mutation_paths = workspace.live.mutation_paths.clone();
     captured.resolution = workspace.resolution.take();
     let mut previous = std::mem::replace(&mut *workspace, captured);
     previous.discard()?;
@@ -323,6 +324,7 @@ pub(crate) fn is_dirty(worker: &Arc<WorkspaceWorker>) -> WorkspaceResult<bool> {
         .workspace
         .lock()
         .map_err(|_| WorkspaceError::WorkspaceBusy)?
+        .live
         .mutation_generation
         != 0)
 }

@@ -6,6 +6,7 @@ use crate::file_edit::{
 use layerfs_content::file::rope::read_range;
 use layerfs_layerstack_store::{CoreReader, Result, SnapshotReader, StoreError};
 use layerfs_workspace_core::backing::{BackingId, BackingRef};
+use layerfs_workspace_core::ReadSource;
 use std::fs::{File, OpenOptions};
 #[cfg(test)]
 use std::os::unix::fs::MetadataExt;
@@ -111,12 +112,7 @@ pub(crate) struct EditCheckpoint {
 
 pub struct ReadPlan {
     reader: SnapshotReader,
-    requested: u64,
-    source: ReadSource,
-}
-enum ReadSource {
-    Base(layerfs_content::file::rope::FileStateRoot, u64, u64),
-    Edited(Vec<Piece>),
+    plan: layerfs_workspace_core::ReadPlan,
 }
 
 impl ReadPlan {
@@ -126,35 +122,19 @@ impl ReadPlan {
         offset: u64,
         size: usize,
     ) -> Result<Self> {
-        let len = match data {
-            FileData::Base { len, .. } => *len,
-            FileData::Edited { pieces, .. } => pieces.len(),
-        };
-        let end = len.min(offset.saturating_add(size as u64));
-        let source = match data {
-            FileData::Base { root, .. } => ReadSource::Base(*root, offset, end),
-            FileData::Edited { pieces, .. } => {
-                let (ranges, visited) = pieces
-                    .range_with_visits(offset, end)
-                    .map_err(crate::live_error)?;
-                layerfs_layerstack_store::note_workspace_commit_tree_visits(visited as u64);
-                ReadSource::Edited(ranges)
-            }
-        };
-        Ok(Self {
-            reader,
-            requested: end.saturating_sub(offset),
-            source,
-        })
+        let plan = layerfs_workspace_core::ReadPlan::for_file(data, offset, size)
+            .map_err(crate::live_error)?;
+        layerfs_layerstack_store::note_workspace_commit_tree_visits(plan.tree_visits as u64);
+        Ok(Self { reader, plan })
     }
 
     pub fn read(self) -> Result<Vec<u8>> {
         let started = std::time::Instant::now();
         let reader = self.reader.clone();
-        let output = match self.source {
+        let output = match self.plan.source {
             ReadSource::Base(root, start, end) => read_base(&self.reader, root, start, end),
             ReadSource::Edited(pieces) => {
-                let mut output = Vec::with_capacity(as_usize(self.requested)?);
+                let mut output = Vec::with_capacity(as_usize(self.plan.requested)?);
                 for piece in pieces {
                     match piece {
                         Piece::Base { root, offset, len } => {
@@ -181,7 +161,11 @@ impl ReadPlan {
                 Ok(output)
             }
         }?;
-        reader.note_workspace_read(self.requested, output.len() as u64, elapsed_ns(started))?;
+        reader.note_workspace_read(
+            self.plan.requested,
+            output.len() as u64,
+            elapsed_ns(started),
+        )?;
         Ok(output)
     }
 }
@@ -194,7 +178,12 @@ impl Workspace {
         let mut charge = 0_u64;
         let mut spool_live = 0_u64;
         let mut metric_nodes_scanned = 0_u64;
-        for node in self.dirty.iter().filter_map(|node| self.nodes.get(node)) {
+        for node in self
+            .live
+            .dirty
+            .iter()
+            .filter_map(|node| self.live.nodes.get(node))
+        {
             metric_nodes_scanned = metric_nodes_scanned.saturating_add(1);
             if let Data::File(FileData::Edited {
                 pieces: tree,
@@ -237,18 +226,19 @@ impl Workspace {
         Ok(EditCheckpoint {
             node,
             value: self
+                .live
                 .nodes
                 .get(&node)
                 .ok_or(StoreError::NotFound("node"))?
                 .clone(),
-            dirty: self.dirty.contains(&node),
+            dirty: self.live.dirty.contains(&node),
             spool_bytes: self.spool_bytes,
             spool_bytes_peak: self.spool_bytes_peak,
             inline_bytes: self.inline_bytes,
             piece_allocation_bytes: self.piece_allocation_bytes,
             spool_write_metrics: self.spool_write_metrics,
-            mutation_generation: self.mutation_generation,
-            mutation_paths: self.mutation_paths.clone(),
+            mutation_generation: self.live.mutation_generation,
+            mutation_paths: self.live.mutation_paths.clone(),
         })
     }
 
@@ -258,19 +248,19 @@ impl Workspace {
         } else {
             self.edited_nodes.insert(checkpoint.node);
         }
-        self.nodes.insert(checkpoint.node, checkpoint.value);
+        self.live.nodes.insert(checkpoint.node, checkpoint.value);
         if checkpoint.dirty {
-            self.dirty.insert(checkpoint.node);
+            self.live.dirty.insert(checkpoint.node);
         } else {
-            self.dirty.remove(&checkpoint.node);
+            self.live.dirty.remove(&checkpoint.node);
         }
         self.spool_bytes = checkpoint.spool_bytes;
         self.spool_bytes_peak = checkpoint.spool_bytes_peak;
         self.inline_bytes = checkpoint.inline_bytes;
         self.piece_allocation_bytes = checkpoint.piece_allocation_bytes;
         self.spool_write_metrics = checkpoint.spool_write_metrics;
-        self.mutation_generation = checkpoint.mutation_generation;
-        self.mutation_paths = checkpoint.mutation_paths;
+        self.live.mutation_generation = checkpoint.mutation_generation;
+        self.live.mutation_paths = checkpoint.mutation_paths;
         self.retire_spool_segments();
         Ok(())
     }
@@ -280,6 +270,7 @@ impl Workspace {
     }
     pub fn read_plan(&self, node: NodeId, offset: u64, size: usize) -> Result<ReadPlan> {
         match &self
+            .live
             .nodes
             .get(&node)
             .ok_or(StoreError::NotFound("node"))?
@@ -347,7 +338,7 @@ impl Workspace {
             .map_err(crate::live_error)?;
         let next_edits = next_edit(edits)?;
         let generation = self.next_generation()?;
-        let paths = self.nodes[&node].paths.iter().cloned().collect();
+        let paths = self.live.nodes[&node].paths.iter().cloned().collect();
         let appended = bytes.map_or(0, |bytes| bytes.len() as u64);
         #[cfg(feature = "test-instrumentation")]
         if appended > 0
@@ -463,7 +454,7 @@ impl Workspace {
             return Err(StoreError::InvalidInput("workspace edit batch"));
         }
         self.ensure_active()?;
-        let (old, prior_edits, was_base) = match &self.nodes[&node].data {
+        let (old, prior_edits, was_base) = match &self.live.nodes[&node].data {
             Data::File(FileData::Base { root, len }) => (
                 PieceTree::base(*root, *len).map_err(crate::live_error)?,
                 0,
@@ -480,6 +471,7 @@ impl Workspace {
             .filter(|value| *value <= MAX_EDITS_PER_FILE)
             .ok_or(StoreError::InvalidInput("workspace edit limit"))?;
         let generation = self
+            .live
             .mutation_generation
             .checked_add(edits.len() as u64)
             .ok_or(StoreError::Integrity("Workspace mutation generation"))?;
@@ -519,7 +511,7 @@ impl Workspace {
                 self.check_piece_resources(&old, &next)?;
             }
         }
-        let paths = self.nodes[&node].paths.iter().cloned().collect();
+        let paths = self.live.nodes[&node].paths.iter().cloned().collect();
         self.invalidate_capture();
         self.ensure_edited(node)?;
         let (high_water, installed, _) = self.edited_state(node)?;
@@ -564,7 +556,7 @@ impl Workspace {
             .replace(start, delete_len, replacement)
             .map_err(crate::live_error)?;
         let generation = self.next_generation()?;
-        let paths = self.nodes[&node].paths.iter().cloned().collect();
+        let paths = self.live.nodes[&node].paths.iter().cloned().collect();
         self.check_piece_resources(&old, &next)?;
         self.install_edit(
             node,
@@ -579,12 +571,13 @@ impl Workspace {
     }
 
     fn next_generation(&self) -> Result<u64> {
-        self.mutation_generation
+        self.live
+            .mutation_generation
             .checked_add(1)
             .ok_or(StoreError::Integrity("Workspace mutation generation"))
     }
     fn edited_state(&self, node: NodeId) -> Result<(u64, PieceTree, u32)> {
-        match &self.nodes[&node].data {
+        match &self.live.nodes[&node].data {
             Data::File(FileData::Edited {
                 spool_high_water,
                 pieces,
@@ -622,7 +615,7 @@ impl Workspace {
         // A successful explicit empty state retires the prior logical edit
         // generation. Keep spool history for in-flight reads; only subsequent
         // mutations receive a fresh edit budget, after existing admission checks.
-        let emptied = old.len() != 0 && next.len() == 0;
+        let emptied = !old.is_empty() && next.is_empty();
         self.inline_bytes = self.inline_bytes - old.inline_len() + next.inline_len();
         self.piece_allocation_bytes = self.piece_allocation_bytes
             - old.logical_allocation_charge().map_err(crate::live_error)?
@@ -636,17 +629,17 @@ impl Workspace {
             edits: current_edits,
             spool_high_water,
             ..
-        }) = &mut self.nodes.get_mut(&node).unwrap().data
+        }) = &mut self.live.nodes.get_mut(&node).unwrap().data
         else {
             return Err(StoreError::Integrity("edited file"));
         };
         *pieces = next;
         *current_edits = if emptied { 0 } else { edits };
         *spool_high_water = high_water;
-        self.dirty.insert(node);
-        self.mutation_generation = generation;
+        self.live.dirty.insert(node);
+        self.live.mutation_generation = generation;
         for path in paths {
-            self.mutation_paths.insert(path, generation);
+            self.live.mutation_paths.insert(path, generation);
         }
         Ok(())
     }
@@ -656,6 +649,7 @@ impl Workspace {
         let mut segments = std::collections::BTreeMap::new();
         if let Some(node) = node {
             if let Data::File(FileData::Edited { pieces, .. }) = &self
+                .live
                 .nodes
                 .get(&node)
                 .ok_or(StoreError::NotFound("node"))?
@@ -668,12 +662,12 @@ impl Workspace {
                 }
             }
             for segment in segments.values() {
-                spool_segment(&segment)?.check()?;
+                spool_segment(segment)?.check()?;
                 spool_segment(segment)?.observe();
             }
         } else {
             for segment in self.spool_segments.values() {
-                spool_segment(&segment)?.check()?;
+                spool_segment(segment)?.check()?;
                 spool_segment(segment)?.observe();
             }
         }
@@ -695,7 +689,7 @@ impl Workspace {
             if let Some(Node {
                 data: Data::File(FileData::Edited { pieces, .. }),
                 ..
-            }) = self.nodes.get_mut(id)
+            }) = self.live.nodes.get_mut(id)
             {
                 *pieces = PieceTree::empty();
             }
@@ -747,7 +741,7 @@ impl Workspace {
             data,
         };
         if reserved {
-            if self.nodes.insert(node, value).is_some() {
+            if self.live.nodes.insert(node, value).is_some() {
                 return Err(StoreError::Integrity("reserved node"));
             }
         } else {
@@ -758,7 +752,7 @@ impl Workspace {
         Ok(())
     }
     fn ensure_edited(&mut self, node: NodeId) -> Result<()> {
-        if let Data::File(FileData::Base { root, len }) = self.nodes[&node].data {
+        if let Data::File(FileData::Base { root, len }) = self.live.nodes[&node].data {
             let pieces = PieceTree::base(root, len).map_err(crate::live_error)?;
             let next_allocation = self
                 .piece_allocation_bytes
@@ -769,7 +763,7 @@ impl Workspace {
                 )
                 .filter(|v| *v <= MAX_PIECE_ALLOCATION)
                 .ok_or(StoreError::InvalidInput("workspace piece allocation limit"))?;
-            self.nodes.get_mut(&node).unwrap().data = Data::File(FileData::Edited {
+            self.live.nodes.get_mut(&node).unwrap().data = Data::File(FileData::Edited {
                 base: Some((root, len)),
                 spool_high_water: 0,
                 pieces,
@@ -778,9 +772,12 @@ impl Workspace {
             self.piece_allocation_bytes = next_allocation;
             self.edited_nodes.insert(node);
         }
-        matches!(self.nodes[&node].data, Data::File(FileData::Edited { .. }))
-            .then_some(())
-            .ok_or(StoreError::InvalidInput("file"))
+        matches!(
+            self.live.nodes[&node].data,
+            Data::File(FileData::Edited { .. })
+        )
+        .then_some(())
+        .ok_or(StoreError::InvalidInput("file"))
     }
     pub(crate) fn physical_spool_snapshot(&self) -> (Option<u64>, Option<u64>, u64, u64) {
         self.physical_spool
@@ -1108,12 +1105,12 @@ mod tests {
         let (root, mut workspace) = workspace("short-append");
         let file = workspace.create_file(ROOT, b"file", 0o600).unwrap().node;
         workspace.write(file, 0, b"base").unwrap();
-        let before = workspace.nodes[&file].clone();
+        let before = workspace.live.nodes[&file].clone();
         let before_charge = workspace.spool_bytes;
         let before_peak = workspace.spool_bytes_peak;
         INJECT_SHORT_APPEND.with(|inject| inject.set(true));
         assert!(workspace.write(file, 4, b"failure").is_err());
-        assert_eq!(workspace.nodes[&file], before);
+        assert_eq!(workspace.live.nodes[&file], before);
         assert_eq!(workspace.spool_bytes, before_charge);
         assert_eq!(workspace.spool_bytes_peak, before_peak);
         assert_eq!(
@@ -1277,8 +1274,8 @@ mod tests {
     fn generation_overflow_rejects_without_logical_or_physical_change() {
         let (root, mut workspace, _) = workspace_with_file("generation-overflow");
         let file = workspace.lookup(ROOT, b"file").unwrap().node;
-        workspace.mutation_generation = u64::MAX;
-        let before = workspace.nodes[&file].clone();
+        workspace.live.mutation_generation = u64::MAX;
+        let before = workspace.live.nodes[&file].clone();
         let charges = (
             workspace.spool_bytes,
             workspace.inline_bytes,
@@ -1290,7 +1287,7 @@ mod tests {
                 vec![(0, 0, crate::WorkspaceFileReplacement::Inline(b"P".to_vec()),)],
             )
             .is_err());
-        assert_eq!(workspace.nodes[&file], before);
+        assert_eq!(workspace.live.nodes[&file], before);
         assert_eq!(
             (
                 workspace.spool_bytes,
@@ -1319,7 +1316,7 @@ mod tests {
             .unwrap();
         let end = workspace.attr(file).unwrap().size;
         workspace.write(file, end, b"S").unwrap();
-        let Data::File(FileData::Edited { pieces, .. }) = &workspace.nodes[&file].data else {
+        let Data::File(FileData::Edited { pieces, .. }) = &workspace.live.nodes[&file].data else {
             panic!("edited file")
         };
         let variants = pieces.pieces();

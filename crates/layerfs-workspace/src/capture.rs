@@ -52,7 +52,7 @@ impl Workspace {
         let eligible = old_len == 0
             && offset == 0
             && matches!(
-                self.nodes.get(&node).map(|node| &node.data),
+                self.live.nodes.get(&node).map(|node| &node.data),
                 Some(Data::File(FileData::Edited { base: None, .. }))
             );
         if matches!(self.capture, CaptureState::Idle)
@@ -142,7 +142,7 @@ impl Workspace {
             return None;
         };
         let exact = matches!(
-            self.nodes.get(&captured.node).map(|node| &node.data),
+            self.live.nodes.get(&captured.node).map(|node| &node.data),
             Some(Data::File(FileData::Edited {
                 base: None,
                 pieces,

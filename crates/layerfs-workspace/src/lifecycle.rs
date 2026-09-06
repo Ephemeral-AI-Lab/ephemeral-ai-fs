@@ -100,7 +100,7 @@ impl Workspace {
         ) {
             crate::changes::inject_candidate_failure_once();
         }
-        let (candidate, admission) = if self.mutation_generation == 0 {
+        let (candidate, admission) = if self.live.mutation_generation == 0 {
             (
                 ObjectBuffer::new(&self.reader)?.finish(self.base_root, 0)?,
                 self.store.workspace_admission(self.workspace_id)?,
@@ -153,7 +153,7 @@ impl Workspace {
         expected_base: layerfs_layerstack_store::LayerId,
         refresh: bool,
     ) -> Result<CommitTransition> {
-        if matches!(outcome, CommitOutcome::UpToDate { .. }) && self.mutation_generation == 0 {
+        if matches!(outcome, CommitOutcome::UpToDate { .. }) && self.live.mutation_generation == 0 {
             let started = Instant::now();
             self.retire_spool_segments();
             layerfs_layerstack_store::note_workspace_commit_phase(
@@ -254,13 +254,14 @@ impl Workspace {
             .take()
             .ok_or(StorageError::Integrity("missing published checkpoint"))?;
         let result = (|| {
-            if checkpoint.root != root || checkpoint.generation != self.mutation_generation {
+            if checkpoint.root != root || checkpoint.generation != self.live.mutation_generation {
                 return Err(StorageError::Integrity("checkpoint publication identity"));
             }
             // Validate every handoff before changing any live backing. Retry also
             // accepts already installed nodes because paths, attributes and IDs stay stable.
             checkpoint.visit(|id, inode, _, attr| {
                 let node = self
+                    .live
                     .nodes
                     .get(&id)
                     .ok_or(StorageError::Integrity("checkpoint node"))?;
@@ -292,7 +293,11 @@ impl Workspace {
             // The descriptor remains readable if unlink succeeds but a later step
             // fails. Each installed node then owns canonical backing; retries skip its spool.
             checkpoint.visit(|id, inode, content, attr| {
-                let node = self.nodes.get_mut(&id).expect("validated checkpoint node");
+                let node = self
+                    .live
+                    .nodes
+                    .get_mut(&id)
+                    .expect("validated checkpoint node");
                 match &mut node.data {
                     Data::File(data) => {
                         *data = FileData::Base {
@@ -322,8 +327,9 @@ impl Workspace {
             self.spool_bytes = 0;
             self.inline_bytes = 0;
             self.piece_allocation_bytes = 0;
-            for id in &self.dirty {
+            for id in &self.live.dirty {
                 if let Some(node) = self
+                    .live
                     .nodes
                     .get_mut(id)
                     .filter(|node| node.paths.is_empty() && node.links == 0)
@@ -340,7 +346,7 @@ impl Workspace {
                     spool_high_water,
                     pieces,
                     ..
-                }) = &self.nodes[id].data
+                }) = &self.live.nodes[id].data
                 else {
                     return Err(StorageError::Integrity("checkpoint retained spool"));
                 };
@@ -361,9 +367,9 @@ impl Workspace {
                 layerfs_content::tree::inode::InodeTableRoot(namespace.inode_table_root);
             self.directory_lookup_cache = Default::default();
             self.spool_bytes_peak = self.spool_bytes;
-            self.mutation_generation = 0;
-            self.mutation_paths.clear();
-            self.dirty.clear();
+            self.live.mutation_generation = 0;
+            self.live.mutation_paths.clear();
+            self.live.dirty.clear();
             self.capture = crate::capture::CaptureState::default();
             self.resolution = None;
             self.state = WorkspaceState::Active;
@@ -432,7 +438,7 @@ impl Workspaces {
             physical_spool_peak_bytes: physical_peak,
             physical_spool_observation_errors: physical_errors,
             physical_spool_observation_count: physical_observations,
-            mutation_generation: workspace.mutation_generation,
+            mutation_generation: workspace.live.mutation_generation,
             open_spool_files: workspace.spool_segments.len(),
             spool_segment_bytes: workspace.segment_bytes,
         })
@@ -836,7 +842,7 @@ impl Workspaces {
                 .lock()
                 .map_err(|_| WorkspaceError::WorkspaceBusy)?;
             let node = lookup_path(&mut workspace, &path)?;
-            if workspace.nodes[&node].pins != 0 {
+            if workspace.live.nodes[&node].pins != 0 {
                 return Err(WorkspaceError::WorkspaceBusy);
             }
             let checkpoint = workspace.edit_checkpoint(node)?;
@@ -991,7 +997,7 @@ impl Workspaces {
                 .map_err(|_| WorkspaceError::WorkspaceBusy)?;
             crate::registry::RetainedSession {
                 session: session_locked(&worker, &workspace),
-                mutation_generation: workspace.mutation_generation,
+                mutation_generation: workspace.live.mutation_generation,
                 ended_at: SystemTime::now(),
             }
         };
@@ -1039,7 +1045,7 @@ impl Workspaces {
                     .map_err(|_| WorkspaceError::WorkspaceBusy)?;
                 Ok(WorkspaceDetail {
                     session: session_locked(&worker, &workspace),
-                    mutation_generation: workspace.mutation_generation,
+                    mutation_generation: workspace.live.mutation_generation,
                     executions,
                 })
             }
@@ -1070,7 +1076,7 @@ impl Workspaces {
                 Ok(WorkspaceDiff {
                     session_id: id,
                     dirty,
-                    mutation_generation: workspace.mutation_generation,
+                    mutation_generation: workspace.live.mutation_generation,
                 })
             }
             crate::registry::SessionRecord::Retained(retained) => Ok(WorkspaceDiff {
@@ -1425,7 +1431,7 @@ mod tests {
         workspace.commit().unwrap();
         let inodes = files
             .iter()
-            .map(|(_, node)| workspace.nodes[node].canonical.unwrap())
+            .map(|(_, node)| workspace.live.nodes[node].canonical.unwrap())
             .collect::<Vec<_>>();
         for (index, (_, node)) in files.iter().enumerate() {
             workspace
@@ -1461,7 +1467,7 @@ mod tests {
                 workspace.lookup(directory, name.as_bytes()).unwrap().node,
                 *node
             );
-            assert_eq!(workspace.nodes[node].canonical, Some(inodes[index]));
+            assert_eq!(workspace.live.nodes[node].canonical, Some(inodes[index]));
             assert_eq!(
                 workspace.read(*node, 0, 64).unwrap(),
                 format!("after-{index:02}").as_bytes()
@@ -1472,7 +1478,7 @@ mod tests {
                 (0o640, 1700000007, 23)
             );
             assert!(matches!(
-                workspace.nodes[node].data,
+                workspace.live.nodes[node].data,
                 crate::cow_tree::Data::File(crate::cow_tree::FileData::Base { .. })
             ));
         }
@@ -1481,13 +1487,13 @@ mod tests {
             files[0].1
         );
         assert_eq!(workspace.attr(files[0].1).unwrap().links, 2);
-        assert!(workspace.nodes[&orphan].paths.is_empty());
-        assert_eq!(workspace.nodes[&orphan].pins, 1);
+        assert!(workspace.live.nodes[&orphan].paths.is_empty());
+        assert_eq!(workspace.live.nodes[&orphan].pins, 1);
         assert_eq!(workspace.read(orphan, 0, 64).unwrap(), b"pinned-data");
         assert_eq!(workspace.spool_bytes, 11);
         assert_eq!(workspace.spool_segments.len(), 1);
-        assert!(workspace.dirty.is_empty() && workspace.mutation_paths.is_empty());
-        assert_eq!(workspace.mutation_generation, 0);
+        assert!(workspace.live.dirty.is_empty() && workspace.live.mutation_paths.is_empty());
+        assert_eq!(workspace.live.mutation_generation, 0);
         workspace.unpin(orphan).unwrap();
         assert_eq!(workspace.spool_bytes, 0);
         assert!(workspace.spool_segments.is_empty());
@@ -1559,10 +1565,10 @@ mod tests {
         let before = {
             let workspace = worker.workspace.lock().unwrap();
             (
-                workspace.nodes.clone(),
-                workspace.dirty.clone(),
-                workspace.mutation_generation,
-                workspace.mutation_paths.clone(),
+                workspace.live.nodes.clone(),
+                workspace.live.dirty.clone(),
+                workspace.live.mutation_generation,
+                workspace.live.mutation_paths.clone(),
                 workspace.spool_bytes,
                 workspace.inline_bytes,
                 workspace.piece_allocation_bytes,
@@ -1573,10 +1579,10 @@ mod tests {
         assert!(prepend(&workspaces, session.id).is_err());
         {
             let workspace = worker.workspace.lock().unwrap();
-            assert_eq!(workspace.nodes, before.0);
-            assert_eq!(workspace.dirty, before.1);
-            assert_eq!(workspace.mutation_generation, before.2);
-            assert_eq!(workspace.mutation_paths, before.3);
+            assert_eq!(workspace.live.nodes, before.0);
+            assert_eq!(workspace.live.dirty, before.1);
+            assert_eq!(workspace.live.mutation_generation, before.2);
+            assert_eq!(workspace.live.mutation_paths, before.3);
             assert_eq!(workspace.spool_bytes, before.4);
             assert_eq!(workspace.inline_bytes, before.5);
             assert_eq!(workspace.piece_allocation_bytes, before.6);
@@ -1606,10 +1612,10 @@ mod tests {
         let before = {
             let workspace = worker.workspace.lock().unwrap();
             (
-                workspace.nodes.clone(),
-                workspace.dirty.clone(),
-                workspace.mutation_generation,
-                workspace.mutation_paths.clone(),
+                workspace.live.nodes.clone(),
+                workspace.live.dirty.clone(),
+                workspace.live.mutation_generation,
+                workspace.live.mutation_paths.clone(),
                 workspace.spool_bytes,
                 workspace.inline_bytes,
                 workspace.piece_allocation_bytes,
@@ -1622,10 +1628,10 @@ mod tests {
         ));
         {
             let workspace = worker.workspace.lock().unwrap();
-            assert_eq!(workspace.nodes, before.0);
-            assert_eq!(workspace.dirty, before.1);
-            assert_eq!(workspace.mutation_generation, before.2);
-            assert_eq!(workspace.mutation_paths, before.3);
+            assert_eq!(workspace.live.nodes, before.0);
+            assert_eq!(workspace.live.dirty, before.1);
+            assert_eq!(workspace.live.mutation_generation, before.2);
+            assert_eq!(workspace.live.mutation_paths, before.3);
             assert_eq!(workspace.spool_bytes, before.4);
             assert_eq!(workspace.inline_bytes, before.5);
             assert_eq!(workspace.piece_allocation_bytes, before.6);
@@ -1674,9 +1680,9 @@ mod tests {
         let before = {
             let workspace = worker.workspace.lock().unwrap();
             (
-                workspace.nodes.clone(),
-                workspace.dirty.clone(),
-                workspace.mutation_generation,
+                workspace.live.nodes.clone(),
+                workspace.live.dirty.clone(),
+                workspace.live.mutation_generation,
                 workspace.spool_bytes,
                 workspace.inline_bytes,
                 workspace.piece_allocation_bytes,
@@ -1697,9 +1703,9 @@ mod tests {
         worker.note_execution(false).unwrap();
         {
             let workspace = worker.workspace.lock().unwrap();
-            assert_eq!(workspace.nodes, before.0);
-            assert_eq!(workspace.dirty, before.1);
-            assert_eq!(workspace.mutation_generation, before.2);
+            assert_eq!(workspace.live.nodes, before.0);
+            assert_eq!(workspace.live.dirty, before.1);
+            assert_eq!(workspace.live.mutation_generation, before.2);
             assert_eq!(workspace.spool_bytes, before.3);
             assert_eq!(workspace.inline_bytes, before.4);
             assert_eq!(workspace.piece_allocation_bytes, before.5);

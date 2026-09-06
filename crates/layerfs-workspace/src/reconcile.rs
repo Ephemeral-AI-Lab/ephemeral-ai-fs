@@ -180,7 +180,7 @@ impl ResolutionConflict {
         let Some(resolved) = self.resolved_generation else {
             return Ok(());
         };
-        let path_was_mutated = self.path_was_mutated(&workspace.mutation_paths, resolved);
+        let path_was_mutated = self.path_was_mutated(&workspace.live.mutation_paths, resolved);
         let fingerprint_changed = match self.resolved_fingerprint {
             Some(expected) => {
                 workspace.resolution_fingerprint(&self.value.affected_paths)? != expected
@@ -366,7 +366,7 @@ impl Workspaces {
                 .affected_paths
                 .clone();
             let fingerprint = workspace.resolution_fingerprint(&affected_paths)?;
-            let generation = workspace.mutation_generation;
+            let generation = workspace.live.mutation_generation;
             let resolution = workspace
                 .resolution
                 .as_mut()

@@ -61,3 +61,15 @@ Checks under the shared measurement lock, Rust 1.85.1, two build jobs:
 - Rust 1.96.0 formatting applied only to the affected packages.
 
 No performance build/sample/proof: this extraction has not yet changed live placement and is not P3's coherent create candidate. Next: portable read plans and prepared write/version ownership, then minimal runtime entry. All C3–C8 supported-operation transfers remain pending.
+
+## P1b — live metadata and portable read preparation
+
+`Workspace.live: LiveWorkspace` now holds the actual native inode table, dirty set, mutation generation and mutation-path map. Native `attr`, `chmod`, `set_mtime` and mutation recording invoke the moved shared bodies. Construction, capture, SDK observation, reconciliation and checkpoint installation address those same nodes through the field; no second inode table was introduced. Namespace acquisition/mutation and write preparation are still being transferred; daemon ownership has not switched.
+
+Core `ReadPlan::for_file(&FileData, offset, size)` owns only canonical roots/pieces/requested length/tree visits. Native `ReadPlan` retains SnapshotReader and executes physical reads separately. Inspection found inherited edited-file reads beyond EOF called `PieceTree::range` with start > end. The new base/edited EOF regression failed with InvalidInput("file range") before the shared planner clamped start to EOF, then passed for EOF, EOF+1 and u64::MAX. Eight affected native file-I/O checks passed after this change.
+
+Moved metadata bodies check generation capacity before changing attributes and update every known alias path in the same generation. New core regression covers alias metadata/generation, invalid nanoseconds and u64::MAX rejection without attribute changes.
+
+Verification after inode-table transfer: 50 native Workspace tests and 11 portable-core tests PASS (Rust 1.85.1, build 6.62 s; test execution 1.09 s / 0.05 s). The field migration initially exposed two retained capture accesses and a chained projection observer access; all now use the same live table. Rust 1.96.0 affected-package Clippy with warnings denied PASS. An earlier Clippy invocation used the wrong 1.85.1 toolchain and reported two unchanged Store findings; CI specifies 1.96.0, and no Store algorithm was changed for those findings. Added conventional `is_empty` methods for the newly public piece types and removed two redundant native borrows.
+
+Remaining P1 exit: exact prepared inode/version, range and resource ownership across backing work. P2–P6 remain open. No rewritten-product performance result or terminal PASS.
