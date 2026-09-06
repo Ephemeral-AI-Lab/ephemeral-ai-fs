@@ -1,5 +1,6 @@
 [workspace]
 resolver = "2"
+exclude = ["crates/vendor/fuser"]
 members = [
     "crates/layerfs-content",
     "crates/layerfs-daemon",
@@ -25,3 +26,6 @@ license = "MIT"
 blake3 = { version = "=1.8.5", default-features = false }
 rusqlite = { version = "=0.40.2", features = ["cache", "hooks", "trace"] }
 clap = { version = "=4.5.48", features = ["derive"] }
+
+[patch.crates-io]
+fuser = { path = "crates/vendor/fuser" }
