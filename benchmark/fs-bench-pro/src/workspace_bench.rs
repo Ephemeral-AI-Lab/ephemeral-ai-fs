@@ -817,10 +817,6 @@ pub(crate) fn fixture_info(case: &Case, seed: u8, branch: Option<BranchId>) -> A
     if let Some((total_bytes, total_files, directories, manifest)) = populated_info {
         print!(",\"populated_bytes\":{total_bytes},\"populated_regular_files\":{total_files},\"populated_directories\":{directories},\"populated_manifest_sha256\":{}", quote(&manifest));
     }
-    if workload_source::ordinary_workloads::mixed_v4(case) {
-        let (parent, dirty) = workload_source::ordinary_workloads::mixed_v4_peak_bytes(case)?;
-        print!(",\"peak_parent_bytes\":{parent},\"expected_dirty_bytes\":{dirty},\"peak_parent_plus_dirty_bytes\":{}", parent + dirty);
-    }
     if let Some(branch) = branch {
         print!(",\"branch_id\":{}", quote(&branch.to_string()));
     }
