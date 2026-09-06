@@ -241,31 +241,7 @@ impl Workspaces {
 
 fn record_summary(record: SessionRecord) -> WorkspaceResult<WorkspaceSummary> {
     match record {
-        SessionRecord::Active(worker) => {
-            let broken_cleanup = matches!(
-                worker
-                    .workspace
-                    .lock()
-                    .map_err(|_| WorkspaceError::WorkspaceBusy)?
-                    .state,
-                crate::WorkspaceState::BrokenCleanup
-            );
-            let dirty = broken_cleanup || crate::projection::is_dirty(&worker)?;
-            let workspace = worker
-                .workspace
-                .lock()
-                .map_err(|_| WorkspaceError::WorkspaceBusy)?;
-            Ok(WorkspaceSummary {
-                id: worker.id,
-                branch_id: workspace.branch_id,
-                layer_stack_id: worker.identity.layer_stack_id,
-                layer_stack_name: worker.identity.layer_stack_name.clone(),
-                branch_name: worker.identity.branch_name.clone(),
-                pinned_head: workspace.expected_head,
-                state: workspace.state,
-                dirty,
-            })
-        }
+        SessionRecord::Active(worker) => crate::lifecycle::summary(&worker),
         SessionRecord::Retained(retained) => Ok(retained_summary(&retained)),
     }
 }

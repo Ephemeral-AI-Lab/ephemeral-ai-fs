@@ -64,6 +64,14 @@ impl BackingOwner {
             wire::SEED => {
                 input.done()?;
                 out.extend_from_slice(self.snapshot.root.as_bytes());
+                wire::bytes_out(
+                    &mut out,
+                    self.snapshot
+                        .expected_head
+                        .as_ref()
+                        .map_or(Vec::new(), |head| head.to_bytes().to_vec())
+                        .as_slice(),
+                )?;
                 wire::u64_out(&mut out, self.policy.max_spool_bytes);
                 wire::u64_out(&mut out, self.policy.max_final_delta_memory_bytes);
                 out.extend(wire::node_out(layerfs_workspace_core::ROOT, &self.root)?);
@@ -473,6 +481,39 @@ mod tests {
             );
         }
         assert_eq!(remote.observe().unwrap().0, 263);
+        let callback = runtime
+            .block_on(owner.callback_gate(layerfs_fuse::KernelOperation::Write, false))
+            .unwrap();
+        let server = remote.server.clone();
+        let (sent, received) = std::sync::mpsc::channel();
+        let freezing = std::thread::spawn(move || {
+            sent.send(server.control("pause")).unwrap();
+        });
+        assert!(matches!(
+            received.recv_timeout(std::time::Duration::from_millis(20)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        let observing = remote.clone();
+        let (sent, observation) = std::sync::mpsc::channel();
+        let observer = std::thread::spawn(move || {
+            sent.send(observing.observe()).unwrap();
+        });
+        assert_eq!(
+            observation
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .unwrap()
+                .unwrap()
+                .0,
+            263
+        );
+        observer.join().unwrap();
+        drop(callback);
+        received
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        freezing.join().unwrap();
+        remote.server.control("resume").unwrap();
         let metrics = remote.server.take_write_metrics().unwrap();
         assert!(metrics.live_backing_calls > 0 && metrics.live_backing_calls < 130);
         assert!(metrics.live_backing_wait_ns > 0);
@@ -739,13 +780,23 @@ impl RemoteWorkspace {
             .map_err(|_| crate::WorkspaceError::InvalidExecution)
     }
 
-    pub(crate) fn observe(&self) -> crate::WorkspaceResult<(u64, u64, u64)> {
+    pub(crate) fn observe(
+        &self,
+    ) -> crate::WorkspaceResult<(u64, u64, u64, Option<layerfs_layerstack_store::CommitId>)> {
         let response = self
             .server
-            .request(&[wire::OBSERVE])
+            .observe()
             .map_err(|_| crate::WorkspaceError::InvalidExecution)?;
         let mut input = Input(&response);
-        let result = (input.u64()?, input.u64()?, input.u64()?);
+        let result = (
+            input.u64()?,
+            input.u64()?,
+            input.u64()?,
+            input
+                .head()?
+                .map(layerfs_layerstack_store::CommitId::from_bytes)
+                .transpose()?,
+        );
         input.done()?;
         Ok(result)
     }
@@ -766,9 +817,19 @@ pub(crate) fn install_checkpoint(
         let Some((outcome, base, _)) = workspace.pending_publication else {
             return Ok(());
         };
-        (remote, outcome, base, workspace.pending_checkpoint.take())
+        let head = match outcome {
+            CommitOutcome::Committed { commit_id, .. } => Some(commit_id),
+            _ => workspace.expected_head,
+        };
+        (
+            remote,
+            outcome,
+            base,
+            head,
+            workspace.pending_checkpoint.take(),
+        )
     };
-    let (remote, outcome, base, checkpoint) = pending;
+    let (remote, outcome, base, head, checkpoint) = pending;
     let root = match outcome {
         CommitOutcome::Committed { root_id, .. } | CommitOutcome::UpToDate { root_id } => root_id,
     };
@@ -841,6 +902,12 @@ pub(crate) fn install_checkpoint(
             let mut end = vec![wire::INSTALL_END];
             end.extend_from_slice(root.as_bytes());
             wire::u64_out(&mut end, count);
+            wire::bytes_out(
+                &mut end,
+                head.as_ref()
+                    .map_or(Vec::new(), |head| head.to_bytes().to_vec())
+                    .as_slice(),
+            )?;
             remote
                 .server
                 .request(&end)
@@ -886,15 +953,18 @@ pub(crate) fn install_checkpoint(
 }
 
 pub(crate) fn generation(worker: &crate::worker::WorkspaceWorker) -> crate::WorkspaceResult<u64> {
-    let (remote, generation) = {
-        let workspace = worker
-            .workspace
-            .lock()
-            .map_err(|_| crate::WorkspaceError::WorkspaceBusy)?;
-        (workspace.remote.clone(), workspace.live.mutation_generation)
-    };
-    match remote {
-        Some(remote) => remote.observe().map(|values| values.0),
-        None => Ok(generation),
+    let remote = worker
+        .remote
+        .lock()
+        .map_err(|_| crate::WorkspaceError::WorkspaceBusy)?
+        .clone();
+    if let Some(remote) = remote {
+        return remote.observe().map(|values| values.0);
     }
+    Ok(worker
+        .workspace
+        .lock()
+        .map_err(|_| crate::WorkspaceError::WorkspaceBusy)?
+        .live
+        .mutation_generation)
 }

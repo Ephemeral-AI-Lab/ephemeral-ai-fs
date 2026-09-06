@@ -937,6 +937,9 @@ impl Workspaces {
         if let Err(error) = crate::projection::end(&worker) {
             if let Ok(mut workspace) = worker.workspace.lock() {
                 workspace.state = WorkspaceState::BrokenCleanup;
+                if let Ok(mut remote) = worker.remote.lock() {
+                    *remote = None;
+                }
             }
             return Err(error);
         }
@@ -946,6 +949,10 @@ impl Workspaces {
                 .lock()
                 .map_err(|_| WorkspaceError::WorkspaceBusy)?;
             workspace.remote = None;
+            *worker
+                .remote
+                .lock()
+                .map_err(|_| WorkspaceError::WorkspaceBusy)? = None;
             match mode {
                 EndWorkspaceMode::Discard => {
                     workspace.discard()?;
@@ -962,6 +969,9 @@ impl Workspaces {
         if let Err(error) = finalized {
             if let Ok(mut workspace) = worker.workspace.lock() {
                 workspace.state = WorkspaceState::BrokenCleanup;
+                if let Ok(mut remote) = worker.remote.lock() {
+                    *remote = None;
+                }
             }
             return Err(error);
         }
@@ -1014,6 +1024,13 @@ impl Workspaces {
         let executions = self.execution_summaries(id)?;
         match record {
             crate::registry::SessionRecord::Active(worker) => {
+                if let Some((session, generation)) = remote_session(&worker)? {
+                    return Ok(WorkspaceDetail {
+                        session,
+                        mutation_generation: generation,
+                        executions,
+                    });
+                }
                 let generation = crate::live_backing::generation(&worker)?;
                 let workspace = worker
                     .workspace
@@ -1044,8 +1061,12 @@ impl Workspaces {
             .ok_or(WorkspaceError::NotFound)?;
         match record {
             crate::registry::SessionRecord::Active(worker) => {
-                let dirty = crate::projection::is_dirty(&worker)?;
                 let generation = crate::live_backing::generation(&worker)?;
+                let dirty = if worker.projection == WorkspaceProjection::Fuse {
+                    generation != 0
+                } else {
+                    crate::projection::is_dirty(&worker)?
+                };
                 Ok(WorkspaceDiff {
                     session_id: id,
                     dirty,
@@ -1078,11 +1099,40 @@ fn elapsed_ns(started: Instant) -> u64 {
 }
 
 pub(crate) fn session(worker: &WorkspaceWorker) -> WorkspaceResult<WorkspaceSession> {
+    if let Some((session, _)) = remote_session(worker)? {
+        return Ok(session);
+    }
     let workspace = worker
         .workspace
         .lock()
         .map_err(|_| WorkspaceError::WorkspaceBusy)?;
     Ok(session_locked(worker, &workspace))
+}
+
+fn remote_session(worker: &WorkspaceWorker) -> WorkspaceResult<Option<(WorkspaceSession, u64)>> {
+    let remote = worker
+        .remote
+        .lock()
+        .map_err(|_| WorkspaceError::WorkspaceBusy)?
+        .clone();
+    let Some(remote) = remote else {
+        return Ok(None);
+    };
+    let (generation, _, _, head) = remote.observe()?;
+    Ok(Some((
+        WorkspaceSession {
+            id: worker.id,
+            branch_id: worker.request.branch_id,
+            layer_stack_id: worker.identity.layer_stack_id,
+            layer_stack_name: worker.identity.layer_stack_name.clone(),
+            branch_name: worker.identity.branch_name.clone(),
+            pinned_head: head,
+            placement: worker.request.placement.clone(),
+            projection: worker.projection,
+            state: WorkspaceState::Active,
+        },
+        generation,
+    )))
 }
 
 fn session_locked(worker: &WorkspaceWorker, workspace: &Workspace) -> WorkspaceSession {
@@ -1099,7 +1149,19 @@ fn session_locked(worker: &WorkspaceWorker, workspace: &Workspace) -> WorkspaceS
     }
 }
 
-fn summary(worker: &Arc<WorkspaceWorker>) -> WorkspaceResult<WorkspaceSummary> {
+pub(crate) fn summary(worker: &Arc<WorkspaceWorker>) -> WorkspaceResult<WorkspaceSummary> {
+    if let Some((session, generation)) = remote_session(worker)? {
+        return Ok(WorkspaceSummary {
+            id: session.id,
+            branch_id: session.branch_id,
+            layer_stack_id: session.layer_stack_id,
+            layer_stack_name: session.layer_stack_name,
+            branch_name: session.branch_name,
+            pinned_head: session.pinned_head,
+            state: session.state,
+            dirty: generation != 0,
+        });
+    }
     let dirty = crate::projection::is_dirty(worker)?;
     let workspace = worker
         .workspace
@@ -1113,7 +1175,7 @@ fn summary(worker: &Arc<WorkspaceWorker>) -> WorkspaceResult<WorkspaceSummary> {
         branch_name: worker.identity.branch_name.clone(),
         pinned_head: workspace.expected_head,
         state: workspace.state,
-        dirty,
+        dirty: dirty || workspace.state == WorkspaceState::BrokenCleanup,
     })
 }
 

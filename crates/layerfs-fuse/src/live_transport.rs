@@ -20,6 +20,8 @@ pub struct BackingServer {
     failed: Arc<AtomicBool>,
     control: Arc<Mutex<Option<TcpStream>>>,
     connected: Arc<tokio::sync::Notify>,
+    observer: Arc<Mutex<Option<TcpStream>>>,
+    observed: Arc<tokio::sync::Notify>,
     metrics: Arc<AtomicFuseWriteMetrics>,
 }
 
@@ -36,11 +38,15 @@ impl BackingServer {
         let failed = Arc::new(AtomicBool::new(false));
         let (stop, mut stopping) = watch::channel(false);
         let fail = failed.clone();
-        let connections = Arc::new(Semaphore::new(2));
+        let connections = Arc::new(Semaphore::new(3));
         let control = Arc::new(Mutex::new(None));
         let connected = Arc::new(tokio::sync::Notify::new());
         let metrics = Arc::new(AtomicFuseWriteMetrics::default());
         let host_metrics = metrics.clone();
+        let observer = Arc::new(Mutex::new(None));
+        let observed = Arc::new(tokio::sync::Notify::new());
+        let observe_slot = observer.clone();
+        let observe_ready = observed.clone();
         let control_slot = control.clone();
         let control_ready = connected.clone();
         let task = scheduler.handle.spawn({let scheduler=scheduler.clone();async move {
@@ -56,11 +62,12 @@ impl BackingServer {
                 let mut closed = stopping.clone();
                 let handler = handler.clone(); let scheduler=scheduler.clone(); let fail=fail.clone();
                 let control=control_slot.clone(); let connected=control_ready.clone(); let metrics=host_metrics.clone();
+                let observer=observe_slot.clone(); let observed=observe_ready.clone();
                 scheduler.handle.clone().spawn(async move {
                     let _slot=slot;
                     tokio::select! {
                         _ = closed.changed() => {},
-                        result = serve(stream,capability,scheduler,handler,control,connected,metrics) => {
+                        result = serve(stream,capability,scheduler,handler,control,connected,observer,observed,metrics) => {
                             if result.is_err() {fail.store(true,Ordering::Release);}
                         }
                     }
@@ -75,6 +82,8 @@ impl BackingServer {
             failed,
             control,
             connected,
+            observer,
+            observed,
             metrics,
         })
     }
@@ -97,15 +106,32 @@ impl BackingServer {
         &self,
         frames: impl IntoIterator<Item = &'a [u8]>,
     ) -> PortResult<Vec<u8>> {
+        self.request_on(&self.control, &self.connected, frames)
+    }
+
+    pub fn observe(&self) -> PortResult<Vec<u8>> {
+        self.request_on(
+            &self.observer,
+            &self.observed,
+            std::iter::once(&[crate::live_wire::OBSERVE][..]),
+        )
+    }
+
+    fn request_on<'a>(
+        &self,
+        slot: &Mutex<Option<TcpStream>>,
+        connected: &tokio::sync::Notify,
+        frames: impl IntoIterator<Item = &'a [u8]>,
+    ) -> PortResult<Vec<u8>> {
         LiveRuntime::shared()
             .map_err(|_| PortError::Io)?
             .block_on(async {
                 tokio::time::timeout(std::time::Duration::from_secs(120), async {
-                    let ready = self.connected.notified();
-                    if self.control.lock().await.is_none() {
+                    let ready = connected.notified();
+                    if slot.lock().await.is_none() {
                         ready.await;
                     }
-                    let mut held = self.control.lock().await;
+                    let mut held = slot.lock().await;
                     let mut stream = held.take().ok_or(PortError::Io)?;
                     let mut response = Ok(Vec::new());
                     for bytes in frames {
@@ -171,6 +197,8 @@ async fn serve(
     handler: Arc<impl Fn(&[u8]) -> PortResult<Vec<u8>> + Send + Sync + 'static>,
     control: Arc<Mutex<Option<TcpStream>>>,
     connected: Arc<tokio::sync::Notify>,
+    observer: Arc<Mutex<Option<TcpStream>>>,
+    observed: Arc<tokio::sync::Notify>,
     metrics: Arc<AtomicFuseWriteMetrics>,
 ) -> io::Result<()> {
     stream.set_nodelay(true)?;
@@ -192,7 +220,12 @@ async fn serve(
         ));
     }
     let role = stream.read_u8().await?;
-    if role == b'c' {
+    if role == b'c' || role == b'o' {
+        let (control, connected) = if role == b'o' {
+            (observer, observed)
+        } else {
+            (control, connected)
+        };
         let mut slot = control.lock().await;
         if slot.is_some() {
             return Err(invalid());

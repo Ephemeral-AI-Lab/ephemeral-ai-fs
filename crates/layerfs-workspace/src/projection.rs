@@ -39,6 +39,10 @@ pub(crate) fn attach(
                 .to_owned();
             let remote = crate::live_backing::RemoteWorkspace::start(&workspace)?;
             workspace.remote = Some(remote.clone());
+            *worker
+                .remote
+                .lock()
+                .map_err(|_| WorkspaceError::WorkspaceBusy)? = Some(remote.clone());
             (remote, runtime)
         };
         return crate::docker::DockerProjection::attach(
@@ -329,6 +333,14 @@ pub(crate) fn resume(worker: &WorkspaceWorker) -> WorkspaceResult<()> {
 }
 
 pub(crate) fn is_dirty(worker: &Arc<WorkspaceWorker>) -> WorkspaceResult<bool> {
+    if let Some(remote) = worker
+        .remote
+        .lock()
+        .map_err(|_| WorkspaceError::WorkspaceBusy)?
+        .clone()
+    {
+        return remote.observe().map(|values| values.0 != 0);
+    }
     let root = {
         let handle = worker
             .projection_handle

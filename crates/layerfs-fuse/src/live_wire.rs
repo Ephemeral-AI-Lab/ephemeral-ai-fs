@@ -75,6 +75,16 @@ impl<'a> Input<'a> {
     pub fn u64(&mut self) -> io::Result<u64> {
         Ok(u64::from_be_bytes(self.raw(8)?.try_into().unwrap()))
     }
+    pub fn head(&mut self) -> io::Result<Option<[u8; 33]>> {
+        let bytes = self.bytes()?;
+        if bytes.is_empty() {
+            return Ok(None);
+        }
+        if bytes.len() != 33 || bytes[0] != 0x12 {
+            return Err(invalid());
+        }
+        Ok(Some(bytes.try_into().map_err(|_| invalid())?))
+    }
     pub fn object(&mut self) -> io::Result<ObjectId> {
         ObjectId::from_bytes(self.raw(32)?).map_err(|_| invalid())
     }

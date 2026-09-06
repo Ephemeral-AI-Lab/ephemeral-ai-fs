@@ -18,6 +18,7 @@ pub struct LiveOwner(Arc<Owner>);
 struct Owner {
     scheduler: Scheduler,
     state: Mutex<LiveWorkspace>,
+    head: Mutex<Option<[u8; 33]>>,
     backing: BackingConnection,
     // Only physical append allocation is ordered across files. No state lock
     // is retained while a physical reservation or append waits.
@@ -117,6 +118,7 @@ impl LiveOwner {
         let seed = backing.call(&[wire::SEED]).await?;
         let mut input = Input(&seed);
         let root = input.object().map_err(io)?;
+        let head = input.head().map_err(io)?;
         let policy = ResourcePolicy {
             max_spool_bytes: input.u64().map_err(io)?,
             max_final_delta_memory_bytes: input.u64().map_err(io)?,
@@ -134,6 +136,7 @@ impl LiveOwner {
             #[cfg(target_os = "linux")]
             kernel_root: Default::default(),
             state: Mutex::new(LiveWorkspace::new(node, policy, root)),
+            head: Mutex::new(head),
             backing,
             append: Default::default(),
             failed: AtomicBool::new(false),
@@ -1429,10 +1432,18 @@ impl LiveOwner {
                         .prepare_splices(node, pending.edits)
                         .map_err(core)?;
                     self.state()?.apply_edit(prepared).map_err(core)?;
+                    // The old read replies drained before the first invalidation.
+                    // Faults queued since that flush must now read the installed
+                    // view: holding their replies through a second invalidation
+                    // deadlocks the notifier on their locked kernel folios.
+                    self.0.cut.lock().map_err(|_| PortError::Io)?.take();
                     #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
-                    if let Err(error) = self.invalidate(node) {
-                        self.0.failed.store(true, Ordering::Release);
-                        return Err(error);
+                    {
+                        let owner = self.clone();
+                        if let Err(error) = self.0.scheduler.kernel(move || owner.invalidate(node).map_err(|_| wire::invalid())).await {
+                            self.0.failed.store(true, Ordering::Release);
+                            return Err(io(error));
+                        }
                     }
                     Ok(())
                 }
@@ -1471,6 +1482,9 @@ impl LiveOwner {
                 wire::u64_out(&mut out, state.mutation_generation);
                 wire::u64_out(&mut out, state.dirty.len() as u64);
                 wire::u64_out(&mut out, state.spool_bytes);
+                let head = self.0.head.lock().map_err(|_| PortError::Io)?;
+                wire::bytes_out(&mut out, head.as_ref().map_or(&[][..], |bytes| &bytes[..]))
+                    .map_err(io)?;
             }
             wire::INSTALL_BEGIN => {
                 let root = input.object().map_err(io)?;
@@ -1516,6 +1530,7 @@ impl LiveOwner {
             wire::INSTALL_END => {
                 let root = input.object().map_err(io)?;
                 let count = input.u64().map_err(io)?;
+                let head = input.head().map_err(io)?;
                 input.done().map_err(io)?;
                 let mut install = self.0.install.lock().map_err(|_| PortError::Io)?;
                 let (expected, generation, records) = install.as_ref().ok_or(PortError::Invalid)?;
@@ -1537,6 +1552,7 @@ impl LiveOwner {
                         .map_err(core)?;
                 }
                 state.finish_checkpoint(root).map_err(core)?;
+                *self.0.head.lock().map_err(|_| PortError::Io)? = head;
                 *install = None;
             }
             _ => return Err(PortError::Invalid),
@@ -1581,6 +1597,27 @@ impl LiveOwner {
             .to_socket_addrs()?
             .next()
             .ok_or_else(wire::invalid)?;
+        let observer_owner = self.clone();
+        let observer: tokio::task::JoinHandle<std::io::Result<()>> =
+            self.0.scheduler.handle.spawn(async move {
+                let mut stream = tokio::net::TcpStream::connect(address).await?;
+                stream.set_nodelay(true)?;
+                stream.write_all(&capability).await?;
+                stream.write_u8(b'o').await?;
+                if stream.read_u8().await? != 1 {
+                    return Err(wire::invalid());
+                }
+                loop {
+                    if stream.read_u32().await? != 1 || stream.read_u8().await? != wire::OBSERVE {
+                        return Err(wire::invalid());
+                    }
+                    let result = observer_owner
+                        .control_request(&[wire::OBSERVE])
+                        .await
+                        .map_err(|_| wire::invalid())?;
+                    crate::live_transport::write_frame(&mut stream, Some(0), &result).await?;
+                }
+            });
         let (shutdown_send, shutdown) = std::sync::mpsc::sync_channel(1);
         let (finished, mut finish) = tokio::sync::oneshot::channel();
         let owner = self.clone();
@@ -1633,6 +1670,7 @@ impl LiveOwner {
             shutdown,
             finished: Some(finished),
             thread,
+            observer,
         })
     }
 }
@@ -1641,6 +1679,7 @@ pub struct LiveControl {
     shutdown: std::sync::mpsc::Receiver<()>,
     finished: Option<tokio::sync::oneshot::Sender<bool>>,
     thread: tokio::task::JoinHandle<std::io::Result<()>>,
+    observer: tokio::task::JoinHandle<std::io::Result<()>>,
 }
 impl LiveControl {
     pub fn wait_for_shutdown(&self) -> std::io::Result<()> {
@@ -1652,9 +1691,12 @@ impl LiveControl {
             .ok_or_else(wire::invalid)?
             .send(success)
             .map_err(|_| wire::invalid())?;
-        LiveRuntime::shared()?
+        let result = LiveRuntime::shared()?
             .block_on(self.thread)
-            .map_err(|_| wire::invalid())?
+            .map_err(|_| wire::invalid())?;
+        self.observer.abort();
+        let _ = LiveRuntime::shared()?.block_on(self.observer);
+        result
     }
 }
 
