@@ -262,6 +262,9 @@ P3 is a branch-local coherent vertical slice, not permission to ship a mount who
 
 ## 5. Create-100 fast iteration and acceptance
 
+**Final optimization scope amendment:** the user has selected [targeted NOFLUSH and combined backing rollover](issue49-final-optimization-pass.md) as the last optional performance pass. Finish active correctness corrections first; apply the linked feasibility/ownership/stop rules. Do not reopen the earlier broad hypothesis list or optional tuning after that pass. Required supported behavior, recovery, cleanup and final qualification remain.
+
+
 This document specifies the implementation workflow; it launches no experiments now. The physical 100-workspace scenarios stay deferred. During the resumed implementation use the ordinary agreed lower-volume workflow, not a new scale campaign.
 
 Current adopted product reference, seconds to four decimals: create Exec **0.9172**, Commit **0.3587**, complete **1.2914**; delete Exec **0.2684**, Commit **0.0148**, complete **0.2980**. Their source/product IDs are in the spec and [campaign ledger](issue49-ten-family-refresh.md). Retained research create Exec **0.4792** / complete **0.9680** is a different product. Never add its Exec to the adopted Commit number or call mixed-v3 count reduction a code speedup.
