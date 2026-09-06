@@ -494,7 +494,7 @@ int main(int argc, char **argv) {
         nanosleep(&delay, 0);
 #endif
     }
-    assert(p[0] == 'A' && p[4095] == 'B');
+    assert(p[0] == 'A' && p[4095] == 'B' && p[777] == 'S');
     assert(fstat(fd, &after) == 0 && before.st_ino == after.st_ino && before.st_dev == after.st_dev);
     assert(lseek(fd, 0, SEEK_CUR) == 19);
     assert(getcwd(later, sizeof later) && strcmp(cwd, later) == 0);
@@ -595,6 +595,15 @@ int main(int argc, char **argv) {
     )?;
     let first_root = store.pin_branch(branch)?.root;
     check_mapped_snapshot(&store, first_root, false)?;
+    for path in ["held-a", "held-b"] {
+        client.edit_workspace_file_range(layerfs_sdk::WorkspaceFileRangeEdit {
+            workspace_id: session.id,
+            path: path.into(),
+            start: 777,
+            delete_len: 1,
+            replacement: layerfs_sdk::WorkspaceFileReplacement::Inline(vec![b'S']),
+        })?;
+    }
     require(
         docker_status(name, ["touch", go.as_str()])?,
         "release after-cut writes",
@@ -681,6 +690,7 @@ fn check_mapped_snapshot(
         require(bytes.len() == 4096, "mapped snapshot length")?;
         for (index, byte) in bytes.into_iter().enumerate() {
             let expected = match index {
+                777 if later => b'S',
                 0 => {
                     if later {
                         b'C'

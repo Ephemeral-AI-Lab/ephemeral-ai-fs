@@ -787,6 +787,15 @@ impl Workspaces {
         let workspace_id = first.workspace_id;
         let path = first.path.clone();
         let worker = self.worker(workspace_id)?;
+        let remote = worker
+            .workspace
+            .lock()
+            .map_err(|_| WorkspaceError::WorkspaceBusy)?
+            .remote
+            .clone();
+        if let Some(remote) = remote {
+            return remote.edit(&path, edits);
+        }
         if worker.has_executions()? {
             return Err(WorkspaceError::WorkspaceBusy);
         }

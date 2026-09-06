@@ -21,6 +21,7 @@ pub struct PreparedFileEdit {
     next: FileData,
     appended: u64,
     bytes: usize,
+    generations: u64,
 }
 
 impl PreparedFileEdit {
@@ -114,6 +115,7 @@ impl LiveWorkspace {
             },
             appended,
             bytes,
+            generations: 1,
         };
         self.write_resources(&prepared)?;
         Ok(prepared)
@@ -171,9 +173,83 @@ impl LiveWorkspace {
             },
             appended: 0,
             bytes: 0,
+            generations: 1,
         };
         self.write_resources(&prepared)?;
         Ok(Some(prepared))
+    }
+
+    /// Prepare an atomic ordered batch of inline/zero splices without changing the inode.
+    pub fn prepare_splices(
+        &self,
+        node: NodeId,
+        replacements: Vec<(u64, u64, Option<Piece>)>,
+    ) -> Result<PreparedFileEdit> {
+        if replacements.is_empty() {
+            return Err(Error::InvalidInput("workspace edit batch"));
+        }
+        let expected = self.nodes.get(&node).ok_or(Error::NotFound("node"))?;
+        let Data::File(before) = &expected.data else {
+            return Err(Error::InvalidInput("file"));
+        };
+        let (base, high_water, old, prior_edits) = match before {
+            FileData::Base { root, len } => {
+                (Some((*root, *len)), 0, PieceTree::base(*root, *len)?, 0)
+            }
+            FileData::Edited {
+                base,
+                spool_high_water,
+                pieces,
+                edits,
+            } => (*base, *spool_high_water, pieces.clone(), *edits),
+        };
+        let generations = replacements.len() as u64;
+        self.mutation_generation
+            .checked_add(generations)
+            .ok_or(Error::Integrity("Workspace mutation generation"))?;
+        expected
+            .revision
+            .checked_add(1)
+            .ok_or(Error::Integrity("inode revision"))?;
+        let edits = u32::try_from(replacements.len())
+            .ok()
+            .and_then(|n| prior_edits.checked_add(n))
+            .filter(|n| *n <= MAX_EDITS_PER_FILE)
+            .ok_or(Error::InvalidInput("workspace edit limit"))?;
+        let mut next = old.clone();
+        for (start, delete_len, replacement) in replacements {
+            match &replacement {
+                Some(Piece::Inline { bytes, .. }) if bytes.len() > MAX_INLINE_PER_EDIT => {
+                    return Err(Error::InvalidInput("workspace inline edit limit"))
+                }
+                Some(Piece::Base { .. } | Piece::Spool { .. }) => {
+                    return Err(Error::InvalidInput("workspace edit replacement"))
+                }
+                _ => {}
+            }
+            next = next.replace(start, delete_len, replacement)?;
+            self.check_piece_resources(
+                matches!(before, FileData::Edited { .. }).then_some(&old),
+                &next,
+            )?;
+        }
+        let emptied = !old.is_empty() && next.is_empty();
+        let prepared = PreparedFileEdit {
+            node,
+            expected_revision: expected.revision,
+            before: before.clone(),
+            next: FileData::Edited {
+                base,
+                spool_high_water: high_water,
+                pieces: next,
+                edits: if emptied { 0 } else { edits },
+            },
+            appended: 0,
+            bytes: 0,
+            generations,
+        };
+        self.write_resources(&prepared)?;
+        Ok(prepared)
     }
 
     pub fn apply_edit(&mut self, prepared: PreparedFileEdit) -> Result<usize> {
@@ -183,7 +259,10 @@ impl LiveWorkspace {
         }) {
             return Err(Error::Integrity("stale prepared write"));
         }
-        let generation = self.next_generation()?;
+        let generation = self
+            .mutation_generation
+            .checked_add(prepared.generations)
+            .ok_or(Error::Integrity("Workspace mutation generation"))?;
         let revision = prepared
             .expected_revision
             .checked_add(1)

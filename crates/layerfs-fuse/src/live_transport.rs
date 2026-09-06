@@ -89,6 +89,14 @@ impl BackingServer {
     }
 
     pub fn request(&self, bytes: &[u8]) -> PortResult<Vec<u8>> {
+        self.request_group(std::iter::once(bytes))
+    }
+
+    /// Serialize one bounded control transaction so other callers cannot interleave its pages.
+    pub fn request_group<'a>(
+        &self,
+        frames: impl IntoIterator<Item = &'a [u8]>,
+    ) -> PortResult<Vec<u8>> {
         LiveRuntime::shared()
             .map_err(|_| PortError::Io)?
             .block_on(async {
@@ -99,9 +107,15 @@ impl BackingServer {
                     }
                     let mut held = self.control.lock().await;
                     let mut stream = held.take().ok_or(PortError::Io)?;
-                    let response = exchange(&mut stream, bytes, None)
-                        .await
-                        .map_err(|_| PortError::Io)?;
+                    let mut response = Ok(Vec::new());
+                    for bytes in frames {
+                        response = exchange(&mut stream, bytes, None)
+                            .await
+                            .map_err(|_| PortError::Io)?;
+                        if response.is_err() {
+                            break;
+                        }
+                    }
                     *held = Some(stream);
                     response
                 })

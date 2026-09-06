@@ -1,8 +1,7 @@
 use crate::cow_tree::{Data, FileData, Node, NodeId, Workspace};
-use crate::file_edit::{
-    Piece, PieceTree, SpoolSlice, MAX_EDITS_PER_FILE, MAX_INLINE_PER_EDIT,
-    MAX_INLINE_PER_WORKSPACE, MAX_PIECE_ALLOCATION,
-};
+use crate::file_edit::{Piece, PieceTree, SpoolSlice};
+#[cfg(test)]
+use crate::file_edit::{MAX_EDITS_PER_FILE, MAX_INLINE_PER_WORKSPACE};
 use layerfs_content::file::rope::read_range;
 use layerfs_layerstack_store::{CoreReader, Result, SnapshotReader, StoreError};
 use layerfs_workspace_core::backing::{BackingId, BackingRef};
@@ -493,83 +492,34 @@ impl Workspace {
         node: NodeId,
         edits: Vec<(u64, u64, crate::WorkspaceFileReplacement)>,
     ) -> Result<()> {
-        if edits.is_empty() {
-            return Err(StoreError::InvalidInput("workspace edit batch"));
-        }
         self.ensure_active()?;
-        let (old, prior_edits, was_base) = match &self.live.nodes[&node].data {
-            Data::File(FileData::Base { root, len }) => (
-                PieceTree::base(*root, *len).map_err(crate::live_error)?,
-                0,
-                true,
-            ),
-            Data::File(FileData::Edited { pieces, edits, .. }) => (pieces.clone(), *edits, false),
-            _ => return Err(StoreError::InvalidInput("file")),
-        };
-        let total_edits = prior_edits
-            .checked_add(
-                u32::try_from(edits.len())
-                    .map_err(|_| StoreError::InvalidInput("workspace edit limit"))?,
-            )
-            .filter(|value| *value <= MAX_EDITS_PER_FILE)
-            .ok_or(StoreError::InvalidInput("workspace edit limit"))?;
-        let generation = self
-            .live
-            .mutation_generation
-            .checked_add(edits.len() as u64)
-            .ok_or(StoreError::Integrity("Workspace mutation generation"))?;
-        let mut next = old.clone();
-        for (start, delete_len, replacement) in edits {
-            let piece = match replacement {
-                crate::WorkspaceFileReplacement::Inline(bytes) => {
-                    if bytes.len() > MAX_INLINE_PER_EDIT {
-                        return Err(StoreError::InvalidInput("workspace inline edit limit"));
+        let replacements = edits
+            .into_iter()
+            .map(|(start, delete_len, replacement)| {
+                let piece = match replacement {
+                    crate::WorkspaceFileReplacement::Inline(bytes) => {
+                        (!bytes.is_empty()).then(|| Piece::Inline {
+                            len: bytes.len() as u64,
+                            bytes: Arc::from(bytes),
+                            offset: 0,
+                        })
                     }
-                    (!bytes.is_empty()).then(|| Piece::Inline {
-                        len: bytes.len() as u64,
-                        bytes: Arc::from(bytes),
-                        offset: 0,
-                    })
-                }
-                crate::WorkspaceFileReplacement::Zero(len) => {
-                    (len != 0).then_some(Piece::Zero { len })
-                }
-            };
-            next = next
-                .replace(start, delete_len, piece)
-                .map_err(crate::live_error)?;
-            if was_base {
-                self.live
-                    .inline_bytes
-                    .checked_add(next.inline_len())
-                    .filter(|value| *value <= MAX_INLINE_PER_WORKSPACE)
-                    .ok_or(StoreError::InvalidInput("workspace inline limit"))?;
-                self.live
-                    .piece_allocation_bytes
-                    .checked_add(
-                        next.logical_allocation_charge()
-                            .map_err(crate::live_error)?,
-                    )
-                    .filter(|value| *value <= MAX_PIECE_ALLOCATION)
-                    .ok_or(StoreError::InvalidInput("workspace piece allocation limit"))?;
-            } else {
-                self.check_piece_resources(&old, &next)?;
-            }
-        }
-        let paths = self.live.nodes[&node].paths.iter().cloned().collect();
+                    crate::WorkspaceFileReplacement::Zero(len) => {
+                        (len != 0).then_some(Piece::Zero { len })
+                    }
+                };
+                (start, delete_len, piece)
+            })
+            .collect();
+        let prepared = self
+            .live
+            .prepare_splices(node, replacements)
+            .map_err(crate::live_error)?;
         self.invalidate_capture();
-        self.ensure_edited(node)?;
-        let (high_water, installed, _) = self.edited_state(node)?;
-        self.install_edit(
-            node,
-            installed,
-            next,
-            total_edits,
-            high_water,
-            0,
-            generation,
-            paths,
-        )
+        self.live
+            .apply_edit(prepared)
+            .map(drop)
+            .map_err(crate::live_error)
     }
 
     pub fn truncate(&mut self, node: NodeId, size: u64) -> Result<()> {
@@ -589,72 +539,6 @@ impl Workspace {
             .apply_edit(prepared)
             .map(|_| ())
             .map_err(crate::live_error)
-    }
-
-    fn edited_state(&self, node: NodeId) -> Result<(u64, PieceTree, u32)> {
-        match &self.live.nodes[&node].data {
-            Data::File(FileData::Edited {
-                spool_high_water,
-                pieces,
-                edits,
-                ..
-            }) => Ok((*spool_high_water, pieces.clone(), *edits)),
-            _ => Err(StoreError::InvalidInput("file")),
-        }
-    }
-    fn check_piece_resources(&self, old: &PieceTree, next: &PieceTree) -> Result<()> {
-        self.live
-            .check_piece_resources(Some(old), next)
-            .map(|_| ())
-            .map_err(crate::live_error)
-    }
-    #[allow(clippy::too_many_arguments)]
-    fn install_edit(
-        &mut self,
-        node: NodeId,
-        old: PieceTree,
-        next: PieceTree,
-        edits: u32,
-        high_water: u64,
-        appended: u64,
-        generation: u64,
-        paths: Vec<String>,
-    ) -> Result<()> {
-        let revision = self.live.nodes[&node]
-            .revision
-            .checked_add(1)
-            .ok_or(StoreError::Integrity("inode revision"))?;
-        // A successful explicit empty state retires the prior logical edit
-        // generation. Keep spool history for in-flight reads; only subsequent
-        // mutations receive a fresh edit budget, after existing admission checks.
-        let emptied = !old.is_empty() && next.is_empty();
-        self.live.inline_bytes = self.live.inline_bytes - old.inline_len() + next.inline_len();
-        self.live.piece_allocation_bytes = self.live.piece_allocation_bytes
-            - old.logical_allocation_charge().map_err(crate::live_error)?
-            + next
-                .logical_allocation_charge()
-                .map_err(crate::live_error)?;
-        self.live.spool_bytes += appended;
-        self.live.spool_bytes_peak = self.live.spool_bytes_peak.max(self.live.spool_bytes);
-        let Data::File(FileData::Edited {
-            pieces,
-            edits: current_edits,
-            spool_high_water,
-            ..
-        }) = &mut self.live.nodes.get_mut(&node).unwrap().data
-        else {
-            return Err(StoreError::Integrity("edited file"));
-        };
-        *pieces = next;
-        *current_edits = if emptied { 0 } else { edits };
-        *spool_high_water = high_water;
-        self.live.nodes.get_mut(&node).unwrap().revision = revision;
-        self.live.dirty.insert(node);
-        self.live.mutation_generation = generation;
-        for path in paths {
-            self.live.mutation_paths.insert(path, generation);
-        }
-        Ok(())
     }
 
     pub fn fsync(&mut self, node: Option<NodeId>) -> Result<()> {
@@ -716,35 +600,6 @@ impl Workspace {
         self.live.inline_bytes = 0;
         self.live.piece_allocation_bytes = 0;
         Ok(())
-    }
-    fn ensure_edited(&mut self, node: NodeId) -> Result<()> {
-        if let Data::File(FileData::Base { root, len }) = self.live.nodes[&node].data {
-            let pieces = PieceTree::base(root, len).map_err(crate::live_error)?;
-            let next_allocation = self
-                .live
-                .piece_allocation_bytes
-                .checked_add(
-                    pieces
-                        .logical_allocation_charge()
-                        .map_err(crate::live_error)?,
-                )
-                .filter(|v| *v <= MAX_PIECE_ALLOCATION)
-                .ok_or(StoreError::InvalidInput("workspace piece allocation limit"))?;
-            self.live.nodes.get_mut(&node).unwrap().data = Data::File(FileData::Edited {
-                base: Some((root, len)),
-                spool_high_water: 0,
-                pieces,
-                edits: 0,
-            });
-            self.live.piece_allocation_bytes = next_allocation;
-            self.live.edited_nodes.insert(node);
-        }
-        matches!(
-            self.live.nodes[&node].data,
-            Data::File(FileData::Edited { .. })
-        )
-        .then_some(())
-        .ok_or(StoreError::InvalidInput("file"))
     }
     pub(crate) fn physical_spool_snapshot(&self) -> (Option<u64>, Option<u64>, u64, u64) {
         if let Some(remote) = &self.remote {

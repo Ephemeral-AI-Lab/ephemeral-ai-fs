@@ -526,6 +526,19 @@ mod tests {
         );
         owner.unpin_directory(empty).unwrap();
         assert!(owner.attr(empty).is_err());
+        remote
+            .edit(
+                "bulk/file",
+                vec![crate::WorkspaceFileRangeEdit {
+                    workspace_id: crate::WorkspaceId::new(),
+                    path: "bulk/file".into(),
+                    start: 1,
+                    delete_len: 2,
+                    replacement: crate::WorkspaceFileReplacement::Inline(b"XY".to_vec()),
+                }],
+            )
+            .unwrap();
+        assert_eq!(owner.read(file, 0, 20).unwrap(), b"fXYst");
         owner.write(file, 0, b"later").unwrap();
         remote.server.control("pause").unwrap();
         let (second, _) = workspace.lock().unwrap().commit().unwrap();
@@ -676,6 +689,54 @@ impl RemoteWorkspace {
             backing,
             server: Arc::new(server),
         })
+    }
+
+    pub(crate) fn edit(
+        &self,
+        path: &str,
+        edits: Vec<crate::WorkspaceFileRangeEdit>,
+    ) -> crate::WorkspaceResult<()> {
+        if edits.is_empty()
+            || edits.len() > layerfs_workspace_core::file_edit::MAX_EDITS_PER_FILE as usize
+        {
+            return Err(crate::WorkspaceError::InvalidExecution);
+        }
+        let _charge = layerfs_fuse::live_runtime::LiveRuntime::shared()?
+            .scheduler()
+            .reserve_live(9 * 1024 * 1024)?;
+        let mut begin = vec![wire::EDIT_BEGIN];
+        wire::bytes_out(&mut begin, path.as_bytes())?;
+        wire::u64_out(&mut begin, edits.len() as u64);
+        let mut frames = vec![begin];
+        let mut retained = 0usize;
+        for edit in edits {
+            let mut frame = vec![wire::EDIT_PART];
+            wire::u64_out(&mut frame, edit.start);
+            wire::u64_out(&mut frame, edit.delete_len);
+            match edit.replacement {
+                crate::WorkspaceFileReplacement::Inline(bytes) => {
+                    retained = retained
+                        .checked_add(bytes.len())
+                        .filter(|n| *n <= 8 * 1024 * 1024)
+                        .ok_or(crate::WorkspaceError::InvalidExecution)?;
+                    if bytes.len() > 1024 * 1024 {
+                        return Err(crate::WorkspaceError::InvalidExecution);
+                    }
+                    frame.push(0);
+                    wire::bytes_out(&mut frame, &bytes)?;
+                }
+                crate::WorkspaceFileReplacement::Zero(len) => {
+                    frame.push(1);
+                    wire::u64_out(&mut frame, len);
+                }
+            }
+            frames.push(frame);
+        }
+        frames.push(vec![wire::EDIT_END]);
+        self.server
+            .request_group(frames.iter().map(Vec::as_slice))
+            .map(drop)
+            .map_err(|_| crate::WorkspaceError::InvalidExecution)
     }
 
     pub(crate) fn observe(&self) -> crate::WorkspaceResult<(u64, u64, u64)> {

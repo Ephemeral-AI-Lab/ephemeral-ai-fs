@@ -30,6 +30,7 @@ struct Owner {
     namespace: tokio::sync::Mutex<()>,
     directories: Mutex<HashMap<NodeId, DirectoryCookies>>,
     ranges: Mutex<HashMap<BackingId, BackingRef>>,
+    edit: Mutex<Option<PendingSplices>>,
     gate: OperationGate,
     writes: crate::write_metrics::AtomicFuseWriteMetrics,
     reads: crate::write_metrics::AtomicFuseReadMetrics,
@@ -52,6 +53,14 @@ struct Owner {
             >,
         )>,
     >,
+}
+
+struct PendingSplices {
+    path: String,
+    count: usize,
+    edits: Vec<(u64, u64, Option<Piece>)>,
+    retained: usize,
+    _charge: crate::live_runtime::LiveReservation,
 }
 
 struct DirectoryCookies {
@@ -135,6 +144,7 @@ impl LiveOwner {
             namespace: Default::default(),
             directories: Default::default(),
             ranges: Default::default(),
+            edit: Default::default(),
             gate: Default::default(),
             cut: Default::default(),
             install: Default::default(),
@@ -1335,6 +1345,103 @@ impl LiveOwner {
         let mut out = Vec::new();
         let opcode = input.byte().map_err(io)?;
         match opcode {
+            wire::EDIT_BEGIN => {
+                let path = std::str::from_utf8(input.bytes().map_err(io)?)
+                    .map_err(|_| PortError::Invalid)?
+                    .to_owned();
+                layerfs_content::CanonicalPath::new(&path).map_err(|_| PortError::Invalid)?;
+                let count = input.u64().map_err(io)? as usize;
+                input.done().map_err(io)?;
+                if count == 0
+                    || count > layerfs_workspace_core::file_edit::MAX_EDITS_PER_FILE as usize
+                {
+                    return Err(PortError::Invalid);
+                }
+                let charge = self
+                    .0
+                    .scheduler
+                    .reserve_live(9 * 1024 * 1024)
+                    .map_err(|_| PortError::NoSpace)?;
+                *self.0.edit.lock().map_err(|_| PortError::Io)? = Some(PendingSplices {
+                    path,
+                    count,
+                    edits: Vec::new(),
+                    retained: 0,
+                    _charge: charge,
+                });
+            }
+            wire::EDIT_PART => {
+                let start = input.u64().map_err(io)?;
+                let delete = input.u64().map_err(io)?;
+                let mut held = self.0.edit.lock().map_err(|_| PortError::Io)?;
+                let pending = held.as_mut().ok_or(PortError::Invalid)?;
+                if pending.edits.len() == pending.count {
+                    return Err(PortError::Invalid);
+                }
+                let piece = match input.byte().map_err(io)? {
+                    0 => {
+                        let bytes = input.bytes().map_err(io)?;
+                        if bytes.len() > layerfs_workspace_core::file_edit::MAX_INLINE_PER_EDIT {
+                            return Err(PortError::Invalid);
+                        }
+                        pending.retained = pending
+                            .retained
+                            .checked_add(bytes.len())
+                            .filter(|n| *n <= 8 * 1024 * 1024)
+                            .ok_or(PortError::NoSpace)?;
+                        (!bytes.is_empty()).then(|| Piece::Inline {
+                            bytes: Arc::from(bytes),
+                            offset: 0,
+                            len: bytes.len() as u64,
+                        })
+                    }
+                    1 => {
+                        let len = input.u64().map_err(io)?;
+                        (len != 0).then_some(Piece::Zero { len })
+                    }
+                    _ => return Err(PortError::Invalid),
+                };
+                input.done().map_err(io)?;
+                pending.edits.push((start, delete, piece));
+            }
+            wire::EDIT_END => {
+                input.done().map_err(io)?;
+                let pending = self
+                    .0
+                    .edit
+                    .lock()
+                    .map_err(|_| PortError::Io)?
+                    .take()
+                    .ok_or(PortError::Invalid)?;
+                if pending.edits.len() != pending.count
+                    || self.0.cut.lock().map_err(|_| PortError::Io)?.is_some()
+                {
+                    return Err(PortError::Invalid);
+                }
+                self.freeze().await?;
+                let result = async {
+                    let mut node = ROOT;
+                    for name in pending.path.split('/').filter(|name| !name.is_empty()) {
+                        node = self.lookup_async(node, name.as_bytes()).await?.node;
+                    }
+                    let prepared = self
+                        .state()?
+                        .prepare_splices(node, pending.edits)
+                        .map_err(core)?;
+                    self.state()?.apply_edit(prepared).map_err(core)?;
+                    #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
+                    if let Err(error) = self.invalidate(node) {
+                        self.0.failed.store(true, Ordering::Release);
+                        return Err(error);
+                    }
+                    Ok(())
+                }
+                .await;
+                if !self.0.failed.load(Ordering::Acquire) {
+                    self.0.cut.lock().map_err(|_| PortError::Io)?.take();
+                }
+                result?;
+            }
             wire::WRITE_METRICS => {
                 input.done().map_err(io)?;
                 let mut metrics = self.0.writes.take();

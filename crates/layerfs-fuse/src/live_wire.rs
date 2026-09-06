@@ -378,3 +378,7 @@ pub const SHUTDOWN: u8 = 38;
 pub const WRITE_METRICS: u8 = 39;
 pub const READ_METRICS: u8 = 40;
 pub const INVALIDATE: u8 = 41;
+
+pub const EDIT_BEGIN: u8 = 42;
+pub const EDIT_PART: u8 = 43;
+pub const EDIT_END: u8 = 44;
