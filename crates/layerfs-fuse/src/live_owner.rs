@@ -15,11 +15,20 @@ use std::time::Instant;
 #[derive(Clone)]
 pub struct LiveOwner(Arc<Owner>);
 
+pub struct LocalFacts {
+    pub root: layerfs_content::ObjectId,
+    pub generation: u64,
+    pub nodes: HashMap<NodeId, layerfs_workspace_core::Node>,
+    pub dirty: std::collections::BTreeSet<NodeId>,
+    pub charge: crate::live_runtime::LiveReservation,
+}
+
 struct Owner {
     scheduler: Scheduler,
     state: Mutex<LiveWorkspace>,
     head: Mutex<Option<[u8; 33]>>,
     backing: BackingConnection,
+    local_facts: Option<Arc<dyn Fn(LocalFacts) -> PortResult<()> + Send + Sync>>,
     // Only physical append allocation is ordered across files. No state lock
     // is retained while a physical reservation or append waits.
     append: tokio::sync::Mutex<Option<AppendWindow>>,
@@ -116,6 +125,27 @@ impl LiveOwner {
         let backing = BackingConnection::connect(endpoint, capability, &scheduler)
             .await
             .map_err(io)?;
+        Self::from_backing(backing, scheduler, None).await
+    }
+
+    pub async fn local(
+        handler: Arc<crate::live_transport::BackingHandler>,
+        facts: Arc<dyn Fn(LocalFacts) -> PortResult<()> + Send + Sync>,
+        scheduler: Scheduler,
+    ) -> PortResult<Self> {
+        Self::from_backing(
+            BackingConnection::local(handler, scheduler.clone()),
+            scheduler,
+            Some(facts),
+        )
+        .await
+    }
+
+    async fn from_backing(
+        backing: BackingConnection,
+        scheduler: Scheduler,
+        local_facts: Option<Arc<dyn Fn(LocalFacts) -> PortResult<()> + Send + Sync>>,
+    ) -> PortResult<Self> {
         let seed = backing.call(&[wire::SEED]).await?;
         let mut input = Input(&seed);
         let root = input.object().map_err(io)?;
@@ -139,6 +169,7 @@ impl LiveOwner {
             state: Mutex::new(LiveWorkspace::new(node, policy, root)),
             head: Mutex::new(head),
             backing,
+            local_facts,
             append: Default::default(),
             failed: AtomicBool::new(false),
             closing: AtomicBool::new(false),
@@ -1291,6 +1322,69 @@ impl LiveOwner {
 
     async fn publish_facts(&self) -> PortResult<()> {
         let mut acknowledged = self.0.facts_sync.lock().await;
+        if let Some(sink) = &self.0.local_facts {
+            let facts = {
+                let state = self.state()?;
+                if *acknowledged == Some((state.base_root, state.mutation_generation)) {
+                    return Ok(());
+                }
+                let mut ids = state.dirty.clone();
+                for id in &state.dirty {
+                    if let Some(layerfs_workspace_core::Node {
+                        data: Data::Directory(directory),
+                        ..
+                    }) = state.nodes.get(id)
+                    {
+                        ids.extend(directory.changes.values().flatten());
+                    }
+                }
+                let mut charge = 0usize;
+                for id in &ids {
+                    let node = state.nodes.get(id).ok_or(PortError::Io)?;
+                    let inline = match &node.data {
+                        Data::File(layerfs_workspace_core::FileData::Edited { pieces, .. }) => {
+                            pieces.inline_len() as usize
+                        }
+                        _ => 0,
+                    };
+                    charge = charge
+                        .checked_add(
+                            wire::node_encoded_bound(node)
+                                .map_err(io)?
+                                .saturating_sub(inline)
+                                .checked_mul(8)
+                                .and_then(|n| n.checked_add(1024))
+                                .ok_or(PortError::NoSpace)?,
+                        )
+                        .filter(|n| *n <= wire::MAX_FACT_MEMORY)
+                        .ok_or(PortError::NoSpace)?;
+                }
+                let charge = self
+                    .0
+                    .scheduler
+                    .reserve_live(charge)
+                    .map_err(|_| PortError::NoSpace)?;
+                LocalFacts {
+                    root: state.base_root,
+                    generation: state.mutation_generation,
+                    nodes: ids
+                        .into_iter()
+                        .map(|id| (id, state.nodes[&id].clone()))
+                        .collect(),
+                    dirty: state.dirty.clone(),
+                    charge,
+                }
+            };
+            let identity = (facts.root, facts.generation);
+            let sink = sink.clone();
+            self.0
+                .scheduler
+                .physical(move || Ok(sink(facts)))
+                .await
+                .map_err(io)??;
+            *acknowledged = Some(identity);
+            return Ok(());
+        }
         let (root, generation, count, pages, _charge) = {
             let state = self.state()?;
             if *acknowledged == Some((state.base_root, state.mutation_generation)) {
@@ -1380,6 +1474,23 @@ impl LiveOwner {
         self.0.backing.call(&end).await?;
         *acknowledged = Some((root, generation));
         Ok(())
+    }
+
+    pub async fn local_control(&self, bytes: &[u8]) -> PortResult<Vec<u8>> {
+        if bytes == [wire::SHUTDOWN] {
+            self.prepare_shutdown().map_err(io)?;
+            return Ok(Vec::new());
+        }
+        let result = self.control_request(bytes).await;
+        if result.is_err()
+            && matches!(
+                bytes.first(),
+                Some(&wire::EDIT_BEGIN) | Some(&wire::EDIT_PART) | Some(&wire::EDIT_END)
+            )
+        {
+            self.0.edit.lock().map_err(|_| PortError::Io)?.take();
+        }
+        result
     }
 
     async fn control_request(&self, bytes: &[u8]) -> PortResult<Vec<u8>> {

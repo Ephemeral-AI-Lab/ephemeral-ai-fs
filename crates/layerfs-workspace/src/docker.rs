@@ -332,40 +332,10 @@ impl DockerProjection {
         self.proxy.failure()
     }
 
-    pub(crate) fn pause(&self) -> WorkspaceResult<()> {
-        self.control("pause")
-    }
-
-    pub(crate) fn resume(&self) -> WorkspaceResult<()> {
-        self.control("resume")
-    }
-
     pub(crate) fn invalidate_file(&self, node: layerfs_fuse::NodeId) -> WorkspaceResult<()> {
         self.proxy
             .invalidate_file(node)
             .map_err(|_| WorkspaceError::InvalidPlacement)
-    }
-
-    pub(crate) fn take_write_metrics(&self) -> WorkspaceResult<layerfs_fuse::FuseWriteMetrics> {
-        self.proxy
-            .take_write_metrics()
-            .map_err(|_| WorkspaceError::InvalidPlacement)
-    }
-
-    pub(crate) fn take_read_metrics(&self) -> WorkspaceResult<layerfs_fuse::FuseReadMetrics> {
-        self.proxy
-            .take_read_metrics()
-            .map_err(|_| WorkspaceError::InvalidPlacement)
-    }
-
-    fn control(&self, command: &str) -> WorkspaceResult<()> {
-        if self.proxy.control(command).is_ok() {
-            Ok(())
-        } else if command == "pause" {
-            Err(WorkspaceError::WorkspaceBusy)
-        } else {
-            Err(WorkspaceError::InvalidPlacement)
-        }
     }
 
     fn fallback(&mut self, evidence: &str) -> (u64, u64, bool) {

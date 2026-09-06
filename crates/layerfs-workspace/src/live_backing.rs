@@ -502,6 +502,15 @@ mod tests {
 
     #[test]
     fn live_owner_builds_and_checkpoints_through_real_host_backing() {
+        live_owner_check(false);
+    }
+
+    #[test]
+    fn local_owner_builds_and_checkpoints_through_direct_host_backing() {
+        live_owner_check(true);
+    }
+
+    fn live_owner_check(local: bool) {
         use layerfs_fuse::{live_owner::LiveOwner, live_runtime::LiveRuntime, FilesystemPort};
         use std::sync::Mutex;
         let directory = std::env::temp_dir().join(format!(
@@ -524,19 +533,34 @@ mod tests {
             )
             .unwrap();
         let mut workspace = crate::Workspace::open(store, branch, directory.join("spool")).unwrap();
-        let remote = RemoteWorkspace::start(&workspace).unwrap();
+        let remote = if local {
+            RemoteWorkspace::start_local(&workspace)
+        } else {
+            RemoteWorkspace::start(&workspace)
+        }
+        .unwrap();
         let runtime = LiveRuntime::new().unwrap();
-        let endpoint = format!("127.0.0.1:{}", remote.server.port());
-        let owner = runtime
-            .block_on(LiveOwner::connect(
-                endpoint.clone(),
-                remote.server.capability(),
-                runtime.scheduler(),
-            ))
-            .unwrap();
-        let control = owner
-            .serve_control(endpoint, remote.server.capability())
-            .unwrap();
+        let (owner, control) = if local {
+            assert_eq!(
+                remote.server.port(),
+                0,
+                "native backing does not listen on a socket"
+            );
+            (remote.server.local_owner().unwrap(), None)
+        } else {
+            let endpoint = format!("127.0.0.1:{}", remote.server.port());
+            let owner = runtime
+                .block_on(LiveOwner::connect(
+                    endpoint.clone(),
+                    remote.server.capability(),
+                    runtime.scheduler(),
+                ))
+                .unwrap();
+            let control = owner
+                .serve_control(endpoint, remote.server.capability())
+                .unwrap();
+            (owner, Some(control))
+        };
         workspace.remote = Some(remote.clone());
         let workspace = Mutex::new(workspace);
         let directory_id = owner.mkdir(crate::ROOT, b"bulk", 0o755).unwrap().node;
@@ -759,11 +783,15 @@ mod tests {
         );
         assert!(owner.write(file, 0, b"must not replay").is_err());
         owner.unpin(file, true).unwrap();
-        let server = remote.server.clone();
-        let ending = std::thread::spawn(move || server.control("shutdown"));
-        control.wait_for_shutdown().unwrap();
-        control.finish_shutdown(true).unwrap();
-        ending.join().unwrap().unwrap();
+        if let Some(control) = control {
+            let server = remote.server.clone();
+            let ending = std::thread::spawn(move || server.control("shutdown"));
+            control.wait_for_shutdown().unwrap();
+            control.finish_shutdown(true).unwrap();
+            ending.join().unwrap().unwrap();
+        } else {
+            remote.server.control("shutdown").unwrap();
+        }
         drop(owner);
         drop(workspace);
         drop(remote);
@@ -864,6 +892,14 @@ pub(crate) struct RemoteWorkspace {
 
 impl RemoteWorkspace {
     pub(crate) fn start(workspace: &crate::Workspace) -> Result<Self> {
+        Self::start_with_placement(workspace, false)
+    }
+    #[cfg(any(test, all(target_os = "linux", feature = "host-fuse")))]
+    pub(crate) fn start_local(workspace: &crate::Workspace) -> Result<Self> {
+        Self::start_with_placement(workspace, true)
+    }
+
+    fn start_with_placement(workspace: &crate::Workspace, local: bool) -> Result<Self> {
         use std::sync::{Arc, Mutex};
         let backing = Arc::new(Mutex::new(BackingOwner::new(
             WorkspaceSnapshot {
@@ -880,13 +916,95 @@ impl RemoteWorkspace {
             workspace.live.policy,
         )));
         let handler = backing.clone();
-        let server = layerfs_fuse::live_transport::BackingServer::start(move |bytes| {
+        let handler: Arc<layerfs_fuse::live_transport::BackingHandler> = Arc::new(move |bytes| {
             handler
                 .lock()
                 .map_err(|_| layerfs_fuse::PortError::Io)?
                 .request(bytes)
                 .map_err(crate::projection::storage_port_error)
-        })?;
+        });
+        let server = if local {
+            let target = backing.clone();
+            let sink = Arc::new(move |mut facts: layerfs_fuse::live_owner::LocalFacts| {
+                use layerfs_workspace_core::file_edit::{Piece, PieceTree};
+                let mut backing = target.lock().map_err(|_| layerfs_fuse::PortError::Io)?;
+                if facts.root != backing.snapshot.root {
+                    return Err(layerfs_fuse::PortError::Io);
+                }
+                for node in facts.nodes.values_mut() {
+                    if let layerfs_workspace_core::Data::File(
+                        layerfs_workspace_core::FileData::Edited { pieces, .. },
+                    ) = &mut node.data
+                    {
+                        let values = pieces
+                            .pieces()
+                            .into_iter()
+                            .map(|piece| match piece {
+                                Piece::Spool {
+                                    segment,
+                                    offset,
+                                    len,
+                                } => {
+                                    let physical = backing
+                                        .spool
+                                        .segments
+                                        .get(&segment.id().0)
+                                        .ok_or(layerfs_fuse::PortError::Io)?;
+                                    if offset.checked_add(len).is_none_or(|end| {
+                                        spool_segment(physical).map_or(true, |segment| {
+                                            end > segment
+                                                .len
+                                                .load(std::sync::atomic::Ordering::Relaxed)
+                                        })
+                                    }) {
+                                        return Err(layerfs_fuse::PortError::Io);
+                                    }
+                                    Ok(Piece::Spool {
+                                        segment: physical.clone(),
+                                        offset,
+                                        len,
+                                    })
+                                }
+                                piece => Ok(piece),
+                            })
+                            .collect::<std::result::Result<Vec<_>, _>>()?;
+                        *pieces = PieceTree::empty()
+                            .replace(0, 0, values)
+                            .map_err(|_| layerfs_fuse::PortError::Io)?;
+                    }
+                }
+                for id in &facts.dirty {
+                    let node = facts.nodes.get(id).ok_or(layerfs_fuse::PortError::Io)?;
+                    if let layerfs_workspace_core::Data::Directory(directory) = &node.data {
+                        if directory
+                            .changes
+                            .values()
+                            .flatten()
+                            .any(|id| !facts.nodes.contains_key(id))
+                        {
+                            return Err(layerfs_fuse::PortError::Io);
+                        }
+                    }
+                }
+                backing.facts = facts.nodes;
+                backing.dirty = facts.dirty;
+                backing.generation = facts.generation;
+                backing.fact_reservations = vec![facts.charge];
+                backing.facts_complete = true;
+                Ok(())
+            });
+            let runtime = layerfs_fuse::live_runtime::LiveRuntime::shared()?;
+            let owner = runtime
+                .block_on(layerfs_fuse::live_owner::LiveOwner::local(
+                    handler,
+                    sink,
+                    runtime.scheduler(),
+                ))
+                .map_err(|_| StoreError::Integrity("local live owner"))?;
+            layerfs_fuse::live_transport::BackingServer::local(owner)
+        } else {
+            layerfs_fuse::live_transport::BackingServer::start(move |bytes| handler(bytes))?
+        };
         Ok(Self {
             backing,
             server: Arc::new(server),

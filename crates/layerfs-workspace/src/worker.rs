@@ -7,6 +7,7 @@ pub(crate) struct WorkspaceWorker {
     pub(crate) projection: WorkspaceProjection,
     pub(crate) identity: WorkspaceIdentity,
     pub(crate) workspace: Arc<Mutex<Workspace>>,
+    pub(crate) lifecycle: Mutex<()>,
     pub(crate) remote: Mutex<Option<crate::live_backing::RemoteWorkspace>>,
     pub(crate) projection_handle: Mutex<Option<crate::projection::ProjectionHandle>>,
     admission: Mutex<Admission>,
@@ -43,6 +44,7 @@ impl WorkspaceWorker {
             projection,
             identity,
             workspace: Arc::new(Mutex::new(workspace)),
+            lifecycle: Mutex::new(()),
             projection_handle: Mutex::new(None),
             remote: Mutex::new(None),
             admission: Mutex::new(Admission {

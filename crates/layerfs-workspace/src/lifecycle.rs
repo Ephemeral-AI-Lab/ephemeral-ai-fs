@@ -497,6 +497,10 @@ impl Workspaces {
         id: WorkspaceId,
     ) -> WorkspaceResult<WorkspaceCommitStatus> {
         let worker = self.worker(id)?;
+        let _operation = worker
+            .lifecycle
+            .lock()
+            .map_err(|_| WorkspaceError::WorkspaceBusy)?;
         let _timing = layerfs_layerstack_store::begin_workspace_commit(match worker.projection {
             WorkspaceProjection::Fuse => layerfs_layerstack_store::CaptureMode::Live,
             WorkspaceProjection::Materialize => layerfs_layerstack_store::CaptureMode::Materialized,
@@ -701,6 +705,10 @@ impl Workspaces {
         id: WorkspaceId,
     ) -> WorkspaceResult<WorkspaceSession> {
         let worker = self.worker(id)?;
+        let _operation = worker
+            .lifecycle
+            .lock()
+            .map_err(|_| WorkspaceError::WorkspaceBusy)?;
         if worker.has_executions()?
             || !worker
                 .workspace
@@ -787,6 +795,10 @@ impl Workspaces {
         let workspace_id = first.workspace_id;
         let path = first.path.clone();
         let worker = self.worker(workspace_id)?;
+        let _operation = worker
+            .lifecycle
+            .lock()
+            .map_err(|_| WorkspaceError::WorkspaceBusy)?;
         let remote = worker
             .workspace
             .lock()
@@ -874,6 +886,10 @@ impl Workspaces {
         mode: EndWorkspaceMode,
     ) -> WorkspaceResult<WorkspaceEndResult> {
         let worker = self.worker(id)?;
+        let _operation = worker
+            .lifecycle
+            .lock()
+            .map_err(|_| WorkspaceError::WorkspaceBusy)?;
         let _ending = worker.begin_end()?;
         let workspace = worker
             .workspace

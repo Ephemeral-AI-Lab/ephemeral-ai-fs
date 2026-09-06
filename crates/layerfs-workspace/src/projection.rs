@@ -1,6 +1,6 @@
 use crate::worker::WorkspaceWorker;
 use crate::{Kind, NodeId, Workspace, WorkspaceError, WorkspacePlacement, WorkspaceResult, ROOT};
-use layerfs_fuse::{FilesystemPort, PortError};
+use layerfs_fuse::PortError;
 use layerfs_materialization::{
     Attr as MaterializedAttr, CaptureSink, Entry, Kind as MaterializedKind, MaterializationError,
     MaterializationSource, NodeId as MaterializedNode, Result as MaterializedResult,
@@ -68,8 +68,28 @@ pub(crate) fn attach(
             #[cfg(all(target_os = "linux", feature = "host-fuse"))]
             {
                 std::fs::create_dir_all(root)?;
-                let port: Arc<dyn FilesystemPort> = Arc::new(FuseView(Arc::downgrade(worker)));
-                let mount = layerfs_fuse::mount_host(port, root, 0, 0)?;
+                let remote = {
+                    let mut workspace = worker
+                        .workspace
+                        .lock()
+                        .map_err(|_| WorkspaceError::WorkspaceBusy)?;
+                    let remote = crate::live_backing::RemoteWorkspace::start_local(&workspace)?;
+                    workspace.remote = Some(remote.clone());
+                    *worker
+                        .remote
+                        .lock()
+                        .map_err(|_| WorkspaceError::WorkspaceBusy)? = Some(remote.clone());
+                    remote
+                };
+                let owner = Arc::new(
+                    remote
+                        .server
+                        .local_owner()
+                        .ok_or(WorkspaceError::InvalidPlacement)?,
+                );
+                let mount = layerfs_fuse::mount_host(owner.clone(), root, 0, 0)?;
+                owner.set_notifier(mount.notifier()?)?;
+                owner.set_kernel_root(std::fs::File::open(root)?)?;
                 Ok(ProjectionHandle::Fuse(mount))
             }
             #[cfg(not(all(target_os = "linux", feature = "host-fuse")))]
@@ -153,28 +173,35 @@ pub(crate) fn capture(worker: &Arc<WorkspaceWorker>) -> WorkspaceResult<()> {
 }
 
 pub(crate) fn pause(worker: &WorkspaceWorker) -> WorkspaceResult<()> {
-    let handle = worker
-        .projection_handle
+    let remote = worker
+        .remote
         .lock()
-        .map_err(|_| WorkspaceError::WorkspaceBusy)?;
-    if let Some(ProjectionHandle::Docker(projection)) = handle.as_ref() {
-        projection.pause()?;
+        .map_err(|_| WorkspaceError::WorkspaceBusy)?
+        .clone();
+    if let Some(remote) = remote {
+        remote
+            .server
+            .control("pause")
+            .map_err(|_| WorkspaceError::InvalidExecution)?;
     }
     Ok(())
 }
 
 pub(crate) fn record_write_metrics(worker: &WorkspaceWorker) -> WorkspaceResult<()> {
     let started = std::time::Instant::now();
-    let transport = {
-        let handle = worker
-            .projection_handle
-            .lock()
-            .map_err(|_| WorkspaceError::WorkspaceBusy)?;
-        match handle.as_ref() {
-            Some(ProjectionHandle::Docker(projection)) => Some(projection.take_write_metrics()?),
-            _ => None,
-        }
-    };
+    let remote = worker
+        .remote
+        .lock()
+        .map_err(|_| WorkspaceError::WorkspaceBusy)?
+        .clone();
+    let transport = remote
+        .map(|remote| {
+            remote
+                .server
+                .take_write_metrics()
+                .map_err(|_| WorkspaceError::InvalidExecution)
+        })
+        .transpose()?;
     let Some(transport) = transport else {
         return Ok(());
     };
@@ -233,16 +260,19 @@ pub(crate) fn record_write_metrics(worker: &WorkspaceWorker) -> WorkspaceResult<
 
 pub(crate) fn record_read_metrics(worker: &WorkspaceWorker) -> WorkspaceResult<()> {
     let started = std::time::Instant::now();
-    let transport = {
-        let handle = worker
-            .projection_handle
-            .lock()
-            .map_err(|_| WorkspaceError::WorkspaceBusy)?;
-        match handle.as_ref() {
-            Some(ProjectionHandle::Docker(projection)) => Some(projection.take_read_metrics()?),
-            _ => None,
-        }
-    };
+    let remote = worker
+        .remote
+        .lock()
+        .map_err(|_| WorkspaceError::WorkspaceBusy)?
+        .clone();
+    let transport = remote
+        .map(|remote| {
+            remote
+                .server
+                .take_read_metrics()
+                .map_err(|_| WorkspaceError::InvalidExecution)
+        })
+        .transpose()?;
     let Some(transport) = transport else {
         return Ok(());
     };
@@ -322,12 +352,16 @@ pub(crate) fn resume(worker: &WorkspaceWorker) -> WorkspaceResult<()> {
             "injected projection resume failure",
         )));
     }
-    let handle = worker
-        .projection_handle
+    let remote = worker
+        .remote
         .lock()
-        .map_err(|_| WorkspaceError::WorkspaceBusy)?;
-    if let Some(ProjectionHandle::Docker(projection)) = handle.as_ref() {
-        projection.resume()?;
+        .map_err(|_| WorkspaceError::WorkspaceBusy)?
+        .clone();
+    if let Some(remote) = remote {
+        remote
+            .server
+            .control("resume")
+            .map_err(|_| WorkspaceError::InvalidExecution)?;
     }
     Ok(())
 }
@@ -371,6 +405,17 @@ pub(crate) fn end(worker: &WorkspaceWorker) -> WorkspaceResult<()> {
     }
     #[cfg(all(target_os = "linux", feature = "host-fuse"))]
     if let Some(ProjectionHandle::Fuse(mount)) = handle.as_mut() {
+        if let Some(remote) = worker
+            .remote
+            .lock()
+            .map_err(|_| WorkspaceError::WorkspaceBusy)?
+            .clone()
+        {
+            remote
+                .server
+                .control("shutdown")
+                .map_err(|_| WorkspaceError::InvalidExecution)?;
+        }
         mount.unmount()?;
         *handle = None;
         return Ok(());
@@ -508,326 +553,6 @@ pub(crate) fn inject_refresh_failure_once() {
 #[cfg(any(debug_assertions, feature = "test-instrumentation"))]
 pub(crate) fn inject_resume_failure_once() {
     INJECT_RESUME_FAILURE.with(|inject| inject.set(true));
-}
-
-struct FuseView(Weak<WorkspaceWorker>);
-
-impl FuseView {
-    fn worker(&self) -> Result<Arc<WorkspaceWorker>, PortError> {
-        self.0.upgrade().ok_or(PortError::Io)
-    }
-
-    fn with<T>(
-        &self,
-        operation: impl FnOnce(&mut Workspace) -> layerfs_layerstack_store::Result<T>,
-    ) -> Result<T, PortError> {
-        let worker = self.worker()?;
-        let _callback = worker.enter_callback().map_err(workspace_port_error)?;
-        let mut workspace = worker.workspace.lock().map_err(|_| PortError::Busy)?;
-        operation(&mut workspace).map_err(storage_port_error)
-    }
-}
-
-impl FilesystemPort for FuseView {
-    fn lookup(
-        &self,
-        parent: layerfs_fuse::NodeId,
-        name: &[u8],
-    ) -> layerfs_fuse::PortResult<layerfs_fuse::Attr> {
-        self.with(|workspace| workspace.lookup(NodeId(parent.0), name))
-    }
-
-    fn attr(&self, node: layerfs_fuse::NodeId) -> layerfs_fuse::PortResult<layerfs_fuse::Attr> {
-        self.with(|workspace| workspace.attr(NodeId(node.0)))
-    }
-
-    fn readlink(&self, node: layerfs_fuse::NodeId) -> layerfs_fuse::PortResult<Vec<u8>> {
-        self.with(|workspace| workspace.readlink(NodeId(node.0)))
-    }
-
-    fn readdir(
-        &self,
-        node: layerfs_fuse::NodeId,
-    ) -> layerfs_fuse::PortResult<Vec<(layerfs_fuse::NodeId, layerfs_fuse::Kind, Vec<u8>)>> {
-        self.with(|workspace| workspace.readdir(node))
-    }
-
-    fn readdirplus(
-        &self,
-        node: layerfs_fuse::NodeId,
-    ) -> layerfs_fuse::PortResult<Vec<(layerfs_fuse::Attr, Vec<u8>)>> {
-        self.with(|workspace| workspace.readdirplus(node))
-    }
-
-    fn create_file(
-        &self,
-        parent: layerfs_fuse::NodeId,
-        name: &[u8],
-        mode: u32,
-    ) -> layerfs_fuse::PortResult<layerfs_fuse::Attr> {
-        self.with(|workspace| workspace.create_file(NodeId(parent.0), name, mode))
-    }
-
-    fn create_file_open(
-        &self,
-        parent: layerfs_fuse::NodeId,
-        name: &[u8],
-        mode: u32,
-    ) -> layerfs_fuse::PortResult<layerfs_fuse::Attr> {
-        let worker = self.worker()?;
-        let _callback = worker.enter_callback().map_err(workspace_port_error)?;
-        let attr = {
-            let mut workspace = worker.workspace.lock().map_err(|_| PortError::Busy)?;
-            let attr = workspace
-                .create_file(NodeId(parent.0), name, mode)
-                .map_err(storage_port_error)?;
-            workspace
-                .pin(attr.node, false)
-                .map_err(storage_port_error)?;
-            attr
-        };
-        worker.note_writer(true).map_err(workspace_port_error)?;
-        Ok(attr)
-    }
-
-    fn reserve_nodes(&self, count: u32) -> layerfs_fuse::PortResult<layerfs_fuse::NodeId> {
-        self.with(|workspace| workspace.reserve_nodes(count))
-            .map(|node| layerfs_fuse::NodeId(node.0))
-    }
-
-    fn create_file_open_reserved(
-        &self,
-        parent: layerfs_fuse::NodeId,
-        name: &[u8],
-        mode: u32,
-        node: layerfs_fuse::NodeId,
-    ) -> layerfs_fuse::PortResult<layerfs_fuse::Attr> {
-        let worker = self.worker()?;
-        let _callback = worker.enter_callback().map_err(workspace_port_error)?;
-        let attr = {
-            let mut workspace = worker.workspace.lock().map_err(|_| PortError::Busy)?;
-            let attr = workspace
-                .create_file_reserved(NodeId(parent.0), name, mode, NodeId(node.0))
-                .map_err(storage_port_error)?;
-            workspace
-                .pin(attr.node, false)
-                .map_err(storage_port_error)?;
-            attr
-        };
-        worker.note_writer(true).map_err(workspace_port_error)?;
-        Ok(attr)
-    }
-
-    fn create_files_closed_reserved(
-        &self,
-        entries: &[(
-            layerfs_fuse::NodeId,
-            Vec<u8>,
-            u32,
-            layerfs_fuse::NodeId,
-            Vec<(u64, Vec<u8>)>,
-            Option<(i64, u32)>,
-        )],
-    ) -> layerfs_fuse::PortResult<()> {
-        let worker = self.worker()?;
-        let _callback = worker.enter_callback().map_err(workspace_port_error)?;
-        let mut workspace = worker.workspace.lock().map_err(|_| PortError::Busy)?;
-        for (parent, name, mode, node, writes, mtime) in entries {
-            let attr = workspace
-                .create_file_reserved(NodeId(parent.0), name, *mode, NodeId(node.0))
-                .map_err(storage_port_error)?;
-            workspace
-                .pin(attr.node, false)
-                .map_err(storage_port_error)?;
-            for (offset, bytes) in writes {
-                workspace
-                    .write(attr.node, *offset, bytes)
-                    .map_err(storage_port_error)?;
-            }
-            if let Some((seconds, nanos)) = mtime {
-                workspace
-                    .set_mtime(attr.node, *seconds, *nanos)
-                    .map_err(storage_port_error)?;
-            }
-            workspace.unpin(attr.node).map_err(storage_port_error)?;
-        }
-        Ok(())
-    }
-
-    fn mkdir(
-        &self,
-        parent: layerfs_fuse::NodeId,
-        name: &[u8],
-        mode: u32,
-    ) -> layerfs_fuse::PortResult<layerfs_fuse::Attr> {
-        self.with(|workspace| workspace.mkdir(NodeId(parent.0), name, mode))
-    }
-
-    fn mkdir_reserved(
-        &self,
-        parent: layerfs_fuse::NodeId,
-        name: &[u8],
-        mode: u32,
-        node: layerfs_fuse::NodeId,
-    ) -> layerfs_fuse::PortResult<layerfs_fuse::Attr> {
-        self.with(|workspace| {
-            workspace.mkdir_reserved(NodeId(parent.0), name, mode, NodeId(node.0))
-        })
-    }
-
-    fn symlink(
-        &self,
-        parent: layerfs_fuse::NodeId,
-        name: &[u8],
-        target: Vec<u8>,
-    ) -> layerfs_fuse::PortResult<layerfs_fuse::Attr> {
-        self.with(|workspace| workspace.symlink(NodeId(parent.0), name, target))
-    }
-
-    fn link(
-        &self,
-        node: layerfs_fuse::NodeId,
-        parent: layerfs_fuse::NodeId,
-        name: &[u8],
-    ) -> layerfs_fuse::PortResult<layerfs_fuse::Attr> {
-        self.with(|workspace| workspace.link(NodeId(node.0), NodeId(parent.0), name))
-    }
-
-    fn unlink(
-        &self,
-        parent: layerfs_fuse::NodeId,
-        name: &[u8],
-        directory: bool,
-    ) -> layerfs_fuse::PortResult<()> {
-        self.with(|workspace| workspace.unlink(NodeId(parent.0), name, directory))
-    }
-
-    fn unlink_batch(
-        &self,
-        entries: &[(layerfs_fuse::NodeId, Vec<u8>)],
-    ) -> layerfs_fuse::PortResult<()> {
-        self.with(|workspace| {
-            for (parent, name) in entries {
-                workspace.unlink(NodeId(parent.0), name, false)?;
-            }
-            Ok(())
-        })
-    }
-
-    fn rename(
-        &self,
-        parent: layerfs_fuse::NodeId,
-        name: &[u8],
-        new_parent: layerfs_fuse::NodeId,
-        new_name: &[u8],
-        no_replace: bool,
-    ) -> layerfs_fuse::PortResult<()> {
-        self.with(|workspace| {
-            workspace.rename(
-                NodeId(parent.0),
-                name,
-                NodeId(new_parent.0),
-                new_name,
-                no_replace,
-            )
-        })
-    }
-
-    fn pin(
-        &self,
-        node: layerfs_fuse::NodeId,
-        truncate: bool,
-        writable: bool,
-    ) -> layerfs_fuse::PortResult<()> {
-        let worker = self.worker()?;
-        let _callback = worker.enter_callback().map_err(workspace_port_error)?;
-        worker
-            .workspace
-            .lock()
-            .map_err(|_| PortError::Busy)?
-            .pin(NodeId(node.0), truncate)
-            .map_err(storage_port_error)?;
-        if writable {
-            worker.note_writer(true).map_err(workspace_port_error)?;
-        }
-        Ok(())
-    }
-
-    fn pin_directory(&self, node: layerfs_fuse::NodeId) -> layerfs_fuse::PortResult<()> {
-        self.with(|workspace| {
-            workspace
-                .live
-                .pin_directory(NodeId(node.0))
-                .map_err(crate::live_error)
-        })
-    }
-
-    fn unpin_directory(&self, node: layerfs_fuse::NodeId) -> layerfs_fuse::PortResult<()> {
-        self.unpin(node, false)
-    }
-
-    fn unpin(&self, node: layerfs_fuse::NodeId, writable: bool) -> layerfs_fuse::PortResult<()> {
-        let worker = self.worker()?;
-        let _callback = worker.enter_callback().map_err(workspace_port_error)?;
-        worker
-            .workspace
-            .lock()
-            .map_err(|_| PortError::Busy)?
-            .unpin(NodeId(node.0))
-            .map_err(storage_port_error)?;
-        if writable {
-            worker.note_writer(false).map_err(workspace_port_error)?;
-        }
-        Ok(())
-    }
-
-    fn read(
-        &self,
-        node: layerfs_fuse::NodeId,
-        offset: u64,
-        size: usize,
-    ) -> layerfs_fuse::PortResult<Vec<u8>> {
-        self.with(|workspace| workspace.read(NodeId(node.0), offset, size))
-    }
-
-    fn write(
-        &self,
-        node: layerfs_fuse::NodeId,
-        offset: u64,
-        bytes: &[u8],
-    ) -> layerfs_fuse::PortResult<usize> {
-        self.with(|workspace| workspace.write(NodeId(node.0), offset, bytes))
-    }
-
-    fn write_zero(
-        &self,
-        node: layerfs_fuse::NodeId,
-        offset: u64,
-        len: usize,
-    ) -> layerfs_fuse::PortResult<usize> {
-        self.with(|workspace| workspace.write_zero(NodeId(node.0), offset, len))
-    }
-
-    fn truncate(&self, node: layerfs_fuse::NodeId, size: u64) -> layerfs_fuse::PortResult<()> {
-        self.with(|workspace| workspace.truncate(NodeId(node.0), size))
-    }
-
-    fn chmod(&self, node: layerfs_fuse::NodeId, mode: u32) -> layerfs_fuse::PortResult<()> {
-        self.with(|workspace| workspace.chmod(NodeId(node.0), mode))
-    }
-
-    fn set_mtime(
-        &self,
-        node: layerfs_fuse::NodeId,
-        seconds: i64,
-        nanos: u32,
-    ) -> layerfs_fuse::PortResult<()> {
-        self.with(|workspace| workspace.set_mtime(NodeId(node.0), seconds, nanos))
-    }
-
-    fn fsync(&self, node: Option<layerfs_fuse::NodeId>) -> layerfs_fuse::PortResult<()> {
-        self.with(|workspace| workspace.fsync(node.map(|node| NodeId(node.0))))
-    }
 }
 
 struct MaterializedView(Weak<WorkspaceWorker>);
@@ -1251,14 +976,6 @@ fn materialized_attr(attr: crate::Attr) -> MaterializedAttr {
         mode: attr.mode,
         mtime_seconds: attr.mtime_seconds,
         mtime_nanoseconds: attr.mtime_nanoseconds,
-    }
-}
-
-fn workspace_port_error(error: WorkspaceError) -> PortError {
-    match error {
-        WorkspaceError::WorkspaceBusy => PortError::Busy,
-        WorkspaceError::ReadOnly => PortError::ReadOnly,
-        _ => PortError::Io,
     }
 }
 

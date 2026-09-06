@@ -630,13 +630,31 @@ int main(int argc, char **argv) {
     check_mapped_snapshot(&store, first_root, false)?;
     for path in ["held-a", "held-b"] {
         eprintln!("live-cut stage=sdk-edit path={path}");
-        client.edit_workspace_file_range(layerfs_sdk::WorkspaceFileRangeEdit {
+        let edit = layerfs_sdk::WorkspaceFileRangeEdit {
             workspace_id: session.id,
             path: path.into(),
             start: 777,
             delete_len: 1,
             replacement: layerfs_sdk::WorkspaceFileReplacement::Inline(vec![b'S']),
-        })?;
+        };
+        if path == "held-a" {
+            let rendezvous = std::sync::Barrier::new(2);
+            std::thread::scope(|scope| -> AnyResult<()> {
+                let committing = scope.spawn(|| {
+                    rendezvous.wait();
+                    client.commit_workspace_session(session.id)
+                });
+                rendezvous.wait();
+                let edited = client.edit_workspace_file_range(edit);
+                committing
+                    .join()
+                    .map_err(|_| "concurrent Commit panicked")??;
+                edited?;
+                Ok(())
+            })?;
+        } else {
+            client.edit_workspace_file_range(edit)?;
+        }
     }
     require(
         docker_status(name, ["touch", go.as_str()])?,

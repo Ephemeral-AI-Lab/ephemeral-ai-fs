@@ -343,6 +343,10 @@ impl Workspaces {
         choice: ResolveChoice,
     ) -> WorkspaceResult<ResolveResult> {
         let worker = self.worker(workspace_id)?;
+        let _operation = worker
+            .lifecycle
+            .lock()
+            .map_err(|_| WorkspaceError::WorkspaceBusy)?;
         crate::projection::pause(&worker)?;
         let result = (|| {
             let _quiesced = worker.quiesce()?;

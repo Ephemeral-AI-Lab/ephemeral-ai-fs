@@ -12,11 +12,14 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{watch, Mutex, Semaphore};
 
+pub type BackingHandler = dyn Fn(&[u8]) -> PortResult<Vec<u8>> + Send + Sync;
+
 pub struct BackingServer {
     port: u16,
     capability: [u8; 32],
     stop: watch::Sender<bool>,
-    listener: tokio::task::JoinHandle<()>,
+    listener: Option<tokio::task::JoinHandle<()>>,
+    local: Option<crate::live_owner::LiveOwner>,
     failed: Arc<AtomicBool>,
     control: Arc<Mutex<Option<TcpStream>>>,
     connected: Arc<tokio::sync::Notify>,
@@ -78,7 +81,8 @@ impl BackingServer {
             port,
             capability,
             stop,
-            listener: task,
+            listener: Some(task),
+            local: None,
             failed,
             control,
             connected,
@@ -87,6 +91,26 @@ impl BackingServer {
             metrics,
         })
     }
+    pub fn local(owner: crate::live_owner::LiveOwner) -> Self {
+        let (stop, _) = watch::channel(false);
+        Self {
+            port: 0,
+            capability: [0; 32],
+            stop,
+            listener: None,
+            local: Some(owner),
+            failed: Arc::new(AtomicBool::new(false)),
+            control: Arc::new(Mutex::new(None)),
+            observer: Arc::new(Mutex::new(None)),
+            connected: Arc::new(tokio::sync::Notify::new()),
+            observed: Arc::new(tokio::sync::Notify::new()),
+            metrics: Arc::new(AtomicFuseWriteMetrics::default()),
+        }
+    }
+    pub fn local_owner(&self) -> Option<crate::live_owner::LiveOwner> {
+        self.local.clone()
+    }
+
     pub fn port(&self) -> u16 {
         self.port
     }
@@ -127,6 +151,14 @@ impl BackingServer {
             .map_err(|_| PortError::Io)?
             .block_on(async {
                 tokio::time::timeout(std::time::Duration::from_secs(120), async {
+                    if let Some(owner) = &self.local {
+                        let _held = slot.lock().await;
+                        let mut response = Vec::new();
+                        for bytes in frames {
+                            response = owner.local_control(bytes.as_ref()).await?;
+                        }
+                        return Ok(response);
+                    }
                     let ready = connected.notified();
                     if slot.lock().await.is_none() {
                         ready.await;
@@ -186,7 +218,9 @@ impl BackingServer {
 impl Drop for BackingServer {
     fn drop(&mut self) {
         let _ = self.stop.send(true);
-        self.listener.abort();
+        if let Some(listener) = &self.listener {
+            listener.abort();
+        }
     }
 }
 
@@ -288,7 +322,9 @@ pub struct BackingConnection {
     // A cancelled/failed exchange drops the taken stream. It cannot reuse a
     // partial frame or silently repeat an append after an uncertain reply.
     stream: Mutex<Option<TcpStream>>,
-    pub(crate) metrics: AtomicFuseWriteMetrics,
+    pub(crate) metrics: Arc<AtomicFuseWriteMetrics>,
+    local: Option<(Arc<BackingHandler>, Scheduler)>,
+    available: AtomicBool,
 }
 impl BackingConnection {
     pub async fn connect(
@@ -313,7 +349,17 @@ impl BackingConnection {
         Ok(Self {
             stream: Mutex::new(Some(stream)),
             metrics: Default::default(),
+            local: None,
+            available: AtomicBool::new(true),
         })
+    }
+    pub fn local(handler: Arc<BackingHandler>, scheduler: Scheduler) -> Self {
+        Self {
+            stream: Mutex::new(None),
+            metrics: Default::default(),
+            local: Some((handler, scheduler)),
+            available: AtomicBool::new(true),
+        }
     }
     pub async fn call(&self, bytes: &[u8]) -> PortResult<Vec<u8>> {
         if bytes.is_empty() || bytes.len() > MAX_FRAME {
@@ -324,6 +370,37 @@ impl BackingConnection {
             .live_backing_calls
             .fetch_add(1, Ordering::Relaxed);
         let mut held = self.stream.lock().await;
+        if let Some((handler, scheduler)) = &self.local {
+            if !self.available.load(Ordering::Acquire) {
+                return Err(PortError::Io);
+            }
+            let charge = scheduler
+                .reserve_transfer(bytes.len() + 2 * MAX_FRAME)
+                .map_err(|_| PortError::NoSpace)?;
+            self.metrics.note_client_frame(0, bytes.len() as u64, 0, 0);
+            let bytes = bytes.to_vec();
+            let handler = handler.clone();
+            let metrics = self.metrics.clone();
+            self.available.store(false, Ordering::Release);
+            let result = scheduler
+                .physical(move || {
+                    let _charge = charge;
+                    metrics
+                        .live_backing_queue_ns
+                        .fetch_add(ns(started), Ordering::Relaxed);
+                    let work = Instant::now();
+                    let response = handler(&bytes);
+                    metrics.note_host_dispatch(ns(work));
+                    Ok(response)
+                })
+                .await
+                .map_err(|_| PortError::Io)?;
+            self.available.store(true, Ordering::Release);
+            self.metrics
+                .live_backing_wait_ns
+                .fetch_add(ns(started), Ordering::Relaxed);
+            return result;
+        }
         let mut stream = held.take().ok_or(PortError::Io)?;
         let result = exchange(&mut stream, bytes, Some(&self.metrics)).await;
         self.metrics
