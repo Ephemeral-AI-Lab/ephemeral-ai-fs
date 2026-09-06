@@ -1,6 +1,6 @@
 # Issue 49 implementation ledger
 
-Status (2026-09-06): shared execution owner and native/direct integration checkpointed; all fuser patches withdrawn in favor of official 0.18.0. Upstream component checks pass, but one mounted SDK/Commit mapping coherence failure remains unresolved. Three subsequent bounded diagnostic attempts passed without a product behavior change and did not reproduce the failing bytes. No final qualification. Earlier phase tables below are historical; latest evidence and limitations are appended at the end.
+Status (2026-09-06): shared execution owner and native/direct integration checkpointed; official upstream fuser 0.18.0 retained. The observed SDK/mapping lost-update path is corrected using public cache-store notifications before invalidation; both focused mounted modes and Linux component checks pass. Broader issue #49 qualification is still incomplete. Earlier tables and failure reports below remain historical; latest evidence is appended at the end.
 
 ## Source custody and frozen workload
 
@@ -346,3 +346,22 @@ The existing mapped-client check now prints actual mapped and ordinary pread val
 Three diagnostic attempts on image `layerfs-bench-infra:7df4de13ed2d8ea0`, source `7df4de13ed2d8ea014719f5bf0ed2804d0e2dcb510c7b5d43b687c25ef0b8beb`, all passed with cleanup: `live-cut-1788693593455030000` (2.33 s), `live-cut-1788693612716076000` (2.34 s), `live-cut-1788693632415837000` (2.32 s). The bound was three attempts, then stop. Because none failed, no actual failing byte values or failure-time published snapshot were obtained. These results do not resolve or replace the earlier upstream failure.
 
 Ordering review: SDK edits (`lifecycle.rs::edit_workspace_file_ranges`) and Commit (`commit_workspace_session_with_status`) hold the same worker lifecycle mutex. The test joins concurrent Commit and awaits both successful SDK edits before creating the external go marker; the clients modify only offsets 128/129 while awaiting it. Owner EDIT_BEGIN freezes and holds the operation cut; EDIT_END applies the prepared edit, releases the cut, then awaits public upstream invalidation. Thus no simple missing host controller lock or premature go marker was found. The demonstrated invariant failure remains that acknowledged SDK edit plus completed concurrent Commit did not satisfy the mapped client's expected A/B/S contents. Whether the failed run involved stale mapping or a persisted lost update remains unresolved; no unsupported repair is claimed and no further campaign was started.
+
+
+### SDK cache writeback correction
+
+The user correctly challenged stopping at the unresolved failure. A temporary 10 ms delay between existing kernel invalidation and completion of the operation cut widened the refault window. Owner traces in `live-cut-1788693963864072000` show the SDK apply for node 2 immediately followed by a 4096-byte WRITE containing byte 777 = 0, then the same ordering for node 3. The application had not explicitly written that offset. The old dirty cached page was therefore allowed to overwrite the SDK replacement after its application. This identifies a concrete LayerFS synchronization defect; it is not an upstream impossibility claim.
+
+The diagnostic also exposed an independent test bug: `wait_live_marker` searched substrings, so `after SDK boundary` in an assertion diagnostic falsely satisfied the `after` marker. Marker matching now requires an exact output line. The temporary reproduction failed at the later active-command assertion because of that diagnostic-marker ambiguity; the owner WRITE ordering and bytes are independently present in its daemon log.
+
+The correction retains the immutable edited file and records affected splice ranges during the existing bounded transaction. Before existing post-edit invalidation, public upstream `Notifier::store` updates those cached bytes. Equal-length replacements leave unrelated bytes untouched; a length-changing splice marks the shifted suffix. Ranges are sorted and overlapping data is sent once, streamed through the existing read implementation in at most 1 MiB buffers. A 2 MiB live buffer reservation is acquired before applying the edit, and cache update/read/invalidation errors mark the owner failed instead of acknowledging success. No vendor, retrieve callback, kernel patch, custom protocol, or background mechanism is added.
+
+With the correction and the same widened race window, `live-cut-1788694261492203000` PASS (2.58 s, cleanup PASS). The temporary delay and WRITE/SDK tracing were then removed. Final implementation source `af3a4790d8d11007f1df8bee2e0f29b1747e75044a3b40eaace02b2d0f9366e6`, product `22e4ad3e355eabef447b2aabf568990e114a95a33d76707d5a876c98daebf60d`, image `layerfs-bench-infra:af3a4790d8d11007`:
+
+- `live-cut-1788694499557925000`: ordinary pwrite plus live mappings, SDK edits/concurrent Commit, peer Workspace lifecycle PASS, 2.31 s.
+- `live-cut-1788694512237047000`: live mappings without ordinary pwrite, same SDK/Commit/peer checks PASS, 2.32 s.
+- Both clean up successfully; exact-name Docker inventory found no retained live-cut containers.
+- Direct and TCP host-backing/checkpoint component tests PASS (two tests, 0.22 s; existing dead native-helper warnings).
+- `cache-store-linux-check-1788694550757377000`: Linux native host-fuse compilation, five daemon tests, owned reply test and two live-runtime tests PASS.
+
+These are focused correction checks, not completion of every remaining #49 transfer/resource/recovery requirement or final create/delete qualification. No new performance campaign was run. The final commit differs from the tested source only by this documentation update.

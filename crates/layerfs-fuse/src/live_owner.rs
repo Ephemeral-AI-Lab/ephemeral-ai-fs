@@ -70,6 +70,7 @@ struct PendingSplices {
     count: usize,
     received: usize,
     prepared: Option<layerfs_workspace_core::file_edit::PreparedFileEdit>,
+    cache_ranges: Vec<std::ops::Range<u64>>,
     cut: crate::live_runtime::OperationCut,
     _charge: crate::live_runtime::LiveReservation,
 }
@@ -424,13 +425,23 @@ impl LiveOwner {
         if size > 1024 * 1024 {
             return Err(PortError::Invalid);
         }
-        let plan = {
+        let file = {
             let state = self.state()?;
             let Data::File(file) = &state.nodes.get(&node).ok_or(PortError::NotFound)?.data else {
                 return Err(PortError::Invalid);
             };
-            ReadPlan::for_file(file, offset, size).map_err(core)?
+            file.clone()
         };
+        self.read_file(&file, offset, size).await
+    }
+
+    async fn read_file(
+        &self,
+        file: &layerfs_workspace_core::FileData,
+        offset: u64,
+        size: usize,
+    ) -> PortResult<Vec<u8>> {
+        let plan = ReadPlan::for_file(file, offset, size).map_err(core)?;
         let pieces = match plan.source {
             ReadSource::Base(root, start, end) => vec![Piece::Base {
                 root,
@@ -1546,6 +1557,7 @@ impl LiveOwner {
                     count,
                     received: 0,
                     prepared: None,
+                    cache_ranges: Vec::new(),
                     cut,
                     _charge: charge,
                 });
@@ -1577,6 +1589,16 @@ impl LiveOwner {
                     _ => return Err(PortError::Invalid),
                 };
                 input.done().map_err(io)?;
+                let replacement_len = piece.as_ref().map_or(0, Piece::len);
+                let cache_end = if replacement_len == delete {
+                    start
+                        .checked_add(replacement_len)
+                        .ok_or(PortError::Invalid)?
+                } else {
+                    // An insertion/deletion changes every following byte's position.
+                    u64::MAX
+                };
+                pending.cache_ranges.push(start..cache_end);
                 let state = self.state()?;
                 if let Some(prepared) = pending.prepared.as_mut() {
                     state
@@ -1604,27 +1626,73 @@ impl LiveOwner {
                     return Err(PortError::Invalid);
                 }
                 let node = pending.node;
+                #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
+                let _cache_charge = self
+                    .0
+                    .scheduler
+                    .reserve_live(2 * 1024 * 1024)
+                    .map_err(|_| PortError::NoSpace)?;
                 self.state()?
                     .apply_edit(pending.prepared.ok_or(PortError::Invalid)?)
                     .map_err(core)?;
+                let file = match &self
+                    .state()?
+                    .nodes
+                    .get(&node)
+                    .ok_or(PortError::NotFound)?
+                    .data
+                {
+                    Data::File(file) => file.clone(),
+                    _ => return Err(PortError::Invalid),
+                };
                 // Queued post-flush faults must read the installed view before
                 // notification can wait for their locked kernel folios.
                 drop(pending.cut);
                 #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
                 {
-                    let owner = self.clone();
-                    if let Err(error) = self
-                        .0
-                        .scheduler
-                        .kernel(move || owner.invalidate(node).map_err(|_| wire::invalid()))
-                        .await
-                    {
+                    let updated = async {
+                        let notifier = self.0.notifier.get().ok_or(PortError::Io)?.clone();
+                        let mut ranges = pending.cache_ranges;
+                        ranges.sort_unstable_by_key(|range| range.start);
+                        let mut end = 0;
+                        for range in ranges {
+                            let mut offset = range.start.max(end);
+                            while offset < range.end {
+                                let size = (range.end - offset).min(1024 * 1024) as usize;
+                                let bytes = self.read_file(&file, offset, size).await?;
+                                if bytes.is_empty() {
+                                    break;
+                                }
+                                let length = bytes.len() as u64;
+                                let notifier = notifier.clone();
+                                // Invalidation can launder a refaulted dirty page. Update
+                                // the edited bytes first so that writeback preserves them.
+                                self.0
+                                    .scheduler
+                                    .kernel(move || {
+                                        notifier.store(fuser::INodeNo(node.0), offset, &bytes)
+                                    })
+                                    .await
+                                    .map_err(io)?;
+                                offset += length;
+                            }
+                            end = end.max(offset);
+                        }
+                        let owner = self.clone();
+                        self.0
+                            .scheduler
+                            .kernel(move || owner.invalidate(node).map_err(|_| wire::invalid()))
+                            .await
+                            .map_err(io)
+                    }
+                    .await;
+                    if let Err(error) = updated {
                         self.0.failed.store(true, Ordering::Release);
-                        return Err(io(error));
+                        return Err(error);
                     }
                 }
                 #[cfg(not(all(target_os = "linux", any(feature = "host", feature = "proxy"))))]
-                let _ = node;
+                let _ = (node, file);
             }
             wire::WRITE_METRICS => {
                 input.done().map_err(io)?;

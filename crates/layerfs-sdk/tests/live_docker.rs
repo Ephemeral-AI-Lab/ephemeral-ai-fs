@@ -744,7 +744,10 @@ fn wait_live_marker(client: &Client, id: ExecutionId, marker: &str) -> AnyResult
             .into_iter()
             .flat_map(|chunk| chunk.bytes)
             .collect();
-        if String::from_utf8_lossy(&bytes).contains(marker) {
+        if String::from_utf8_lossy(&bytes)
+            .lines()
+            .any(|line| line == marker)
+        {
             return Ok(());
         }
         if page.exited || Instant::now() >= deadline {
