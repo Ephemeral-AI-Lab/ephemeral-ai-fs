@@ -491,6 +491,28 @@ def _validate_sample_inspection(
             raise RuntimeFailure("sample loopback environment mismatch")
 
 
+def ensure_container_dir(name: str, path: str, deadline: Deadline) -> None:
+    """Create one absolute directory inside a running sample without a host mount."""
+    _name(name)
+    destination = Path(path)
+    if not destination.is_absolute() or ".." in destination.parts:
+        raise ValueError("container directory must be absolute without ..")
+    run(["docker", "exec", name, "mkdir", "-p", path], deadline=deadline, output_limit=4096)
+
+
+def install_tree(name: str, source: Path, destination: str, deadline: Deadline) -> None:
+    """Copy a host directory into a running container by docker cp, never a bind mount."""
+    source = Path(source)
+    if source.is_symlink() or not source.is_dir():
+        raise RuntimeFailure("install_tree requires a real host directory")
+    ensure_container_dir(name, destination, deadline)
+    run(
+        ["docker", "cp", f"{source}/.", f"{name}:{destination}/"],
+        deadline=deadline,
+        output_limit=4096,
+    )
+
+
 def file_sha256(path):
     with Path(path).open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()

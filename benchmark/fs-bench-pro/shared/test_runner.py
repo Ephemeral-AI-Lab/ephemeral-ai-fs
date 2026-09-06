@@ -154,19 +154,50 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual((args.topology, args.cpus, args.memory_mib, args.timeout),
                              ("host-store", 2, 2048, 130))
             self.assertIsNone(args.perf_samples)
-        self.assertEqual(len(runner.HOST_FAMILIES), 12)
+        self.assertEqual(len(runner.HOST_FAMILIES), 17)
         self.assertIn("tiny_file_churn", runner.HOST_FAMILIES)
+        for family in ("workspace_change_locality", "dedup_branch_history", "git_tool_workflow",
+                       "mixed_load_bearing", "workspace_reliability"):
+            self.assertIn(family, runner.HOST_FAMILIES)
         row = {"identities": {"timer": "product_call_sum_ns"}, "command_wall_ns": 999,
                "records": [{"complete_ns": 888}, {"product_call_sum_ns": 123}]}
         self.assertEqual(runner._timer(row), ("product_call_sum_ns", 123))
         row["records"] = [{"complete_ns": 888}]
         self.assertEqual(runner._timer(row), ("product_call_sum_ns", None))
 
+    def test_timer_reconstructs_pure_call_sum_from_phase_records(self):
+        row = {"identities": {"timer": "pure_call_sum_ns"},
+               "records": [
+                   {"kind": "phase", "phase": "create", "elapsed_ns": 10},
+                   {"kind": "phase", "phase": "exec", "elapsed_ns": 20},
+                   {"kind": "phase", "phase": "commit", "elapsed_ns": 30},
+               ]}
+        self.assertEqual(runner._timer(row), ("pure_call_sum_ns", 60))
+
     def test_execution_allowance_does_not_relax_product_target(self):
         self.assertEqual(runner.PRODUCT_TARGET_NS, 15_000_000_000)
         self.assertEqual(runner.performance_target_status(15_000_000_000), "PASS")
         self.assertEqual(runner.performance_target_status(15_000_000_001), "TARGET_MISS")
         self.assertEqual(runner.performance_target_status(119_000_000_000), "TARGET_MISS")
+
+    def test_collection_mode_keeps_historical_target_classifier(self):
+        args = runner.build_parser().parse_args([
+            "--family", "namespace_mutation", "--collection-mode",
+            "--product-timeout", "300", "--timeout", "310",
+        ])
+        self.assertTrue(args.collection_mode)
+        self.assertEqual(args.product_timeout, 300)
+        self.assertEqual(args.timeout, 310)
+        self.assertEqual(runner.performance_target_status(16_000_000_000), "TARGET_MISS")
+        self.assertIn("reporting-only", runner.HISTORICAL_PRODUCT_TARGET_SCOPE)
+
+    def test_collection_timeouts_must_still_be_ordered(self):
+        with self.assertRaisesRegex(ValueError, "resource/budget"):
+            self.resolve(["--collection-mode", "--product-timeout", "300", "--timeout", "300"], {})
+        _, selection = self.resolve(
+            ["--collection-mode", "--product-timeout", "300", "--timeout", "310"], {}
+        )
+        self.assertEqual(selection["product_execution_allowance_seconds"], 300)
 
     def test_sdk_repetitions_share_input_identity(self):
         _, one = self.resolve(["--repetition", "1"], {"route": "sdk", "inherited": True, "seed_max": 5})

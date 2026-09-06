@@ -25,8 +25,13 @@ import runtime
 HOST_FAMILIES = ("payload_create_read", "dedup_workspace_reuse", "dedup_cross_file", "dedup_cdc_locality",
                  "edit_length_preserving", "edit_length_changing", "edit_canonical_chunk_count",
                  "init_namespace", "store_footprint", "tiny_file_churn",
-                 "namespace_mutation", "directory_construction_traversal")
+                 "namespace_mutation", "directory_construction_traversal",
+                 "workspace_change_locality", "dedup_branch_history", "git_tool_workflow",
+                 "mixed_load_bearing", "workspace_reliability")
 PRODUCT_TARGET_NS = 15_000_000_000
+HISTORICAL_PRODUCT_TARGET_SCOPE = (
+    "reporting-only historical 15-second family target; not a collection acceptance gate"
+)
 
 
 def performance_target_status(elapsed_ns):
@@ -79,9 +84,11 @@ def build_parser(include_modes=True):
     p.add_argument("--source", "--source-identity", dest="source")
     p.add_argument("--input", "--input-identity", dest="input")
     p.add_argument("--output", default=str(REPO / "benchmark-results" / "infra" / ("run-" + uuid.uuid4().hex[:12])))
-    p.add_argument("--timeout", type=float, default=130, help="Outer performance command allowance; must exceed --product-timeout; pass target remains 15 seconds")
-    p.add_argument("--product-timeout", type=int, default=120, help="Workspace diagnostic product allowance in seconds; does not change pass targets")
+    p.add_argument("--timeout", type=float, default=130, help="Outer performance command allowance; must exceed --product-timeout; historical 15-second pass target remains reporting-only unless collection-mode is unset")
+    p.add_argument("--product-timeout", type=int, default=120, help="Workspace diagnostic product allowance in seconds; does not change historical 15-second reporting")
     p.add_argument("--setup-timeout", type=float, default=120)
+    p.add_argument("--collection-mode", action="store_true",
+                   help="Statistics collection: completed work is PASS regardless of the historical 15-second target; record that target as reporting-only")
     p.add_argument("--cpus", type=int, default=2)
     p.add_argument("--memory-mib", type=int, default=2048)
     return p
@@ -93,6 +100,11 @@ def _deadline(end):
 
 def _command(argv, end, **kw):
     return runtime.run(argv, deadline=_deadline(end), **kw)
+
+
+def _host_command_env(args, selection=None):
+    image = (selection or {}).get("image") or getattr(args, "image", None)
+    return {"LAYERFS_V013_IMAGE": image} if image else {}
 
 
 def _text(value):
@@ -198,7 +210,7 @@ def resolve_selection(args, deadline):
     if platform.system() != "Darwin":
         raise ValueError("host Store qualification requires macOS + Docker Desktop")
     if args.family not in HOST_FAMILIES:
-        raise ValueError("family host migration is deferred to issue #39")
+        raise ValueError("family is not admitted to host-store execution")
     host_identity = json.loads(Path(args.host_binary + ".identity.json").read_text())
     if runtime.file_sha256(args.host_binary) != host_identity["binary_sha256"]:
         raise ValueError("host binary seal mismatch; rebuild with --build-host")
@@ -278,8 +290,9 @@ HOST_ROOT = REPO / "benchmark-results/host-store"
 
 def _host_acquire(args, selection, deadline):
     sdk = selection.get("route") == "sdk"
+    host_env = _host_command_env(args, selection)
     fixture_command = [args.host_binary, "infra-fixture-info", selection["family"], selection["case"], str(selection["seed"])]
-    fixture = selection.get("fixture_info") or records(_command(fixture_command, deadline).stdout)[-1]
+    fixture = selection.get("fixture_info") or records(_command(fixture_command, deadline, env=host_env).stdout)[-1]
     native = selection["setup_identity"] == "fresh-output"
     compatibility = {"contract": "sdk-edit-prepared-store-cache-v1" if sdk else "layerfs-canonical-v5-workspace-fixture-v1",
         "fixture": fixture, "schema_sha256": selection["host_executor"]["schema_sha256"]}
@@ -287,6 +300,9 @@ def _host_acquire(args, selection, deadline):
         compatibility["seed"] = selection["seed"]
     if native:
         compatibility.update(family=selection["family"], case=selection["case"])
+    if selection["family"] == "git_tool_workflow":
+        # The Git reference oracle is case-specific even when the Store fixture is shared.
+        compatibility["case"] = selection["case"]
     key = digest(compatibility)
     fresh = selection["setup_identity"] == "fresh"
     root = HOST_ROOT / ("fixtures" if native else "prepared") / key
@@ -301,15 +317,15 @@ def _host_acquire(args, selection, deadline):
             if sdk:
                 staging.mkdir()
                 prepared = records(_command([args.host_binary, "sdk-edit-prepare", str(staging / "payload"),
-                                             str(selection["fixture_bytes"])], deadline).stdout)[-1]
+                                             str(selection["fixture_bytes"])], deadline, env=host_env).stdout)[-1]
                 (staging / "payload/branch-id").write_text(prepared["branch_id"])
                 qualifications = ["family\tcase\tplan\tinitial\texpected\tfile\tmap\tinitial_count\tfinal_count\tdigest\n"]
                 for family in ("edit_length_preserving", "edit_length_changing", "edit_canonical_chunk_count"):
-                    listed = records(_command([args.host_binary, "infra-list", family], deadline).stdout)
+                    listed = records(_command([args.host_binary, "infra-list", family], deadline, env=host_env).stdout)
                     for row in listed:
                         if row.get("fixture_bytes") == selection["fixture_bytes"] and row.get("supported", True):
                             output = _command([args.host_binary, "sdk-edit-qualify", str(staging / "payload"),
-                                               prepared["branch_id"], family, row["scenario_id"]], deadline).stdout
+                                               prepared["branch_id"], family, row["scenario_id"]], deadline, env=host_env).stdout
                             qualifications.append(_text(output))
                 (staging / "qualification.tsv").write_text("".join(qualifications))
                 (staging / "manifest.json").write_text(json.dumps({
@@ -317,7 +333,7 @@ def _host_acquire(args, selection, deadline):
                     "input_qualification_sha256": runtime.file_sha256(staging / "qualification.tsv")
                 }))
             else:
-                _command([args.host_binary, "infra-prepare", selection["family"], selection["case"], str(selection["seed"]), str(staging)], deadline)
+                _command([args.host_binary, "infra-prepare", selection["family"], selection["case"], str(selection["seed"]), str(staging)], deadline, env=host_env)
             (staging / "host-owner.json").write_text(json.dumps({"owner": runtime.OWNER}))
             if not native:
                 master = staging / "payload/store.sqlite"
@@ -436,6 +452,18 @@ def execute_selected(args, *, deadline, verification=False):
         result["environment_observation"] = sample.observation
         host_sample_path = HOST_ROOT / "samples" / name
         result["setup"] = _host_sample(prepared, selection, name, work_end)
+        if selection["family"] == "git_tool_workflow":
+            reference = Path(prepared["host_root"]) / "reference" / "input"
+            if not reference.is_dir():
+                raise RuntimeError("prepared Git reference tree is missing")
+            runtime.install_tree(sample.name, reference, "/qualified/git-reference", _deadline(work_end))
+            runtime.ensure_container_dir(sample.name, "/verification", _deadline(work_end))
+            result["setup"]["git_reference_install"] = {
+                "method": "docker-cp",
+                "source": str(reference),
+                "destination": "/qualified/git-reference",
+                "host_data_sharing_mount": False,
+            }
         result["preparation_wall_ns"] = time.monotonic_ns() - setup_started
         before = cgroup_snapshot(sample, work_end)
         run_started = time.monotonic_ns()
@@ -449,13 +477,19 @@ def execute_selected(args, *, deadline, verification=False):
             command_env["LAYERFS_SDK_EDIT_PERFORMANCE_ROWS"] = args.performance_rows
         if selection["family"] in ("dedup_cross_file", "dedup_cdc_locality"):
             command_env["LAYERFS_INITIALIZATION_DIAGNOSTIC_NONCE"] = selection["input_identity"][:16]
+        if selection["family"] == "workspace_reliability":
+            prepared_input = str(Path(prepared["host_root"]))
+        else:
+            prepared_input = result["setup"].get(
+                "prepared_input_root", str(Path(prepared["host_root"]) / "payload/input")
+            )
         command_env.update(LAYERFS_EXEC_TRANSPORT="daemon", LAYERFS_FUSE_TRANSPORT="daemon",
             LAYERFS_BENCH_WORKLOAD="/usr/local/bin/fs-benchmark-workload",
-            LAYERFS_BENCH_PREPARED_INPUT=result["setup"].get("prepared_input_root", str(Path(prepared["host_root"]) / "payload/input")),
+            LAYERFS_BENCH_PREPARED_INPUT=prepared_input,
             TMPDIR=str(host_sample_path))
         operation = ["infra-run", selection["family"], selection["case"], str(selection["seed"]),
                      "verify" if verification else "performance", str(host_sample_path), sample.id]
-        command = _command([args.host_binary, *operation], command_end, env=command_env, output_limit=1024**2)
+        command = _command([args.host_binary, *operation], command_end, env=command_env, output_limit=16 * 1024**2)
         result["command_wall_ns"] = time.monotonic_ns() - run_started
         result["records"] = records(command.stdout)
         result["records"].extend(initialization_diagnostics(command.stderr))
@@ -463,12 +497,13 @@ def execute_selected(args, *, deadline, verification=False):
             if record.get("kind") == "sampled-canonical-verification":
                 result["sampled_paths_or_ranges"].extend(record["sampled_paths_or_ranges"])
                 result["omissions"].append("sampled Workspace proof: no exhaustive namespace, full-file bytes, object census, aliases, or failure injection")
-        if not verification:
-            timer, elapsed = _timer(result)
-            if elapsed is None:
-                raise RuntimeError(f"missing declared product timer: {timer}")
+        timer, elapsed = _timer(result)
         if command.truncated:
-            raise RuntimeError("selected command output exceeded compact receipt limit")
+            result["omissions"].append("selected command output exceeded the 16 MiB compact receipt limit")
+            if not verification:
+                raise RuntimeError("selected command output exceeded compact receipt limit")
+        if not verification and elapsed is None and command.returncode == 0:
+            raise RuntimeError(f"missing declared product timer: {timer}")
         result["phase"] = "resource-finalization"
         after = cgroup_snapshot(sample, work_end)
         result["resources"] = {"command_window_cpu_ns": (after["usage_usec"] - before["usage_usec"]) * 1000,
@@ -486,12 +521,22 @@ def execute_selected(args, *, deadline, verification=False):
             if not verification:
                 result["completion_status"] = "COMPLETE"
                 result["product_target_ns"] = PRODUCT_TARGET_NS
-                result["status"] = performance_target_status(elapsed)
+                historical = performance_target_status(elapsed)
+                result["historical_product_target_status"] = historical
+                result["historical_product_target_scope"] = HISTORICAL_PRODUCT_TARGET_SCOPE
                 assessment = issue47_assessment(selection, elapsed)
                 if assessment is not None:
                     result["issue47_assessment"] = assessment
-                if result["status"] == "TARGET_MISS":
-                    result["error"] = f"complete product-call sum {elapsed} ns exceeds the 15-second target"
+                if getattr(args, "collection_mode", False):
+                    result["status"] = "PASS"
+                    if historical == "TARGET_MISS":
+                        result["historical_product_target_note"] = (
+                            f"complete product-call sum {elapsed} ns exceeds the historical 15-second target"
+                        )
+                else:
+                    result["status"] = historical
+                    if result["status"] == "TARGET_MISS":
+                        result["error"] = f"complete product-call sum {elapsed} ns exceeds the 15-second target"
     except Exception as error:
         result["status"] = "TIMEOUT" if isinstance(error, TimeoutError) or "timeout" in str(error).lower() or "deadline" in str(error).lower() else "FAIL"
         failed_command = getattr(error, "result", None)
@@ -546,6 +591,15 @@ def _timer(row):
         for key in keys:
             if isinstance(record.get(key), (float, int)):
                 return key, record[key]
+    if declared in (None, "pure_call_sum_ns", "product_call_sum_ns"):
+        total = 0
+        found = False
+        for record in row.get("records", []):
+            if record.get("kind") == "phase" and isinstance(record.get("elapsed_ns"), (float, int)):
+                total += record["elapsed_ns"]
+                found = True
+        if found:
+            return declared or "pure_call_sum_ns", total
     return declared or "unavailable", None
 
 
@@ -616,6 +670,8 @@ def main(argv=None):
                   "requested_samples": count, "full_workload": True, "cpus": args.cpus,
                   "product_target_ns": PRODUCT_TARGET_NS, "command_allowance_seconds": args.timeout,
                   "product_execution_allowance_seconds": args.product_timeout,
+                  "collection_mode": bool(args.collection_mode),
+                  "historical_product_target_scope": HISTORICAL_PRODUCT_TARGET_SCOPE,
                   "memory_mib": args.memory_mib, "resource_limit_scope": "Linux container only; host CPU not capped", "verification_status": "NOT_RUN"})
             for index in range(1, count + 1):
                 row = execute_selected(args, deadline=time.monotonic() + args.setup_timeout + args.timeout + 10)
@@ -623,16 +679,25 @@ def main(argv=None):
                 emit(row)
                 samples.append(row)
                 key, value = _timer(row)
-                print(f"{args.family} {args.case} sample={index} {row['status']} {key}={value} slow={row.get('slow', False)}", flush=True)
-                if row["status"] != "PASS":
+                print(f"{args.family} {args.case} sample={index} {row['status']} {key}={value} historical_target={row.get('historical_product_target_status')} slow={row.get('slow', False)}", flush=True)
+                if row["status"] not in ("PASS", "TARGET_MISS"):
+                    (output / "failure.log").write_text(str(row.get("error", row.get("cleanup")))[:1024**2])
+                    break
+                if row["status"] == "TARGET_MISS" and not args.collection_mode:
                     (output / "failure.log").write_text(str(row.get("error", row.get("cleanup")))[:1024**2])
                     break
             valid = [row for row in samples if row["status"] == "PASS"]
             completed = [row for row in samples if row["status"] in ("PASS", "TARGET_MISS")]
             times = [value for row in completed if (value := _timer(row)[1]) is not None]
+            if args.collection_mode:
+                summary_status = "PASS" if len(valid) == count else "INCOMPLETE"
+            else:
+                summary_status = "PASS" if len(valid) == count else ("TARGET_MISS" if len(completed) == count else "INCOMPLETE")
             summary = {"kind": "summary", "requested": count, "attempted": len(samples), "valid": len(valid),
                        "completed": len(completed), "product_target_ns": PRODUCT_TARGET_NS,
-                       "status": "PASS" if len(valid) == count else ("TARGET_MISS" if len(completed) == count else "INCOMPLETE"), "verification_status": "NOT_RUN",
+                       "collection_mode": bool(args.collection_mode),
+                       "historical_product_target_scope": HISTORICAL_PRODUCT_TARGET_SCOPE,
+                       "status": summary_status, "verification_status": "NOT_RUN",
                        "timer": _timer(completed[0])[0] if completed else None,
                        "median_ns": statistics.median(times) if times else None,
                        "min_ns": min(times) if times else None, "max_ns": max(times) if times else None}

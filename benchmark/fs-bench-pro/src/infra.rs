@@ -529,10 +529,9 @@ fn run_selected(
                 .env("LAYERFS_V013_VERIFIER_EXCHANGE_HOST", &exchange);
         }
         if family == "git_tool_workflow" {
-            std::fs::create_dir_all("/qualified")?;
-            std::os::unix::fs::symlink(root.join("reference/input"), "/qualified/git-reference")?;
-            std::fs::create_dir_all("/verification")?;
-            command.env("LAYERFS_V013_VERIFIER_EXCHANGE_HOST", "/verification");
+            let exchange = root.join("verification");
+            std::fs::create_dir_all(&exchange)?;
+            command.env("LAYERFS_V013_VERIFIER_EXCHANGE_HOST", &exchange);
         }
         if !command.status()?.success() {
             return Err("selected Workspace operation failed".into());
