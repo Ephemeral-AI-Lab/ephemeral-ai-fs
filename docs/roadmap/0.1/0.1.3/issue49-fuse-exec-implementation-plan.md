@@ -8,6 +8,8 @@ Issue: [#49](https://github.com/Ephemeral-AI-Lab/layerfs/issues/49), under #47/#
 
 **One mutable live owner per mounted Workspace. Reuse the existing file algorithms. Keep host physical backing and canonical publication. Acquire missing immutable state outside state locks; resume the same bounded operation.**
 
+Start from current `main` and its finalized Commit code. **Do not make migration, cherry-picking or integration of the research worktree's Exec patch a prerequisite or a separate handoff task.** Learn from its successful mechanisms, safety checks and failed hypotheses, then implement the shared architecture directly on current code.
+
 The goal is a generic execution core used by ordinary FUSE and native-host callers. The primary optimization/iteration case is `tiny-bulk-create-100-mixed-v3`. It creates 1,000 affected files totaling 100 MiB, including one 50 MiB file, with the existing separate 200-file/1 MiB witness. It is not a 100-file workload. Do not change its bytes, names, metadata normalization, sync obligations or generator to manufacture a gain.
 
 No kernel patch, native-directory mirror, Docker SQLite, host-data mount, application/benchmark/size-selected engine, lease service or automatic mutation replay is introduced. The architecture preserves CAS, CDC, COW, PieceTree, rope/extent construction, aliases, stable handles, finality and exact publication/checkpoint recovery.
@@ -238,7 +240,7 @@ One implementation owner controls shared core/Workspace/Store seams. Independent
 
 | Step | Work and dependency | Exit artifact / create-100 relevance |
 |---|---|---|
-| P0 — freeze | Fetch actual current main; bring latest local plan/guideline into branch; identify retained #48 patch responsibilities and exact mixed-v3 receipt/recipe | Source/caller/deletion ledger. No new benchmark baseline campaign; existing numbers remain producing-source evidence |
+| P0 — freeze | Fetch actual current main; bring latest local plan/guideline into branch; inspect #48 mechanisms, retained evidence and rejected hypotheses as references; freeze the exact mixed-v3 receipt/recipe | Source/caller/deletion ledger. No new benchmark baseline campaign; existing numbers remain producing-source evidence |
 | P1 — minimum portable seam | C1/C2 identities, PieceTree ownership and read/write preparation; native-host facade uses moved bodies first | Concrete before/after signatures, core dependency check, inherited focused range/lifetime checks. Do not extract every Workspace subsystem upfront |
 | P2 — minimal runtime entry | Narrow fuser single-loop/buffer patch, direct owner mount plumbing, capacity ownership needed by the first operation slice | Reused decoder and safe request size/lifetime; exact source-based buffer/thread arithmetic. P2 can be prepared alongside P1 with fixed interfaces |
 | P3 — complete create path | C3 local owner handles cold parent acquisition, mkdir/create/write/read/metadata/release/sync needed by ordinary create; C5 backing + C6 frozen Commit bridge + C7 current SDK observers included | End-to-end create/read/Commit/continue on one owner. This is the first meaningful performance candidate; no per-benchmark dispatch or alternate host authority for unsupported mutations |
@@ -274,6 +276,8 @@ python3 benchmark/fs-bench-pro/shared/runner.py \
 ```
 
 Build commands remain `runner.py --build-host` and `runner.py --build-image`; bind the resulting image/source as documented in QUICKSTART. Default performance watchdog 120 seconds product / 130 seconds outer is a diagnostic allowance, not the pass target. Do not replace create-100 with a tiny smoke case as performance proof, and do not run tier500 or all families routinely.
+
+**Working ambition is now create-100 complete lifecycle around 0.7000–0.8000 s**, with an indicative Exec budget around 0.3000–0.4000 s while preserving current Commit efficiency. These are planning objectives, not measured predictions or separate hard phase gates. The earlier approximately 0.5000 s Exec expectation is a reference checkpoint, not the rewrite's ambition. The research run used an older Commit implementation (0.4718 s versus the finalized reference 0.3587 s), so its 0.9680 s total is not the desired endpoint. Do not combine measurements from different products into a claimed achieved lifecycle. A roughly 0.0500 s difference from the working band should not trigger prolonged minor tuning when the structural result is sound.
 
 **Parent target remains both tier100 create/delete complete lifecycles strictly below 1.0000 s using unrounded measurements.** No new isolated Exec/Commit millisecond gate. A roughly 0.0500 s phase difference is not a reason for prolonged minor tuning, but a strict total MISS remains a MISS. Preserve Commit's existing gain; a faster Exec offset by Commit/End is insufficient.
 

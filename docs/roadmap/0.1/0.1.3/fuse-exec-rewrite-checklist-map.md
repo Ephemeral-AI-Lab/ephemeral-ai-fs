@@ -6,14 +6,14 @@ The [implementation plan](issue49-fuse-exec-implementation-plan.md) defines C1â€
 
 The requirement text is reproduced exactly below, with Markdown table escaping. IDs identify each checkbox in checklist order. S references identify specification sections; T references identify the focused acceptance groups in S11. The implementation owner must record source-bound checks and limitations before changing any checklist status. A mapped obligation still fails acceptance if its implementation, compatibility inventory, or required evidence is missing.
 
-Checklist SHA-256 at generation: `d055d4bfb174f6a5f2fb8c73fe1d81a232748290c7af6295e8e8a4605fd5a148`. Regenerate/check this map when requirements change; do not let a stale map imply coverage.
+Checklist SHA-256 at generation: `a1809463f6bf7db3bd3db6179aa1d379885c3c287f78d4a62f0340865e9b7d60`. Regenerate/check this map when requirements change; do not let a stale map imply coverage.
 
 | Requirement | Exact checklist obligation | Spec sections | Required checks | Components | Steps |
 |---|---|---|---|---|---|
 | R1.01 | Platform adapters call one shared live-Workspace operation core; they do not implement separate mutation engines. | S1, S3, S10 | T2, T7 | C1, C3, C7 | P1, P3, P5 |
 | R1.02 | Reuse existing PieceTree, COW, rope/extent, CDC, CAS, deduplication and checked persistence mechanisms. | S1, S3, S10 | T2, T7 | C1, C2, C5, C6 | P1, P3 |
 | R1.03 | Preserve #49's applicable shared producer execution and completed-file handling where construction is required; verify actual adopted source rather than assuming issue completion proves integration. | S1, S3, S10 | T2, T7 | C5, C6 | P0, P3 |
-| R1.04 | Incorporate applicable #48 improvements before replacing equivalent behavior; preserve source/patch ownership and distinguish retained from rejected experiments. | S1, S3, S10 | T2, T7 | C3, C4, C7 | P0, P3 |
+| R1.04 | Learn from applicable #48 mechanisms and safety checks, distinguishing retained from rejected experiments; implement on current main without requiring migration of the research Exec patch, and preserve separately owned work. | S1, S3, S10 | T2, T7 | C3, C4, C7 | P0, P3 |
 | R1.05 | Keep mounting, request/reply translation, permission mapping, cache notifications and platform capabilities in the adapters. | S1, S3, S10 | T2, T7 | C3, C4 | P2, P3 |
 | R1.06 | No optimization engine is selected by benchmark/application name, file-size bucket or deletion density. Differences arising from real operation semantics remain explicit. | S1, S3, S10 | T2, T7 | C1, C2, C3, C4, C5, C6, C7, C8 | P0, P1, P3, P5 |
 | R1.07 | Remove superseded implementations only after transferring necessary responsibilities and all callers; no permanent old/new engine facade. | S1, S3, S10 | T2, T7 | C1, C2, C3, C4, C5, C6, C7, C8 | P0, P1, P3, P5 |

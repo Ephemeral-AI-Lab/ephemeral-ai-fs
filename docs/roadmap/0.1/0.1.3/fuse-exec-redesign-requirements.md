@@ -34,7 +34,7 @@ The portable principle is to execute ordinary operations beside the application'
 - [ ] Platform adapters call one shared live-Workspace operation core; they do not implement separate mutation engines.
 - [ ] Reuse existing PieceTree, COW, rope/extent, CDC, CAS, deduplication and checked persistence mechanisms.
 - [ ] Preserve #49's applicable shared producer execution and completed-file handling where construction is required; verify actual adopted source rather than assuming issue completion proves integration.
-- [ ] Incorporate applicable #48 improvements before replacing equivalent behavior; preserve source/patch ownership and distinguish retained from rejected experiments.
+- [ ] Learn from applicable #48 mechanisms and safety checks, distinguishing retained from rejected experiments; implement on current main without requiring migration of the research Exec patch, and preserve separately owned work.
 - [ ] Keep mounting, request/reply translation, permission mapping, cache notifications and platform capabilities in the adapters.
 - [ ] No optimization engine is selected by benchmark/application name, file-size bucket or deletion density. Differences arising from real operation semantics remain explicit.
 - [ ] Remove superseded implementations only after transferring necessary responsibilities and all callers; no permanent old/new engine facade.

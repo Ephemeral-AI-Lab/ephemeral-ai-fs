@@ -75,7 +75,7 @@ The retained Exec research task is `01a072c8-2e80-7982-966b-df26da9fdeb5`, workt
 | No positive LOOKUP entry had an expired advertised TTL in the v3 diagnostic | Do not begin with a TTL increase; zero expiry does not identify every kernel lookup cause |
 | Completion drains below 1 ms in retained v3 samples | No evidence of a large completion-drain backlog |
 
-The research implementation remains a dirty source/evidence checkpoint based on `8cbbb425b`; do not merge its entire worktree over the integration branch. Freeze its actual retained product patch, exclude rejected candidates, and reconcile only selected responsibilities with the actual adopted #49 core before comparisons. Read its `research/issue48-exec/real-fuse/{mixed-v3-baseline,mixed-v3-next-investigation,residual-findings-20260906}.md` with their stated evidence limits. Earlier proposal documents are alternatives, not measurements.
+The research implementation remains a dirty source/evidence checkpoint based on `8cbbb425b`; do not merge its entire worktree over the integration branch. Use its retained mechanisms and rejected experiments as evidence. The user does not request migration/cherry-picking of the research Exec patch; do not create that as a prerequisite. Implement the shared rewrite on current main while preserving equivalent correctness/lifetime responsibilities. Read its `research/issue48-exec/real-fuse/{mixed-v3-baseline,mixed-v3-next-investigation,residual-findings-20260906}.md` with their stated evidence limits. Earlier proposal documents are alternatives, not measurements.
 
 ## S3. Components and reuse boundary
 
@@ -232,7 +232,7 @@ Normal unmount closes admission and applies the declared drain/Busy timeout poli
 
 The [implementation plan](issue49-fuse-exec-implementation-plan.md) supplies concrete C1–C8 component transfers and P0–P6 execution order. Start with the minimum portable ownership/acquisition seam needed by the create-100 vertical slice, rather than extracting every subsystem before demonstrating useful behavior.
 
-Freeze an integrated source combining reviewed retained #48 changes with actual #49 commits. Current main/integration and research source identities differ; preserve both receipts and port responsibilities, not full stale files. A single owner edits core/Workspace/Store seams; the Exec owner controls its current FUSE changes until an explicit handoff.
+Start from current main with the finalized Commit implementation. Research #48 source is a reference for mechanisms/evidence, not a patch-migration prerequisite. Preserve source identities and implement the new shared path directly; do not overwrite current files from the research worktree. A single owner controls core/Workspace/Store seams and preserves separately owned work.
 
 | Area | Work |
 |---|---|
@@ -261,13 +261,13 @@ Test identifiers below are referenced by the checklist map. Each is a focused gr
 
 Deferred runtime sequence (do not launch or schedule for this review; physical 100-workspace exercise is not a prerequisite for current lower-volume work):
 
-1. Integrate retained proven semantics and establish one source-bound baseline using unchanged mixed-v3 tier100 create/delete. Existing branch timings are context until the integrated product is identified; do not add favorable phases from different products.
+1. Start from current main and reuse its source-bound baseline where applicable, using unchanged mixed-v3 tier100 definitions. Learn from retained research mechanisms without requiring Exec patch migration. Existing research timings are separate-source context; do not add favorable phases from different products.
 2. Implement a vertical slice of known-state metadata/binding operations in the shared owner, with bounded backing/fact acknowledgment and SDK observation. Keep kernel flags/TTL unchanged. Run its semantic tests, then one selected real-FUSE sample. Hypothesis: callback decision/host dependency time decreases without moving equal work to Commit/End or worsening load behavior.
 3. If roundtrips drop but elapsed does not, inspect request receipt -> core -> reply -> application resumption. Do not expand transport machinery to explain unattributed time. Replan the limiting layer rather than promise a rewrite gain.
 4. Transfer the remaining supported operations through the same core; include one two-workspace stall test and bounded saturation test early. Add broader concurrency/platform checks only when the implemented surface requires them.
 5. Retire old execution paths after integrated semantic coverage; collect final selected evidence/proofs under the existing workflow. Stop unnecessary tuning once the applicable accepted outcome is satisfied; #47 complete-lifecycle obligations are separate from an Exec-phase milestone.
 
-No speedup magnitude is promised. Acceptance requires a measured improvement in the chosen complete workload or a specifically agreed simplification outcome, with no hidden resource/overload tradeoff. Fewer messages, higher CPU consumption or a faster isolated phase are insufficient. Freeze numerical performance targets in the applicable issue before qualification rather than invent them here.
+The preferred create-100 working objective is approximately 0.7000–0.8000 s complete lifecycle, with indicative Exec around 0.3000–0.4000 s and preserved Commit efficiency. This is higher ambition than reproducing the research result, not a measured forecast or a new hard phase threshold. The formal parent lifecycle requirement remains below 1.0000 s per tier100 create/delete case; avoid prolonged tuning for minor differences from the preferred band. No speedup magnitude is promised. Acceptance requires a measured improvement in the chosen complete workload or a specifically agreed simplification outcome, with no hidden resource/overload tradeoff. Fewer messages, higher CPU consumption or a faster isolated phase are insufficient. Freeze numerical performance targets in the applicable issue before qualification rather than invent them here.
 
 All builds/tests/samples use the shared host measurement lock; preserve other task artifacts. Iterate one substantive change and one selected performance sample. Independent sampled proofs remain final-stage only, 45 seconds work / 59 seconds hard end-to-end. Performance diagnostic allowances retain their separately approved values; a longer watchdog is not a looser pass threshold. Each focused overload/failure check is deadline-bounded and reaps its own workers. Preserve rejected hypotheses and do not search for favorable repeats.
 
