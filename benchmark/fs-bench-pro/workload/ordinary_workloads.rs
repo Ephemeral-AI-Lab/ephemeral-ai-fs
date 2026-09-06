@@ -41,6 +41,7 @@ fn case_shards(case:&Case,seed:u8,n:usize,prefix:&str)->Result<Vec<Entry>> {
 }
 pub(crate) const MIXED_BULK_PROFILE: &str = "tiny-bulk-mixed-v3";
 pub(crate) const MIXED_V4_PROFILE: &str = common::MIXED_V4_PROFILE;
+pub(crate) const MIXED_V4_GIT_PROFILE: &str = common::MIXED_V4_GIT_PROFILE;
 
 pub(crate) fn mixed_bulk(case: &Case) -> bool {
     case.family == "tiny_file_churn" && case.kind.starts_with("tiny-bulk-")
@@ -51,6 +52,10 @@ pub(crate) fn mixed_v4(case: &Case) -> bool {
     matches!(case.tier, 100 | 500) && case.id.ends_with("-mixed-v4")
 }
 
+pub(crate) fn mixed_v4_git(case: &Case) -> bool {
+    mixed_v4(case) && case.kind == "git-tool"
+}
+
 fn mixed_v4_content(case: &Case, seed: u8, shard: usize, file: usize) -> Result<Content> {
     let ordinal = shard * 200 + file;
     let count = common::mixed_v4_file_count(case.tier)?;
@@ -58,10 +63,26 @@ fn mixed_v4_content(case: &Case, seed: u8, shard: usize, file: usize) -> Result<
         return Err("workspace-mixed-v4 ordinal".into());
     }
     let path = shard_path(shard, file);
+    let (profile, len) = if mixed_v4_git(case) {
+        (
+            MIXED_V4_GIT_PROFILE,
+            common::mixed_v4_git_len(case.tier, ordinal)?,
+        )
+    } else {
+        (MIXED_V4_PROFILE, common::mixed_v4_len(case.tier, ordinal)?)
+    };
     Ok(Content::Seed {
-        seed: common::frame_seed(&[MIXED_V4_PROFILE, &seed_label(seed)?, &path], &[ordinal as u64]),
-        len: common::mixed_v4_len(case.tier, ordinal)?,
+        seed: common::frame_seed(&[profile, &seed_label(seed)?, &path], &[ordinal as u64]),
+        len,
     })
+}
+
+fn mixed_v4_namespace_shards(case: &Case) -> usize {
+    match case.tier {
+        100 => 1,
+        500 => 5,
+        _ => 0,
+    }
 }
 
 fn workspace_tree(case: &Case, seed: u8, shards: usize) -> Result<Vec<Entry>> {
@@ -273,17 +294,26 @@ fn mixed_v4_sample(case: &Case, seed: u8) -> Result<common::TreeSample> {
     if !mixed_v4(case) {
         return Err("mixed-v4 sample family".into());
     }
-    let large = common::mixed_v4_large_sizes(case.tier)?;
-    let small = common::mixed_v4_small_count(case.tier)?;
     let count = common::mixed_v4_file_count(case.tier)?;
+    let large = if mixed_v4_git(case) {
+        vec![50 * MIB]
+    } else {
+        common::mixed_v4_large_sizes(case.tier)?
+    };
     let mut selected = BTreeSet::new();
     for ordinal in 0..large.len() {
         selected.insert(ordinal);
     }
-    selected.insert(large.len());
-    selected.insert(large.len() + small - 1);
-    selected.insert(large.len() + small);
-    selected.insert(count - 1);
+    if mixed_v4_git(case) {
+        selected.insert(1);
+        selected.insert(count - 1);
+    } else {
+        let small = common::mixed_v4_small_count(case.tier)?;
+        selected.insert(large.len());
+        selected.insert(large.len() + small - 1);
+        selected.insert(large.len() + small);
+        selected.insert(count - 1);
+    }
     selected.insert(64);
     selected.insert(199);
     let expected = expected(case, seed, 1)?;
@@ -321,6 +351,15 @@ fn mixed_v4_sample(case: &Case, seed: u8) -> Result<common::TreeSample> {
                     .insert(path.clone(), mixed_v4_large_ranges(content.len())?);
             }
             sample.entries.push((*entry).clone());
+        }
+    }
+    if case.kind == "namespace-subtree-relocate-delete" {
+        sample.absent.push("source/tree-b".into());
+        if let Some(moved) = by_path.get("destination/moved-a") {
+            sample.entries.push((*moved).clone());
+        }
+        if let Some(file) = by_path.get("destination/moved-a/s000/f000.dat") {
+            sample.entries.push((*file).clone());
         }
     }
     sample.validate()?;
@@ -398,7 +437,16 @@ pub(crate) fn fixture(case: &Case, seed: u8) -> Result<Vec<Entry>> {
             merge(&mut entries, workspace_tree(case, seed, background_shards(case,500))?)
         }
         "git-tool" => {
-            merge(&mut entries, case_shards(case,seed, if compact(case) {case.tier.min(4)} else {32}, "background")?);
+            if mixed_v4(case) {
+                merge(&mut entries, common::mixed_v4_git_entries(seed, case.tier, "")?);
+                file(
+                    &mut entries,
+                    ".gitignore".into(),
+                    Content::Literal(common::MIXED_V4_GIT_IGNORE.as_bytes().to_vec()),
+                );
+            } else {
+                merge(&mut entries, case_shards(case,seed, if compact(case) {case.tier.min(4)} else {32}, "background")?);
+            }
             dir(&mut entries, "tracked");
             dir(&mut entries, "added");
             for (kind, p, c) in git_targets(seed)?.into_iter().take(if compact(case) {case.tier} else {500}) {
@@ -408,14 +456,18 @@ pub(crate) fn fixture(case: &Case, seed: u8) -> Result<Vec<Entry>> {
             }
         }
         "namespace-subtree-relocate-delete" => {
-            for i in 0..if compact(case) {200} else {100_000} {
-                let path = format!("background/d{:03}/f{i:06}.dat", i / 1000);
-                let data = content(seed, "namespace-mutation", &path, 2500)?;
-                file(&mut entries, path, data);
+            if mixed_v4(case) {
+                merge(&mut entries, common::mixed_v4_entries(seed, case.tier, "")?);
+            } else {
+                for i in 0..if compact(case) {200} else {100_000} {
+                    let path = format!("background/d{:03}/f{i:06}.dat", i / 1000);
+                    let data = content(seed, "namespace-mutation", &path, 2500)?;
+                    file(&mut entries, path, data);
+                }
             }
             dir(&mut entries, "destination");
             for tree in ["a", "b"] {
-                for s in 0..case.tier {
+                for s in 0..if mixed_v4(case) { mixed_v4_namespace_shards(case) } else { case.tier } {
                     for j in 0..namespace_files_per_shard(case) {
                         let path = format!("source/tree-{tree}/s{s:03}/f{j:03}.dat");
                         let data = content(seed, "namespace-mutation", &path, 1024)?;
@@ -762,7 +814,7 @@ pub(crate) fn check_cases(rows: &[Case], expected: usize) -> Result<()> {
             || row.id.ends_with("-mixed-v3") != mixed_bulk(row)
             || row.id.ends_with("-mixed-v4") != mixed_v4(row)
             || (row.family == "tiny_file_churn" && row.kind.starts_with("tiny-bulk-") && row.tier >= 100 && !mixed_bulk(row))
-            || (matches!(row.family, "workspace_change_locality" | "directory_construction_traversal")
+            || (matches!(row.family, "workspace_change_locality" | "directory_construction_traversal" | "namespace_mutation" | "git_tool_workflow")
                 && row.tier >= 100
                 && !mixed_v4(row))
             || !identity.ends_with(&row.tier.to_string())
@@ -1676,12 +1728,20 @@ pub(crate) fn prepare_git_reference(root: &Path, case: &Case, seed: u8) -> Resul
     let repo = root.join("repository");
     common::create_fixture(&repo, &fixture(case, seed)?)?;
     let mut receipt = prepare_git(&repo, seed)?;
-    let mut allocation_bound = 34 * MIB + 2500 + MIB;
+    let mut allocation_bound = if mixed_v4(case) {
+        common::MIXED_V4_GIT_WORKING_TREE_CAP
+    } else {
+        34 * MIB
+    } + 2500
+        + MIB;
     for entries in [fixture(case, seed)?, expected(case, seed, 1)?] {
         let mut tree_bytes: BTreeMap<String, u64> = BTreeMap::new();
         let mut index_bytes = 32;
         for entry in entries {
             let path = Path::new(&entry.path);
+            if mixed_v4(case) && entry.path == common::MIXED_V4_GIT_BLOB_PATH {
+                continue;
+            }
             if entry.path != "." {
                 let parent = path
                     .parent()
@@ -2088,7 +2148,7 @@ pub(crate) fn apply(case: &Case, seed: u8, step: usize, verify: bool) -> Result<
                     .insert("move_ns".into(), phase.elapsed().as_nanos());
                 if verify {
                     let mut moved = vec![Entry::directory(".")];
-                    for s in 0..case.tier {
+                    for s in 0..if mixed_v4(case) { mixed_v4_namespace_shards(case) } else { case.tier } {
                         moved.push(Entry::directory(format!("s{s:03}")));
                         for j in 0..namespace_files_per_shard(case) {
                             moved.push(Entry::file(

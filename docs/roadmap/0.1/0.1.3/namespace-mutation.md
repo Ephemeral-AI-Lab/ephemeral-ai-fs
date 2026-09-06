@@ -25,12 +25,14 @@ and `source/tree-b/` contains N shards, each with 200 independently generated
 1 KiB files. Prepare empty `destination/` before timing. Freeze directory names,
 placement, metadata, and whole-tree manifests; N uses nested shard prefixes.
 
-| Scenario ID | N | Files in each affected tree | Initial regular files | Peak logical file bytes |
-| --- | ---: | ---: | ---: | ---: |
-| `namespace-subtree-relocate-delete-1` | 1 | 200 | 100,400 | 250,409,600 |
-| `namespace-subtree-relocate-delete-10` | 10 | 2,000 | 104,000 | 254,096,000 |
-| `namespace-subtree-relocate-delete-100` | 100 | 20,000 | 140,000 | 290,960,000 |
-| `namespace-subtree-relocate-delete-500` | 500 | 100,000 | 300,000 | 454,800,000 |
+| Scenario ID | Background | Files in each affected tree | Initial regular files | Peak logical file bytes |
+| --- | --- | ---: | ---: | ---: |
+| `namespace-subtree-relocate-delete-1-compact-v2` | compact-v2 | compact list | compact bound | compact bound |
+| `namespace-subtree-relocate-delete-10-compact-v2` | compact-v2 | compact list | compact bound | compact bound |
+| `namespace-subtree-relocate-delete-100-mixed-v4` | mixed-v4 2,000 / 100 MiB | 200 | 2,400 | 105,267,200 |
+| `namespace-subtree-relocate-delete-500-mixed-v4` | mixed-v4 5,000 / 500 MiB | 1,000 | 7,000 | 526,336,000 |
+
+Tiers 100/500 use [`workspace-mixed-v4`](workspace-mixed-v4.md) as the whole Workspace background. Affected subtrees `source/tree-a` and `source/tree-b` are hundreds to low thousands of 1 KiB files **inside** that tree, not a second 100k-file parent. Compact 1/10 IDs and file lists are unchanged. Old unversioned 100/500 IDs (100k background + 20k/100k per tree) are historical. See [#62](https://github.com/Ephemeral-AI-Lab/layerfs/issues/62).
 
 The primary unit is **affected subtree shards**, not operation count. These are
 the only four members. All files are at most 2,500 bytes; the initial state is

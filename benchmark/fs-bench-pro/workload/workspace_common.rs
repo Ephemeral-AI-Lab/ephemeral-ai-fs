@@ -677,6 +677,77 @@ pub(crate) fn mixed_v4_entries(seed: u8, tier: usize, prefix: &str) -> Result<Ve
     Ok(entries)
 }
 
+pub(crate) const MIXED_V4_GIT_PROFILE: &str = "workspace-mixed-v4-git";
+pub(crate) const MIXED_V4_GIT_WORKING_TREE_CAP: u64 = 80 * MIB;
+pub(crate) const MIXED_V4_GIT_BLOB_PATH: &str = "wide/s000-f000.dat";
+pub(crate) const MIXED_V4_GIT_IGNORE: &str = "wide/s000-f000.dat\n";
+
+pub(crate) fn mixed_v4_git_len(tier: usize, ordinal: usize) -> Result<u64> {
+    let count = mixed_v4_file_count(tier)?;
+    if ordinal >= count {
+        return Err("workspace-mixed-v4-git ordinal".into());
+    }
+    Ok(if ordinal == 0 { 50 * MIB } else { 4096 })
+}
+
+pub(crate) fn mixed_v4_git_payload_bytes(tier: usize) -> Result<u64> {
+    let count = mixed_v4_file_count(tier)?;
+    Ok(50 * MIB + (count as u64 - 1) * 4096)
+}
+
+pub(crate) fn mixed_v4_git_entries(seed: u8, tier: usize, prefix: &str) -> Result<Vec<Entry>> {
+    let label = seed_label(seed)?;
+    let shards = mixed_v4_shard_count(tier)?;
+    let count = mixed_v4_file_count(tier)?;
+    let prefix = prefix.trim_end_matches('/');
+    if !prefix.is_empty() && prefix != "." {
+        validate_path(prefix)?;
+    }
+    let join = |path: &str| {
+        if prefix.is_empty() || prefix == "." {
+            path.to_owned()
+        } else {
+            format!("{prefix}/{path}")
+        }
+    };
+    let mut entries = vec![Entry::directory(".")];
+    let mut directories = BTreeSet::new();
+    for shard in 0..shards {
+        for file in 0..200 {
+            let ordinal = shard * 200 + file;
+            if ordinal >= count {
+                return Err("workspace-mixed-v4-git shard overflow".into());
+            }
+            let path = join(&workspace_shard_path(shard, file));
+            add_parents(&path, &mut directories);
+            entries.push(Entry::file(
+                path.clone(),
+                Content::Seed {
+                    seed: frame_seed(&[MIXED_V4_GIT_PROFILE, &label, &path], &[ordinal as u64]),
+                    len: mixed_v4_git_len(tier, ordinal)?,
+                },
+            ));
+        }
+    }
+    let dest = join("dest");
+    add_parents(&dest, &mut directories);
+    directories.insert(dest);
+    entries.extend(directories.into_iter().map(Entry::directory));
+    entries.sort_by(|left, right| left.path.cmp(&right.path));
+    let bytes = validate_entries(&entries)?;
+    if bytes != mixed_v4_git_payload_bytes(tier)?
+        || bytes > MIXED_V4_GIT_WORKING_TREE_CAP
+        || entries
+            .iter()
+            .filter(|entry| matches!(entry.kind, EntryKind::File(_)))
+            .count()
+            != count
+    {
+        return Err("workspace-mixed-v4-git fixture totals".into());
+    }
+    Ok(entries)
+}
+
 fn add_parents(path: &str, directories: &mut BTreeSet<String>) {
     let mut parent = Path::new(path).parent();
     while let Some(value) = parent {

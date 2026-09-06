@@ -117,12 +117,14 @@ Git complete-repository cap remains 256 MiB including `.git` ([git-tool-workflow
 For `git-tool-{100,500}-mixed-v4` only, when registered:
 
 - File counts still 2,000 / 5,000.
-- At most one 50 MiB blob, unchanged by the Git edit schedule.
-- Working tree ≤ 80 MiB. Conservative `.git`+tree allocation bound must stay ≤ 256 MiB or the case must not register.
-- Change schedule stays 2,500-byte `tracked/modify-*` / `tracked/delete-*` and `added/add-*` files. Isolation env and `GIT_CONFIG` table unchanged.
+- At most one 50 MiB blob at frozen path `wide/s000-f000.dat`, unchanged by the Git edit schedule.
+- Remaining files are 4 KiB: tier 100 is 60,616,704 mixed-tree bytes; tier 500 is 72,904,704. Plus 2,500-byte `tracked/` / `added/` change-schedule files. Working tree ≤ 80 MiB.
+- Fixture profile `workspace-mixed-v4-git` so the 500 MiB workspace tree cannot cache-hit.
+- `.gitignore` excludes `wide/s000-f000.dat`. Isolation env and `GIT_CONFIG` table unchanged.
 - Do not git-add or rewrite the 50 MiB blob.
+- Conservative `.git`+tree allocation bound must stay ≤ 256 MiB or the case must not register.
 
-Do not start Wave 3 Git until the 256 MiB bound is proven in a fixture self-check.
+A fixture self-check must prove the 256 MiB bound before these IDs stay registered.
 
 ## Later waves (shared generator; collection not required to land it)
 

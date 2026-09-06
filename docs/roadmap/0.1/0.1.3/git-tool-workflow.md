@@ -28,14 +28,20 @@ Expand `N` over exactly `1, 10, 100, 500` to obtain four scenario IDs:
 
 | Scenario IDs | Changed paths | Expected result |
 | --- | ---: | --- |
-| `git-tool-{N}` | First N changes from the same seed-bound schedule | One new Git commit and `Created` LayerFS Commit |
+| `git-tool-{1,10}-compact-v2` | First N changes from the same seed-bound schedule | One new Git commit and `Created` LayerFS Commit |
+| `git-tool-{100,500}-mixed-v4` | First N changes from the same seed-bound schedule | One new Git commit and `Created` LayerFS Commit |
 
-Every tier has the same substantial **32 MiB tracked background**, distributed
-across 32 shared-profile shards with 6,400 files. Reuse the bounded shared
-generator, path manifests, wide-directory layout, and deep-path witness. The
-background remains unchanged and must participate in full Git/LayerFS state
-verification. A separate 500-slot change schedule uses domain `git-tool-workflow`.
-Smaller tiers are exact prefixes of its ordered changes.
+Compact 1/10 keep the compact background. Tiers 100/500 use the git-safe
+[`workspace-mixed-v4`](workspace-mixed-v4.md) exception: 2,000 / 5,000 files,
+at most one 50 MiB blob at `wide/s000-f000.dat` excluded from `git add` via
+`.gitignore`, remaining files 4 KiB, working tree ≤ 80 MiB, complete `.git`+tree
+≤ 256 MiB. Profile `workspace-mixed-v4-git`. The 500 MiB workspace mixed-v4 tree
+is not the Git working tree. Old unversioned 100/500 IDs (32 MiB / 6,400-file
+background) are historical.
+
+A separate 500-slot change schedule uses domain `git-tool-workflow`.
+Smaller tiers are exact prefixes of its ordered changes. Do not git-add or
+rewrite the 50 MiB blob. Isolation env and `GIT_CONFIG` stay unchanged.
 
 Each ten-slot block uses:
 
