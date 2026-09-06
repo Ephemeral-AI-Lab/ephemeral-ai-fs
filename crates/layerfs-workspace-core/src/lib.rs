@@ -116,6 +116,40 @@ impl Node {
     }
 }
 
+/// Read-only construction input held at one operation cut. The backing owner must
+/// retain every referenced range until construction and checkpoint installation finish.
+/// The maps may contain only dirty nodes and children named by their directory deltas.
+pub struct FrozenWorkspaceChanges<'a> {
+    pub nodes: &'a HashMap<NodeId, Node>,
+    pub dirty: &'a BTreeSet<NodeId>,
+    pub canonical_nodes: &'a HashMap<InodeId, NodeId>,
+    pub base_root: layerfs_content::ObjectId,
+    pub mutation_generation: u64,
+    pub policy: ResourcePolicy,
+}
+
+impl FrozenWorkspaceChanges<'_> {
+    pub fn attr(&self, node: NodeId) -> Result<Attr> {
+        self.nodes
+            .get(&node)
+            .map(|value| value.attr(node))
+            .ok_or(Error::Integrity("frozen node"))
+    }
+}
+
+impl LiveWorkspace {
+    pub fn frozen_changes(&self) -> FrozenWorkspaceChanges<'_> {
+        FrozenWorkspaceChanges {
+            nodes: &self.nodes,
+            dirty: &self.dirty,
+            canonical_nodes: &self.canonical_nodes,
+            base_root: self.base_root,
+            mutation_generation: self.mutation_generation,
+            policy: self.policy,
+        }
+    }
+}
+
 /// An immutable owned description. The adapter performs acquisition and physical
 /// reads after releasing live-state locks; the retained pieces keep old bytes alive.
 pub struct ReadPlan {

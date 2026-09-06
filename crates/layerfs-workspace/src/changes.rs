@@ -157,8 +157,8 @@ struct CheckpointJournal {
 }
 
 impl CheckpointJournal {
-    fn new(workspace: &Workspace) -> Result<Self> {
-        let file = anonymous_journal(&workspace.spool)?;
+    fn new(workspace: &CandidateInputs<'_>) -> Result<Self> {
+        let file = anonymous_journal(workspace.spool)?;
         Ok(Self {
             writer: BufWriter::with_capacity(
                 journal_io_bytes(workspace.live.policy.max_final_delta_memory_bytes),
@@ -353,6 +353,182 @@ impl Workspace {
         purpose: CandidatePurpose,
         worker_limit: usize,
     ) -> Result<PreparedCommit> {
+        let captured = self.take_capture();
+        self.candidate_inputs()
+            .build(purpose, worker_limit, captured)
+    }
+
+    fn candidate_inputs(&self) -> CandidateInputs<'_> {
+        CandidateInputs {
+            live: self.live.frozen_changes(),
+            store: &self.store,
+            workspace_id: self.workspace_id,
+            reader: self.reader.clone(),
+            base_inodes: self.base_inodes,
+            spool: &self.spool,
+        }
+    }
+
+    pub(crate) fn resolution_fingerprint(
+        &mut self,
+        affected_paths: &[CanonicalPath],
+    ) -> Result<[u8; 32]> {
+        let base = self.base_manifest()?;
+        let final_view = self.final_manifest(manifest_charge(&base))?;
+        let mut affected = affected_paths.iter().collect::<Vec<_>>();
+        affected.sort();
+        let mut digest = ContentDigestWriter::new();
+        digest.write_all(b"layerfs/workspace-resolution/v2\0")?;
+        for affected_path in affected {
+            digest.write_all(b"A")?;
+            frame(&mut digest, affected_path.as_bytes())?;
+            for (path, entry) in final_view
+                .iter()
+                .filter(|(path, _)| path_intersects(path, affected_path.as_str()))
+            {
+                digest.write_all(b"E")?;
+                frame(&mut digest, path.as_bytes())?;
+                digest.write_all(&[match entry.attr.kind {
+                    Kind::File => 1,
+                    Kind::Directory => 2,
+                    Kind::Symlink => 3,
+                }])?;
+                digest.write_all(&entry.attr.size.to_be_bytes())?;
+                digest.write_all(&entry.attr.mode.to_be_bytes())?;
+                digest.write_all(&entry.attr.links.to_be_bytes())?;
+                digest.write_all(&entry.attr.mtime_seconds.to_be_bytes())?;
+                digest.write_all(&entry.attr.mtime_nanoseconds.to_be_bytes())?;
+                let node = self
+                    .live
+                    .nodes
+                    .get(&entry.node)
+                    .ok_or(StorageError::Integrity("resolution node"))?;
+                digest.write_all(&(node.paths.len() as u64).to_be_bytes())?;
+                for alias in &node.paths {
+                    frame(&mut digest, alias.as_bytes())?;
+                }
+                match entry.attr.kind {
+                    Kind::File => {
+                        let mut reader = WorkspaceFileReader::new(self, entry.node)?;
+                        std::io::copy(&mut reader, &mut digest)?;
+                    }
+                    Kind::Symlink => frame(&mut digest, &self.readlink(entry.node)?)?,
+                    Kind::Directory => {}
+                }
+            }
+            digest.write_all(b"Z")?;
+        }
+        Ok(digest.finish())
+    }
+
+    fn base_manifest(&self) -> Result<BTreeMap<String, BaseEntry>> {
+        let reader = CoreReader(&self.reader);
+        let mut output = BTreeMap::new();
+        let mut charge = 0_u64;
+        let mut pending = vec![CanonicalPath::root()];
+        while let Some(directory) = pending.pop() {
+            let mut after = None;
+            loop {
+                let (page, _) = filesystem::list(
+                    &reader,
+                    self.base_root,
+                    &directory,
+                    after.as_ref(),
+                    128,
+                    256 * 1024,
+                )?;
+                layerfs_layerstack_store::note_workspace_namespace_visits(
+                    page.entries.len() as u64,
+                    0,
+                    0,
+                    0,
+                    0,
+                );
+                for (name, _) in page.entries {
+                    let path = join(&directory, name.as_str())?;
+                    let resolved = filesystem::resolve(
+                        &reader,
+                        self.base_root,
+                        &path,
+                        &mut LogicalCounters::default(),
+                    )?;
+                    if resolved.record.kind == InodeKind::Directory {
+                        pending.push(path.clone());
+                    }
+                    let path = path.as_str().to_owned();
+                    charge = charge.saturating_add(path_charge(&path));
+                    output.insert(
+                        path,
+                        BaseEntry {
+                            record: resolved.record,
+                        },
+                    );
+                    self.live
+                        .policy
+                        .check_final_delta(charge)
+                        .map_err(crate::live_error)?;
+                }
+                let Some(next) = page.continuation else { break };
+                after = Some(next);
+            }
+        }
+        Ok(output)
+    }
+
+    fn final_manifest(&mut self, base_charge: u64) -> Result<BTreeMap<String, FinalEntry>> {
+        let mut output = BTreeMap::new();
+        let mut charge = base_charge;
+        let mut pending = vec![(ROOT, String::new())];
+        while let Some((directory, prefix)) = pending.pop() {
+            for (name, node) in self.directory_entries(directory)? {
+                let dirty = self.live.dirty.contains(&node);
+                layerfs_layerstack_store::note_workspace_namespace_visits(
+                    0,
+                    1,
+                    u64::from(dirty),
+                    u64::from(!dirty),
+                    0,
+                );
+                let name = std::str::from_utf8(&name)
+                    .map_err(|_| StorageError::Integrity("Workspace path"))?;
+                let path = if prefix.is_empty() {
+                    name.to_owned()
+                } else {
+                    format!("{prefix}/{name}")
+                };
+                let attr = self.attr(node)?;
+                charge = charge.saturating_add(path_charge(&path));
+                output.insert(path.clone(), FinalEntry { node, attr });
+                self.live
+                    .policy
+                    .check_final_delta(charge)
+                    .map_err(crate::live_error)?;
+                if attr.kind == Kind::Directory {
+                    pending.push((node, path));
+                }
+            }
+        }
+        Ok(output)
+    }
+}
+
+// Host construction needs immutable inputs and backing, never a live Workspace.
+struct CandidateInputs<'a> {
+    live: layerfs_workspace_core::FrozenWorkspaceChanges<'a>,
+    store: &'a layerfs_layerstack_store::LayerStackStore,
+    workspace_id: [u8; 16],
+    reader: layerfs_layerstack_store::SnapshotReader,
+    base_inodes: InodeTableRoot,
+    spool: &'a std::path::Path,
+}
+
+impl CandidateInputs<'_> {
+    fn build(
+        &self,
+        purpose: CandidatePurpose,
+        worker_limit: usize,
+        captured: Option<crate::capture::CapturedFile>,
+    ) -> Result<PreparedCommit> {
         let started = Instant::now();
         self.live
             .policy
@@ -370,17 +546,16 @@ impl Workspace {
         let tree_scratch = usize::try_from(frontier_budget.saturating_sub(1024) / 2)
             .unwrap_or(usize::MAX)
             .min(SORTED_TREE_UPDATE_SCRATCH_BYTES);
-        let captured = self.take_capture();
         if let Some(captured) = &captured {
             layerfs_layerstack_store::note_workspace_capture(1, captured.len);
         }
         let inputs = StableFileInputs {
-            nodes: &self.live.nodes,
-            dirty: &self.live.dirty,
+            nodes: self.live.nodes,
+            dirty: self.live.dirty,
             reader: self.reader.clone(),
             base_inodes: self.base_inodes,
             generation: self.live.mutation_generation,
-            spool: &self.spool,
+            spool: self.spool,
             io_bytes: io_bytes / 2,
             captured: std::sync::Mutex::new(captured),
         };
@@ -427,17 +602,17 @@ impl Workspace {
         note_commit_phase(WorkspaceCommitPhase::Content, content_started);
         let started = Instant::now();
         let mut inodes = FrontierInodes::new(
-            self.base_root,
+            self.live.base_root,
             // The fixed 1 KiB allowance includes the first 256-byte map entry.
             1 + (frontier_budget.saturating_sub(1024) / 512) as usize,
             tree_scratch,
-            &self.spool,
+            self.spool,
         );
         let mut metadata_cache = PortableMetadataCache::default();
-        let mut references = ReferenceJournal::new(&self.spool, io_bytes / 2);
+        let mut references = ReferenceJournal::new(self.spool, io_bytes / 2);
         note_commit_phase(WorkspaceCommitPhase::CandidatePlan, started);
         let started = Instant::now();
-        for &node in &self.live.dirty {
+        for &node in self.live.dirty {
             let value = self
                 .live
                 .nodes
@@ -449,7 +624,11 @@ impl Workspace {
             }
             let inode = self.frontier_inode(node)?;
             let file_result = if matches!(value.data, Data::File(_)) {
-                Some(files.next(node, self.live.mutation_generation, self.attr(node)?.size)?)
+                Some(files.next(
+                    node,
+                    self.live.mutation_generation,
+                    self.live.attr(node).map_err(crate::live_error)?.size,
+                )?)
             } else {
                 None
             };
@@ -461,7 +640,7 @@ impl Workspace {
                     None => None,
                 }
             };
-            let attr = self.attr(node)?;
+            let attr = self.live.attr(node).map_err(crate::live_error)?;
             let inode_kind = match attr.kind {
                 Kind::File => InodeKind::RegularFile,
                 Kind::Directory => InodeKind::Directory,
@@ -554,7 +733,7 @@ impl Workspace {
         )?;
         let mut checkpoint = CheckpointJournal::new(self)?;
         inodes.finish(&mut objects, |objects, inode, node, content, record| {
-            let attr = self.attr(node)?;
+            let attr = self.live.attr(node).map_err(crate::live_error)?;
             CheckpointJournal::validate_record(objects, &metadata_cache, record, content, attr)?;
             checkpoint.push(
                 node,
@@ -708,151 +887,9 @@ impl Workspace {
         // Bind new identity to this base snapshot: replacing one alias must not
         // accidentally reuse the still-live inode originally allocated at its path.
         Ok(filesystem::allocated_inode(
-            self.base_root.to_bytes(),
+            self.live.base_root.to_bytes(),
             &CanonicalPath::new(path)?,
         ))
-    }
-
-    pub(crate) fn resolution_fingerprint(
-        &mut self,
-        affected_paths: &[CanonicalPath],
-    ) -> Result<[u8; 32]> {
-        let base = self.base_manifest()?;
-        let final_view = self.final_manifest(manifest_charge(&base))?;
-        let mut affected = affected_paths.iter().collect::<Vec<_>>();
-        affected.sort();
-        let mut digest = ContentDigestWriter::new();
-        digest.write_all(b"layerfs/workspace-resolution/v2\0")?;
-        for affected_path in affected {
-            digest.write_all(b"A")?;
-            frame(&mut digest, affected_path.as_bytes())?;
-            for (path, entry) in final_view
-                .iter()
-                .filter(|(path, _)| path_intersects(path, affected_path.as_str()))
-            {
-                digest.write_all(b"E")?;
-                frame(&mut digest, path.as_bytes())?;
-                digest.write_all(&[match entry.attr.kind {
-                    Kind::File => 1,
-                    Kind::Directory => 2,
-                    Kind::Symlink => 3,
-                }])?;
-                digest.write_all(&entry.attr.size.to_be_bytes())?;
-                digest.write_all(&entry.attr.mode.to_be_bytes())?;
-                digest.write_all(&entry.attr.links.to_be_bytes())?;
-                digest.write_all(&entry.attr.mtime_seconds.to_be_bytes())?;
-                digest.write_all(&entry.attr.mtime_nanoseconds.to_be_bytes())?;
-                let node = self
-                    .live
-                    .nodes
-                    .get(&entry.node)
-                    .ok_or(StorageError::Integrity("resolution node"))?;
-                digest.write_all(&(node.paths.len() as u64).to_be_bytes())?;
-                for alias in &node.paths {
-                    frame(&mut digest, alias.as_bytes())?;
-                }
-                match entry.attr.kind {
-                    Kind::File => {
-                        let mut reader = WorkspaceFileReader::new(self, entry.node)?;
-                        std::io::copy(&mut reader, &mut digest)?;
-                    }
-                    Kind::Symlink => frame(&mut digest, &self.readlink(entry.node)?)?,
-                    Kind::Directory => {}
-                }
-            }
-            digest.write_all(b"Z")?;
-        }
-        Ok(digest.finish())
-    }
-
-    fn base_manifest(&self) -> Result<BTreeMap<String, BaseEntry>> {
-        let reader = CoreReader(&self.reader);
-        let mut output = BTreeMap::new();
-        let mut charge = 0_u64;
-        let mut pending = vec![CanonicalPath::root()];
-        while let Some(directory) = pending.pop() {
-            let mut after = None;
-            loop {
-                let (page, _) = filesystem::list(
-                    &reader,
-                    self.base_root,
-                    &directory,
-                    after.as_ref(),
-                    128,
-                    256 * 1024,
-                )?;
-                layerfs_layerstack_store::note_workspace_namespace_visits(
-                    page.entries.len() as u64,
-                    0,
-                    0,
-                    0,
-                    0,
-                );
-                for (name, _) in page.entries {
-                    let path = join(&directory, name.as_str())?;
-                    let resolved = filesystem::resolve(
-                        &reader,
-                        self.base_root,
-                        &path,
-                        &mut LogicalCounters::default(),
-                    )?;
-                    if resolved.record.kind == InodeKind::Directory {
-                        pending.push(path.clone());
-                    }
-                    let path = path.as_str().to_owned();
-                    charge = charge.saturating_add(path_charge(&path));
-                    output.insert(
-                        path,
-                        BaseEntry {
-                            record: resolved.record,
-                        },
-                    );
-                    self.live
-                        .policy
-                        .check_final_delta(charge)
-                        .map_err(crate::live_error)?;
-                }
-                let Some(next) = page.continuation else { break };
-                after = Some(next);
-            }
-        }
-        Ok(output)
-    }
-
-    fn final_manifest(&mut self, base_charge: u64) -> Result<BTreeMap<String, FinalEntry>> {
-        let mut output = BTreeMap::new();
-        let mut charge = base_charge;
-        let mut pending = vec![(ROOT, String::new())];
-        while let Some((directory, prefix)) = pending.pop() {
-            for (name, node) in self.directory_entries(directory)? {
-                let dirty = self.live.dirty.contains(&node);
-                layerfs_layerstack_store::note_workspace_namespace_visits(
-                    0,
-                    1,
-                    u64::from(dirty),
-                    u64::from(!dirty),
-                    0,
-                );
-                let name = std::str::from_utf8(&name)
-                    .map_err(|_| StorageError::Integrity("Workspace path"))?;
-                let path = if prefix.is_empty() {
-                    name.to_owned()
-                } else {
-                    format!("{prefix}/{name}")
-                };
-                let attr = self.attr(node)?;
-                charge = charge.saturating_add(path_charge(&path));
-                output.insert(path.clone(), FinalEntry { node, attr });
-                self.live
-                    .policy
-                    .check_final_delta(charge)
-                    .map_err(crate::live_error)?;
-                if attr.kind == Kind::Directory {
-                    pending.push((node, path));
-                }
-            }
-        }
-        Ok(output)
     }
 }
 
@@ -2322,6 +2359,82 @@ mod tests {
     }
 
     #[test]
+    fn detached_changed_inputs_preserve_cut_without_a_live_workspace() {
+        let (root, mut workspace) = empty_workspace("detached-changes");
+        let file = workspace.create_file(ROOT, b"file", 0o640).unwrap().node;
+        workspace.write(file, 0, b"before").unwrap();
+        let untouched = workspace
+            .create_file(ROOT, b"untouched", 0o600)
+            .unwrap()
+            .node;
+        workspace.write(untouched, 0, b"unchanged").unwrap();
+        workspace.commit().unwrap();
+        // Directory deltas need their referenced identities; unrelated cached nodes
+        // are not construction inputs.
+        workspace.link(file, ROOT, b"alias").unwrap();
+        workspace.write(file, 0, b"at cut").unwrap();
+        let expected = workspace
+            .build_frontier_candidate(CandidatePurpose::Preview)
+            .unwrap()
+            .built
+            .root_id;
+        let dirty = workspace.live.dirty.clone();
+        let mut selected = dirty.clone();
+        for node in &dirty {
+            if let Data::Directory(directory) = &workspace.live.nodes[node].data {
+                selected.extend(directory.changes.values().flatten());
+            }
+        }
+        let nodes = selected
+            .into_iter()
+            .map(|id| (id, workspace.live.nodes[&id].clone()))
+            .collect::<std::collections::HashMap<_, _>>();
+        assert!(!nodes.contains_key(&untouched));
+        let canonical = nodes
+            .iter()
+            .filter_map(|(&id, node)| node.canonical.map(|inode| (inode, id)))
+            .collect();
+        let generation = workspace.live.mutation_generation;
+        let base_root = workspace.base_root;
+        let base_inodes = workspace.base_inodes;
+        let policy = workspace.live.policy;
+        let reader = workspace.reader.clone();
+        let store = workspace.store.clone();
+        let workspace_id = workspace.workspace_id;
+        let spool = workspace.spool.clone();
+        // Keep the old ranges in the detached records through a newer write/unlink.
+        workspace.write(file, 0, b"later!").unwrap();
+        workspace.unlink(ROOT, b"alias", false).unwrap();
+        let frozen = CandidateInputs {
+            live: layerfs_workspace_core::FrozenWorkspaceChanges {
+                nodes: &nodes,
+                dirty: &dirty,
+                canonical_nodes: &canonical,
+                base_root,
+                mutation_generation: generation,
+                policy,
+            },
+            store: &store,
+            workspace_id,
+            reader,
+            base_inodes,
+            spool: &spool,
+        };
+        let candidate = frozen.build(CandidatePurpose::Preview, 1, None).unwrap();
+        assert_eq!(candidate.built.root_id, expected);
+        assert_eq!(candidate.checkpoint.generation, generation);
+        assert_ne!(workspace.live.mutation_generation, generation);
+        assert_eq!(workspace.read(file, 0, 6).unwrap(), b"later!");
+        assert!(workspace.lookup(ROOT, b"alias").is_err());
+        drop(candidate);
+        drop(frozen);
+        drop(nodes);
+        drop(workspace);
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn producer_workers_preserve_roots_alias_capture_and_empty_inputs() {
         let (root, mut workspace) = empty_workspace("producer-workers");
         workspace.mkdir(ROOT, b"directory", 0o700).unwrap();
@@ -2802,7 +2915,7 @@ mod tests {
         workspace.live.policy.max_spool_bytes = 0;
         workspace.set_mtime(file, 17, 3).unwrap();
         workspace.commit().unwrap();
-        let mut journal = CheckpointJournal::new(&workspace).unwrap();
+        let mut journal = CheckpointJournal::new(&workspace.candidate_inputs()).unwrap();
         let attr = workspace.attr(file).unwrap();
         let inode = workspace.live.nodes[&file].canonical.unwrap();
         let objects = ObjectBuffer::new(&workspace.reader).unwrap();
@@ -3000,7 +3113,7 @@ mod tests {
         let path = workspace.live.nodes[&parent].paths.first().unwrap();
         assert!(CanonicalPath::new(path).is_ok());
         assert!(matches!(
-            workspace.frontier_inode(parent),
+            workspace.candidate_inputs().frontier_inode(parent),
             Err(StorageError::InvalidInput("workspace final-delta limit"))
         ));
         drop(workspace);
