@@ -1803,6 +1803,16 @@ mod sampled_tests {
                 assert_eq!(sample.ranges.get(&path).map(Vec::len), Some(3));
             }
         }
+        for case in workload_source::dedup_branch_history::cases()
+            .into_iter()
+            .filter(|case| workload_source::dedup_workloads::history_unrelated_mixed_v2(case))
+        {
+            let sample = workload_source::ordinary_workloads::workspace_sample(&case, 1)?;
+            sample.validate()?;
+            let large = workload_source::dedup_workloads::mixed_v2_path(0)?;
+            assert_eq!(sample.ranges.len(), 1);
+            assert_eq!(sample.ranges.get(&large).map(Vec::len), Some(3));
+        }
         let root = std::env::temp_dir().join(format!(
             "layerfs-sampled-check-{}-{}",
             std::process::id(),

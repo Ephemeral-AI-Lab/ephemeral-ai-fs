@@ -96,6 +96,11 @@ class RunnerTests(unittest.TestCase):
         self.assertNotEqual(runner.digest(shards), runner.digest(mixed))
         self.assertNotEqual(runner.digest(compact), runner.digest(mixed))
 
+    def test_history_unrelated_mixed_v2_profile_is_isolated_from_shards(self):
+        shards = {"fixture_profile": "workspace-input-v1", "input_plan_sha256": "plan", "fixture_bytes": 1048576, "regular_files": 200}
+        mixed = {"fixture_profile": "history-unrelated-mixed-v2", "input_plan_sha256": "plan", "fixture_bytes": 1048576, "regular_files": 10}
+        self.assertNotEqual(runner.digest(shards), runner.digest(mixed))
+
     def test_mixed_oracle_identity_reuse_keeps_proof_bounded(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(runner, "HOST_ROOT", Path(directory)):
             args = SimpleNamespace(host_binary="host", family="tiny_file_churn", case="tiny-bulk-create-100-mixed-v3", verification=False)

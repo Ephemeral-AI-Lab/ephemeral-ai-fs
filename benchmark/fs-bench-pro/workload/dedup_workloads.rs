@@ -254,12 +254,145 @@ pub(crate) fn check_registry(cases: &[Case], count: usize) -> Result<()> {
     if cases.len() != count || cases.iter().map(|c| &c.id).collect::<BTreeSet<_>>().len() != count {
         return Err("dedup registry cardinality".into());
     }
+    if cases.iter().any(|case| case.family == "dedup_branch_history") {
+        let unrelated: Vec<_> = cases.iter().filter(|case| case.kind == "unrelated").collect();
+        if unrelated.len() != 4
+            || unrelated.iter().any(|case| {
+                let versioned = case.id.ends_with("-mixed-v2");
+                versioned != matches!(case.tier, 100 | 500)
+                    || versioned != history_unrelated_mixed_v2(case)
+                    || (versioned
+                        && case.id
+                            != format!("dedup-history-unrelated-{}-mixed-v2", case.tier))
+                    || (!versioned && case.id != format!("dedup-history-unrelated-{}", case.tier))
+            })
+        {
+            return Err("history-unrelated-mixed-v2 registry".into());
+        }
+    }
     Ok(())
 }
 
 pub(crate) fn is_sdk(case: &Case) -> bool {
     case.family == "dedup_branch_history"
         && matches!(case.kind, "distributed" | "hotset" | "recurring")
+}
+
+pub(crate) const HISTORY_UNRELATED_MIXED_V2_PROFILE: &str = "history-unrelated-mixed-v2";
+pub(crate) const MIXED_V2_FILES: usize = 10;
+pub(crate) const MIXED_V2_LARGE: u64 = 640 * 1024;
+pub(crate) const MIXED_V2_SMALL: u64 = 4096;
+pub(crate) const MIXED_V2_MEDIUM: u64 = 120 * 1024;
+const MIXED_V2_SAMPLE_RANGE: usize = 65_536;
+
+pub(crate) fn history_unrelated_mixed_v2(case: &Case) -> bool {
+    case.family == "dedup_branch_history"
+        && case.kind == "unrelated"
+        && matches!(case.tier, 100 | 500)
+        && case.id.ends_with("-mixed-v2")
+}
+
+pub(crate) fn mixed_v2_path(ordinal: usize) -> Result<String> {
+    if ordinal >= MIXED_V2_FILES {
+        return Err("history-unrelated-mixed-v2 ordinal".into());
+    }
+    Ok(format!("mixed/f{ordinal:03}.dat"))
+}
+
+pub(crate) fn mixed_v2_len(ordinal: usize) -> Result<u64> {
+    match ordinal {
+        0 => Ok(MIXED_V2_LARGE),
+        1..=6 => Ok(MIXED_V2_SMALL),
+        7..=9 => Ok(MIXED_V2_MEDIUM),
+        _ => Err("history-unrelated-mixed-v2 ordinal".into()),
+    }
+}
+
+pub(crate) fn mixed_v2_peak_bytes() -> u64 {
+    2 * MIB
+}
+
+fn mixed_v2_content(seed: u8, path: &str, ordinal: usize, role: &str, k: u64, len: u64) -> Result<Content> {
+    let label = super::workspace_common::seed_label(seed)?;
+    Ok(Content::Seed {
+        seed: super::workspace_common::frame_seed(
+            &[HISTORY_UNRELATED_MIXED_V2_PROFILE, &label, path, role],
+            &[ordinal as u64, k],
+        ),
+        len,
+    })
+}
+
+pub(crate) fn mixed_v2_entries(seed: u8) -> Result<Vec<Entry>> {
+    let mut entries = vec![Entry::directory("."), Entry::directory("mixed")];
+    for ordinal in 0..MIXED_V2_FILES {
+        let path = mixed_v2_path(ordinal)?;
+        entries.push(Entry::file(
+            path.clone(),
+            mixed_v2_content(seed, &path, ordinal, "genesis", 0, mixed_v2_len(ordinal)?)?,
+        ));
+    }
+    entries.sort_by(|left, right| left.path.cmp(&right.path));
+    let bytes = super::workspace_common::validate_entries(&entries)?;
+    let files = entries
+        .iter()
+        .filter(|entry| matches!(entry.kind, EntryKind::File(_)))
+        .count();
+    if bytes != MIB || files != MIXED_V2_FILES {
+        return Err("history-unrelated-mixed-v2 fixture totals".into());
+    }
+    Ok(entries)
+}
+
+pub(crate) fn mixed_v2_rewrite(seed: u8, path: &str, ordinal: usize, k: usize, len: u64) -> Result<Content> {
+    mixed_v2_content(seed, path, ordinal, "rewrite", k as u64, len)
+}
+
+fn mixed_v2_large_ranges(len: u64) -> Result<Vec<(u64, usize)>> {
+    let range = MIXED_V2_SAMPLE_RANGE as u64;
+    if len < range * 2 {
+        return Err("history-unrelated-mixed-v2 large file shorter than sampled ranges".into());
+    }
+    Ok(vec![
+        (0, MIXED_V2_SAMPLE_RANGE),
+        (len / 2, MIXED_V2_SAMPLE_RANGE),
+        (len - range, MIXED_V2_SAMPLE_RANGE),
+    ])
+}
+
+pub(crate) fn history_sample(case: &Case, seed: u8) -> Result<super::workspace_common::TreeSample> {
+    use super::workspace_common::TreeSample;
+    if !history_unrelated_mixed_v2(case) {
+        return Err("history-unrelated-mixed-v2 sample family".into());
+    }
+    let expected = super::dedup_branch_history::expected(case, seed, case.tier)?;
+    let by_path = expected
+        .iter()
+        .map(|entry| (entry.path.as_str(), entry))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut sample = TreeSample {
+        entries: vec![Entry::directory("."), Entry::directory("mixed")],
+        absent: vec![],
+        ranges: std::collections::BTreeMap::new(),
+    };
+    for ordinal in [0, 1, 6, 7, 9] {
+        let path = mixed_v2_path(ordinal)?;
+        let Some(entry) = by_path.get(path.as_str()) else {
+            return Err(format!("history-unrelated-mixed-v2 sample path absent: {path}").into());
+        };
+        if let EntryKind::File(content) = &entry.kind {
+            if ordinal == 0 {
+                sample
+                    .ranges
+                    .insert(path.clone(), mixed_v2_large_ranges(content.len())?);
+            }
+            sample.entries.push((*entry).clone());
+        } else {
+            return Err("history-unrelated-mixed-v2 sample file kind".into());
+        }
+    }
+    sample.validate()?;
+    Ok(sample)
 }
 pub(crate) fn sdk_edits(case: &Case, seed: u8, step: usize) -> Result<Vec<SdkEdit>> {
     if !is_sdk(case) {
@@ -367,11 +500,14 @@ pub(crate) fn apply(
                 result?;
                 syncs += 1;
             } else {
-                let mut file = OpenOptions::new()
-                    .write(true)
-                    .create_new(create)
-                    .truncate(!create)
-                    .open(&entry.path)?;
+                let mut options = OpenOptions::new();
+                options.write(true);
+                if create {
+                    options.create_new(true);
+                } else if !history_unrelated_mixed_v2(case) {
+                    options.truncate(true);
+                }
+                let mut file = options.open(&entry.path)?;
                 let EntryKind::File(content) = &entry.kind else {
                     return Err("native dedup file kind".into());
                 };
