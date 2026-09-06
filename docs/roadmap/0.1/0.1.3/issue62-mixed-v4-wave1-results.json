@@ -1,0 +1,366 @@
+{
+  "campaign": {
+    "directory": "benchmark-results/host-store/campaigns/issue62-58e1e5118572c834",
+    "image": "sha256:e2078498d4ade952ccfa18fbaf40464d271156773e0bd860870face00b6080bf",
+    "image_tag": "layerfs-bench-infra:58e1e5118572c834",
+    "performance_allowance": "300 s product / 310 s outer",
+    "product_seal": "0999a1259161c245110e525e22b6db888cf4241872e190b36e2dcb617790e695",
+    "proof_allowance": "45 s work / 59 s hard; sampled only",
+    "samples": 1,
+    "seed": 1,
+    "source_seal": "58e1e5118572c834a20736ff59d261a31c0aafcd023d520c207811c4109333ea",
+    "topology": "host-store: macOS SDK/SQLite/spool; Docker Linux daemon/FUSE; 2 CPU / 2 GiB / no swap / 256 PIDs; no data mounts"
+  },
+  "collection_mode": true,
+  "disclaimer": "New times on 2k/5k mixed-v4 trees are a different workload from the old 20k/100k tiny-file trees. Do not compare as a product speedup. Historical 15 s status is reporting-only.",
+  "issue": 62,
+  "performance": [
+    {
+      "cache_hit": false,
+      "case": "workspace-dense-rewrite-100-mixed-v4",
+      "cleanup": "PASS",
+      "command_wall_ns": 3046769208,
+      "completed_file_write_count": 2000,
+      "completed_write_bytes": 104857600,
+      "container_cpu_ns": 609333000,
+      "container_peak_bytes": 120582144,
+      "error": null,
+      "fixture_bytes": 104857600,
+      "fixture_files": 2000,
+      "fsync_count": 0,
+      "fsyncdir_count": 1,
+      "historical_15s_reporting_status": "PASS",
+      "input_identity": "3b9559bbaccd6334036d698490ac2670b734a7c5ff86a7dad7ca059d6657b161",
+      "large_file_sizes": [
+        52428800
+      ],
+      "open_count": 2000,
+      "phases_ms": {
+        "commit": 672.786,
+        "create": 10.294,
+        "end": 9.57,
+        "exec": 2005.855,
+        "sdk_edit": null,
+        "visibility": 0.073
+      },
+      "preparation_wall_ns": 3304534750,
+      "proof": {
+        "cleanup": "PASS",
+        "error": null,
+        "omissions": [
+          "no exhaustive Phase 1 replay",
+          "sampled Workspace proof: no exhaustive namespace, full-file bytes, object census, aliases, or failure injection"
+        ],
+        "receipt": "benchmark-results/host-store/campaigns/issue62-58e1e5118572c834/verification/workspace-dense-rewrite-100-mixed-v4/verification.json",
+        "status": "PASS",
+        "wall_seconds": 4.991672624833882
+      },
+      "pure_call_sum_ns": 2698577751,
+      "pwrite_count": 2049,
+      "receipt": "benchmark-results/host-store/campaigns/issue62-58e1e5118572c834/performance/workspace-dense-rewrite-100-mixed-v4/perf.jsonl",
+      "runner_status": "PASS",
+      "spool_peak_bytes": 104927232,
+      "status": "COMPLETE",
+      "timer": "pure_call_sum_ns"
+    },
+    {
+      "cache_hit": false,
+      "case": "workspace-dense-rewrite-500-mixed-v4",
+      "cleanup": "PASS",
+      "command_wall_ns": 9263326208,
+      "completed_file_write_count": 5000,
+      "completed_write_bytes": 524288000,
+      "container_cpu_ns": 1846811000,
+      "container_peak_bytes": 534728704,
+      "error": null,
+      "fixture_bytes": 524288000,
+      "fixture_files": 5000,
+      "fsync_count": 0,
+      "fsyncdir_count": 1,
+      "historical_15s_reporting_status": "PASS",
+      "input_identity": "a0c60880c32acb00d773aa16535b440baafb3a3f9102e7c60670789d40a03b76",
+      "large_file_sizes": [
+        314572800,
+        104857600
+      ],
+      "open_count": 5000,
+      "phases_ms": {
+        "commit": 2717.426,
+        "create": 7.679,
+        "end": 19.66,
+        "exec": 6005.751,
+        "sdk_edit": null,
+        "visibility": 0.093
+      },
+      "preparation_wall_ns": 13754139958,
+      "proof": {
+        "cleanup": "PASS",
+        "error": null,
+        "omissions": [
+          "no exhaustive Phase 1 replay",
+          "sampled Workspace proof: no exhaustive namespace, full-file bytes, object census, aliases, or failure injection"
+        ],
+        "receipt": "benchmark-results/host-store/campaigns/issue62-58e1e5118572c834/verification/workspace-dense-rewrite-500-mixed-v4/verification.json",
+        "status": "PASS",
+        "wall_seconds": 13.29852983308956
+      },
+      "pure_call_sum_ns": 8750610124,
+      "pwrite_count": 5398,
+      "receipt": "benchmark-results/host-store/campaigns/issue62-58e1e5118572c834/performance/workspace-dense-rewrite-500-mixed-v4/perf.jsonl",
+      "runner_status": "PASS",
+      "spool_peak_bytes": 524632064,
+      "status": "COMPLETE",
+      "timer": "pure_call_sum_ns"
+    },
+    {
+      "cache_hit": true,
+      "case": "workspace-clean-commit-100-mixed-v4",
+      "cleanup": "PASS",
+      "command_wall_ns": 389608666,
+      "container_cpu_ns": 19024000,
+      "container_peak_bytes": 5431296,
+      "error": null,
+      "fixture_bytes": 104857600,
+      "fixture_files": 2000,
+      "historical_15s_reporting_status": "PASS",
+      "input_identity": "1878e9e75d6327f631eb1c8c946fdd9010dd6f43cde9292e0d93021dc082629b",
+      "large_file_sizes": [
+        52428800
+      ],
+      "phases_ms": {
+        "commit": 1.534,
+        "create": 9.491,
+        "end": 2.195,
+        "exec": null,
+        "sdk_edit": null,
+        "visibility": 0.086
+      },
+      "preparation_wall_ns": 906247292,
+      "proof": {
+        "cleanup": "PASS",
+        "error": null,
+        "omissions": [
+          "no exhaustive Phase 1 replay",
+          "sampled Workspace proof: no exhaustive namespace, full-file bytes, object census, aliases, or failure injection"
+        ],
+        "receipt": "benchmark-results/host-store/campaigns/issue62-58e1e5118572c834/verification/workspace-clean-commit-100-mixed-v4/verification.json",
+        "status": "PASS",
+        "wall_seconds": 2.4460021667182446
+      },
+      "pure_call_sum_ns": 13306165,
+      "receipt": "benchmark-results/host-store/campaigns/issue62-58e1e5118572c834/performance/workspace-clean-commit-100-mixed-v4/perf.jsonl",
+      "runner_status": "PASS",
+      "status": "COMPLETE",
+      "timer": "pure_call_sum_ns"
+    },
+    {
+      "cache_hit": true,
+      "case": "workspace-clean-commit-500-mixed-v4",
+      "cleanup": "PASS",
+      "command_wall_ns": 390444916,
+      "container_cpu_ns": 16982000,
+      "container_peak_bytes": 5128192,
+      "error": null,
+      "fixture_bytes": 524288000,
+      "fixture_files": 5000,
+      "historical_15s_reporting_status": "PASS",
+      "input_identity": "ca6305d2ddcf101c1eafef69c04801a9a56827060f90e15f7eca9487723d541a",
+      "large_file_sizes": [
+        314572800,
+        104857600
+      ],
+      "phases_ms": {
+        "commit": 1.616,
+        "create": 8.275,
+        "end": 2.258,
+        "exec": null,
+        "sdk_edit": null,
+        "visibility": 0.068
+      },
+      "preparation_wall_ns": 2544361791,
+      "proof": {
+        "cleanup": "PASS",
+        "error": null,
+        "omissions": [
+          "no exhaustive Phase 1 replay",
+          "sampled Workspace proof: no exhaustive namespace, full-file bytes, object census, aliases, or failure injection"
+        ],
+        "receipt": "benchmark-results/host-store/campaigns/issue62-58e1e5118572c834/verification/workspace-clean-commit-500-mixed-v4/verification.json",
+        "status": "PASS",
+        "wall_seconds": 4.367098042275757
+      },
+      "pure_call_sum_ns": 12215710,
+      "receipt": "benchmark-results/host-store/campaigns/issue62-58e1e5118572c834/performance/workspace-clean-commit-500-mixed-v4/perf.jsonl",
+      "runner_status": "PASS",
+      "status": "COMPLETE",
+      "timer": "pure_call_sum_ns"
+    },
+    {
+      "cache_hit": true,
+      "case": "workspace-fixed-move-100-mixed-v4",
+      "cleanup": "PASS",
+      "command_wall_ns": 384005458,
+      "container_cpu_ns": 20793000,
+      "container_peak_bytes": 5173248,
+      "error": null,
+      "fixture_bytes": 104857600,
+      "fixture_files": 2000,
+      "historical_15s_reporting_status": "PASS",
+      "input_identity": "c756a4bd0b2c1f8959af81ae9df93922609e0269c7551c467ea7f658326a5340",
+      "large_file_sizes": [
+        52428800
+      ],
+      "phases_ms": {
+        "commit": 4.734,
+        "create": 9.145,
+        "end": 2.641,
+        "exec": 6.816,
+        "sdk_edit": null,
+        "visibility": 0.068
+      },
+      "preparation_wall_ns": 1068956500,
+      "proof": {
+        "cleanup": "PASS",
+        "error": null,
+        "omissions": [
+          "no exhaustive Phase 1 replay",
+          "sampled Workspace proof: no exhaustive namespace, full-file bytes, object census, aliases, or failure injection"
+        ],
+        "receipt": "benchmark-results/host-store/campaigns/issue62-58e1e5118572c834/verification/workspace-fixed-move-100-mixed-v4/verification.json",
+        "status": "PASS",
+        "wall_seconds": 2.2985121672973037
+      },
+      "pure_call_sum_ns": 23403626,
+      "receipt": "benchmark-results/host-store/campaigns/issue62-58e1e5118572c834/performance/workspace-fixed-move-100-mixed-v4/perf.jsonl",
+      "runner_status": "PASS",
+      "status": "COMPLETE",
+      "timer": "pure_call_sum_ns"
+    },
+    {
+      "cache_hit": true,
+      "case": "workspace-fixed-move-500-mixed-v4",
+      "cleanup": "PASS",
+      "command_wall_ns": 392781250,
+      "container_cpu_ns": 20047000,
+      "container_peak_bytes": 4874240,
+      "error": null,
+      "fixture_bytes": 524288000,
+      "fixture_files": 5000,
+      "historical_15s_reporting_status": "PASS",
+      "input_identity": "9d454cd411e601e2882e9931ccf8e161a1c6ba7ac30d1a5c6cfd81ba18be9355",
+      "large_file_sizes": [
+        314572800,
+        104857600
+      ],
+      "phases_ms": {
+        "commit": 5.646,
+        "create": 9.9,
+        "end": 2.809,
+        "exec": 6.961,
+        "sdk_edit": null,
+        "visibility": 0.068
+      },
+      "preparation_wall_ns": 2389039375,
+      "proof": {
+        "cleanup": "PASS",
+        "error": null,
+        "omissions": [
+          "no exhaustive Phase 1 replay",
+          "sampled Workspace proof: no exhaustive namespace, full-file bytes, object census, aliases, or failure injection"
+        ],
+        "receipt": "benchmark-results/host-store/campaigns/issue62-58e1e5118572c834/verification/workspace-fixed-move-500-mixed-v4/verification.json",
+        "status": "PASS",
+        "wall_seconds": 4.5051559577696025
+      },
+      "pure_call_sum_ns": 25382792,
+      "receipt": "benchmark-results/host-store/campaigns/issue62-58e1e5118572c834/performance/workspace-fixed-move-500-mixed-v4/perf.jsonl",
+      "runner_status": "PASS",
+      "status": "COMPLETE",
+      "timer": "pure_call_sum_ns"
+    },
+    {
+      "cache_hit": true,
+      "case": "workspace-distributed-sdk-edit-100-mixed-v4",
+      "cleanup": "PASS",
+      "command_wall_ns": 645306041,
+      "container_cpu_ns": 49141000,
+      "container_peak_bytes": 5132288,
+      "error": null,
+      "fixture_bytes": 104857600,
+      "fixture_files": 2000,
+      "historical_15s_reporting_status": "PASS",
+      "input_identity": "2ba70fc87a6d02adb778146f05cdffe3c8f0e18032b76348befcd8b2d9c54754",
+      "large_file_sizes": [
+        52428800
+      ],
+      "phases_ms": {
+        "commit": 21.591,
+        "create": 8.567,
+        "end": 2.183,
+        "exec": null,
+        "sdk_edit": 231.342,
+        "visibility": 0.067
+      },
+      "preparation_wall_ns": 1142720916,
+      "proof": {
+        "cleanup": "PASS",
+        "error": null,
+        "omissions": [
+          "no exhaustive Phase 1 replay",
+          "sampled Workspace proof: no exhaustive namespace, full-file bytes, object census, aliases, or failure injection"
+        ],
+        "receipt": "benchmark-results/host-store/campaigns/issue62-58e1e5118572c834/verification/workspace-distributed-sdk-edit-100-mixed-v4/verification.json",
+        "status": "PASS",
+        "wall_seconds": 2.5221862918697298
+      },
+      "pure_call_sum_ns": 263750617,
+      "receipt": "benchmark-results/host-store/campaigns/issue62-58e1e5118572c834/performance/workspace-distributed-sdk-edit-100-mixed-v4/perf.jsonl",
+      "runner_status": "PASS",
+      "status": "COMPLETE",
+      "timer": "pure_call_sum_ns"
+    },
+    {
+      "cache_hit": true,
+      "case": "workspace-distributed-sdk-edit-500-mixed-v4",
+      "cleanup": "PASS",
+      "command_wall_ns": 3101095666,
+      "container_cpu_ns": 423795000,
+      "container_peak_bytes": 9969664,
+      "error": null,
+      "fixture_bytes": 524288000,
+      "fixture_files": 5000,
+      "historical_15s_reporting_status": "PASS",
+      "input_identity": "c15388e30d6bfc5a1fc796a18ec6fffecb298040cf3e9ee665d6ab121012c4cf",
+      "large_file_sizes": [
+        314572800,
+        104857600
+      ],
+      "phases_ms": {
+        "commit": 94.814,
+        "create": 9.401,
+        "end": 2.47,
+        "exec": null,
+        "sdk_edit": 2588.073,
+        "visibility": 0.07
+      },
+      "preparation_wall_ns": 2264171833,
+      "proof": {
+        "cleanup": "PASS",
+        "error": null,
+        "omissions": [
+          "no exhaustive Phase 1 replay",
+          "sampled Workspace proof: no exhaustive namespace, full-file bytes, object census, aliases, or failure injection"
+        ],
+        "receipt": "benchmark-results/host-store/campaigns/issue62-58e1e5118572c834/verification/workspace-distributed-sdk-edit-500-mixed-v4/verification.json",
+        "status": "PASS",
+        "wall_seconds": 6.809933625161648
+      },
+      "pure_call_sum_ns": 2694829043,
+      "receipt": "benchmark-results/host-store/campaigns/issue62-58e1e5118572c834/performance/workspace-distributed-sdk-edit-500-mixed-v4/perf.jsonl",
+      "runner_status": "PASS",
+      "status": "COMPLETE",
+      "timer": "pure_call_sum_ns"
+    }
+  ],
+  "wave": 1
+}
