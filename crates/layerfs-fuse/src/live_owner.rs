@@ -776,14 +776,15 @@ impl LiveOwner {
                 };
                 match result {
                     Ok(bytes) => {
-                        stream.write_u32((bytes.len() + 1) as u32).await?;
-                        stream.write_u8(0).await?;
-                        stream.write_all(&bytes).await?;
+                        crate::live_transport::write_frame(&mut stream, Some(0), &bytes).await?;
                     }
                     Err(error) => {
-                        stream.write_u32(2).await?;
-                        stream.write_u8(1).await?;
-                        stream.write_u8(crate::protocol::error_code(error)).await?;
+                        crate::live_transport::write_frame(
+                            &mut stream,
+                            Some(1),
+                            &[crate::protocol::error_code(error)],
+                        )
+                        .await?;
                     }
                 }
                 if shutdown_requested {

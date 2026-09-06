@@ -227,14 +227,10 @@ async fn serve(
                 if bytes.len() > MAX_FRAME {
                     return Err(invalid());
                 }
-                stream.write_u32((bytes.len() + 1) as u32).await?;
-                stream.write_u8(0).await?;
-                stream.write_all(&bytes).await?;
+                write_frame(&mut stream, Some(0), &bytes).await?;
             }
             Err(error) => {
-                stream.write_u32(2).await?;
-                stream.write_u8(1).await?;
-                stream.write_u8(crate::protocol::error_code(error)).await?;
+                write_frame(&mut stream, Some(1), &[crate::protocol::error_code(error)]).await?;
             }
         }
         drop(admitted);
@@ -305,8 +301,7 @@ async fn exchange(
         return Err(invalid());
     }
     let written = Instant::now();
-    stream.write_u32(bytes.len() as u32).await?;
-    stream.write_all(bytes).await?;
+    write_frame(stream, None, bytes).await?;
     if let Some(metrics) = metrics {
         metrics.note_client_frame((bytes.len() + 4) as u64, 0, 0, ns(written));
     }
@@ -328,4 +323,72 @@ async fn exchange(
 
 fn ns(started: Instant) -> u64 {
     started.elapsed().as_nanos().min(u64::MAX as u128) as u64
+}
+
+/// Send the framing prefix and existing payload in the same writev without
+/// another payload allocation. Advance both slices on short socket writes.
+pub(crate) async fn write_frame(
+    output: &mut (impl tokio::io::AsyncWrite + Unpin),
+    status: Option<u8>,
+    bytes: &[u8],
+) -> io::Result<()> {
+    use std::io::IoSlice;
+    if bytes.len() > MAX_FRAME || (status.is_none() && bytes.is_empty()) {
+        return Err(invalid());
+    }
+    let mut header = [0; 5];
+    let length = bytes.len() + usize::from(status.is_some());
+    header[..4].copy_from_slice(&(length as u32).to_be_bytes());
+    let prefix = if let Some(status) = status {
+        header[4] = status;
+        &header[..]
+    } else {
+        &header[..4]
+    };
+    let mut storage = [IoSlice::new(prefix), IoSlice::new(bytes)];
+    let mut slices = &mut storage[..];
+    while !slices.is_empty() {
+        let written = output.write_vectored(slices).await?;
+        if written == 0 {
+            return Err(io::Error::new(io::ErrorKind::WriteZero, "live frame"));
+        }
+        IoSlice::advance_slices(&mut slices, written);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vectored_frames_preserve_prefixes_across_short_writes() {
+        let runtime = LiveRuntime::new().unwrap();
+        runtime.block_on(async {
+            let (mut writer, mut reader) = tokio::io::duplex(7);
+            let payload = vec![42; 1024];
+            let expected = payload.clone();
+            let send = async {
+                write_frame(&mut writer, None, &payload).await.unwrap();
+                write_frame(&mut writer, Some(0), &[]).await.unwrap();
+                write_frame(&mut writer, Some(1), &[7]).await.unwrap();
+            };
+            let receive = async {
+                assert_eq!(reader.read_u32().await.unwrap(), 1024);
+                let mut received = vec![0; 1024];
+                reader.read_exact(&mut received).await.unwrap();
+                assert_eq!(received, expected);
+                assert_eq!(reader.read_u32().await.unwrap(), 1);
+                assert_eq!(reader.read_u8().await.unwrap(), 0);
+                assert_eq!(reader.read_u32().await.unwrap(), 2);
+                assert_eq!(reader.read_u8().await.unwrap(), 1);
+                assert_eq!(reader.read_u8().await.unwrap(), 7);
+            };
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                tokio::join!(send, receive);
+            })
+            .await
+            .unwrap();
+        });
+    }
 }
