@@ -1789,6 +1789,20 @@ mod sampled_tests {
                 }
             }
         }
+        for case in workload_source::workspace_change_locality::cases()
+            .into_iter()
+            .filter(|case| workload_source::ordinary_workloads::mixed_v4(case))
+        {
+            let sample = workload_source::ordinary_workloads::workspace_sample(&case, 1)?;
+            sample.validate()?;
+            let large = workload_source::workspace_common::mixed_v4_large_sizes(case.tier)?;
+            assert_eq!(sample.ranges.len(), large.len());
+            for ordinal in 0..large.len() {
+                let path =
+                    workload_source::ordinary_workloads::shard_path(ordinal / 200, ordinal % 200);
+                assert_eq!(sample.ranges.get(&path).map(Vec::len), Some(3));
+            }
+        }
         let root = std::env::temp_dir().join(format!(
             "layerfs-sampled-check-{}-{}",
             std::process::id(),

@@ -59,6 +59,10 @@ fn row(
     let smoke_supported = low_tier && bytes <= 50_000_000 && files <= 1_000 && !proof;
     let profile = if family == "tiny_file_churn" && id.ends_with("-mixed-v3") {
         workload_source::ordinary_workloads::MIXED_BULK_PROFILE
+    } else if family == "git_tool_workflow" && id.ends_with("-mixed-v4") {
+        workload_source::ordinary_workloads::MIXED_V4_GIT_PROFILE
+    } else if id.ends_with("-mixed-v4") {
+        workload_source::ordinary_workloads::MIXED_V4_PROFILE
     } else if id.contains("compact-") || id.contains("low-v") {
         "compact-low-tier-v2"
     } else {
@@ -529,10 +533,9 @@ fn run_selected(
                 .env("LAYERFS_V013_VERIFIER_EXCHANGE_HOST", &exchange);
         }
         if family == "git_tool_workflow" {
-            std::fs::create_dir_all("/qualified")?;
-            std::os::unix::fs::symlink(root.join("reference/input"), "/qualified/git-reference")?;
-            std::fs::create_dir_all("/verification")?;
-            command.env("LAYERFS_V013_VERIFIER_EXCHANGE_HOST", "/verification");
+            let exchange = root.join("verification");
+            std::fs::create_dir_all(&exchange)?;
+            command.env("LAYERFS_V013_VERIFIER_EXCHANGE_HOST", &exchange);
         }
         if !command.status()?.success() {
             return Err("selected Workspace operation failed".into());

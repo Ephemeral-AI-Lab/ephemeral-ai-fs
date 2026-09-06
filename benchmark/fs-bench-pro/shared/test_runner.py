@@ -68,6 +68,12 @@ class RunnerTests(unittest.TestCase):
                 fourth = runner._host_acquire(args, selection, time.monotonic() + 5)
                 self.assertFalse(fourth["cache_hit"])
                 self.assertNotEqual(third["cache_key"], fourth["cache_key"])
+                fixture["fixture_profile"] = "workspace-mixed-v4"
+                fixture["fixture_bytes"] = 104857600
+                fixture["regular_files"] = 2000
+                fifth = runner._host_acquire(args, selection, time.monotonic() + 5)
+                self.assertFalse(fifth["cache_hit"])
+                self.assertNotEqual(fourth["cache_key"], fifth["cache_key"])
 
     def test_mixed_v3_strict_classifier_and_cache_invalidation(self):
         for operation in ("create", "delete"):
@@ -78,7 +84,17 @@ class RunnerTests(unittest.TestCase):
                 self.assertIsNone(runner.issue47_assessment({**selection, "case": case}, 1))
         old = {"fixture_profile": "workspace-input-v1", "input_plan_sha256": "old-target"}
         new = {"fixture_profile": "tiny-bulk-mixed-v3", "input_plan_sha256": "new-target", "populated_manifest_sha256": "full-digests"}
+        mixed_v4 = {"fixture_profile": "workspace-mixed-v4", "input_plan_sha256": "mixed-v4-target", "fixture_bytes": 104857600, "regular_files": 2000}
         self.assertNotEqual(runner.digest(old), runner.digest(new))
+        self.assertNotEqual(runner.digest(old), runner.digest(mixed_v4))
+        self.assertNotEqual(runner.digest(new), runner.digest(mixed_v4))
+
+    def test_mixed_v4_profile_is_isolated_from_shards_and_compact(self):
+        shards = {"fixture_profile": "workspace-input-v1", "input_plan_sha256": "plan", "fixture_bytes": 104857600}
+        compact = {"fixture_profile": "compact-low-tier-v2", "input_plan_sha256": "plan", "fixture_bytes": 10485760}
+        mixed = {"fixture_profile": "workspace-mixed-v4", "input_plan_sha256": "plan", "fixture_bytes": 104857600}
+        self.assertNotEqual(runner.digest(shards), runner.digest(mixed))
+        self.assertNotEqual(runner.digest(compact), runner.digest(mixed))
 
     def test_mixed_oracle_identity_reuse_keeps_proof_bounded(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(runner, "HOST_ROOT", Path(directory)):
@@ -154,19 +170,50 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual((args.topology, args.cpus, args.memory_mib, args.timeout),
                              ("host-store", 2, 2048, 130))
             self.assertIsNone(args.perf_samples)
-        self.assertEqual(len(runner.HOST_FAMILIES), 12)
+        self.assertEqual(len(runner.HOST_FAMILIES), 17)
         self.assertIn("tiny_file_churn", runner.HOST_FAMILIES)
+        for family in ("workspace_change_locality", "dedup_branch_history", "git_tool_workflow",
+                       "mixed_load_bearing", "workspace_reliability"):
+            self.assertIn(family, runner.HOST_FAMILIES)
         row = {"identities": {"timer": "product_call_sum_ns"}, "command_wall_ns": 999,
                "records": [{"complete_ns": 888}, {"product_call_sum_ns": 123}]}
         self.assertEqual(runner._timer(row), ("product_call_sum_ns", 123))
         row["records"] = [{"complete_ns": 888}]
         self.assertEqual(runner._timer(row), ("product_call_sum_ns", None))
 
+    def test_timer_reconstructs_pure_call_sum_from_phase_records(self):
+        row = {"identities": {"timer": "pure_call_sum_ns"},
+               "records": [
+                   {"kind": "phase", "phase": "create", "elapsed_ns": 10},
+                   {"kind": "phase", "phase": "exec", "elapsed_ns": 20},
+                   {"kind": "phase", "phase": "commit", "elapsed_ns": 30},
+               ]}
+        self.assertEqual(runner._timer(row), ("pure_call_sum_ns", 60))
+
     def test_execution_allowance_does_not_relax_product_target(self):
         self.assertEqual(runner.PRODUCT_TARGET_NS, 15_000_000_000)
         self.assertEqual(runner.performance_target_status(15_000_000_000), "PASS")
         self.assertEqual(runner.performance_target_status(15_000_000_001), "TARGET_MISS")
         self.assertEqual(runner.performance_target_status(119_000_000_000), "TARGET_MISS")
+
+    def test_collection_mode_keeps_historical_target_classifier(self):
+        args = runner.build_parser().parse_args([
+            "--family", "namespace_mutation", "--collection-mode",
+            "--product-timeout", "300", "--timeout", "310",
+        ])
+        self.assertTrue(args.collection_mode)
+        self.assertEqual(args.product_timeout, 300)
+        self.assertEqual(args.timeout, 310)
+        self.assertEqual(runner.performance_target_status(16_000_000_000), "TARGET_MISS")
+        self.assertIn("reporting-only", runner.HISTORICAL_PRODUCT_TARGET_SCOPE)
+
+    def test_collection_timeouts_must_still_be_ordered(self):
+        with self.assertRaisesRegex(ValueError, "resource/budget"):
+            self.resolve(["--collection-mode", "--product-timeout", "300", "--timeout", "300"], {})
+        _, selection = self.resolve(
+            ["--collection-mode", "--product-timeout", "300", "--timeout", "310"], {}
+        )
+        self.assertEqual(selection["product_execution_allowance_seconds"], 300)
 
     def test_sdk_repetitions_share_input_identity(self):
         _, one = self.resolve(["--repetition", "1"], {"route": "sdk", "inherited": True, "seed_max": 5})

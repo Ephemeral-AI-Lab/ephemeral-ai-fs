@@ -76,6 +76,12 @@ class RuntimeTests(unittest.TestCase):
             with self.assertRaisesRegex(runtime.RuntimeFailure, "unowned"):
                 runtime.evict_host_cache(root, root / "prepared/0", max_entries=1)
 
+    def test_container_tree_install_rejects_unsafe_paths(self):
+        with self.assertRaisesRegex(ValueError, "absolute"):
+            runtime.ensure_container_dir("sample", "relative", runtime.Deadline.after(1))
+        with self.assertRaisesRegex(ValueError, r"\.\."):
+            runtime.ensure_container_dir("sample", "/qualified/../etc", runtime.Deadline.after(1))
+
     def test_volume_rejected(self):
         value = {"Image": "image", "State": {"Running": True}, "Mounts": [{"Type": "volume"}]}
         with self.assertRaisesRegex(runtime.RuntimeFailure, "runtime mount"):

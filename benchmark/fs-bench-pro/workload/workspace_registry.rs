@@ -119,7 +119,7 @@ pub(crate) fn dispatch(args: &[String]) -> Result<()> {
     }
     match args {
         [command,id,seed] if command == "workspace-verify-sample" => {
-            let sample = super::ordinary_workloads::tiny_sample(&resolve(id)?, seed.parse()?)?;
+            let sample = super::ordinary_workloads::workspace_sample(&resolve(id)?, seed.parse()?)?;
             let receipt = super::workspace_common::verify_native_sample(Path::new("."), &sample)?;
             for (key,value) in receipt { println!("{key}={value}"); }
         }

@@ -77,6 +77,34 @@ python3 benchmark/fs-bench-pro/shared/runner.py --topology host-store --family t
 
 Then select `tiny-bulk-delete-500-mixed-v3` with the same options and source. This authorization supersedes the earlier tier500-performance deferral above. Other runs retain the120second product/130second outer defaults. Independent proof budgets remain45/59seconds.
 
+## Issue 62 workspace-mixed-v4 Wave 1
+
+High-tier locality 100/500 IDs use [`workspace-mixed-v4`](../../docs/roadmap/0.1/0.1.3/workspace-mixed-v4.md): 2,000 files / 100 MiB including one 50 MiB object, and 5,000 files / 500 MiB including 300 MiB + 100 MiB objects. Compact 1/10 IDs are unchanged. Old unversioned 100k-file receipts stay historical; fewer files are not a product speedup.
+
+```bash
+python3 benchmark/fs-bench-pro/shared/runner.py --build-host
+export LAYERFS_BENCH_IMAGE="$(python3 benchmark/fs-bench-pro/shared/runner.py --build-image)"
+python3 benchmark/fs-bench-pro/shared/runner.py \
+  --topology host-store --family workspace_change_locality \
+  --case workspace-dense-rewrite-100-mixed-v4 --seed 1 --setup clone \
+  --collection-mode --product-timeout 300 --timeout 310 --setup-timeout 600 \
+  --output benchmark-results/host-store/campaigns/issue62-mixed-v4/dense-rewrite-100
+```
+
+Collect the eight Wave 1 locality 100/500 IDs serially. Compact 1/10 are not rerun. After performance, run sampled proofs only for completed cases; skip proofs when performance is INCOMPLETE. Proofs stay 45/59 seconds.
+
+## Issue 54 remaining-family statistics collection
+
+Issue #54 collects one full seed-1 sample of every remaining family without a 15-second performance acceptance gate. Use the existing host-store runner with `--collection-mode`, a 300-second product timeout covering the whole declared workload, and a 310-second outer command allowance. Preparation stays separately bounded. Historical 15-second classification is recorded as reporting-only and does not fail collection.
+
+```bash
+python3 benchmark/fs-bench-pro/issue54_collect.py \
+  --image "$LAYERFS_BENCH_IMAGE" \
+  --output benchmark-results/host-store/campaigns/issue54
+```
+
+`--collection-mode` does not rewrite historical receipts or erase the 15-second classifier. A 300-second timeout is an incomplete workload, not a completed timing. The `workspace-sustained-600s-compact-v2-proof` definition is preserved and reported as incompatible with the 60-second verification ceiling; do not shorten it.
+
 ## Issue49 create-100 fast iteration: prepare once, clone each sample
 
 The primary selection is `tiny-bulk-create-100-mixed-v3`, seed1: 1,000 created files /100MiB including one50MiB file, plus the unchanged separate200-file/1MiB witness. Use the family scripts below; they delegate to the existing host-store runner. Do not add a benchmark engine or direct benchmark execution inside Docker.
@@ -105,3 +133,15 @@ bash benchmark/fs-bench-pro/families/tiny_file_churn/perf.sh \
 Inspect preparation `cache_hit`, compatibility, setup mode/clone method, source/image identity, `prepared_master_unchanged`, complete product timings and cleanup. A new input/schema incompatibility should create/acquire the appropriate master through the runner; never force an incompatible cache hit or weaken isolation checks. Setup and cleanup retain their declared timer scopes.
 
 During implementation: one hypothesis, smallest changed-seam checks, matching build artifacts, one create-100 sample, inspect, retain/revise. Keep serial shared-lock coordination. Component checks supplement real FUSE execution; a host-only synthetic test cannot establish Docker/FUSE performance. Do not multiply performance seeds or rerun passing suites without a relevant change. Independent sampled proofs stay final-only through `verify.sh`/`verify-selected.py`, with exact receipt identities and45-second work/59-second hard limits. Physical100-workspace qualification remains deferred. These are execution instructions, not a request to run a benchmark during documentation work.
+
+## Issue 54 remaining-family statistics collection
+
+Issue #54 collects one full seed-1 sample of every remaining family without a 15-second performance acceptance gate. Use the existing host-store runner with `--collection-mode`, a 300-second product timeout covering the whole declared workload, and a 310-second outer command allowance. Preparation stays separately bounded. Historical 15-second classification is recorded as reporting-only and does not fail collection.
+
+```bash
+python3 benchmark/fs-bench-pro/issue54_collect.py \
+  --image "$LAYERFS_BENCH_IMAGE" \
+  --output benchmark-results/host-store/campaigns/issue54
+```
+
+`--collection-mode` does not rewrite historical receipts or erase the 15-second classifier. A 300-second timeout is an incomplete workload, not a completed timing. The `workspace-sustained-600s-compact-v2-proof` definition is preserved and reported as incompatible with the 60-second verification ceiling; do not shorten it.

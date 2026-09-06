@@ -3,14 +3,14 @@ use std::collections::BTreeMap;
 use workload_source::workspace_common::{self as common, Case, Entry, EntryKind};
 use workload_source::workspace_registry as registry;
 
-fn sample_binding(
+pub(crate) fn sample_binding(
     root: &Path,
     container: &ContainerId,
 ) -> AnyResult<Option<layerfs_sdk::ContainerBinding>> {
     benchmark_container_binding(root, container)
 }
 
-fn sample_client(
+pub(crate) fn sample_client(
     store: Arc<LayerStackStore>,
     binding: &Option<layerfs_sdk::ContainerBinding>,
 ) -> AnyResult<Client> {
@@ -798,11 +798,24 @@ pub(crate) fn fixture_info(case: &Case, seed: u8, branch: Option<BranchId>) -> A
             populated.len() - total_files,
             manifest_sha256,
         ))
+    } else if workload_source::ordinary_workloads::mixed_v4(case) {
+        let profile = if workload_source::ordinary_workloads::mixed_v4_git(case) {
+            "workspace-mixed-v4-git"
+        } else {
+            "workspace-mixed-v4"
+        };
+        plan =
+            workload_source::sdk_edit_common::sha256_hex(format!("{profile}\n{plan}").as_bytes());
+        None
     } else {
         None
     };
     let profile = if workload_source::ordinary_workloads::mixed_bulk(case) {
         workload_source::ordinary_workloads::MIXED_BULK_PROFILE
+    } else if workload_source::ordinary_workloads::mixed_v4_git(case) {
+        workload_source::ordinary_workloads::MIXED_V4_GIT_PROFILE
+    } else if workload_source::ordinary_workloads::mixed_v4(case) {
+        workload_source::ordinary_workloads::MIXED_V4_PROFILE
     } else {
         "workspace-input-v1"
     };
@@ -876,54 +889,140 @@ fn prepare(root: &Path, case: &Case, seed: u8) -> AnyResult<()> {
     Ok(())
 }
 
+fn docker_output(args: &[&str]) -> AnyResult<std::process::Output> {
+    Ok(Command::new("docker").args(args).output()?)
+}
+
+fn docker_success(args: &[&str], context: &str) -> AnyResult<()> {
+    let output = docker_output(args)?;
+    if !output.status.success() {
+        return Err(format!("{context}: {}", String::from_utf8_lossy(&output.stderr)).into());
+    }
+    Ok(())
+}
+
+fn copy_from_container(container: &ContainerId, src: &str, dst: &Path) -> AnyResult<()> {
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    docker_success(
+        &[
+            "cp",
+            &format!("{}:{src}", container.0),
+            dst.to_str().ok_or("container copy destination UTF-8")?,
+        ],
+        "docker cp from sample",
+    )
+}
+
 fn native_preparation(root: &Path, command: &[String]) -> AnyResult<()> {
     let image = std::env::var("LAYERFS_V013_IMAGE")?;
+    let host_target = PathBuf::from(command.get(1).ok_or("Git native preparation target")?);
+    let container_target = "/preparation/target";
     let stage = std::fs::canonicalize(root.parent().ok_or("Git preparation stage")?)?;
-    let mount = format!("type=bind,src={},dst=/preparation", stage.display());
     let token = std::env::var("LAYERFS_V013_PREPARATION_TOKEN")
         .unwrap_or_else(|_| format!("{}", std::process::id()));
     let name = format!("layerfs-prep-{token}-{}", command[0]);
     let label = format!("layerfs.phase1.preparation={token}");
-    let output = Command::new("docker")
-        .args([
-            "run",
-            "--rm",
-            "--name",
-            &name,
-            "--label",
-            &label,
-            "--cpus",
-            "2",
-            "--memory",
-            "2g",
-            "--memory-swap",
-            "2g",
-            "--pids-limit",
-            "256",
-            "--mount",
-            &mount,
-            "--entrypoint",
-            "/usr/local/bin/fs-benchmark-workload",
-            &image,
-        ])
-        .args(command)
-        .output()?;
-    std::fs::write(
-        stage.join(format!("{}.stdout.txt", command[0])),
-        &output.stdout,
-    )?;
-    std::fs::write(
-        stage.join(format!("{}.stderr.txt", command[0])),
-        &output.stderr,
-    )?;
-    if !output.status.success() {
+    let create = docker_output(&[
+        "create",
+        "--name",
+        &name,
+        "--label",
+        &label,
+        "--cpus",
+        "2",
+        "--memory",
+        "2g",
+        "--memory-swap",
+        "2g",
+        "--pids-limit",
+        "256",
+        "--network",
+        "none",
+        "--entrypoint",
+        "/bin/sleep",
+        &image,
+        "infinity",
+    ])?;
+    if !create.status.success() {
         return Err(format!(
-            "Git native preparation failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+            "Git native preparation create failed: {}",
+            String::from_utf8_lossy(&create.stderr)
         )
         .into());
     }
-    Ok(())
+    let result = (|| -> AnyResult<std::process::Output> {
+        docker_success(&["start", &name], "Git native preparation start")?;
+        docker_success(
+            &["exec", &name, "mkdir", "-p", "/preparation"],
+            "Git native preparation mkdir",
+        )?;
+        let existed = host_target.exists();
+        if existed {
+            docker_success(
+                &["exec", &name, "mkdir", "-p", container_target],
+                "Git native preparation target mkdir",
+            )?;
+            let source = format!("{}/.", host_target.display());
+            docker_success(
+                &["cp", &source, &format!("{name}:{container_target}/")],
+                "Git native preparation copy in",
+            )?;
+        }
+        let mut exec = Command::new("docker");
+        exec.args([
+            "exec",
+            &name,
+            "/usr/local/bin/fs-benchmark-workload",
+            &command[0],
+            container_target,
+        ]);
+        exec.args(&command[2..]);
+        let output = exec.output()?;
+        std::fs::write(
+            stage.join(format!("{}.stdout.txt", command[0])),
+            &output.stdout,
+        )?;
+        std::fs::write(
+            stage.join(format!("{}.stderr.txt", command[0])),
+            &output.stderr,
+        )?;
+        if !output.status.success() {
+            return Err(format!(
+                "Git native preparation failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into());
+        }
+        if existed {
+            docker_success(
+                &[
+                    "cp",
+                    &format!("{name}:{container_target}/."),
+                    &format!("{}/", host_target.display()),
+                ],
+                "Git native preparation copy out",
+            )?;
+        } else {
+            if let Some(parent) = host_target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            docker_success(
+                &[
+                    "cp",
+                    &format!("{name}:{container_target}"),
+                    host_target.to_str().ok_or("Git copy destination UTF-8")?,
+                ],
+                "Git native preparation copy new tree",
+            )?;
+        }
+        Ok(output)
+    })();
+    let _ = Command::new("docker")
+        .args(["rm", "--force", &name])
+        .output();
+    result.map(|_| ())
 }
 
 fn reference_info(case: &Case, seed: u8) -> AnyResult<()> {
@@ -1179,7 +1278,9 @@ fn run_case(
 ) -> AnyResult<()> {
     let fast = mode == "fast-verify";
     let verification = mode == "verify" || fast;
-    let sampled = verification && case.family == "tiny_file_churn";
+    let sampled = verification
+        && (case.family == "tiny_file_churn"
+            || workload_source::ordinary_workloads::mixed_v4(case));
     if fast
         && (case.kind == "git-tool"
             || case.kind == "boundaries"
@@ -1564,6 +1665,10 @@ fn run_case(
                 spool_observation("after-workload-before-commit")?;
                 physical_spool_state(&client, session.id, "after-workload-before-commit")?;
                 if verification && case.kind == "git-tool" {
+                    docker_success(
+                        &["exec", &container.0, "mkdir", "-p", "/verification"],
+                        "Git verification directory",
+                    )?;
                     let receipt = execute(
                         &client,
                         session.id,
@@ -1577,6 +1682,13 @@ fn run_case(
                         "git-precommit-custody",
                         &[("receipt", quote(&output_text(&receipt)?))],
                     );
+                    let exchange =
+                        PathBuf::from(std::env::var("LAYERFS_V013_VERIFIER_EXCHANGE_HOST")?);
+                    copy_from_container(
+                        &container,
+                        "/verification/precommit.tsv",
+                        &exchange.join("precommit.tsv"),
+                    )?;
                 }
                 product_budget.begin("commit")?;
                 let start = product_budget.start_clock("commit")?;
@@ -1743,7 +1855,7 @@ fn run_case(
             {
                 return Err("sampled publication/reconnect identity".into());
             }
-            let sample = workload_source::ordinary_workloads::tiny_sample(case, seed)?;
+            let sample = workload_source::ordinary_workloads::workspace_sample(case, seed)?;
             let receipt =
                 super::workspace_verify::verify_sample(&pinned.reader, pinned.root, &sample)?;
             emit(
@@ -1872,6 +1984,10 @@ fn run_case(
                 projection: Some(WorkspaceProjection::Fuse),
             })?;
             if case.kind == "git-tool" {
+                docker_success(
+                    &["exec", &container.0, "mkdir", "-p", "/verification"],
+                    "Git reopen verification directory",
+                )?;
                 let receipt = execute(
                     &client,
                     session.id,
@@ -1886,6 +2002,11 @@ fn run_case(
                     &[("receipt", quote(&output_text(&receipt)?))],
                 );
                 let exchange = PathBuf::from(std::env::var("LAYERFS_V013_VERIFIER_EXCHANGE_HOST")?);
+                copy_from_container(
+                    &container,
+                    "/verification/reopened.tsv",
+                    &exchange.join("reopened.tsv"),
+                )?;
                 if std::fs::read(exchange.join("precommit.tsv"))?
                     != std::fs::read(exchange.join("reopened.tsv"))?
                 {
@@ -2395,7 +2516,7 @@ pub(crate) fn dispatch(args: &[OsString]) -> AnyResult<()> {
                     let _sampler = HostSampler::start()?;
                     let outcome = super::workspace_reliability::run(
                         Path::new(root),
-                        Path::new(input).parent().ok_or("prepared directory")?,
+                        Path::new(input),
                         id,
                         ContainerId(container.clone()),
                     );

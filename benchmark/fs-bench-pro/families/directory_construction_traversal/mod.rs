@@ -12,7 +12,7 @@ pub(crate) fn cases() -> Vec<Case> {
     ] {
         for tier in [1, 10, 100, 500] {
             rows.push(Case {
-                id: format!("{prefix}{tier}{suffix}{}", if tier<=10 {"-compact-v2"} else {""}),
+                id: format!("{prefix}{tier}{suffix}{}", if tier<=10 {"-compact-v2"} else {"-mixed-v4"}),
                 family: FAMILY_ID,
                 tier,
                 kind,

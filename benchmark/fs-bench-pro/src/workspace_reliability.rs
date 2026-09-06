@@ -383,7 +383,8 @@ pub(crate) fn run(
         }
     }
     let store = Arc::new(LayerStackStore::connect(&path)?);
-    let client = Client::connect(store.clone())?;
+    let binding = super::workspace_bench::sample_binding(root, &container)?;
+    let client = super::workspace_bench::sample_client(store.clone(), &binding)?;
     let placement = WorkspacePlacement::Container {
         container_id: container.clone(),
         root: PathBuf::from(format!("/workspace/reliability-{}", case.kind)),
@@ -410,7 +411,7 @@ pub(crate) fn run(
         live(&client, session.id, &case, "initial", 0)?;
         match case.kind {
             "lease-lifecycle" => {
-                let second = Client::connect(store.clone())?;
+                let second = super::workspace_bench::sample_client(store.clone(), &binding)?;
                 let error = second.create_workspace_session(request());
                 observed(&second)?;
                 if !matches!(
@@ -440,12 +441,21 @@ pub(crate) fn run(
                     delete_len: 1,
                     replacement: WorkspaceFileReplacement::Inline(vec![1]),
                 });
-                if !matches!(
-                    invalid,
+                record("invalid-edit-outcome", &invalid);
+                // Historical store-route proofs returned InvalidInput("file range").
+                // The live daemon/FUSE owner maps that rejected range onto InvalidExecution.
+                // Either public rejection is accepted; a successful edit is not.
+                let historical = matches!(
+                    &invalid,
                     Err(SdkError::Workspace(WorkspaceError::Storage(
                         layerfs_layerstack_store::StoreError::InvalidInput("file range")
                     )))
-                ) {
+                );
+                let live_mapped = matches!(
+                    &invalid,
+                    Err(SdkError::Workspace(WorkspaceError::InvalidExecution))
+                );
+                if invalid.is_ok() || !(historical || live_mapped) {
                     return Err(format!("unexpected invalid-edit outcome: {invalid:?}").into());
                 }
                 unchanged(&store, branch, &before, before_commits)?;
@@ -896,7 +906,7 @@ pub(crate) fn run(
         return Err("unconsumed fault is a qualification gap".into());
     }
     let reopened = Arc::new(LayerStackStore::connect(&path)?);
-    let client = Client::connect(reopened.clone())?;
+    let client = super::workspace_bench::sample_client(reopened.clone(), &binding)?;
     let result = client.create_workspace_session(request());
     let observation = observed(&client);
     let session = result?;
@@ -984,11 +994,12 @@ fn integrity(
             return Err(e.into());
         }
     };
-    let client = Client::connect(store)?;
+    let binding = super::workspace_bench::sample_binding(root, &container)?;
+    let client = super::workspace_bench::sample_client(store, &binding)?;
     let create = client.create_workspace_session(CreateWorkspaceSession {
         branch_id: branch,
         placement: WorkspacePlacement::Container {
-            container_id: container,
+            container_id: container.clone(),
             root: PathBuf::from(format!("/workspace/reliability-{}", case.kind)),
         },
         projection: Some(WorkspaceProjection::Fuse),

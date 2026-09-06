@@ -148,7 +148,14 @@ product/oracle identity changes.
 
 ## Shared Workspace fixture
 
-The new `workspace-shards-v1` profile reuses the existing bounded byte generator.
+Two profiles exist. Do not mutate `workspace-shards-v1` in place. High-tier
+ordinary Workspace trees outside `init_namespace` use `workspace-mixed-v4`
+([workspace-mixed-v4.md](workspace-mixed-v4.md)); compact 1/10 and historical
+unversioned receipts keep `workspace-shards-v1` / `ordinary-low-tier-compact-v2`.
+
+### workspace-shards-v1
+
+The `workspace-shards-v1` profile reuses the existing bounded byte generator.
 For `N` shards and file ordinal `j` in `0..199`:
 
 | Ordinals | Files per shard | Bytes per file |
@@ -195,6 +202,24 @@ fixed large background reuse that qualified background across compatible runs.
 Metadata/content scans and Workspace-locality cases share the same fixture
 artifact when their complete identity matches. Hashes of the flat SDK payload
 are not hashes of this multi-file tree, even though the generator is shared.
+
+### workspace-mixed-v4
+
+High-tier (`100` / `500`) shared trees for families other than `init_namespace`
+use profile `workspace-mixed-v4`. Exact file/byte/large-object totals, Git
+exception, peak-bytes rule, and versioned IDs are frozen in
+[workspace-mixed-v4.md](workspace-mixed-v4.md). Summary:
+
+| Tier | Regular files | Payload | Large files | Wide `wide/` entries |
+| ---: | ---: | ---: | --- | ---: |
+| 100 | 2,000 | 100 MiB | 1 × 50 MiB | 640 |
+| 500 | 5,000 | 500 MiB | 1 × 300 MiB + 1 × 100 MiB | 1,600 |
+
+Assignment is large, then small (4 KiB), then medium, by `(shard, file ordinal)`
+ascending, 200 files per shard, same wide/regular/spine path shape as v1.
+Wide-directory fan-out is hundreds to low thousands, not 32,000. Prepared-cache
+identity includes this profile so v1/v3/compact masters cannot cache-hit.
+Product code must not branch on the profile string.
 
 ## Make preparation reusable and lazy
 

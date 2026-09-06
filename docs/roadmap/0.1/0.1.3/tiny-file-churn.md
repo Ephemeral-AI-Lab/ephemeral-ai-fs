@@ -27,14 +27,19 @@ scenario IDs. No size × operation-count matrix is added.
 
 | Scenario IDs | Affected files | Measured operation | Expected Commit |
 | --- | ---: | --- | --- |
-| `tiny-create-{N}` | N | Create and write scheduled absent files | `Created` |
-| `tiny-stat-{N}` | N | `lstat` scheduled existing files without payload reads | `UpToDate` |
-| `tiny-unlink-{N}` | N | Unlink scheduled existing files | `Created` |
-| `tiny-bulk-create-{N}` | 200 × N | Create N complete shared-profile shards, including directories and all file bytes | `Created` |
-| `tiny-bulk-delete-{N}` | 200 × N | Unlink every file in N prepared shards, then remove emptied shard directories | `Created` |
+| `tiny-create-{1,10}-compact-v2` | N | Create and write scheduled absent files | `Created` |
+| `tiny-create-{100,500}-mixed-v4` | N | Create and write scheduled absent files on mixed-v4 background | `Created` |
+| `tiny-stat-{1,10}-compact-v2` | N | `lstat` scheduled existing files without payload reads | `UpToDate` |
+| `tiny-stat-{100,500}-mixed-v4` | N | `lstat` scheduled existing files on mixed-v4 background | `UpToDate` |
+| `tiny-unlink-{1,10}-compact-v2` | N | Unlink scheduled existing files | `Created` |
+| `tiny-unlink-{100,500}-mixed-v4` | N | Unlink scheduled existing files on mixed-v4 background | `Created` |
+| `tiny-bulk-create-{1,10}-compact-v2` / `tiny-bulk-create-{100,500}-mixed-v3` | mixed-v3 bulk counts | Create target tree | `Created` |
+| `tiny-bulk-delete-{1,10}-compact-v2` / `tiny-bulk-delete-{100,500}-mixed-v3` | mixed-v3 bulk counts | Delete target tree | `Created` |
 
-Small-operation cases use the fixed 500-shard shared workspace as untouched
-background and a separate 500-target schedule. Parents are prepared before
+Small-operation compact 1/10 keep the compact background. Tiers 100/500 use the
+[`workspace-mixed-v4`](workspace-mixed-v4.md) tree as untouched background;
+operations stay N tiny 0–8 KiB files. Old unversioned 100/500 tiny-op IDs are
+historical. Bulk 100/500 stay `-mixed-v3`. A separate 500-target schedule. Parents are prepared before
 measurement. Create targets start absent; stat/unlink targets start present.
 Small target sizes repeat by scheduled ordinal:
 

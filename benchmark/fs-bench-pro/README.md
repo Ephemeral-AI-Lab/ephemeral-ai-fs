@@ -140,7 +140,7 @@ and [issue #45](https://github.com/Ephemeral-AI-Lab/layerfs/issues/45).
 
 ### Host-owned SQLite execution
 
-All enabled families use host-owned SQLite. `--topology host-store` remains an optional explicit spelling; `--topology docker` is rejected. Families awaiting host migration fail explicitly and have no Docker fallback. Build the host coordinator with `python3 shared/runner.py --build-host`, then use the same family `perf.sh`/`verify.sh`, selectors and seeds. Pass the frozen compatible Linux image with `--image`; host and image product seals must match. Host binary identity is sealed beside `target/release/fs-benchmark-pro`. The Linux image keeps its original source identity. Default host performance output is `benchmark-results/host-store/results/run-…`; pass an explicit host results directory for verification.
+All enabled families use host-owned SQLite. `--topology host-store` remains an optional explicit spelling; `--topology docker` is rejected. Unregistered families fail explicitly and have no Docker fallback. The remaining ordinary/dedup/Git/reliability families are admitted through the same host-store runner. Build the host coordinator with `python3 shared/runner.py --build-host`, then use the same family `perf.sh`/`verify.sh`, selectors and seeds. Pass the frozen compatible Linux image with `--image`; host and image product seals must match. Host binary identity is sealed beside `target/release/fs-benchmark-pro`. The Linux image keeps its original source identity. Default host performance output is `benchmark-results/host-store/results/run-…`; pass an explicit host results directory for verification.
 
 Example (from this directory):
 
