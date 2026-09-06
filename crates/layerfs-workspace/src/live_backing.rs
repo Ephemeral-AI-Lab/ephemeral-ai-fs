@@ -128,9 +128,17 @@ impl BackingOwner {
                 if data.len() > 1024 * 1024 {
                     return Err(StoreError::InvalidInput("backing append"));
                 }
-                if self.append_reservation != Some((id, offset, data.len() as u64)) {
-                    return Err(StoreError::Integrity("backing append reservation"));
-                }
+                let remaining = match self.append_reservation {
+                    Some((held, start, remaining))
+                        if held == id
+                            && start == offset
+                            && !data.is_empty()
+                            && data.len() as u64 <= remaining =>
+                    {
+                        remaining
+                    }
+                    _ => return Err(StoreError::Integrity("backing append reservation")),
+                };
                 let segment = self
                     .retained
                     .get(&id)
@@ -146,6 +154,9 @@ impl BackingOwner {
                     #[cfg(feature = "test-instrumentation")]
                     false,
                 )?;
+                let remaining = remaining - data.len() as u64;
+                self.append_reservation =
+                    (remaining != 0).then_some((id, offset + data.len() as u64, remaining));
             }
             wire::CANCEL_RESERVATION => {
                 let id = BackingId(input.u64()?);
@@ -474,7 +485,22 @@ mod tests {
         wire::u64_out(&mut read, offset);
         read.extend_from_slice(&3u32.to_be_bytes());
         assert_eq!(owner.request(&read).unwrap(), b"abc");
+        let response = owner.request(&reserve).unwrap();
+        let mut input = Input(&response);
+        let next_id = input.u64().unwrap();
+        let next_offset = input.u64().unwrap();
+        let mut part = vec![wire::APPEND];
+        wire::u64_out(&mut part, next_id);
+        wire::u64_out(&mut part, next_offset);
+        wire::bytes_out(&mut part, b"x").unwrap();
+        owner.request(&part).unwrap();
+        assert!(owner.request(&part).is_err(), "partial prefix replayed");
+        let mut cancel = vec![wire::CANCEL_RESERVATION];
+        wire::u64_out(&mut cancel, next_id);
+        wire::u64_out(&mut cancel, next_offset + 1);
+        owner.request(&cancel).unwrap();
         assert!(owner.request(&reserve).is_ok());
+        assert_eq!(owner.request(&read).unwrap(), b"abc");
         drop(owner);
         drop(workspace);
         std::fs::remove_dir_all(directory).unwrap();

@@ -19,7 +19,7 @@ struct Owner {
     backing: BackingConnection,
     // Only physical append allocation is ordered across files. No state lock
     // is retained while a physical reservation or append waits.
-    append: tokio::sync::Mutex<()>,
+    append: tokio::sync::Mutex<Option<(BackingId, u64, u64)>>,
     ordering: Mutex<HashMap<NodeId, Arc<tokio::sync::Mutex<()>>>>,
     ranges: Mutex<HashMap<BackingId, BackingRef>>,
     gate: OperationGate,
@@ -159,28 +159,51 @@ impl LiveOwner {
             return Err(PortError::Invalid);
         }
         let _order = self.ordered(node).await?;
-        let _append = self.0.append.lock().await;
-        let mut reserve = vec![wire::RESERVE];
-        wire::u64_out(&mut reserve, bytes.len() as u64);
-        let response = self.0.backing.call(&reserve).await?;
-        let mut input = Input(&response);
-        let id = BackingId(input.u64().map_err(io)?);
-        let start = input.u64().map_err(io)?;
-        let capacity = input.u64().map_err(io)?;
-        input.done().map_err(io)?;
-        if start
-            .checked_add(bytes.len() as u64)
-            .is_none_or(|end| end > capacity)
-        {
-            return Err(PortError::Io);
+        let mut window = self.0.append.lock().await;
+        if window.is_some_and(|(_, _, remaining)| remaining < bytes.len() as u64) {
+            self.cancel_append(&mut window).await?;
         }
+        if window.is_none() {
+            let mut wanted = {
+                let state = self.state()?;
+                (1024 * 1024)
+                    .min(
+                        state
+                            .policy
+                            .max_spool_bytes
+                            .saturating_sub(state.spool_bytes),
+                    )
+                    .max(bytes.len() as u64)
+            };
+            let mut reserve = vec![wire::RESERVE];
+            wire::u64_out(&mut reserve, wanted);
+            let response = match self.0.backing.call(&reserve).await {
+                Err(PortError::NoSpace) if wanted > bytes.len() as u64 => {
+                    wanted = bytes.len() as u64;
+                    reserve.truncate(1);
+                    wire::u64_out(&mut reserve, wanted);
+                    self.0.backing.call(&reserve).await?
+                }
+                result => result?,
+            };
+            let mut input = Input(&response);
+            let id = BackingId(input.u64().map_err(io)?);
+            let start = input.u64().map_err(io)?;
+            let capacity = input.u64().map_err(io)?;
+            input.done().map_err(io)?;
+            if start.checked_add(wanted).is_none_or(|end| end > capacity) {
+                return Err(PortError::Io);
+            }
+            *window = Some((id, start, wanted));
+        }
+        let (id, start, remaining) = window.ok_or(PortError::Io)?;
         let reference = self
             .0
             .ranges
             .lock()
             .map_err(|_| PortError::Io)?
             .entry(id)
-            .or_insert_with(|| BackingRef::new(id, capacity))
+            .or_insert_with(|| BackingRef::new(id, ()))
             .clone();
         let prepared = self
             .state()?
@@ -195,22 +218,26 @@ impl LiveOwner {
                 }),
             )
             .map_err(core);
-        let prepared = match prepared {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                let mut release = vec![wire::CANCEL_RESERVATION];
-                wire::u64_out(&mut release, id.0);
-                wire::u64_out(&mut release, start);
-                self.0.backing.call(&release).await?;
-                return Err(error);
-            }
-        };
+        let prepared = prepared?;
         let mut append = vec![wire::APPEND];
         wire::u64_out(&mut append, id.0);
         wire::u64_out(&mut append, start);
         wire::bytes_out(&mut append, bytes).map_err(io)?;
+        *window = None;
         self.0.backing.call(&append).await?;
+        let remaining = remaining - bytes.len() as u64;
+        *window = (remaining != 0).then_some((id, start + bytes.len() as u64, remaining));
         self.state()?.apply_edit(prepared).map_err(core)
+    }
+
+    async fn cancel_append(&self, window: &mut Option<(BackingId, u64, u64)>) -> PortResult<()> {
+        if let Some((id, offset, _)) = window.take() {
+            let mut cancel = vec![wire::CANCEL_RESERVATION];
+            wire::u64_out(&mut cancel, id.0);
+            wire::u64_out(&mut cancel, offset);
+            self.0.backing.call(&cancel).await?;
+        }
+        Ok(())
     }
 
     pub async fn read_owned(&self, node: NodeId, offset: u64, size: usize) -> PortResult<Vec<u8>> {
@@ -445,7 +472,8 @@ impl FilesystemPort for LiveOwner {
     }
     fn fsync(&self, _: Option<NodeId>) -> PortResult<()> {
         self.run(async {
-            let _append = self.0.append.lock().await;
+            let mut window = self.0.append.lock().await;
+            self.cancel_append(&mut window).await?;
             let mut check = vec![wire::CHECK];
             for id in self.0.ranges.lock().map_err(|_| PortError::Io)?.keys() {
                 wire::u64_out(&mut check, id.0);
@@ -496,6 +524,7 @@ impl LiveOwner {
         }
         let cut = self.0.gate.cache_flush().await.finish().await;
         *self.0.cut.lock().map_err(|_| PortError::Io)? = Some(cut);
+        self.cancel_append(&mut *self.0.append.lock().await).await?;
         let (generation, ids) = {
             let state = self.state()?;
             let mut ids = state.dirty.clone();
