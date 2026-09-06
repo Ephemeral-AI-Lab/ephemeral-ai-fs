@@ -185,6 +185,67 @@ impl ResolvedName {
 }
 
 impl LiveWorkspace {
+    pub fn check_pin(&self, node: NodeId) -> Result<()> {
+        let value = self.nodes.get(&node).ok_or(Error::NotFound("node"))?;
+        if !matches!(value.data, Data::File(_)) {
+            return Err(Error::InvalidInput("open"));
+        }
+        value
+            .pins
+            .checked_add(1)
+            .ok_or(Error::Integrity("node pin"))?;
+        Ok(())
+    }
+
+    pub fn pin(&mut self, node: NodeId) -> Result<()> {
+        self.check_pin(node)?;
+        self.nodes.get_mut(&node).unwrap().pins += 1;
+        Ok(())
+    }
+
+    /// Returns whether edited ranges were released and adapter retirement can run.
+    pub fn unpin(&mut self, node: NodeId) -> Result<bool> {
+        let value = self.nodes.get_mut(&node).ok_or(Error::NotFound("node"))?;
+        value.pins = value
+            .pins
+            .checked_sub(1)
+            .ok_or(Error::Integrity("node pin"))?;
+        Ok(self.reclaim(node))
+    }
+
+    pub fn reclaim(&mut self, node: NodeId) -> bool {
+        if self.nodes.get(&node).is_some_and(|value| {
+            value.paths.is_empty()
+                && value.pins == 0
+                && !(value.links != 0
+                    && !matches!(value.data, Data::Directory(_))
+                    && self.dirty.contains(&node))
+        }) {
+            self.dirty.remove(&node);
+            self.directory_parents.remove(&node);
+            if let Some(value) = self.nodes.remove(&node) {
+                self.edited_nodes.remove(&node);
+                if let Some(inode) = value.canonical {
+                    self.canonical_nodes.remove(&inode);
+                }
+                if let Data::File(FileData::Edited {
+                    spool_high_water,
+                    pieces,
+                    ..
+                }) = value.data
+                {
+                    self.spool_bytes = self.spool_bytes.saturating_sub(spool_high_water);
+                    self.inline_bytes = self.inline_bytes.saturating_sub(pieces.inline_len());
+                    self.piece_allocation_bytes = self
+                        .piece_allocation_bytes
+                        .saturating_sub(pieces.logical_allocation_charge().unwrap_or(0));
+                    drop(pieces);
+                    return true;
+                }
+            }
+        }
+        false
+    }
     pub fn directory(&self, node: NodeId) -> Result<&DirectoryData> {
         match &self.nodes.get(&node).ok_or(Error::NotFound("node"))?.data {
             Data::Directory(directory) => Ok(directory),

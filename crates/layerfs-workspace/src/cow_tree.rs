@@ -738,35 +738,18 @@ impl Workspace {
     }
 
     pub fn pin(&mut self, node: NodeId, truncate: bool) -> Result<()> {
-        if !matches!(
-            self.live
-                .nodes
-                .get(&node)
-                .ok_or(StorageError::NotFound("node"))?
-                .data,
-            Data::File(_)
-        ) {
-            return Err(StorageError::InvalidInput("open"));
-        }
+        self.live.check_pin(node).map_err(crate::live_error)?;
         if truncate {
             self.truncate(node, 0)?;
         }
-        self.live.nodes.get_mut(&node).unwrap().pins += 1;
-        Ok(())
+        self.live.pin(node).map_err(crate::live_error)
     }
 
     pub fn unpin(&mut self, node: NodeId) -> Result<()> {
         self.finish_capture(Some(node));
-        let value = self
-            .live
-            .nodes
-            .get_mut(&node)
-            .ok_or(StorageError::NotFound("node"))?;
-        value.pins = value
-            .pins
-            .checked_sub(1)
-            .ok_or(StorageError::Integrity("node pin"))?;
-        self.reclaim(node);
+        if self.live.unpin(node).map_err(crate::live_error)? {
+            self.retire_spool_segments();
+        }
         Ok(())
     }
 
@@ -816,37 +799,8 @@ impl Workspace {
     }
 
     fn reclaim(&mut self, node: NodeId) {
-        if self.live.nodes.get(&node).is_some_and(|value| {
-            value.paths.is_empty()
-                && value.pins == 0
-                && !(value.links != 0
-                    && !matches!(value.data, Data::Directory(_))
-                    && self.live.dirty.contains(&node))
-        }) {
-            self.live.dirty.remove(&node);
-            self.live.directory_parents.remove(&node);
-            if let Some(value) = self.live.nodes.remove(&node) {
-                self.live.edited_nodes.remove(&node);
-                if let Some(inode) = value.canonical {
-                    self.live.canonical_nodes.remove(&inode);
-                }
-                if let Data::File(FileData::Edited {
-                    spool_high_water,
-                    pieces,
-                    ..
-                }) = value.data
-                {
-                    self.live.spool_bytes = self.live.spool_bytes.saturating_sub(spool_high_water);
-                    self.live.inline_bytes =
-                        self.live.inline_bytes.saturating_sub(pieces.inline_len());
-                    self.live.piece_allocation_bytes = self
-                        .live
-                        .piece_allocation_bytes
-                        .saturating_sub(pieces.logical_allocation_charge().unwrap_or(0));
-                    drop(pieces);
-                    self.retire_spool_segments();
-                }
-            }
+        if self.live.reclaim(node) {
+            self.retire_spool_segments();
         }
     }
 }

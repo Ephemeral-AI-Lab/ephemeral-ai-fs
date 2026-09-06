@@ -259,7 +259,7 @@ mod tests {
         assert_eq!(live.nodes[&file], before, "prepare mutated live state");
         assert_eq!(live.spool_bytes, 0);
         live.chmod(ROOT, 0o700).unwrap();
-        live.nodes.get_mut(&file).unwrap().pins += 1;
+        live.pin(file).unwrap();
         assert_eq!(live.apply_edit(prepared).unwrap(), 5);
         assert_eq!(live.attr(file).unwrap().size, 8);
         assert_eq!(live.spool_bytes, 5);
@@ -327,7 +327,7 @@ mod tests {
         )
         .unwrap();
         let prepared = live.prepare_truncate(file, 0).unwrap().unwrap();
-        live.nodes.get_mut(&file).unwrap().pins += 1;
+        live.pin(file).unwrap();
         live.policy.max_spool_bytes = 0;
         live.apply_edit(prepared).unwrap();
         assert_eq!(live.attr(file).unwrap().size, 0);
@@ -347,6 +347,28 @@ mod tests {
         let before = live.nodes[&file].clone();
         assert!(live.prepare_truncate(file, 0).is_err());
         assert_eq!(live.nodes[&file], before);
+    }
+
+    #[test]
+    fn pins_reject_overflow_and_keep_unlinked_nodes_until_last_release() {
+        let (mut live, file) = live_file();
+        assert!(live.unpin(file).is_err());
+        live.nodes.get_mut(&file).unwrap().pins = u32::MAX;
+        assert!(live.pin(file).is_err());
+        assert_eq!(live.nodes[&file].pins, u32::MAX);
+        live.nodes.get_mut(&file).unwrap().pins = 0;
+        live.pin(file).unwrap();
+        live.pin(file).unwrap();
+        let value = live.nodes.get_mut(&file).unwrap();
+        value.paths.clear();
+        value.links = 0;
+        assert!(!live.reclaim(file));
+        assert!(!live.unpin(file).unwrap());
+        assert!(live.nodes.contains_key(&file));
+        assert!(live.unpin(file).unwrap());
+        assert!(!live.nodes.contains_key(&file));
+        assert!(live.unpin(file).is_err());
+        assert!(live.pin(ROOT).is_err());
     }
 
     #[test]
