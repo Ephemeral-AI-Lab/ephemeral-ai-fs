@@ -26,10 +26,12 @@ pub struct FuseWriteMetrics {
     pub live_backing_queue_ns: u64,
     pub live_write_dispatch_ns: u64,
     pub live_edit_ns: u64,
+    /// Request body bytes for all live backing operations, including non-write control/facts.
+    pub live_backing_request_bytes: u64,
 }
 
 impl FuseWriteMetrics {
-    const FIELD_COUNT: usize = 23;
+    const FIELD_COUNT: usize = 24;
 
     pub(crate) fn merge(&mut self, other: Self) {
         self.max_write_bytes = self.max_write_bytes.max(other.max_write_bytes);
@@ -82,6 +84,7 @@ impl FuseWriteMetrics {
             self.live_backing_queue_ns,
             self.live_write_dispatch_ns,
             self.live_edit_ns,
+            self.live_backing_request_bytes,
         ]
     }
 
@@ -110,6 +113,7 @@ impl FuseWriteMetrics {
             &mut self.live_backing_queue_ns,
             &mut self.live_write_dispatch_ns,
             &mut self.live_edit_ns,
+            &mut self.live_backing_request_bytes,
         ]
     }
 
@@ -138,6 +142,7 @@ impl FuseWriteMetrics {
             live_backing_queue_ns: fields[20],
             live_write_dispatch_ns: fields[21],
             live_edit_ns: fields[22],
+            live_backing_request_bytes: fields[23],
         }
     }
 }
@@ -167,6 +172,7 @@ pub(crate) struct AtomicFuseWriteMetrics {
     pub(crate) live_backing_queue_ns: AtomicU64,
     pub(crate) live_write_dispatch_ns: AtomicU64,
     pub(crate) live_edit_ns: AtomicU64,
+    pub(crate) live_backing_request_bytes: AtomicU64,
 }
 
 impl AtomicFuseWriteMetrics {
@@ -258,6 +264,7 @@ impl AtomicFuseWriteMetrics {
             live_backing_queue_ns: self.live_backing_queue_ns.swap(0, Ordering::Relaxed),
             live_write_dispatch_ns: self.live_write_dispatch_ns.swap(0, Ordering::Relaxed),
             live_edit_ns: self.live_edit_ns.swap(0, Ordering::Relaxed),
+            live_backing_request_bytes: self.live_backing_request_bytes.swap(0, Ordering::Relaxed),
         }
     }
 }

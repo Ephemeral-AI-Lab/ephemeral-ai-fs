@@ -1627,10 +1627,18 @@ impl LiveOwner {
                 }
                 let node = pending.node;
                 #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
+                let cache_data = self
+                    .0
+                    .cached
+                    .lock()
+                    .map_err(|_| PortError::Io)?
+                    .contains(&node);
+                #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
                 let _cache_charge = self
                     .0
                     .notifier
                     .get()
+                    .filter(|_| cache_data)
                     .map(|_| {
                         self.0
                             .scheduler
@@ -1657,7 +1665,11 @@ impl LiveOwner {
                 #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
                 if let Some(notifier) = self.0.notifier.get().cloned() {
                     let updated = async {
-                        let mut ranges = pending.cache_ranges;
+                        let mut ranges = if cache_data {
+                            pending.cache_ranges
+                        } else {
+                            Vec::new()
+                        };
                         ranges.sort_unstable_by_key(|range| range.start);
                         let mut end = 0;
                         for range in ranges {

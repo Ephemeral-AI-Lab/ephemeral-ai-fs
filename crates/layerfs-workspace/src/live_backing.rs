@@ -621,6 +621,7 @@ mod tests {
         remote.server.control("resume").unwrap();
         let metrics = remote.server.take_write_metrics().unwrap();
         assert!(metrics.live_backing_calls > 0 && metrics.live_backing_calls < 130);
+        assert!(metrics.live_backing_request_bytes > 0);
         assert!(metrics.live_backing_wait_ns > 0);
         assert!(metrics.live_backing_queue_ns > 0);
         assert!(metrics.host_dispatch_ns > 0);
@@ -672,6 +673,7 @@ mod tests {
         );
         owner.unpin_directory(empty).unwrap();
         assert!(owner.attr(empty).is_err());
+        remote.server.take_write_metrics().unwrap();
         remote
             .edit(
                 "bulk/file",
@@ -685,6 +687,13 @@ mod tests {
             )
             .unwrap();
         assert_eq!(owner.read(file, 0, 20).unwrap(), b"fXYst");
+        let sdk_metrics = remote.server.take_write_metrics().unwrap();
+        if !local {
+            assert!(sdk_metrics.live_backing_request_bytes > 0);
+        }
+        assert_eq!(sdk_metrics.client_frame_bytes, 0);
+        assert_eq!(sdk_metrics.host_frame_bytes, 0);
+        assert_eq!(sdk_metrics.frame_payload_copy_bytes, 0);
         let streamed = owner
             .create_file_open(crate::ROOT, b"streamed", 0o600)
             .unwrap()

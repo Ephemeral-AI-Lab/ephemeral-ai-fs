@@ -288,7 +288,16 @@ async fn serve(
         let mut bytes = vec![0; length];
         let read = Instant::now();
         stream.read_exact(&mut bytes).await?;
-        metrics.note_host_frame((length + 4) as u64, 0, ns(read), 0);
+        metrics.note_host_frame(
+            if bytes[0] == crate::live_wire::APPEND {
+                (length + 4) as u64
+            } else {
+                0
+            },
+            0,
+            ns(read),
+            0,
+        );
         let handler = handler.clone();
         let metrics = metrics.clone();
         let queued = Instant::now();
@@ -369,6 +378,9 @@ impl BackingConnection {
         self.metrics
             .live_backing_calls
             .fetch_add(1, Ordering::Relaxed);
+        self.metrics
+            .live_backing_request_bytes
+            .fetch_add(bytes.len() as u64, Ordering::Relaxed);
         let mut held = self.stream.lock().await;
         if let Some((handler, scheduler)) = &self.local {
             if !self.available.load(Ordering::Acquire) {
@@ -377,7 +389,16 @@ impl BackingConnection {
             let charge = scheduler
                 .reserve_transfer(bytes.len() + 2 * MAX_FRAME)
                 .map_err(|_| PortError::NoSpace)?;
-            self.metrics.note_client_frame(0, bytes.len() as u64, 0, 0);
+            self.metrics.note_client_frame(
+                0,
+                if bytes[0] == crate::live_wire::APPEND {
+                    bytes.len() as u64
+                } else {
+                    0
+                },
+                0,
+                0,
+            );
             let bytes = bytes.to_vec();
             let handler = handler.clone();
             let metrics = self.metrics.clone();
@@ -427,7 +448,16 @@ async fn exchange(
     let written = Instant::now();
     write_frame(stream, None, bytes).await?;
     if let Some(metrics) = metrics {
-        metrics.note_client_frame((bytes.len() + 4) as u64, 0, 0, ns(written));
+        metrics.note_client_frame(
+            if bytes[0] == crate::live_wire::APPEND {
+                (bytes.len() + 4) as u64
+            } else {
+                0
+            },
+            0,
+            0,
+            ns(written),
+        );
     }
     let length = stream.read_u32().await? as usize;
     if length == 0 || length > MAX_FRAME + 1 {

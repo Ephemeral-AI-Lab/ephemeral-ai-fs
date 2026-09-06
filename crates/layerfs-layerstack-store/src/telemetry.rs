@@ -77,6 +77,7 @@ pub struct FuseWriteReceipt {
     pub host_decode_copy_bytes: u64,
     pub host_dispatch_ns: u64,
     pub live_backing_calls: u64,
+    pub live_backing_request_bytes: u64,
     pub live_backing_wait_ns: u64,
     pub live_backing_queue_ns: u64,
     pub live_write_dispatch_ns: u64,
