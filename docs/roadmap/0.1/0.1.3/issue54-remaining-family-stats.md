@@ -105,12 +105,6 @@ Unavailable metrics are omitted or recorded as the runner emitted them; zeros ar
 
 ## Follow-up ownership
 
-| Issue | Owns |
-|---|---|
-| [#55](https://github.com/Ephemeral-AI-Lab/layerfs/issues/55) | `directory-*-scan-500` and `workspace-dense-rewrite-500` ENOSPC |
-| [#56](https://github.com/Ephemeral-AI-Lab/layerfs/issues/56) | `workspace-dense-rewrite-100` FUSE presentation failure |
-| [#57](https://github.com/Ephemeral-AI-Lab/layerfs/issues/57) | `dedup-history-unrelated-500` 300 s incomplete timeout |
-| [#58](https://github.com/Ephemeral-AI-Lab/layerfs/issues/58) | reliability Busy/fault proofs vs live owner; `sustained-600s` remains duration-incompatible |
-| [#59](https://github.com/Ephemeral-AI-Lab/layerfs/issues/59) | git-tool canonical metadata mismatch on `.` |
+Leftover failed and slow rows are tracked in one ticket: [#61](https://github.com/Ephemeral-AI-Lab/layerfs/issues/61). Split follow-ups #55–#59 were closed as duplicates of that issue.
 
 Large-tier independent proofs that hit the 45/59 s ceiling are not rerun at 300 s. Compact/tier-1/10 proofs of the same kind already cover those shapes. This campaign does not start Exec+Commit optimization and does not close #39.
