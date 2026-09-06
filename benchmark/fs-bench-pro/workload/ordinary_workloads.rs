@@ -304,18 +304,24 @@ fn mixed_v4_sample(case: &Case, seed: u8) -> Result<common::TreeSample> {
     for ordinal in 0..large.len() {
         selected.insert(ordinal);
     }
+    let tiny_op = matches!(case.kind, "tiny-create" | "tiny-stat" | "tiny-unlink");
     if mixed_v4_git(case) {
         selected.insert(1);
         selected.insert(count - 1);
+        selected.insert(64);
+        selected.insert(199);
+    } else if tiny_op {
+        selected.insert(64);
+        selected.insert(199);
     } else {
         let small = common::mixed_v4_small_count(case.tier)?;
         selected.insert(large.len());
         selected.insert(large.len() + small - 1);
         selected.insert(large.len() + small);
         selected.insert(count - 1);
+        selected.insert(64);
+        selected.insert(199);
     }
-    selected.insert(64);
-    selected.insert(199);
     let expected = expected(case, seed, 1)?;
     let by_path = expected
         .iter()
@@ -366,6 +372,22 @@ fn mixed_v4_sample(case: &Case, seed: u8) -> Result<common::TreeSample> {
             sample.entries.push((*file).clone());
         }
     }
+    if tiny_op {
+        sample.entries.push(Entry::directory("tiny"));
+        let order = rank(seed, "tiny-file-churn")?;
+        let mut tiny_idx = BTreeSet::from([0, case.tier / 2, case.tier - 1]);
+        tiny_idx.retain(|k| *k < case.tier);
+        for k in tiny_idx {
+            let path = format!("tiny/p{}/f{:03}.dat", k % 10, order[k]);
+            if case.kind == "tiny-unlink" {
+                sample.absent.push(path);
+            } else if let Some(entry) = by_path.get(path.as_str()) {
+                sample.entries.push((*entry).clone());
+            } else {
+                return Err(format!("workspace-mixed-v4 tiny sample path absent: {path}").into());
+            }
+        }
+    }
     sample.validate()?;
     Ok(sample)
 }
@@ -412,7 +434,7 @@ pub(crate) fn fixture(case: &Case, seed: u8) -> Result<Vec<Entry>> {
             },
         ),
         "tiny-create" | "tiny-stat" | "tiny-unlink" => {
-            merge(&mut entries, case_shards(case,seed, background_shards(case,500), "")?);
+            merge(&mut entries, workspace_tree(case, seed, background_shards(case,500))?);
             dir(&mut entries, "tiny");
             for p in 0..10 {
                 dir(&mut entries, &format!("tiny/p{p}"));
@@ -818,6 +840,7 @@ pub(crate) fn check_cases(rows: &[Case], expected: usize) -> Result<()> {
             || row.id.ends_with("-mixed-v3") != mixed_bulk(row)
             || row.id.ends_with("-mixed-v4") != mixed_v4(row)
             || (row.family == "tiny_file_churn" && row.kind.starts_with("tiny-bulk-") && row.tier >= 100 && !mixed_bulk(row))
+            || (row.family == "tiny_file_churn" && !row.kind.starts_with("tiny-bulk-") && row.tier >= 100 && !mixed_v4(row))
             || (matches!(row.family, "workspace_change_locality" | "directory_construction_traversal" | "namespace_mutation" | "git_tool_workflow")
                 && row.tier >= 100
                 && !mixed_v4(row))

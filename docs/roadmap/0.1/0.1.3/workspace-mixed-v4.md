@@ -132,7 +132,7 @@ Wave 2: `directory-content-scan-{100,500}-mixed-v4`, `directory-metadata-scan-{1
 
 Wave 3: `namespace-subtree-relocate-delete-{100,500}-mixed-v4`, `git-tool-{100,500}-mixed-v4` (Git exception above).
 
-Background-only: `tiny-{create,stat,unlink}-{100,500}-mixed-v4`.
+Background-only: `tiny-{create,stat,unlink}-{100,500}-mixed-v4`. Operations stay N tiny 0–8 KiB files; the mixed tree is the untouched background. Compact 1/10 and `tiny-bulk-*-{100,500}-mixed-v3` stay as they are.
 
 ## Do not migrate
 

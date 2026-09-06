@@ -21,7 +21,7 @@ pub(crate) fn cases() -> Vec<Case> {
                     } else if kind.starts_with("tiny-bulk-") {
                         "-mixed-v3"
                     } else {
-                        ""
+                        "-mixed-v4"
                     }
                 ),
                 family: FAMILY_ID,
@@ -47,7 +47,49 @@ pub(crate) fn apply(case: &Case, seed: u8, step: usize, verify: bool) -> Result<
 
 pub(crate) fn self_check() -> Result<()> {
     ordinary_workloads::check_cases(&cases(), 20)?;
-    mixed_v3_check()
+    mixed_v3_check()?;
+    mixed_v4_tiny_check()
+}
+
+fn mixed_v4_tiny_check() -> Result<()> {
+    use super::workspace_common::{self as common, EntryKind};
+    let rows = cases();
+    for kind in ["tiny-create", "tiny-stat", "tiny-unlink"] {
+        for tier in [100, 500] {
+            let case = rows
+                .iter()
+                .find(|row| row.kind == kind && row.tier == tier)
+                .ok_or("tiny mixed-v4 case")?;
+            if !case.id.ends_with("-mixed-v4") {
+                return Err("tiny mixed-v4 id".into());
+            }
+            let background = if tier == 100 { 2000 } else { 5000 };
+            for seed in 1..=3 {
+                let input = fixture(case, seed)?;
+                let prepared = input
+                    .iter()
+                    .filter(|entry| {
+                        matches!(entry.kind, EntryKind::File(_))
+                            && !entry.path.starts_with("tiny/")
+                    })
+                    .count();
+                if prepared != background {
+                    return Err(format!("tiny mixed-v4 background files {kind} {tier}").into());
+                }
+                if common::validate_entries(&input)?
+                    < tier as u64 * common::MIB
+                {
+                    return Err("tiny mixed-v4 background bytes".into());
+                }
+                let sample = ordinary_workloads::workspace_sample(case, seed)?;
+                sample.validate()?;
+                if sample.ranges.len() != if tier == 100 { 1 } else { 2 } {
+                    return Err("tiny mixed-v4 large-file sample".into());
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 // Descriptor and bounded-byte checks; no product, full materialization or benchmark.
