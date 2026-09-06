@@ -55,6 +55,7 @@ impl WorkspaceWorker {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn enter_callback(&self) -> Result<Callback<'_>, WorkspaceError> {
         let mut admission = self
             .admission
@@ -67,6 +68,7 @@ impl WorkspaceWorker {
         Ok(Callback { worker: self })
     }
 
+    #[cfg(test)]
     pub(crate) fn note_writer(&self, opened: bool) -> Result<(), WorkspaceError> {
         let mut admission = self
             .admission
@@ -174,10 +176,12 @@ impl WorkspaceWorker {
     }
 }
 
+#[cfg(test)]
 pub(crate) struct Callback<'a> {
     worker: &'a WorkspaceWorker,
 }
 
+#[cfg(test)]
 impl Drop for Callback<'_> {
     fn drop(&mut self) {
         if let Ok(mut admission) = self.worker.admission.lock() {

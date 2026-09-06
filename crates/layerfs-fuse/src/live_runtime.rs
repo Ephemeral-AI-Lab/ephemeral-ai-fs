@@ -84,13 +84,7 @@ impl Scheduler {
     /// Poll ready local work on ingress; only pending work enters the existing
     /// runtime. The owned future retains its admission and reply until completion.
     pub fn submit(&self, future: impl Future<Output = ()> + Send + 'static) {
-        struct Wake;
-        impl std::task::Wake for Wake {
-            fn wake(self: Arc<Self>) {}
-        }
-        static WAKE: std::sync::OnceLock<Arc<Wake>> = std::sync::OnceLock::new();
-        let waker = std::task::Waker::from(WAKE.get_or_init(|| Arc::new(Wake)).clone());
-        let mut context = std::task::Context::from_waker(&waker);
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
         let mut future = Box::pin(future);
         let entered = self.handle.enter();
         let pending = future.as_mut().poll(&mut context).is_pending();

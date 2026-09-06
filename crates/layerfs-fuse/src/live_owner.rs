@@ -49,21 +49,21 @@ struct Owner {
     #[cfg(target_os = "linux")]
     kernel_root: Mutex<Option<Arc<std::fs::File>>>,
     cut: Mutex<Option<crate::live_runtime::OperationCut>>,
-    install: Mutex<
-        Option<(
-            layerfs_content::ObjectId,
-            u64,
-            std::collections::BTreeMap<
-                NodeId,
-                (
-                    layerfs_content::tree::inode::InodeId,
-                    layerfs_content::ObjectId,
-                    Attr,
-                ),
-            >,
-        )>,
-    >,
+    install: Mutex<Option<PendingCheckpoint>>,
 }
+
+type PendingCheckpoint = (
+    layerfs_content::ObjectId,
+    u64,
+    std::collections::BTreeMap<
+        NodeId,
+        (
+            layerfs_content::tree::inode::InodeId,
+            layerfs_content::ObjectId,
+            Attr,
+        ),
+    >,
+);
 
 struct PendingSplices {
     node: NodeId,

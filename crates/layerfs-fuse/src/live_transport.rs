@@ -12,6 +12,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{watch, Mutex, Semaphore};
 
+type ControlSlot = (Arc<Mutex<Option<TcpStream>>>, Arc<tokio::sync::Notify>);
+
 pub type BackingHandler = dyn Fn(&[u8]) -> PortResult<Vec<u8>> + Send + Sync;
 
 pub struct BackingServer {
@@ -70,7 +72,7 @@ impl BackingServer {
                     let _slot=slot;
                     tokio::select! {
                         _ = closed.changed() => {},
-                        result = serve(stream,capability,scheduler,handler,control,connected,observer,observed,metrics) => {
+                        result = serve(stream,capability,scheduler,handler,(control,connected),(observer,observed),metrics) => {
                             if result.is_err() {fail.store(true,Ordering::Release);}
                         }
                     }
@@ -229,10 +231,8 @@ async fn serve(
     capability: [u8; 32],
     scheduler: Scheduler,
     handler: Arc<impl Fn(&[u8]) -> PortResult<Vec<u8>> + Send + Sync + 'static>,
-    control: Arc<Mutex<Option<TcpStream>>>,
-    connected: Arc<tokio::sync::Notify>,
-    observer: Arc<Mutex<Option<TcpStream>>>,
-    observed: Arc<tokio::sync::Notify>,
+    (control, connected): ControlSlot,
+    (observer, observed): ControlSlot,
     metrics: Arc<AtomicFuseWriteMetrics>,
 ) -> io::Result<()> {
     stream.set_nodelay(true)?;

@@ -216,6 +216,7 @@ impl Workspace {
         Ok(output.into())
     }
 
+    #[cfg(test)]
     pub(crate) fn reserve_nodes(&mut self, count: u32) -> Result<NodeId> {
         self.ensure_active()?;
         if count == 0 || count > 65_536 {
@@ -231,20 +232,6 @@ impl Workspace {
             .reserved
             .extend((start..self.live.next_node).map(NodeId));
         Ok(NodeId(start))
-    }
-
-    pub(crate) fn create_file_reserved(
-        &mut self,
-        parent: NodeId,
-        name: &[u8],
-        mode: u32,
-        node: NodeId,
-    ) -> Result<Attr> {
-        self.ensure_active()?;
-        let name = self.acquire_name(parent, name)?;
-        self.live
-            .create_file(name, mode, Some(node))
-            .map_err(crate::live_error)
     }
 
     fn acquire_name(
@@ -283,13 +270,6 @@ impl Workspace {
         self.live
             .complete_name(input, acquired)
             .map_err(crate::live_error)
-    }
-
-    pub(crate) fn note_mutation(&mut self, paths: impl IntoIterator<Item = String>) -> Result<()> {
-        if self.pending_stage.is_some() {
-            return Err(StorageError::InvalidInput("workspace stage pending"));
-        }
-        self.live.note_mutation(paths).map_err(crate::live_error)
     }
 
     pub(crate) fn lookup_node(&mut self, parent: NodeId, name: &[u8]) -> Result<NodeId> {
@@ -400,10 +380,6 @@ impl Workspace {
 
     fn directory(&self, node: NodeId) -> Result<&DirectoryData> {
         self.live.directory(node).map_err(crate::live_error)
-    }
-
-    pub(crate) fn directory_mut(&mut self, node: NodeId) -> Result<&mut DirectoryData> {
-        self.live.directory_mut(node).map_err(crate::live_error)
     }
 
     pub(crate) fn path_of(&self, node: NodeId) -> Result<String> {
@@ -612,6 +588,7 @@ impl Workspace {
         self.live.mkdir(name, mode, None).map_err(crate::live_error)
     }
 
+    #[cfg(test)]
     pub(crate) fn mkdir_reserved(
         &mut self,
         parent: NodeId,
@@ -656,6 +633,7 @@ impl Workspace {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn rename(
         &mut self,
         parent: NodeId,
@@ -680,6 +658,7 @@ impl Workspace {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn pin(&mut self, node: NodeId, truncate: bool) -> Result<()> {
         self.live.check_pin(node).map_err(crate::live_error)?;
         if truncate {
@@ -688,6 +667,7 @@ impl Workspace {
         self.live.pin(node).map_err(crate::live_error)
     }
 
+    #[cfg(test)]
     pub fn unpin(&mut self, node: NodeId) -> Result<()> {
         self.finish_capture(Some(node));
         if self.live.unpin(node).map_err(crate::live_error)? {

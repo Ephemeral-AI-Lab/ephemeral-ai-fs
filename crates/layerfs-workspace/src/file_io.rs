@@ -399,10 +399,6 @@ impl Workspace {
     pub fn write(&mut self, node: NodeId, offset: u64, bytes: &[u8]) -> Result<usize> {
         self.write_inner(node, offset, bytes.len(), Some(bytes))
     }
-    pub(crate) fn write_zero(&mut self, node: NodeId, offset: u64, len: usize) -> Result<usize> {
-        self.invalidate_capture();
-        self.write_inner(node, offset, len, None)
-    }
     fn write_inner(
         &mut self,
         node: NodeId,
@@ -541,6 +537,7 @@ impl Workspace {
             .map_err(crate::live_error)
     }
 
+    #[cfg(test)]
     pub fn fsync(&mut self, node: Option<NodeId>) -> Result<()> {
         let started = std::time::Instant::now();
         let mut segments = std::collections::BTreeMap::new();
