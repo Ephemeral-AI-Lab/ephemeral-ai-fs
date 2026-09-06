@@ -85,6 +85,6 @@ No exhaustive 100/500 walks were rerun at 300 s.
 
 ## What this does not close
 
-- Waves 2–3 and tiny-op backgrounds are not collected here. The shared generator is registered for directory 100/500 `-mixed-v4` so Wave 2 can start. Git mixed-v4 is not registered until the 256 MiB `.git`+tree bound is proven.
+- Wave 2 directory 100/500 mixed-v4 collection is reported separately in [issue62-mixed-v4-wave2-results.md](issue62-mixed-v4-wave2-results.md). Wave 3 (`namespace-subtree-relocate-delete` and `git-tool` mixed-v4) is not collected. Git mixed-v4 is not registered until the 256 MiB `.git`+tree bound is proven.
 - [#61](https://github.com/Ephemeral-AI-Lab/layerfs/issues/61) remains the home of old 100k-file ENOSPC/presentation leftovers.
 - Product Exec/Commit optimization remains [#46](https://github.com/Ephemeral-AI-Lab/layerfs/issues/46) / [#47](https://github.com/Ephemeral-AI-Lab/layerfs/issues/47) / [#48](https://github.com/Ephemeral-AI-Lab/layerfs/issues/48) / [#50](https://github.com/Ephemeral-AI-Lab/layerfs/issues/50).
