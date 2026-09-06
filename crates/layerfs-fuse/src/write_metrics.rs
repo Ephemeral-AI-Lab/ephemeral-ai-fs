@@ -21,10 +21,15 @@ pub struct FuseWriteMetrics {
     pub decode_ns: u64,
     pub host_decode_copy_bytes: u64,
     pub host_dispatch_ns: u64,
+    pub live_backing_calls: u64,
+    pub live_backing_wait_ns: u64,
+    pub live_backing_queue_ns: u64,
+    pub live_write_dispatch_ns: u64,
+    pub live_edit_ns: u64,
 }
 
 impl FuseWriteMetrics {
-    const FIELD_COUNT: usize = 18;
+    const FIELD_COUNT: usize = 23;
 
     pub(crate) fn merge(&mut self, other: Self) {
         self.max_write_bytes = self.max_write_bytes.max(other.max_write_bytes);
@@ -72,6 +77,11 @@ impl FuseWriteMetrics {
             self.decode_ns,
             self.host_decode_copy_bytes,
             self.host_dispatch_ns,
+            self.live_backing_calls,
+            self.live_backing_wait_ns,
+            self.live_backing_queue_ns,
+            self.live_write_dispatch_ns,
+            self.live_edit_ns,
         ]
     }
 
@@ -95,6 +105,11 @@ impl FuseWriteMetrics {
             &mut self.decode_ns,
             &mut self.host_decode_copy_bytes,
             &mut self.host_dispatch_ns,
+            &mut self.live_backing_calls,
+            &mut self.live_backing_wait_ns,
+            &mut self.live_backing_queue_ns,
+            &mut self.live_write_dispatch_ns,
+            &mut self.live_edit_ns,
         ]
     }
 
@@ -118,6 +133,11 @@ impl FuseWriteMetrics {
             decode_ns: fields[15],
             host_decode_copy_bytes: fields[16],
             host_dispatch_ns: fields[17],
+            live_backing_calls: fields[18],
+            live_backing_wait_ns: fields[19],
+            live_backing_queue_ns: fields[20],
+            live_write_dispatch_ns: fields[21],
+            live_edit_ns: fields[22],
         }
     }
 }
@@ -142,6 +162,11 @@ pub(crate) struct AtomicFuseWriteMetrics {
     decode_ns: AtomicU64,
     host_decode_copy_bytes: AtomicU64,
     host_dispatch_ns: AtomicU64,
+    pub(crate) live_backing_calls: AtomicU64,
+    pub(crate) live_backing_wait_ns: AtomicU64,
+    pub(crate) live_backing_queue_ns: AtomicU64,
+    pub(crate) live_write_dispatch_ns: AtomicU64,
+    pub(crate) live_edit_ns: AtomicU64,
 }
 
 impl AtomicFuseWriteMetrics {
@@ -228,6 +253,11 @@ impl AtomicFuseWriteMetrics {
             decode_ns: self.decode_ns.swap(0, Ordering::Relaxed),
             host_decode_copy_bytes: self.host_decode_copy_bytes.swap(0, Ordering::Relaxed),
             host_dispatch_ns: self.host_dispatch_ns.swap(0, Ordering::Relaxed),
+            live_backing_calls: self.live_backing_calls.swap(0, Ordering::Relaxed),
+            live_backing_wait_ns: self.live_backing_wait_ns.swap(0, Ordering::Relaxed),
+            live_backing_queue_ns: self.live_backing_queue_ns.swap(0, Ordering::Relaxed),
+            live_write_dispatch_ns: self.live_write_dispatch_ns.swap(0, Ordering::Relaxed),
+            live_edit_ns: self.live_edit_ns.swap(0, Ordering::Relaxed),
         }
     }
 }

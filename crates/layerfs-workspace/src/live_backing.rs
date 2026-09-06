@@ -395,6 +395,12 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(remote.observe().unwrap().0, 263);
+        let metrics = remote.server.take_write_metrics().unwrap();
+        assert!(metrics.live_backing_calls > 130);
+        assert!(metrics.live_backing_wait_ns > 0);
+        assert!(metrics.live_backing_queue_ns > 0);
+        assert!(metrics.host_dispatch_ns > 0);
+        assert_eq!(metrics.client_frame_bytes, metrics.host_frame_bytes);
         remote.server.control("pause").unwrap();
         let (first, _) = workspace.lock().unwrap().commit().unwrap();
         install_checkpoint(&workspace).unwrap();

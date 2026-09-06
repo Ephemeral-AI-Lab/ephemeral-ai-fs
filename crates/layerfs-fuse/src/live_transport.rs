@@ -1,11 +1,13 @@
 use crate::live_runtime::{LiveRuntime, Scheduler};
 use crate::live_wire::{invalid, MAX_FRAME};
+use crate::write_metrics::AtomicFuseWriteMetrics;
 use crate::{PortError, PortResult};
 use std::io;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
+use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{watch, Mutex, Semaphore};
@@ -18,6 +20,7 @@ pub struct BackingServer {
     failed: Arc<AtomicBool>,
     control: Arc<Mutex<Option<TcpStream>>>,
     connected: Arc<tokio::sync::Notify>,
+    metrics: Arc<AtomicFuseWriteMetrics>,
 }
 
 impl BackingServer {
@@ -36,6 +39,8 @@ impl BackingServer {
         let connections = Arc::new(Semaphore::new(2));
         let control = Arc::new(Mutex::new(None));
         let connected = Arc::new(tokio::sync::Notify::new());
+        let metrics = Arc::new(AtomicFuseWriteMetrics::default());
+        let host_metrics = metrics.clone();
         let control_slot = control.clone();
         let control_ready = connected.clone();
         let task = scheduler.handle.spawn({let scheduler=scheduler.clone();async move {
@@ -50,12 +55,12 @@ impl BackingServer {
                 };
                 let mut closed = stopping.clone();
                 let handler = handler.clone(); let scheduler=scheduler.clone(); let fail=fail.clone();
-                let control=control_slot.clone(); let connected=control_ready.clone();
+                let control=control_slot.clone(); let connected=control_ready.clone(); let metrics=host_metrics.clone();
                 scheduler.handle.clone().spawn(async move {
                     let _slot=slot;
                     tokio::select! {
                         _ = closed.changed() => {},
-                        result = serve(stream,capability,scheduler,handler,control,connected) => {
+                        result = serve(stream,capability,scheduler,handler,control,connected,metrics) => {
                             if result.is_err() {fail.store(true,Ordering::Release);}
                         }
                     }
@@ -70,6 +75,7 @@ impl BackingServer {
             failed,
             control,
             connected,
+            metrics,
         })
     }
     pub fn port(&self) -> u16 {
@@ -93,7 +99,7 @@ impl BackingServer {
                     }
                     let mut held = self.control.lock().await;
                     let mut stream = held.take().ok_or(PortError::Io)?;
-                    let response = exchange(&mut stream, bytes)
+                    let response = exchange(&mut stream, bytes, None)
                         .await
                         .map_err(|_| PortError::Io)?;
                     *held = Some(stream);
@@ -120,7 +126,10 @@ impl BackingServer {
 
     pub fn take_write_metrics(&self) -> PortResult<crate::FuseWriteMetrics> {
         let bytes = self.request(&[crate::live_wire::WRITE_METRICS])?;
-        crate::FuseWriteMetrics::read_from(&mut bytes.as_slice()).map_err(|_| PortError::Io)
+        let mut metrics =
+            crate::FuseWriteMetrics::read_from(&mut bytes.as_slice()).map_err(|_| PortError::Io)?;
+        metrics.merge(self.metrics.take());
+        Ok(metrics)
     }
 
     pub fn take_read_metrics(&self) -> PortResult<crate::FuseReadMetrics> {
@@ -148,6 +157,7 @@ async fn serve(
     handler: Arc<impl Fn(&[u8]) -> PortResult<Vec<u8>> + Send + Sync + 'static>,
     control: Arc<Mutex<Option<TcpStream>>>,
     connected: Arc<tokio::sync::Notify>,
+    metrics: Arc<AtomicFuseWriteMetrics>,
 ) -> io::Result<()> {
     stream.set_nodelay(true)?;
     let mut presented = [0; 32];
@@ -195,9 +205,23 @@ async fn serve(
         // before retaining any frame body or entering the physical queue.
         let admitted = scheduler.admit(length + 2 * MAX_FRAME).await?;
         let mut bytes = vec![0; length];
+        let read = Instant::now();
         stream.read_exact(&mut bytes).await?;
+        metrics.note_host_frame((length + 4) as u64, 0, ns(read), 0);
         let handler = handler.clone();
-        let response = scheduler.physical(move || Ok(handler(&bytes))).await?;
+        let metrics = metrics.clone();
+        let queued = Instant::now();
+        let response = scheduler
+            .physical(move || {
+                metrics
+                    .live_backing_queue_ns
+                    .fetch_add(ns(queued), Ordering::Relaxed);
+                let started = Instant::now();
+                let result = handler(&bytes);
+                metrics.note_host_dispatch(ns(started));
+                Ok(result)
+            })
+            .await?;
         match response {
             Ok(bytes) => {
                 if bytes.len() > MAX_FRAME {
@@ -221,6 +245,7 @@ pub struct BackingConnection {
     // A cancelled/failed exchange drops the taken stream. It cannot reuse a
     // partial frame or silently repeat an append after an uncertain reply.
     stream: Mutex<Option<TcpStream>>,
+    pub(crate) metrics: AtomicFuseWriteMetrics,
 }
 impl BackingConnection {
     pub async fn connect(
@@ -244,15 +269,23 @@ impl BackingConnection {
         }
         Ok(Self {
             stream: Mutex::new(Some(stream)),
+            metrics: Default::default(),
         })
     }
     pub async fn call(&self, bytes: &[u8]) -> PortResult<Vec<u8>> {
         if bytes.is_empty() || bytes.len() > MAX_FRAME {
             return Err(PortError::Invalid);
         }
+        let started = Instant::now();
+        self.metrics
+            .live_backing_calls
+            .fetch_add(1, Ordering::Relaxed);
         let mut held = self.stream.lock().await;
         let mut stream = held.take().ok_or(PortError::Io)?;
-        let result = exchange(&mut stream, bytes).await;
+        let result = exchange(&mut stream, bytes, Some(&self.metrics)).await;
+        self.metrics
+            .live_backing_wait_ns
+            .fetch_add(ns(started), Ordering::Relaxed);
         match result {
             Ok(result) => {
                 *held = Some(stream);
@@ -263,12 +296,20 @@ impl BackingConnection {
     }
 }
 
-async fn exchange(stream: &mut TcpStream, bytes: &[u8]) -> io::Result<PortResult<Vec<u8>>> {
+async fn exchange(
+    stream: &mut TcpStream,
+    bytes: &[u8],
+    metrics: Option<&AtomicFuseWriteMetrics>,
+) -> io::Result<PortResult<Vec<u8>>> {
     if bytes.is_empty() || bytes.len() > MAX_FRAME {
         return Err(invalid());
     }
+    let written = Instant::now();
     stream.write_u32(bytes.len() as u32).await?;
     stream.write_all(bytes).await?;
+    if let Some(metrics) = metrics {
+        metrics.note_client_frame((bytes.len() + 4) as u64, 0, 0, ns(written));
+    }
     let length = stream.read_u32().await? as usize;
     if length == 0 || length > MAX_FRAME + 1 {
         return Err(invalid());
@@ -283,4 +324,8 @@ async fn exchange(stream: &mut TcpStream, bytes: &[u8]) -> io::Result<PortResult
         1 if length == 2 => Ok(Err(crate::protocol::port_error(stream.read_u8().await?)?)),
         _ => Err(invalid()),
     }
+}
+
+fn ns(started: Instant) -> u64 {
+    started.elapsed().as_nanos().min(u64::MAX as u128) as u64
 }

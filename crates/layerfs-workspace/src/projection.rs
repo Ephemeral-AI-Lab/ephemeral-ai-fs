@@ -211,6 +211,12 @@ pub(crate) fn record_write_metrics(worker: &WorkspaceWorker) -> WorkspaceResult<
         decode_ns: transport.decode_ns,
         host_decode_copy_bytes: transport.host_decode_copy_bytes,
         host_dispatch_ns: transport.host_dispatch_ns,
+        live_backing_calls: transport.live_backing_calls,
+        live_backing_wait_ns: transport.live_backing_wait_ns,
+        live_backing_queue_ns: transport.live_backing_queue_ns,
+        live_write_dispatch_ns: transport.live_write_dispatch_ns,
+        live_edit_ns: transport.live_edit_ns,
+
         spool_write_bytes: spool.write_bytes,
         spool_write_open_count: spool.write_open_count,
         spool_write_ns: spool.write_ns,

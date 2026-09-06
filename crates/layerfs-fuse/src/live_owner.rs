@@ -8,7 +8,9 @@ use layerfs_workspace_core::file_edit::{Piece, SpoolSlice};
 use layerfs_workspace_core::namespace::{AcquiredInode, NameLookup, ResolvedName};
 use layerfs_workspace_core::{Data, LiveWorkspace, ReadPlan, ReadSource, ResourcePolicy};
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 #[derive(Clone)]
 pub struct LiveOwner(Arc<Owner>);
@@ -205,6 +207,7 @@ impl LiveOwner {
             .entry(id)
             .or_insert_with(|| BackingRef::new(id, ()))
             .clone();
+        let preparing = Instant::now();
         let prepared = self
             .state()?
             .prepare_write(
@@ -218,16 +221,30 @@ impl LiveOwner {
                 }),
             )
             .map_err(core);
+        self.0
+            .writes
+            .live_edit_ns
+            .fetch_add(ns(preparing), Ordering::Relaxed);
         let prepared = prepared?;
+        let encoding = Instant::now();
         let mut append = vec![wire::APPEND];
         wire::u64_out(&mut append, id.0);
         wire::u64_out(&mut append, start);
         wire::bytes_out(&mut append, bytes).map_err(io)?;
+        self.0
+            .writes
+            .note_client_frame(0, bytes.len() as u64, ns(encoding), 0);
         *window = None;
         self.0.backing.call(&append).await?;
         let remaining = remaining - bytes.len() as u64;
         *window = (remaining != 0).then_some((id, start + bytes.len() as u64, remaining));
-        self.state()?.apply_edit(prepared).map_err(core)
+        let applying = Instant::now();
+        let result = self.state()?.apply_edit(prepared).map_err(core);
+        self.0
+            .writes
+            .live_edit_ns
+            .fetch_add(ns(applying), Ordering::Relaxed);
+        result
     }
 
     async fn cancel_append(&self, window: &mut Option<(BackingId, u64, u64)>) -> PortResult<()> {
@@ -371,7 +388,14 @@ impl FilesystemPort for LiveOwner {
     ) {
         let owner = self.clone();
         let bytes = bytes.to_vec();
+        self.0.writes.note_client_copy(bytes.len() as u64);
+        let queued = Instant::now();
         self.0.scheduler.handle.spawn(async move {
+            owner
+                .0
+                .writes
+                .live_write_dispatch_ns
+                .fetch_add(ns(queued), Ordering::Relaxed);
             reply.complete(owner.write_owned(node, offset, &bytes).await);
         });
     }
@@ -583,7 +607,9 @@ impl LiveOwner {
         match opcode {
             wire::WRITE_METRICS => {
                 input.done().map_err(io)?;
-                self.0.writes.take().write_to(&mut out).map_err(io)?;
+                let mut metrics = self.0.writes.take();
+                metrics.merge(self.0.backing.metrics.take());
+                metrics.write_to(&mut out).map_err(io)?;
             }
             wire::READ_METRICS => {
                 input.done().map_err(io)?;
@@ -792,4 +818,8 @@ impl LiveControl {
             .block_on(self.thread)
             .map_err(|_| wire::invalid())?
     }
+}
+
+fn ns(started: Instant) -> u64 {
+    started.elapsed().as_nanos().min(u64::MAX as u128) as u64
 }
