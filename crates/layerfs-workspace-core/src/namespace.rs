@@ -7,6 +7,12 @@ use layerfs_content::CanonicalName;
 // measured contention warrants it. Acquisition runs outside that state access.
 
 /// A name whose binding was resolved at an exact parent revision.
+pub(crate) struct AcquiredNames {
+    namespace: layerfs_content::ObjectId,
+    directory: DirectoryStateRoot,
+    entries: std::collections::BTreeMap<Vec<u8>, Option<NodeId>>,
+}
+
 pub struct ResolvedName {
     parent: NodeId,
     revision: u64,
@@ -203,6 +209,18 @@ impl LiveWorkspace {
         Ok(())
     }
 
+    pub fn pin_directory(&mut self, node: NodeId) -> Result<()> {
+        let value = self.nodes.get_mut(&node).ok_or(Error::NotFound("node"))?;
+        if !matches!(value.data, Data::Directory(_)) {
+            return Err(Error::InvalidInput("directory"));
+        }
+        value.pins = value
+            .pins
+            .checked_add(1)
+            .ok_or(Error::Integrity("node pin"))?;
+        Ok(())
+    }
+
     /// Returns whether edited ranges were released and adapter retirement can run.
     pub fn unpin(&mut self, node: NodeId) -> Result<bool> {
         let value = self.nodes.get_mut(&node).ok_or(Error::NotFound("node"))?;
@@ -223,6 +241,7 @@ impl LiveWorkspace {
         }) {
             self.dirty.remove(&node);
             self.directory_parents.remove(&node);
+            self.known_names.remove(&node);
             if let Some(value) = self.nodes.remove(&node) {
                 self.edited_nodes.remove(&node);
                 if let Some(inode) = value.canonical {
@@ -289,7 +308,14 @@ impl LiveWorkspace {
         let name = CanonicalName::from_bytes(name)?;
         let directory = self.directory(parent)?;
         let revision = self.nodes[&parent].revision;
-        let existing = match directory.changes.get(name.as_bytes()) {
+        let known = self.known_names.get(&parent).filter(|known| {
+            known.namespace == self.base_root && Some(known.directory) == directory.base
+        });
+        let existing = match directory
+            .changes
+            .get(name.as_bytes())
+            .or_else(|| known.and_then(|known| known.entries.get(name.as_bytes())))
+        {
             Some(existing) => *existing,
             None => match directory.base {
                 Some(directory) => {
@@ -363,7 +389,37 @@ impl LiveWorkspace {
         } else {
             None
         };
+        self.remember_name(input.parent, input.name.as_bytes(), existing)?;
         self.resolve_name(input, existing)
+    }
+
+    pub fn remember_name(
+        &mut self,
+        parent: NodeId,
+        name: &[u8],
+        node: Option<NodeId>,
+    ) -> Result<()> {
+        let Some(directory) = self.directory(parent)?.base else {
+            return Ok(());
+        };
+        let namespace = self.base_root;
+        let known = self
+            .known_names
+            .entry(parent)
+            .or_insert_with(|| AcquiredNames {
+                namespace,
+                directory,
+                entries: Default::default(),
+            });
+        if known.namespace != namespace || known.directory != directory {
+            *known = AcquiredNames {
+                namespace,
+                directory,
+                entries: Default::default(),
+            };
+        }
+        known.entries.insert(name.to_vec(), node);
+        Ok(())
     }
 
     pub fn allocate_node(&mut self, node: Node) -> Result<NodeId> {
@@ -575,5 +631,170 @@ impl LiveWorkspace {
         self.mutation_generation = generation;
         self.mutation_paths.insert(path, generation);
         self.attr(node)
+    }
+}
+
+impl LiveWorkspace {
+    fn validate_name(&self, name: &ResolvedName) -> Result<()> {
+        if self.nodes.get(&name.parent).map(|node| node.revision) != Some(name.revision) {
+            return Err(Error::Integrity("stale name acquisition"));
+        }
+        self.directory(name.parent)?;
+        Ok(())
+    }
+
+    pub fn link(&mut self, node: NodeId, name: ResolvedName) -> Result<Attr> {
+        self.validate_name(&name)?;
+        if name.existing.is_some() {
+            return Err(Error::InvalidInput("name exists"));
+        }
+        let value = self.nodes.get(&node).ok_or(Error::NotFound("node"))?;
+        if matches!(value.data, Data::Directory(_)) {
+            return Err(Error::InvalidInput("directory link"));
+        }
+        let links = value
+            .links
+            .checked_add(1)
+            .ok_or(Error::InvalidInput("inode links"))?;
+        self.next_generation()?;
+        name.revision
+            .checked_add(1)
+            .ok_or(Error::Integrity("inode revision"))?;
+        let target = self.child_path(name.parent, name.name.as_bytes())?;
+        self.directory_mut(name.parent)?
+            .changes
+            .insert(name.name.as_bytes().to_vec(), Some(node));
+        self.dirty.insert(node);
+        let value = self.nodes.get_mut(&node).unwrap();
+        value.links = links;
+        value.paths.insert(target);
+        let paths = value.paths.iter().cloned().collect::<Vec<_>>();
+        self.note_mutation(paths)?;
+        self.attr(node)
+    }
+
+    pub fn unlink(&mut self, name: ResolvedName, directory: bool, empty: bool) -> Result<bool> {
+        self.validate_name(&name)?;
+        let node = name.existing.ok_or(Error::NotFound("name"))?;
+        let value = self.nodes.get(&node).ok_or(Error::NotFound("node"))?;
+        if directory != matches!(value.data, Data::Directory(_)) {
+            return Err(Error::InvalidInput("unlink kind"));
+        }
+        if directory && !empty {
+            return Err(Error::InvalidInput("directory not empty"));
+        }
+        self.next_generation()?;
+        name.revision
+            .checked_add(1)
+            .ok_or(Error::Integrity("inode revision"))?;
+        self.remove_binding(name)
+    }
+
+    fn remove_binding(&mut self, name: ResolvedName) -> Result<bool> {
+        let node = name.existing.ok_or(Error::NotFound("name"))?;
+        let path = self.child_path(name.parent, name.name.as_bytes())?;
+        let mut paths = self.nodes[&node].paths.iter().cloned().collect::<Vec<_>>();
+        paths.push(path.clone());
+        self.directory_mut(name.parent)?
+            .changes
+            .insert(name.name.as_bytes().to_vec(), None);
+        let value = self.nodes.get_mut(&node).unwrap();
+        value.links = value.links.saturating_sub(1);
+        value.paths.remove(&path);
+        self.dirty.insert(node);
+        let reclaimed = self.reclaim(node);
+        self.note_mutation(paths)?;
+        Ok(reclaimed)
+    }
+
+    pub fn rename(
+        &mut self,
+        source: ResolvedName,
+        target: ResolvedName,
+        no_replace: bool,
+        target_empty: bool,
+    ) -> Result<()> {
+        self.validate_name(&source)?;
+        self.validate_name(&target)?;
+        let node = source.existing.ok_or(Error::NotFound("name"))?;
+        let source_path = self.child_path(source.parent, source.name.as_bytes())?;
+        let destination = self.child_path(target.parent, target.name.as_bytes())?;
+        if source_path == destination || target.existing == Some(node) {
+            return Ok(());
+        }
+        let source_directory = matches!(self.nodes[&node].data, Data::Directory(_));
+        if no_replace && target.existing.is_some() {
+            return Err(Error::InvalidInput("rename target"));
+        }
+        if let Some(existing) = target.existing {
+            if source_directory != matches!(self.nodes[&existing].data, Data::Directory(_)) {
+                return Err(Error::InvalidInput("rename type"));
+            }
+            if source_directory && !target_empty {
+                return Err(Error::InvalidInput("directory not empty"));
+            }
+        }
+        if source_directory {
+            let parent_path = self.path_of(target.parent)?;
+            if parent_path == source_path
+                || (parent_path.starts_with(&source_path)
+                    && parent_path.as_bytes().get(source_path.len()) == Some(&b'/'))
+            {
+                return Err(Error::InvalidInput("rename descendant"));
+            }
+        }
+        self.mutation_generation
+            .checked_add(1 + u64::from(target.existing.is_some()))
+            .ok_or(Error::Integrity("Workspace mutation generation"))?;
+        let target_edits = 1 + u64::from(target.existing.is_some());
+        if source.parent == target.parent {
+            source
+                .revision
+                .checked_add(1 + target_edits)
+                .ok_or(Error::Integrity("inode revision"))?;
+        } else {
+            source
+                .revision
+                .checked_add(1)
+                .ok_or(Error::Integrity("inode revision"))?;
+            target
+                .revision
+                .checked_add(target_edits)
+                .ok_or(Error::Integrity("inode revision"))?;
+        }
+        let target_parent = target.parent;
+        let target_name = target.name.as_bytes().to_vec();
+        if target.existing.is_some() {
+            self.remove_binding(target)?;
+        }
+        self.directory_mut(source.parent)?
+            .changes
+            .insert(source.name.as_bytes().to_vec(), None);
+        self.directory_mut(target_parent)?
+            .changes
+            .insert(target_name, Some(node));
+        // ponytail: update only materialized paths; add a path index if this scan is measured as material.
+        for value in self.nodes.values_mut() {
+            value.paths = value
+                .paths
+                .iter()
+                .map(|path| {
+                    if path == &source_path {
+                        destination.clone()
+                    } else if path.starts_with(&source_path)
+                        && path.as_bytes().get(source_path.len()) == Some(&b'/')
+                    {
+                        format!("{destination}{}", &path[source_path.len()..])
+                    } else {
+                        path.clone()
+                    }
+                })
+                .collect();
+        }
+        if source_directory {
+            self.directory_parents.insert(node, target_parent);
+        }
+        self.note_mutation([source_path, destination])?;
+        Ok(())
     }
 }

@@ -101,6 +101,62 @@ impl BackingOwner {
                     out.extend(wire::node_out(NodeId(1), &node)?);
                 }
             }
+            wire::DIRECTORY_PAGE => {
+                let namespace = input.object()?;
+                let directory = DirectoryStateRoot(input.object()?);
+                let after = input.bytes()?;
+                let after = if after.is_empty() {
+                    None
+                } else {
+                    Some(CanonicalName::from_bytes(after)?)
+                };
+                input.done()?;
+                if namespace != self.snapshot.root {
+                    return Err(StoreError::Integrity("backing namespace"));
+                }
+                let core = CoreReader(&self.snapshot.reader);
+                let namespace = layerfs_content::filesystem::namespace(&core, namespace)?;
+                let page = layerfs_content::tree::directory::directory_page_after(
+                    &core,
+                    directory,
+                    after.as_ref(),
+                    128,
+                    256 * 1024,
+                    &mut NamespaceCounters::default(),
+                )?;
+                out.push(u8::from(page.continuation.is_some()));
+                out.extend_from_slice(&(page.entries.len() as u32).to_be_bytes());
+                let ids = page
+                    .entries
+                    .iter()
+                    .map(|(_, inode)| *inode)
+                    .collect::<Vec<_>>();
+                let acquired = crate::cow_tree::acquire_inodes(
+                    &self.snapshot.reader,
+                    InodeTableRoot(namespace.inode_table_root),
+                    &ids,
+                )?;
+                for ((name, _), acquired) in page.entries.into_iter().zip(acquired) {
+                    wire::bytes_out(&mut out, name.as_bytes())?;
+                    wire::bytes_out(
+                        &mut out,
+                        &wire::node_out(
+                            NodeId(1),
+                            &Node {
+                                revision: 0,
+                                canonical: Some(acquired.inode),
+                                paths: BTreeSet::new(),
+                                mode: acquired.mode,
+                                links: acquired.links,
+                                pins: 0,
+                                mtime_seconds: acquired.mtime_seconds,
+                                mtime_nanoseconds: acquired.mtime_nanoseconds,
+                                data: acquired.data,
+                            },
+                        )?,
+                    )?;
+                }
+            }
             wire::RESERVE => {
                 let len = input.u64()?;
                 input.done()?;
@@ -430,6 +486,46 @@ mod tests {
         assert_eq!(owner.lookup(directory_id, b"file").unwrap().node, file);
         assert_eq!(owner.read(file, 0, 20).unwrap(), b"first");
         assert_eq!(remote.observe().unwrap().0, 0);
+        owner.link(file, directory_id, b"alias").unwrap();
+        owner
+            .rename(directory_id, b"alias", crate::ROOT, b"moved", false)
+            .unwrap();
+        assert_eq!(owner.lookup(crate::ROOT, b"moved").unwrap().node, file);
+        owner.unlink(crate::ROOT, b"moved", false).unwrap();
+        let page = runtime
+            .block_on(owner.directory_page_async(directory_id, 0))
+            .unwrap();
+        assert_eq!(page.len(), 128);
+        let cookie = page.last().unwrap().0;
+        let removed = page
+            .iter()
+            .find(|(_, _, name)| name.starts_with(b"sibling-"))
+            .unwrap()
+            .2
+            .clone();
+        owner.unlink(directory_id, &removed, false).unwrap();
+        owner
+            .create_file(directory_id, b"new-child", 0o600)
+            .unwrap();
+        let rest = runtime
+            .block_on(owner.directory_page_async(directory_id, cookie))
+            .unwrap();
+        assert!(rest.iter().any(|(_, _, name)| name == b"new-child"));
+        assert!(rest
+            .iter()
+            .all(|(_, _, name)| !page.iter().any(|(_, _, seen)| seen == name)));
+        let empty = owner
+            .mkdir(crate::ROOT, b"open-directory", 0o700)
+            .unwrap()
+            .node;
+        owner.pin_directory(empty).unwrap();
+        owner.unlink(crate::ROOT, b"open-directory", true).unwrap();
+        assert_eq!(
+            owner.attr(empty).unwrap().kind,
+            layerfs_fuse::Kind::Directory
+        );
+        owner.unpin_directory(empty).unwrap();
+        assert!(owner.attr(empty).is_err());
         owner.write(file, 0, b"later").unwrap();
         remote.server.control("pause").unwrap();
         let (second, _) = workspace.lock().unwrap().commit().unwrap();

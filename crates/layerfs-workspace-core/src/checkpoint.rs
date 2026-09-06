@@ -92,6 +92,7 @@ impl LiveWorkspace {
                 .saturating_add(pieces.logical_allocation_charge()?);
         }
         self.base_root = root;
+        self.known_names.clear();
         self.spool_bytes_peak = self.spool_bytes;
         self.mutation_generation = 0;
         self.mutation_paths.clear();

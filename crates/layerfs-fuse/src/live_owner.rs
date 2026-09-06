@@ -27,6 +27,8 @@ struct Owner {
     cached: Mutex<std::collections::BTreeSet<NodeId>>,
     facts_sync: tokio::sync::Mutex<Option<(layerfs_content::ObjectId, u64)>>,
     ordering: Mutex<HashMap<NodeId, Arc<tokio::sync::Mutex<()>>>>,
+    namespace: tokio::sync::Mutex<()>,
+    directories: Mutex<HashMap<NodeId, DirectoryCookies>>,
     ranges: Mutex<HashMap<BackingId, BackingRef>>,
     gate: OperationGate,
     writes: crate::write_metrics::AtomicFuseWriteMetrics,
@@ -50,6 +52,13 @@ struct Owner {
             >,
         )>,
     >,
+}
+
+struct DirectoryCookies {
+    generation: (layerfs_content::ObjectId, u64),
+    next: u64,
+    names: std::collections::BTreeMap<Vec<u8>, (u64, NodeId)>,
+    ordered: std::collections::BTreeMap<u64, (NodeId, Vec<u8>)>,
 }
 
 struct AppendWindow {
@@ -123,6 +132,8 @@ impl LiveOwner {
             cached: Default::default(),
             facts_sync: Default::default(),
             ordering: Default::default(),
+            namespace: Default::default(),
+            directories: Default::default(),
             ranges: Default::default(),
             gate: Default::default(),
             cut: Default::default(),
@@ -135,6 +146,7 @@ impl LiveOwner {
     }
 
     async fn ordered(&self, node: NodeId) -> PortResult<tokio::sync::OwnedMutexGuard<()>> {
+        self.state()?.attr(node).map_err(core)?;
         let order = {
             let mut ordering = self.0.ordering.lock().map_err(|_| PortError::Io)?;
             ordering.entry(node).or_default().clone()
@@ -466,6 +478,111 @@ impl LiveOwner {
         Ok(out)
     }
 
+    async fn entries(
+        &self,
+        node: NodeId,
+    ) -> PortResult<std::collections::BTreeMap<Vec<u8>, NodeId>> {
+        let (root, base, revision, changes) = {
+            let state = self.state()?;
+            let directory = state.directory(node).map_err(core)?;
+            (
+                state.base_root,
+                directory.base,
+                state.nodes[&node].revision,
+                directory.changes.clone(),
+            )
+        };
+        let mut entries = std::collections::BTreeMap::new();
+        if let Some(base) = base {
+            let mut after = Vec::new();
+            loop {
+                let mut request = vec![wire::DIRECTORY_PAGE];
+                request.extend_from_slice(root.as_bytes());
+                request.extend_from_slice(base.0.as_bytes());
+                wire::bytes_out(&mut request, &after).map_err(io)?;
+                let response = self.0.backing.call(&request).await?;
+                let mut input = Input(&response);
+                let more = match input.byte().map_err(io)? {
+                    0 => false,
+                    1 => true,
+                    _ => return Err(PortError::Io),
+                };
+                let count = input.u32().map_err(io)? as usize;
+                if count > 128 || (more && count == 0) {
+                    return Err(PortError::Io);
+                }
+                let mut state = self.state()?;
+                if state.base_root != root
+                    || state.nodes.get(&node).map(|node| node.revision) != Some(revision)
+                {
+                    return Err(PortError::Io);
+                }
+                for _ in 0..count {
+                    let name = input.bytes().map_err(io)?.to_vec();
+                    if name <= after {
+                        return Err(PortError::Io);
+                    }
+                    after = name.clone();
+                    let (_, acquired) =
+                        wire::node_in(input.bytes().map_err(io)?, |_, _, _| Err(wire::invalid()))
+                            .map_err(io)?;
+                    if changes.contains_key(&name) {
+                        continue;
+                    }
+                    let path = state.child_path(node, &name).map_err(core)?;
+                    let child = state
+                        .install_immutable_node(
+                            AcquiredInode {
+                                inode: acquired.canonical.ok_or(PortError::Io)?,
+                                mode: acquired.mode,
+                                links: acquired.links,
+                                mtime_seconds: acquired.mtime_seconds,
+                                mtime_nanoseconds: acquired.mtime_nanoseconds,
+                                data: acquired.data,
+                            },
+                            path,
+                        )
+                        .map_err(core)?;
+                    state.remember_directory_parent(child, node).map_err(core)?;
+                    state
+                        .remember_name(node, &name, Some(child))
+                        .map_err(core)?;
+                    entries.insert(name, child);
+                }
+                input.done().map_err(io)?;
+                if entries.len() > 16384 {
+                    return Err(PortError::NoSpace);
+                }
+                if !more {
+                    break;
+                }
+            }
+        }
+        for (name, child) in changes {
+            if let Some(child) = child {
+                entries.insert(name, child);
+            }
+        }
+        if entries.len() > 16384 {
+            return Err(PortError::NoSpace);
+        }
+        Ok(entries)
+    }
+
+    async fn empty_directory(&self, node: NodeId) -> PortResult<bool> {
+        {
+            let state = self.state()?;
+            let directory = state.directory(node).map_err(core)?;
+            if directory.changes.values().any(Option::is_some) {
+                return Ok(false);
+            }
+            if directory.base.is_none() {
+                return Ok(true);
+            }
+        }
+        Ok(self.entries(node).await?.is_empty())
+    }
+
     fn run<T>(&self, future: impl std::future::Future<Output = PortResult<T>>) -> PortResult<T> {
         LiveRuntime::shared().map_err(io)?.block_on(future)
     }
@@ -634,7 +751,7 @@ impl FilesystemPort for LiveOwner {
     }
     fn lookup_async<'a>(&'a self, parent: NodeId, name: &'a [u8]) -> crate::PortFuture<'a, Attr> {
         Box::pin(async move {
-            let _order = self.ordered(parent).await?;
+            let _namespace = self.0.namespace.lock().await;
             let name = self.name(parent, name).await?;
             self.state()?
                 .attr(name.existing().ok_or(PortError::NotFound)?)
@@ -667,7 +784,7 @@ impl FilesystemPort for LiveOwner {
         mode: u32,
     ) -> crate::PortFuture<'a, Attr> {
         Box::pin(async move {
-            let _order = self.ordered(parent).await?;
+            let _namespace = self.0.namespace.lock().await;
             let name = self.name(parent, name).await?;
             self.state()?.create_file(name, mode, None).map_err(core)
         })
@@ -682,7 +799,7 @@ impl FilesystemPort for LiveOwner {
         mode: u32,
     ) -> crate::PortFuture<'a, Attr> {
         Box::pin(async move {
-            let _order = self.ordered(parent).await?;
+            let _namespace = self.0.namespace.lock().await;
             let name = self.name(parent, name).await?;
             self.state()?.mkdir(name, mode, None).map_err(core)
         })
@@ -697,7 +814,7 @@ impl FilesystemPort for LiveOwner {
         target: Vec<u8>,
     ) -> crate::PortFuture<'a, Attr> {
         Box::pin(async move {
-            let _order = self.ordered(parent).await?;
+            let _namespace = self.0.namespace.lock().await;
             let name = self.name(parent, name).await?;
             self.state()?.symlink(name, target).map_err(core)
         })
@@ -733,13 +850,19 @@ impl FilesystemPort for LiveOwner {
         mode: u32,
     ) -> crate::PortFuture<'a, Attr> {
         Box::pin(async move {
-            let _order = self.ordered(parent).await?;
+            let _namespace = self.0.namespace.lock().await;
             let name = self.name(parent, name).await?;
             let mut state = self.state()?;
             let attr = state.create_file(name, mode, None).map_err(core)?;
             state.pin(attr.node).map_err(core)?;
             Ok(attr)
         })
+    }
+    fn pin_directory(&self, node: NodeId) -> PortResult<()> {
+        self.state()?.pin_directory(node).map_err(core)
+    }
+    fn unpin_directory(&self, node: NodeId) -> PortResult<()> {
+        self.unpin(node, false)
     }
     fn unpin(&self, node: NodeId, _: bool) -> PortResult<()> {
         self.state()?.unpin(node).map(drop).map_err(core)
@@ -767,6 +890,12 @@ impl FilesystemPort for LiveOwner {
     }
     fn chmod_async<'a>(&'a self, node: NodeId, mode: u32) -> crate::PortFuture<'a, ()> {
         Box::pin(async move {
+            let directory = self.state()?.attr(node).map_err(core)?.kind == Kind::Directory;
+            let _namespace = if directory {
+                Some(self.0.namespace.lock().await)
+            } else {
+                None
+            };
             let _order = self.ordered(node).await?;
             self.state()?.chmod(node, mode).map_err(core)
         })
@@ -781,6 +910,12 @@ impl FilesystemPort for LiveOwner {
         nanos: u32,
     ) -> crate::PortFuture<'a, ()> {
         Box::pin(async move {
+            let directory = self.state()?.attr(node).map_err(core)?.kind == Kind::Directory;
+            let _namespace = if directory {
+                Some(self.0.namespace.lock().await)
+            } else {
+                None
+            };
             let _order = self.ordered(node).await?;
             self.state()?.set_mtime(node, seconds, nanos).map_err(core)
         })
@@ -800,17 +935,214 @@ impl FilesystemPort for LiveOwner {
             self.publish_facts().await
         })
     }
-    fn readdir(&self, _: NodeId) -> PortResult<Vec<(NodeId, Kind, Vec<u8>)>> {
-        Err(PortError::Invalid)
+    fn readdir(&self, node: NodeId) -> PortResult<Vec<(NodeId, Kind, Vec<u8>)>> {
+        self.run(async {
+            let _namespace = self.0.namespace.lock().await;
+            let entries = self.entries(node).await?;
+            let state = self.state()?;
+            let mut result = vec![
+                (node, Kind::Directory, b".".to_vec()),
+                (
+                    state.parent_of(node).map_err(core)?,
+                    Kind::Directory,
+                    b"..".to_vec(),
+                ),
+            ];
+            for (name, id) in entries {
+                result.push((id, state.attr(id).map_err(core)?.kind, name));
+            }
+            Ok(result)
+        })
     }
-    fn link(&self, _: NodeId, _: NodeId, _: &[u8]) -> PortResult<Attr> {
-        Err(PortError::Invalid)
+    fn link(&self, node: NodeId, parent: NodeId, name: &[u8]) -> PortResult<Attr> {
+        self.run(self.link_async(node, parent, name))
     }
-    fn unlink(&self, _: NodeId, _: &[u8], _: bool) -> PortResult<()> {
-        Err(PortError::Invalid)
+    fn link_async<'a>(
+        &'a self,
+        node: NodeId,
+        parent: NodeId,
+        name: &'a [u8],
+    ) -> crate::PortFuture<'a, Attr> {
+        Box::pin(async move {
+            let _namespace = self.0.namespace.lock().await;
+            let name = self.name(parent, name).await?;
+            self.state()?.link(node, name).map_err(core)
+        })
     }
-    fn rename(&self, _: NodeId, _: &[u8], _: NodeId, _: &[u8], _: bool) -> PortResult<()> {
-        Err(PortError::Invalid)
+    fn unlink(&self, parent: NodeId, name: &[u8], directory: bool) -> PortResult<()> {
+        self.run(self.unlink_async(parent, name, directory))
+    }
+    fn unlink_async<'a>(
+        &'a self,
+        parent: NodeId,
+        name: &'a [u8],
+        directory: bool,
+    ) -> crate::PortFuture<'a, ()> {
+        Box::pin(async move {
+            let _namespace = self.0.namespace.lock().await;
+            let name = self.name(parent, name).await?;
+            let node = name.existing().ok_or(PortError::NotFound)?;
+            let empty = if directory {
+                self.empty_directory(node).await?
+            } else {
+                true
+            };
+            self.state()?.unlink(name, directory, empty).map_err(core)?;
+            if !self.state()?.nodes.contains_key(&node) {
+                self.0
+                    .ordering
+                    .lock()
+                    .map_err(|_| PortError::Io)?
+                    .remove(&node);
+                self.0
+                    .directories
+                    .lock()
+                    .map_err(|_| PortError::Io)?
+                    .remove(&node);
+            }
+            Ok(())
+        })
+    }
+    fn rename(
+        &self,
+        parent: NodeId,
+        name: &[u8],
+        target_parent: NodeId,
+        target: &[u8],
+        no_replace: bool,
+    ) -> PortResult<()> {
+        self.run(self.rename_async(parent, name, target_parent, target, no_replace))
+    }
+    fn rename_async<'a>(
+        &'a self,
+        parent: NodeId,
+        name: &'a [u8],
+        target_parent: NodeId,
+        target: &'a [u8],
+        no_replace: bool,
+    ) -> crate::PortFuture<'a, ()> {
+        Box::pin(async move {
+            let _namespace = self.0.namespace.lock().await;
+            let source = self.name(parent, name).await?;
+            let target = self.name(target_parent, target).await?;
+            let empty = if let Some(node) = target.existing() {
+                if self.state()?.attr(node).map_err(core)?.kind == Kind::Directory {
+                    self.empty_directory(node).await?
+                } else {
+                    true
+                }
+            } else {
+                true
+            };
+            self.state()?
+                .rename(source, target, no_replace, empty)
+                .map_err(core)
+        })
+    }
+    fn readdir_page_async<'a>(
+        &'a self,
+        node: NodeId,
+        after: usize,
+    ) -> crate::PortFuture<'a, Vec<(NodeId, Kind, Vec<u8>)>> {
+        Box::pin(async move {
+            self.directory_page_async(node, after as u64)
+                .await
+                .map(|entries| {
+                    entries
+                        .into_iter()
+                        .map(|(_, attr, name)| (attr.node, attr.kind, name))
+                        .collect()
+                })
+        })
+    }
+    fn readdirplus_page_async<'a>(
+        &'a self,
+        node: NodeId,
+        after: usize,
+    ) -> crate::PortFuture<'a, Vec<(Attr, Vec<u8>)>> {
+        Box::pin(async move {
+            self.directory_page_async(node, after as u64)
+                .await
+                .map(|entries| {
+                    entries
+                        .into_iter()
+                        .map(|(_, attr, name)| (attr, name))
+                        .collect()
+                })
+        })
+    }
+    fn directory_page_async<'a>(
+        &'a self,
+        node: NodeId,
+        after: u64,
+    ) -> crate::PortFuture<'a, Vec<(u64, Attr, Vec<u8>)>> {
+        Box::pin(async move {
+            let _namespace = self.0.namespace.lock().await;
+            let generation = {
+                let state = self.state()?;
+                (
+                    state.base_root,
+                    state.nodes.get(&node).ok_or(PortError::NotFound)?.revision,
+                )
+            };
+            let refresh = self
+                .0
+                .directories
+                .lock()
+                .map_err(|_| PortError::Io)?
+                .get(&node)
+                .is_none_or(|cursor| cursor.generation != generation);
+            if refresh {
+                let entries = self.entries(node).await?;
+                let mut directories = self.0.directories.lock().map_err(|_| PortError::Io)?;
+                let cursor = directories.entry(node).or_insert_with(|| DirectoryCookies {
+                    generation,
+                    next: 3,
+                    names: Default::default(),
+                    ordered: Default::default(),
+                });
+                cursor.names.retain(|name, (cookie, id)| {
+                    let keep = entries.get(name) == Some(id);
+                    if !keep {
+                        cursor.ordered.remove(cookie);
+                    }
+                    keep
+                });
+                for (name, id) in entries {
+                    if !cursor.names.contains_key(&name) {
+                        let cookie = cursor.next;
+                        cursor.next = cookie.checked_add(1).ok_or(PortError::NoSpace)?;
+                        cursor.names.insert(name.clone(), (cookie, id));
+                        cursor.ordered.insert(cookie, (id, name));
+                    }
+                }
+                cursor.generation = generation;
+            }
+            let state = self.state()?;
+            let directories = self.0.directories.lock().map_err(|_| PortError::Io)?;
+            let cursor = directories.get(&node).ok_or(PortError::Io)?;
+            let mut page = Vec::new();
+            if after == 0 {
+                page.push((1, state.attr(node).map_err(core)?, b".".to_vec()));
+            }
+            if after < 2 {
+                page.push((
+                    2,
+                    state
+                        .attr(state.parent_of(node).map_err(core)?)
+                        .map_err(core)?,
+                    b"..".to_vec(),
+                ));
+            }
+            for (cookie, (id, name)) in cursor
+                .ordered
+                .range((std::ops::Bound::Excluded(after), std::ops::Bound::Unbounded))
+                .take(128 - page.len())
+            {
+                page.push((*cookie, state.attr(*id).map_err(core)?, name.clone()));
+            }
+            Ok(page)
+        })
     }
 }
 

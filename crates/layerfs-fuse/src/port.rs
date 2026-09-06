@@ -62,6 +62,24 @@ pub type PortFuture<'a, T> =
 
 pub trait FilesystemPort: Send + Sync {
     #[cfg(feature = "live")]
+    fn directory_page_async<'a>(
+        &'a self,
+        node: NodeId,
+        after: u64,
+    ) -> PortFuture<'a, Vec<(u64, Attr, Vec<u8>)>> {
+        Box::pin(async move {
+            self.readdirplus_page_async(node, after as usize)
+                .await
+                .map(|entries| {
+                    entries
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, (attr, name))| (after + index as u64 + 1, attr, name))
+                        .collect()
+                })
+        })
+    }
+    #[cfg(feature = "live")]
     fn callback_gate(
         &self,
         _operation: KernelOperation,
@@ -289,6 +307,12 @@ pub trait FilesystemPort: Send + Sync {
     ) -> PortResult<()>;
     fn pin(&self, node: NodeId, truncate: bool, writable: bool) -> PortResult<()>;
     fn unpin(&self, node: NodeId, writable: bool) -> PortResult<()>;
+    fn pin_directory(&self, _node: NodeId) -> PortResult<()> {
+        Ok(())
+    }
+    fn unpin_directory(&self, _node: NodeId) -> PortResult<()> {
+        Ok(())
+    }
     fn read(&self, node: NodeId, offset: u64, size: usize) -> PortResult<Vec<u8>>;
     fn write(&self, node: NodeId, offset: u64, bytes: &[u8]) -> PortResult<usize>;
     /// The adapter transfers the one-shot kernel reply. Implementations may park it

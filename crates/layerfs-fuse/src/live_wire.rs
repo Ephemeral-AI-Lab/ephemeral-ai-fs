@@ -24,6 +24,7 @@ pub const FACTS_BEGIN: u8 = 9;
 pub const FACTS_NODE: u8 = 10;
 pub const FACTS_END: u8 = 11;
 pub const CANCEL_RESERVATION: u8 = 12;
+pub const DIRECTORY_PAGE: u8 = 13;
 
 pub fn invalid() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "live owner transport")

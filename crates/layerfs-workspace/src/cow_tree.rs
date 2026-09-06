@@ -298,23 +298,6 @@ impl Workspace {
             .ok_or(StorageError::NotFound("name"))
     }
 
-    fn materialize_record(
-        &mut self,
-        inode: InodeId,
-        path: String,
-        record: layerfs_content::tree::inode::InodeRecordV1,
-        file_len: Option<u64>,
-    ) -> Result<NodeId> {
-        if let Some(node) = self.live.canonical_nodes.get(&inode).copied() {
-            self.live.nodes.get_mut(&node).unwrap().paths.insert(path);
-            return Ok(node);
-        }
-        let acquired = acquire_inode_record(&self.reader, inode, record, file_len)?;
-        self.live
-            .install_immutable_node(acquired, path)
-            .map_err(crate::live_error)
-    }
-
     pub(crate) fn directory_entries(&mut self, node: NodeId) -> Result<BTreeMap<Vec<u8>, NodeId>> {
         let parent = node;
         let (base, changes) = {
@@ -355,53 +338,23 @@ impl Workspace {
             }
         }
         for pending in pending.chunks(128) {
-            let reader = self.reader.clone();
-            let core = CoreReader(&reader);
             let inodes = pending
                 .iter()
                 .map(|(_, inode, _)| *inode)
                 .collect::<Vec<_>>();
-            let record_ids = inode_table_lookup_many(
-                &core,
-                self.base_inodes,
-                &inodes,
-                &mut InodeTableCounters::default(),
-            )?
-            .into_iter()
-            .map(|record| record.ok_or(StorageError::Integrity("Workspace inode")))
-            .collect::<Result<Vec<_>>>()?;
-            let mut records = BTreeMap::new();
-            core.get_authenticated_batch(&record_ids, |id, payload| {
-                records.insert(
-                    id,
-                    decode_inode_record(&layerfs_content::encode_bytes_object(payload)?)?,
-                );
-                Ok(())
-            })?;
-            let file_states = records
-                .values()
-                .filter(|record| record.kind == InodeKind::RegularFile)
-                .map(|record| record.content_root)
-                .collect::<Vec<_>>();
-            let mut file_lengths = BTreeMap::new();
-            core.get_authenticated_batch(&file_states, |id, payload| {
-                file_lengths.insert(
-                    id,
-                    decode_file_state(&layerfs_content::encode_bytes_object(payload)?)?.logical_len,
-                );
-                Ok(())
-            })?;
-            for ((name, inode, path), record_id) in pending.iter().zip(record_ids) {
-                let record = *records
-                    .get(&record_id)
-                    .ok_or(StorageError::Integrity("Workspace inode record"))?;
-                let child = self.materialize_record(
-                    *inode,
-                    path.clone(),
-                    record,
-                    file_lengths.get(&record.content_root).copied(),
-                )?;
+            for ((name, _, path), acquired) in
+                pending
+                    .iter()
+                    .zip(acquire_inodes(&self.reader, self.base_inodes, &inodes)?)
+            {
+                let child = self
+                    .live
+                    .install_immutable_node(acquired, path.clone())
+                    .map_err(crate::live_error)?;
                 self.remember_directory_parent(child, parent)?;
+                self.live
+                    .remember_name(parent, name.as_bytes(), Some(child))
+                    .map_err(crate::live_error)?;
                 entries.insert(name.as_bytes().to_vec(), child);
             }
         }
@@ -472,6 +425,60 @@ impl Workspace {
             .remember_directory_parent(node, parent)
             .map_err(crate::live_error)
     }
+}
+
+pub(crate) fn acquire_inodes(
+    reader: &SnapshotReader,
+    inodes: InodeTableRoot,
+    ids: &[InodeId],
+) -> Result<Vec<layerfs_workspace_core::namespace::AcquiredInode>> {
+    if ids.len() > 128 {
+        return Err(StorageError::InvalidInput("inode acquisition page"));
+    }
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let core = CoreReader(reader);
+    let record_ids =
+        inode_table_lookup_many(&core, inodes, ids, &mut InodeTableCounters::default())?
+            .into_iter()
+            .map(|record| record.ok_or(StorageError::Integrity("Workspace inode")))
+            .collect::<Result<Vec<_>>>()?;
+    let mut records = BTreeMap::new();
+    core.get_authenticated_batch(&record_ids, |id, payload| {
+        records.insert(
+            id,
+            decode_inode_record(&layerfs_content::encode_bytes_object(payload)?)?,
+        );
+        Ok(())
+    })?;
+    let file_states = records
+        .values()
+        .filter(|record| record.kind == InodeKind::RegularFile)
+        .map(|record| record.content_root)
+        .collect::<Vec<_>>();
+    let mut file_lengths = BTreeMap::new();
+    core.get_authenticated_batch(&file_states, |id, payload| {
+        file_lengths.insert(
+            id,
+            decode_file_state(&layerfs_content::encode_bytes_object(payload)?)?.logical_len,
+        );
+        Ok(())
+    })?;
+    ids.iter()
+        .zip(record_ids)
+        .map(|(inode, record_id)| {
+            let record = *records
+                .get(&record_id)
+                .ok_or(StorageError::Integrity("Workspace inode record"))?;
+            acquire_inode_record(
+                reader,
+                *inode,
+                record,
+                file_lengths.get(&record.content_root).copied(),
+            )
+        })
+        .collect()
 }
 
 pub(crate) fn acquire_inode(
@@ -627,53 +634,25 @@ impl Workspace {
 
     pub fn link(&mut self, node: NodeId, parent: NodeId, name: &[u8]) -> Result<Attr> {
         self.ensure_active()?;
-        if matches!(
-            self.live
-                .nodes
-                .get(&node)
-                .ok_or(StorageError::NotFound("node"))?
-                .data,
-            Data::Directory(_)
-        ) {
-            return Err(StorageError::InvalidInput("directory link"));
-        }
-        let target = self.child_path(parent, name)?;
-        self.insert_name(parent, name, node)?;
-        let value = self.live.nodes.get_mut(&node).unwrap();
-        value.links += 1;
-        value.paths.insert(target.clone());
-        let paths = value.paths.iter().cloned().collect::<Vec<_>>();
-        self.note_mutation(paths)?;
-        self.attr(node)
+        let name = self.acquire_name(parent, name)?;
+        self.live.link(node, name).map_err(crate::live_error)
     }
 
     pub fn unlink(&mut self, parent: NodeId, name: &[u8], directory: bool) -> Result<()> {
         self.ensure_active()?;
-        let node = self.lookup_node(parent, name)?;
-        let (is_directory, mut paths) = {
-            let value = self.live.nodes.get(&node).unwrap();
-            (
-                matches!(value.data, Data::Directory(_)),
-                value.paths.iter().cloned().collect::<Vec<_>>(),
-            )
+        let name = self.acquire_name(parent, name)?;
+        let empty = if directory {
+            self.directory_is_empty(name.existing().ok_or(StorageError::NotFound("name"))?)?
+        } else {
+            true
         };
-        if directory != is_directory {
-            return Err(StorageError::InvalidInput("unlink kind"));
+        if self
+            .live
+            .unlink(name, directory, empty)
+            .map_err(crate::live_error)?
+        {
+            self.retire_spool_segments();
         }
-        if directory && !self.directory_entries(node)?.is_empty() {
-            return Err(StorageError::InvalidInput("directory not empty"));
-        }
-        let path = self.child_path(parent, name)?;
-        paths.push(path.clone());
-        self.directory_mut(parent)?
-            .changes
-            .insert(name.to_vec(), None);
-        let value = self.live.nodes.get_mut(&node).unwrap();
-        value.links = value.links.saturating_sub(1);
-        value.paths.remove(&path);
-        self.live.dirty.insert(node);
-        self.reclaim(node);
-        self.note_mutation(paths)?;
         Ok(())
     }
 
@@ -686,56 +665,18 @@ impl Workspace {
         no_replace: bool,
     ) -> Result<()> {
         self.ensure_active()?;
-        let node = self.lookup_node(parent, name)?;
-        let source = self.child_path(parent, name)?;
-        let destination = self.child_path(target_parent, target)?;
-        if source == destination {
-            return Ok(());
-        }
-        let source_directory = matches!(self.live.nodes[&node].data, Data::Directory(_));
-        let existing = match self.lookup_node(target_parent, target) {
-            Ok(existing) if existing == node => return Ok(()),
-            Ok(existing) => Some(existing),
-            Err(StorageError::NotFound(_)) => None,
-            Err(error) => return Err(error),
+        let source = self.acquire_name(parent, name)?;
+        let target = self.acquire_name(target_parent, target)?;
+        let empty = match target.existing() {
+            Some(node) if matches!(self.live.nodes[&node].data, Data::Directory(_)) => {
+                self.directory_is_empty(node)?
+            }
+            _ => true,
         };
-        if no_replace && existing.is_some() {
-            return Err(StorageError::InvalidInput("rename target"));
-        }
-        if let Some(existing) = existing {
-            let target_directory = matches!(self.live.nodes[&existing].data, Data::Directory(_));
-            if source_directory != target_directory {
-                return Err(StorageError::InvalidInput("rename type"));
-            }
-        }
-        if source_directory {
-            let target_parent_path = self.path_of(target_parent)?;
-            if target_parent_path == source
-                || (target_parent_path.starts_with(&source)
-                    && target_parent_path.as_bytes().get(source.len()) == Some(&b'/'))
-            {
-                return Err(StorageError::InvalidInput("rename descendant"));
-            }
-        }
-        if let Some(existing) = existing {
-            if source_directory && !self.directory_is_empty(existing)? {
-                return Err(StorageError::InvalidInput("directory not empty"));
-            }
-        }
-        if existing.is_some() {
-            self.unlink(target_parent, target, source_directory)?;
-        }
-        self.directory_mut(parent)?
-            .changes
-            .insert(name.to_vec(), None);
-        self.directory_mut(target_parent)?
-            .changes
-            .insert(target.to_vec(), Some(node));
-        self.replace_path_prefix(&source, &destination);
-        if source_directory {
-            self.live.directory_parents.insert(node, target_parent);
-        }
-        self.note_mutation([source, destination])?;
+        self.live
+            .rename(source, target, no_replace, empty)
+            .map_err(crate::live_error)?;
+        self.retire_spool_segments();
         Ok(())
     }
 
@@ -765,45 +706,6 @@ impl Workspace {
         self.live
             .set_mtime(node, seconds, nanos)
             .map_err(crate::live_error)
-    }
-
-    fn insert_name(&mut self, parent: NodeId, name: &[u8], node: NodeId) -> Result<()> {
-        match self.lookup_node(parent, name) {
-            Ok(_) => return Err(StorageError::InvalidInput("name exists")),
-            Err(StorageError::NotFound(_)) => {}
-            Err(error) => return Err(error),
-        }
-        self.directory_mut(parent)?
-            .changes
-            .insert(name.to_vec(), Some(node));
-        self.live.dirty.insert(node);
-        self.remember_directory_parent(node, parent)
-    }
-
-    fn replace_path_prefix(&mut self, source: &str, target: &str) {
-        for node in self.live.nodes.values_mut() {
-            node.paths = node
-                .paths
-                .iter()
-                .map(|path| {
-                    if path == source {
-                        target.to_owned()
-                    } else if path.starts_with(source)
-                        && path.as_bytes().get(source.len()) == Some(&b'/')
-                    {
-                        format!("{target}{}", &path[source.len()..])
-                    } else {
-                        path.clone()
-                    }
-                })
-                .collect();
-        }
-    }
-
-    fn reclaim(&mut self, node: NodeId) {
-        if self.live.reclaim(node) {
-            self.retire_spool_segments();
-        }
     }
 }
 

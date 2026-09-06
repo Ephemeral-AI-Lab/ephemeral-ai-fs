@@ -741,6 +741,19 @@ impl FilesystemPort for FuseView {
         Ok(())
     }
 
+    fn pin_directory(&self, node: layerfs_fuse::NodeId) -> layerfs_fuse::PortResult<()> {
+        self.with(|workspace| {
+            workspace
+                .live
+                .pin_directory(NodeId(node.0))
+                .map_err(crate::live_error)
+        })
+    }
+
+    fn unpin_directory(&self, node: layerfs_fuse::NodeId) -> layerfs_fuse::PortResult<()> {
+        self.unpin(node, false)
+    }
+
     fn unpin(&self, node: layerfs_fuse::NodeId, writable: bool) -> layerfs_fuse::PortResult<()> {
         let worker = self.worker()?;
         let _callback = worker.enter_callback().map_err(workspace_port_error)?;

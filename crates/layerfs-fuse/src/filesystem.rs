@@ -961,6 +961,7 @@ impl Filesystem for LayerFs {
                 if this.port.attr(node).map_err(errno)?.kind != Kind::Directory {
                     return Err(fuser::Errno::ENOTDIR);
                 }
+                this.port.pin_directory(node).map_err(errno)?;
                 Ok(this.handles.insert(node, false))
             }) {
                 Ok(handle) => reply.opened(FileHandle(handle), FopenFlags::empty()),
@@ -1009,7 +1010,7 @@ impl Filesystem for LayerFs {
                 let node = this.handle(handle)?;
                 {
                     this.port
-                        .readdir_page_async(node, offset as usize)
+                        .directory_page_async(node, offset)
                         .await
                         .map_err(errno)
                 }
@@ -1018,12 +1019,12 @@ impl Filesystem for LayerFs {
             match result {
                 Ok(entries) => {
                     let mut returned_entries = 0;
-                    for (index, (node, kind, name)) in entries.into_iter().enumerate() {
-                        let ino = this.inodes.kernel(node);
+                    for (cookie, attr, name) in entries {
+                        let ino = this.inodes.kernel(attr.node);
                         if reply.add(
                             INodeNo(ino),
-                            offset + (index + 1) as u64,
-                            file_type(kind),
+                            cookie,
+                            file_type(attr.kind),
                             OsStr::from_bytes(&name),
                         ) {
                             break;
@@ -1079,7 +1080,7 @@ impl Filesystem for LayerFs {
                 let node = this.handle(handle)?;
                 {
                     this.port
-                        .readdirplus_page_async(node, offset as usize)
+                        .directory_page_async(node, offset)
                         .await
                         .map_err(errno)
                 }
@@ -1088,7 +1089,7 @@ impl Filesystem for LayerFs {
             match result {
                 Ok(entries) => {
                     let mut returned_entries = 0;
-                    for (index, (attr, name)) in entries.into_iter().enumerate() {
+                    for (cookie, attr, name) in entries {
                         let attr = match this.attr(attr) {
                             Ok(attr) => attr,
                             Err(error) => {
@@ -1098,7 +1099,7 @@ impl Filesystem for LayerFs {
                         };
                         if reply.add(
                             attr.ino,
-                            offset + (index + 1) as u64,
+                            cookie,
                             OsStr::from_bytes(&name),
                             &TTL,
                             &attr,
@@ -1152,10 +1153,12 @@ impl Filesystem for LayerFs {
                 }
             };
 
-            if this.handles.remove(handle.0).is_some() {
-                reply.ok();
-            } else {
-                reply.error(fuser::Errno::EBADF);
+            match this.handles.remove(handle.0) {
+                Some(handle) => match this.port.unpin_directory(handle.node) {
+                    Ok(()) => reply.ok(),
+                    Err(error) => reply.error(errno(error)),
+                },
+                None => reply.error(fuser::Errno::EBADF),
             }
         });
     }
