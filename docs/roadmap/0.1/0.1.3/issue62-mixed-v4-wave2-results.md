@@ -85,5 +85,5 @@ No exhaustive 100/500 walks were rerun at 300 s.
 
 ## What this does not close
 
-- Wave 3 (`namespace-subtree-relocate-delete` and `git-tool` mixed-v4) is not collected. Git mixed-v4 is not registered until the 256 MiB `.git`+tree bound is proven.
+- Wave 3 is reported in [issue62-mixed-v4-wave3-results.md](issue62-mixed-v4-wave3-results.md). Background-only tiny-op mixed-v4 is still later work.
 - [#61](https://github.com/Ephemeral-AI-Lab/layerfs/issues/61) remains the home of old 100k-file ENOSPC/presentation leftovers, including the historical `readdir wide: ENOSPC` rows.
