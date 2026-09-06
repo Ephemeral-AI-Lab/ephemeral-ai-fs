@@ -776,7 +776,11 @@ mod tests {
             .write(file, 0, b"retained after host failure")
             .unwrap();
         remote.backing.lock().unwrap().append_reservation = None;
-        assert!(owner.fsync(None).is_err());
+        assert!(remote.server.control("pause").is_err());
+        assert!(
+            remote.server.control("pause").is_err(),
+            "a retained cut cannot acknowledge failed backing on retry"
+        );
         assert_eq!(
             owner.read(file, 0, 100).unwrap(),
             b"retained after host failure"

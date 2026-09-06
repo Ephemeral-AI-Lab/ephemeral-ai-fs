@@ -752,6 +752,13 @@ impl FilesystemPort for LiveOwner {
         mut reply: crate::WriteReply,
     ) {
         let owner = self.clone();
+        // Cached write-through callbacks can hold a folio needed by invalidation.
+        let kernel_cache = writeback
+            || self
+                .0
+                .cached
+                .lock()
+                .is_ok_and(|cached| cached.contains(&node));
         let bytes = bytes.to_vec();
         self.0.writes.note_client_copy(bytes.len() as u64);
         let queued = Instant::now();
@@ -762,7 +769,7 @@ impl FilesystemPort for LiveOwner {
                 .live_write_dispatch_ns
                 .fetch_add(ns(queued), Ordering::Relaxed);
             reply._guard._gate = match owner
-                .callback_gate(crate::KernelOperation::Write, writeback)
+                .callback_gate(crate::KernelOperation::Write, kernel_cache)
                 .await
             {
                 Ok(gate) => gate,
@@ -1256,7 +1263,7 @@ impl LiveOwner {
                 let state = self.state()?;
                 cached
                     .into_iter()
-                    .filter(|id| state.nodes.get(id).is_some_and(|node| node.pins != 0))
+                    .filter(|id| state.nodes.contains_key(id))
                     .collect()
             };
             if nodes.is_empty() {
@@ -1308,13 +1315,15 @@ impl LiveOwner {
     }
 
     pub async fn freeze(&self) -> PortResult<()> {
-        if self.0.cut.lock().map_err(|_| PortError::Io)?.is_some() {
-            return Ok(());
+        if self.0.failed.load(Ordering::Acquire) {
+            return Err(PortError::Io);
         }
-        let flush = self.0.gate.cache_flush().await;
-        self.flush_kernel_cache().await?;
-        let cut = flush.finish().await;
-        *self.0.cut.lock().map_err(|_| PortError::Io)? = Some(cut);
+        if self.0.cut.lock().map_err(|_| PortError::Io)?.is_none() {
+            let flush = self.0.gate.cache_flush().await;
+            self.flush_kernel_cache().await?;
+            let cut = flush.finish().await;
+            *self.0.cut.lock().map_err(|_| PortError::Io)? = Some(cut);
+        }
         self.flush_append(&mut *self.0.append.lock().await).await?;
         self.publish_facts().await?;
         self.retire_ranges().await

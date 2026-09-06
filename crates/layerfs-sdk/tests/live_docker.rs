@@ -443,6 +443,15 @@ fn run_live_cut(ordinary_writes: bool) {
     let name = format!("layerfs-live-cut-{}", std::process::id());
     eprintln!("focused live cut container={name}");
     let result = live_cut_check(&manager, &name, &image, &root, ordinary_writes);
+    if result.is_err() {
+        if let Ok(logs) = Command::new("docker")
+            .args(["logs", name.as_str()])
+            .output()
+        {
+            eprintln!("daemon stdout: {}", String::from_utf8_lossy(&logs.stdout));
+            eprintln!("daemon stderr: {}", String::from_utf8_lossy(&logs.stderr));
+        }
+    }
     let cleanup = cleanup_container(&manager, &name);
     match (result, cleanup) {
         (Ok(()), Ok(())) => std::fs::remove_dir_all(root).unwrap(),
@@ -489,14 +498,14 @@ int main(int argc, char **argv) {
     assert((void *)p != MAP_FAILED);
     p[0] = 'A'; p[4095] = 'B';
     puts("ready"); fflush(stdout);
+    /* Keep this coherence check inside the existing 4096-edit generation budget. */
     struct timespec delay = {0, 1000000};
     while (access(argv[2], F_OK) != 0) {
         p[128]++;
 #ifdef ORDINARY_WRITES
         assert(pwrite(fd, "Q", 1, 129) == 1);
-#else
-        nanosleep(&delay, 0);
 #endif
+        nanosleep(&delay, 0);
     }
     assert(p[0] == 'A' && p[4095] == 'B' && p[777] == 'S');
     assert(fstat(fd, &after) == 0 && before.st_ino == after.st_ino && before.st_dev == after.st_dev);
@@ -509,9 +518,8 @@ int main(int argc, char **argv) {
         p[128]++;
 #ifdef ORDINARY_WRITES
         assert(pwrite(fd, "Q", 1, 129) == 1);
-#else
-        nanosleep(&delay, 0);
 #endif
+        nanosleep(&delay, 0);
     }
     assert(p[0] == 'C' && p[4095] == 'D' && p[2048] == 'F');
     assert(munmap((void *)p, 4096) == 0); assert(close(fd) == 0);
