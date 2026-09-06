@@ -57,10 +57,11 @@ struct Owner {
 }
 
 struct PendingSplices {
-    path: String,
+    node: NodeId,
     count: usize,
-    edits: Vec<(u64, u64, Option<Piece>)>,
-    retained: usize,
+    received: usize,
+    prepared: Option<layerfs_workspace_core::file_edit::PreparedFileEdit>,
+    cut: crate::live_runtime::OperationCut,
     _charge: crate::live_runtime::LiveReservation,
 }
 
@@ -644,7 +645,8 @@ impl FilesystemPort for LiveOwner {
         let control = writeback
             || matches!(
                 _operation,
-                crate::KernelOperation::Fsync
+                crate::KernelOperation::Read
+                    | crate::KernelOperation::Fsync
                     | crate::KernelOperation::Fsyncdir
                     | crate::KernelOperation::Flush
             );
@@ -691,10 +693,13 @@ impl FilesystemPort for LiveOwner {
             {
                 return Err(PortError::Io);
             }
+            // A page-fault READ can own a folio required by invalidation.
+            // Drain it with laundering callbacks, not behind the ordinary cut.
             let writeback = writeback
                 || matches!(
                     operation,
-                    crate::KernelOperation::Fsync
+                    crate::KernelOperation::Read
+                        | crate::KernelOperation::Fsync
                         | crate::KernelOperation::Fsyncdir
                         | crate::KernelOperation::Flush
                 );
@@ -1178,6 +1183,7 @@ impl LiveOwner {
     pub fn prepare_shutdown(&self) -> std::io::Result<()> {
         self.0.closing.store(true, Ordering::Release);
         self.0.cut.lock().map_err(|_| wire::invalid())?.take();
+        self.0.edit.lock().map_err(|_| wire::invalid())?.take();
         #[cfg(target_os = "linux")]
         self.0
             .kernel_root
@@ -1360,16 +1366,34 @@ impl LiveOwner {
                 {
                     return Err(PortError::Invalid);
                 }
+                if self.0.edit.lock().map_err(|_| PortError::Io)?.is_some()
+                    || self.0.cut.lock().map_err(|_| PortError::Io)?.is_some()
+                {
+                    return Err(PortError::Busy);
+                }
                 let charge = self
                     .0
                     .scheduler
                     .reserve_live(9 * 1024 * 1024)
                     .map_err(|_| PortError::NoSpace)?;
+                self.freeze().await?;
+                let cut = self
+                    .0
+                    .cut
+                    .lock()
+                    .map_err(|_| PortError::Io)?
+                    .take()
+                    .ok_or(PortError::Io)?;
+                let mut node = ROOT;
+                for name in path.split('/').filter(|name| !name.is_empty()) {
+                    node = self.lookup_async(node, name.as_bytes()).await?.node;
+                }
                 *self.0.edit.lock().map_err(|_| PortError::Io)? = Some(PendingSplices {
-                    path,
+                    node,
                     count,
-                    edits: Vec::new(),
-                    retained: 0,
+                    received: 0,
+                    prepared: None,
+                    cut,
                     _charge: charge,
                 });
             }
@@ -1378,7 +1402,7 @@ impl LiveOwner {
                 let delete = input.u64().map_err(io)?;
                 let mut held = self.0.edit.lock().map_err(|_| PortError::Io)?;
                 let pending = held.as_mut().ok_or(PortError::Invalid)?;
-                if pending.edits.len() == pending.count {
+                if pending.received == pending.count {
                     return Err(PortError::Invalid);
                 }
                 let piece = match input.byte().map_err(io)? {
@@ -1387,11 +1411,6 @@ impl LiveOwner {
                         if bytes.len() > layerfs_workspace_core::file_edit::MAX_INLINE_PER_EDIT {
                             return Err(PortError::Invalid);
                         }
-                        pending.retained = pending
-                            .retained
-                            .checked_add(bytes.len())
-                            .filter(|n| *n <= 8 * 1024 * 1024)
-                            .ok_or(PortError::NoSpace)?;
                         (!bytes.is_empty()).then(|| Piece::Inline {
                             bytes: Arc::from(bytes),
                             offset: 0,
@@ -1405,7 +1424,19 @@ impl LiveOwner {
                     _ => return Err(PortError::Invalid),
                 };
                 input.done().map_err(io)?;
-                pending.edits.push((start, delete, piece));
+                let state = self.state()?;
+                if let Some(prepared) = pending.prepared.as_mut() {
+                    state
+                        .extend_splices(prepared, start, delete, piece)
+                        .map_err(core)?;
+                } else {
+                    pending.prepared = Some(
+                        state
+                            .prepare_splices(pending.node, vec![(start, delete, piece)])
+                            .map_err(core)?,
+                    );
+                }
+                pending.received += 1;
             }
             wire::EDIT_END => {
                 input.done().map_err(io)?;
@@ -1416,42 +1447,31 @@ impl LiveOwner {
                     .map_err(|_| PortError::Io)?
                     .take()
                     .ok_or(PortError::Invalid)?;
-                if pending.edits.len() != pending.count
-                    || self.0.cut.lock().map_err(|_| PortError::Io)?.is_some()
-                {
+                if pending.received != pending.count {
                     return Err(PortError::Invalid);
                 }
-                self.freeze().await?;
-                let result = async {
-                    let mut node = ROOT;
-                    for name in pending.path.split('/').filter(|name| !name.is_empty()) {
-                        node = self.lookup_async(node, name.as_bytes()).await?.node;
-                    }
-                    let prepared = self
-                        .state()?
-                        .prepare_splices(node, pending.edits)
-                        .map_err(core)?;
-                    self.state()?.apply_edit(prepared).map_err(core)?;
-                    // The old read replies drained before the first invalidation.
-                    // Faults queued since that flush must now read the installed
-                    // view: holding their replies through a second invalidation
-                    // deadlocks the notifier on their locked kernel folios.
-                    self.0.cut.lock().map_err(|_| PortError::Io)?.take();
-                    #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
+                let node = pending.node;
+                self.state()?
+                    .apply_edit(pending.prepared.ok_or(PortError::Invalid)?)
+                    .map_err(core)?;
+                // Queued post-flush faults must read the installed view before
+                // notification can wait for their locked kernel folios.
+                drop(pending.cut);
+                #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
+                {
+                    let owner = self.clone();
+                    if let Err(error) = self
+                        .0
+                        .scheduler
+                        .kernel(move || owner.invalidate(node).map_err(|_| wire::invalid()))
+                        .await
                     {
-                        let owner = self.clone();
-                        if let Err(error) = self.0.scheduler.kernel(move || owner.invalidate(node).map_err(|_| wire::invalid())).await {
-                            self.0.failed.store(true, Ordering::Release);
-                            return Err(io(error));
-                        }
+                        self.0.failed.store(true, Ordering::Release);
+                        return Err(io(error));
                     }
-                    Ok(())
                 }
-                .await;
-                if !self.0.failed.load(Ordering::Acquire) {
-                    self.0.cut.lock().map_err(|_| PortError::Io)?.take();
-                }
-                result?;
+                #[cfg(not(all(target_os = "linux", any(feature = "host", feature = "proxy"))))]
+                let _ = node;
             }
             wire::WRITE_METRICS => {
                 input.done().map_err(io)?;
@@ -1648,6 +1668,14 @@ impl LiveOwner {
                 } else {
                     owner.control_request(&bytes).await
                 };
+                if result.is_err()
+                    && matches!(
+                        bytes.first(),
+                        Some(&wire::EDIT_BEGIN) | Some(&wire::EDIT_PART) | Some(&wire::EDIT_END)
+                    )
+                {
+                    owner.0.edit.lock().map_err(|_| wire::invalid())?.take();
+                }
                 match result {
                     Ok(bytes) => {
                         crate::live_transport::write_frame(&mut stream, Some(0), &bytes).await?;
@@ -1669,8 +1697,8 @@ impl LiveOwner {
         Ok(LiveControl {
             shutdown,
             finished: Some(finished),
-            thread,
-            observer,
+            thread: Some(thread),
+            observer: Some(observer),
         })
     }
 }
@@ -1678,8 +1706,8 @@ impl LiveOwner {
 pub struct LiveControl {
     shutdown: std::sync::mpsc::Receiver<()>,
     finished: Option<tokio::sync::oneshot::Sender<bool>>,
-    thread: tokio::task::JoinHandle<std::io::Result<()>>,
-    observer: tokio::task::JoinHandle<std::io::Result<()>>,
+    thread: Option<tokio::task::JoinHandle<std::io::Result<()>>>,
+    observer: Option<tokio::task::JoinHandle<std::io::Result<()>>>,
 }
 impl LiveControl {
     pub fn wait_for_shutdown(&self) -> std::io::Result<()> {
@@ -1692,11 +1720,24 @@ impl LiveControl {
             .send(success)
             .map_err(|_| wire::invalid())?;
         let result = LiveRuntime::shared()?
-            .block_on(self.thread)
+            .block_on(self.thread.take().ok_or_else(wire::invalid)?)
             .map_err(|_| wire::invalid())?;
-        self.observer.abort();
-        let _ = LiveRuntime::shared()?.block_on(self.observer);
+        if let Some(observer) = self.observer.take() {
+            observer.abort();
+            let _ = LiveRuntime::shared()?.block_on(observer);
+        }
         result
+    }
+}
+
+impl Drop for LiveControl {
+    fn drop(&mut self) {
+        if let Some(thread) = &self.thread {
+            thread.abort();
+        }
+        if let Some(observer) = &self.observer {
+            observer.abort();
+        }
     }
 }
 

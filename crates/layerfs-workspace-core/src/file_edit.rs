@@ -192,18 +192,53 @@ impl LiveWorkspace {
         let Data::File(before) = &expected.data else {
             return Err(Error::InvalidInput("file"));
         };
-        let (base, high_water, old, prior_edits) = match before {
-            FileData::Base { root, len } => {
-                (Some((*root, *len)), 0, PieceTree::base(*root, *len)?, 0)
-            }
-            FileData::Edited {
-                base,
-                spool_high_water,
-                pieces,
-                edits,
-            } => (*base, *spool_high_water, pieces.clone(), *edits),
+        let next = match before {
+            FileData::Base { root, len } => FileData::Edited {
+                base: Some((*root, *len)),
+                spool_high_water: 0,
+                pieces: PieceTree::base(*root, *len)?,
+                edits: 0,
+            },
+            edited => edited.clone(),
         };
-        let generations = replacements.len() as u64;
+        let mut prepared = PreparedFileEdit {
+            node,
+            expected_revision: expected.revision,
+            before: before.clone(),
+            next,
+            appended: 0,
+            bytes: 0,
+            generations: 0,
+        };
+        for (start, delete_len, replacement) in replacements {
+            self.extend_splices(&mut prepared, start, delete_len, replacement)?;
+        }
+        Ok(prepared)
+    }
+
+    /// Extend a retained batch without retaining overwritten replacement input.
+    pub fn extend_splices(
+        &self,
+        prepared: &mut PreparedFileEdit,
+        start: u64,
+        delete_len: u64,
+        replacement: Option<Piece>,
+    ) -> Result<()> {
+        let expected = self
+            .nodes
+            .get(&prepared.node)
+            .ok_or(Error::NotFound("node"))?;
+        if expected.revision != prepared.expected_revision
+            || !matches!(&expected.data, Data::File(data) if *data == prepared.before)
+            || prepared.bytes != 0
+            || prepared.appended != 0
+        {
+            return Err(Error::Integrity("stale prepared splice"));
+        }
+        let generations = prepared
+            .generations
+            .checked_add(1)
+            .ok_or(Error::InvalidInput("workspace edit limit"))?;
         self.mutation_generation
             .checked_add(generations)
             .ok_or(Error::Integrity("Workspace mutation generation"))?;
@@ -211,45 +246,42 @@ impl LiveWorkspace {
             .revision
             .checked_add(1)
             .ok_or(Error::Integrity("inode revision"))?;
-        let edits = u32::try_from(replacements.len())
+        let (old, prior_edits, old_len) = match &prepared.before {
+            FileData::Base { len, .. } => (None, 0, *len),
+            FileData::Edited { pieces, edits, .. } => (Some(pieces), *edits, pieces.len()),
+        };
+        let edits = u32::try_from(generations)
             .ok()
             .and_then(|n| prior_edits.checked_add(n))
             .filter(|n| *n <= MAX_EDITS_PER_FILE)
             .ok_or(Error::InvalidInput("workspace edit limit"))?;
-        let mut next = old.clone();
-        for (start, delete_len, replacement) in replacements {
-            match &replacement {
-                Some(Piece::Inline { bytes, .. }) if bytes.len() > MAX_INLINE_PER_EDIT => {
-                    return Err(Error::InvalidInput("workspace inline edit limit"))
-                }
-                Some(Piece::Base { .. } | Piece::Spool { .. }) => {
-                    return Err(Error::InvalidInput("workspace edit replacement"))
-                }
-                _ => {}
+        match &replacement {
+            Some(Piece::Inline { bytes, .. }) if bytes.len() > MAX_INLINE_PER_EDIT => {
+                return Err(Error::InvalidInput("workspace inline edit limit"))
             }
-            next = next.replace(start, delete_len, replacement)?;
-            self.check_piece_resources(
-                matches!(before, FileData::Edited { .. }).then_some(&old),
-                &next,
-            )?;
+            Some(Piece::Base { .. } | Piece::Spool { .. }) => {
+                return Err(Error::InvalidInput("workspace edit replacement"))
+            }
+            _ => {}
         }
-        let emptied = !old.is_empty() && next.is_empty();
-        let prepared = PreparedFileEdit {
-            node,
-            expected_revision: expected.revision,
-            before: before.clone(),
-            next: FileData::Edited {
-                base,
-                spool_high_water: high_water,
-                pieces: next,
-                edits: if emptied { 0 } else { edits },
-            },
-            appended: 0,
-            bytes: 0,
-            generations,
+        let FileData::Edited {
+            pieces,
+            edits: next_edits,
+            ..
+        } = &mut prepared.next
+        else {
+            return Err(Error::Integrity("prepared splice"));
         };
-        self.write_resources(&prepared)?;
-        Ok(prepared)
+        let next = pieces.replace(start, delete_len, replacement)?;
+        self.check_piece_resources(old, &next)?;
+        *next_edits = if old_len != 0 && next.is_empty() {
+            0
+        } else {
+            edits
+        };
+        *pieces = next;
+        prepared.generations = generations;
+        Ok(())
     }
 
     pub fn apply_edit(&mut self, prepared: PreparedFileEdit) -> Result<usize> {

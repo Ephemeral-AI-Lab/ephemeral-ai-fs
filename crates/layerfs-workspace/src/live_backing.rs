@@ -580,6 +580,42 @@ mod tests {
             )
             .unwrap();
         assert_eq!(owner.read(file, 0, 20).unwrap(), b"fXYst");
+        let streamed = owner
+            .create_file_open(crate::ROOT, b"streamed", 0o600)
+            .unwrap()
+            .node;
+        let splice = |start, delete_len, bytes| crate::WorkspaceFileRangeEdit {
+            workspace_id: crate::WorkspaceId::new(),
+            path: "streamed".into(),
+            start,
+            delete_len,
+            replacement: crate::WorkspaceFileReplacement::Inline(bytes),
+        };
+        remote
+            .edit(
+                "streamed",
+                (0..9)
+                    .map(|index| {
+                        splice(
+                            0,
+                            if index == 0 { 0 } else { 1024 * 1024 },
+                            vec![index; 1024 * 1024],
+                        )
+                    })
+                    .collect(),
+            )
+            .unwrap();
+        assert_eq!(owner.attr(streamed).unwrap().size, 1024 * 1024);
+        assert_eq!(owner.read(streamed, 0, 10).unwrap(), vec![8; 10]);
+        assert!(remote
+            .edit(
+                "streamed",
+                vec![splice(0, 1, vec![99]), splice(2 * 1024 * 1024, 0, vec![1])]
+            )
+            .is_err());
+        assert_eq!(owner.read(streamed, 0, 10).unwrap(), vec![8; 10]);
+        owner.unlink(crate::ROOT, b"streamed", false).unwrap();
+        owner.unpin(streamed, true).unwrap();
         owner.write(file, 0, b"later").unwrap();
         remote.server.control("pause").unwrap();
         let (second, _) = workspace.lock().unwrap().commit().unwrap();
@@ -742,40 +778,37 @@ impl RemoteWorkspace {
         {
             return Err(crate::WorkspaceError::InvalidExecution);
         }
+        if edits.iter().any(|edit| matches!(&edit.replacement, crate::WorkspaceFileReplacement::Inline(bytes) if bytes.len() > 1024 * 1024)) {
+            return Err(crate::WorkspaceError::InvalidExecution);
+        }
         let _charge = layerfs_fuse::live_runtime::LiveRuntime::shared()?
             .scheduler()
-            .reserve_live(9 * 1024 * 1024)?;
+            .reserve_live(wire::MAX_FRAME)?;
         let mut begin = vec![wire::EDIT_BEGIN];
         wire::bytes_out(&mut begin, path.as_bytes())?;
         wire::u64_out(&mut begin, edits.len() as u64);
-        let mut frames = vec![begin];
-        let mut retained = 0usize;
-        for edit in edits {
+        let parts = edits.into_iter().map(|edit| {
             let mut frame = vec![wire::EDIT_PART];
             wire::u64_out(&mut frame, edit.start);
             wire::u64_out(&mut frame, edit.delete_len);
             match edit.replacement {
                 crate::WorkspaceFileReplacement::Inline(bytes) => {
-                    retained = retained
-                        .checked_add(bytes.len())
-                        .filter(|n| *n <= 8 * 1024 * 1024)
-                        .ok_or(crate::WorkspaceError::InvalidExecution)?;
-                    if bytes.len() > 1024 * 1024 {
-                        return Err(crate::WorkspaceError::InvalidExecution);
-                    }
                     frame.push(0);
-                    wire::bytes_out(&mut frame, &bytes)?;
+                    wire::bytes_out(&mut frame, &bytes).expect("validated inline length");
                 }
                 crate::WorkspaceFileReplacement::Zero(len) => {
                     frame.push(1);
                     wire::u64_out(&mut frame, len);
                 }
             }
-            frames.push(frame);
-        }
-        frames.push(vec![wire::EDIT_END]);
+            frame
+        });
         self.server
-            .request_group(frames.iter().map(Vec::as_slice))
+            .request_group(
+                std::iter::once(begin)
+                    .chain(parts)
+                    .chain(std::iter::once(vec![wire::EDIT_END])),
+            )
             .map(drop)
             .map_err(|_| crate::WorkspaceError::InvalidExecution)
     }

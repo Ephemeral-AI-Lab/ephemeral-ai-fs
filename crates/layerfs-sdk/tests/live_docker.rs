@@ -578,6 +578,7 @@ int main(int argc, char **argv) {
     for id in &executions {
         wait_live_marker(&client, *id, "ready")?;
     }
+    eprintln!("live-cut stage=first-commit");
     require(
         client.active_execution_count()? == 2,
         "two commands live before Commit",
@@ -596,6 +597,7 @@ int main(int argc, char **argv) {
     let first_root = store.pin_branch(branch)?.root;
     check_mapped_snapshot(&store, first_root, false)?;
     for path in ["held-a", "held-b"] {
+        eprintln!("live-cut stage=sdk-edit path={path}");
         client.edit_workspace_file_range(layerfs_sdk::WorkspaceFileRangeEdit {
             workspace_id: session.id,
             path: path.into(),
@@ -608,6 +610,7 @@ int main(int argc, char **argv) {
         docker_status(name, ["touch", go.as_str()])?,
         "release after-cut writes",
     )?;
+    eprintln!("live-cut stage=second-commit");
     for id in &executions {
         wait_live_marker(&client, *id, "after")?;
     }
