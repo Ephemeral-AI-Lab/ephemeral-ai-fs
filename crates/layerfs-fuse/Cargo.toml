@@ -11,5 +11,6 @@ host = ["dep:fuser"]
 proxy = ["dep:fuser"]
 
 [dependencies]
+layerfs-workspace-core = { path = "../layerfs-workspace-core" }
 fuser = { version = "=0.18.0", default-features = false, optional = true }
 layerfs-content = { path = "../layerfs-content" }

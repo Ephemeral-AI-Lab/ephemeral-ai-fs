@@ -2,28 +2,7 @@ pub(crate) const DIRECTORY_PAGE_ENTRIES: usize = 128;
 
 use std::sync::Arc;
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct NodeId(pub u64);
-
-pub const ROOT: NodeId = NodeId(1);
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Kind {
-    File,
-    Directory,
-    Symlink,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Attr {
-    pub node: NodeId,
-    pub size: u64,
-    pub kind: Kind,
-    pub mode: u32,
-    pub links: u32,
-    pub mtime_seconds: i64,
-    pub mtime_nanoseconds: u32,
-}
+pub use layerfs_workspace_core::{Attr, Kind, NodeId, ROOT};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PortError {

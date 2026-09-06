@@ -21,9 +21,8 @@ use layerfs_layerstack_store::{
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct NodeId(pub u64);
-pub const ROOT: NodeId = NodeId(1);
+pub use layerfs_workspace_core::{Attr, Kind, NodeId, ROOT};
+pub(crate) use layerfs_workspace_core::{Data, DirectoryData, FileData, Node};
 
 pub(crate) struct WorkspaceSnapshot {
     pub(crate) store: LayerStackStore,
@@ -33,63 +32,6 @@ pub(crate) struct WorkspaceSnapshot {
     pub(crate) expected_base: LayerId,
     pub(crate) root: layerfs_content::ObjectId,
     pub(crate) reader: SnapshotReader,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Kind {
-    File,
-    Directory,
-    Symlink,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Attr {
-    pub node: NodeId,
-    pub size: u64,
-    pub kind: Kind,
-    pub mode: u32,
-    pub links: u32,
-    pub mtime_seconds: i64,
-    pub mtime_nanoseconds: u32,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum Data {
-    File(FileData),
-    Directory(DirectoryData),
-    Symlink(Vec<u8>),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum FileData {
-    Base {
-        root: FileStateRoot,
-        len: u64,
-    },
-    Edited {
-        base: Option<(FileStateRoot, u64)>,
-        spool_high_water: u64,
-        pieces: crate::file_edit::PieceTree,
-        edits: u32,
-    },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct DirectoryData {
-    pub base: Option<DirectoryStateRoot>,
-    pub changes: BTreeMap<Vec<u8>, Option<NodeId>>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Node {
-    pub canonical: Option<InodeId>,
-    pub paths: BTreeSet<String>,
-    pub mode: u32,
-    pub links: u32,
-    pub pins: u32,
-    pub mtime_seconds: i64,
-    pub mtime_nanoseconds: u32,
-    pub data: Data,
 }
 
 /// Event-boundary observations of owned regular spool inode allocation, not
@@ -169,7 +111,7 @@ pub struct Workspace {
     pub(crate) spool_write_metrics: SpoolWriteMetrics,
     pub(crate) capture: crate::capture::CaptureState,
     pub(crate) edited_nodes: BTreeSet<NodeId>,
-    pub(crate) spool_segments: HashMap<u64, std::sync::Arc<crate::file_io::SpoolSegment>>,
+    pub(crate) spool_segments: HashMap<u64, layerfs_workspace_core::backing::BackingRef>,
     pub(crate) current_spool: Option<u64>,
     pub(crate) next_spool: u64,
     pub(crate) segment_bytes: u64,
@@ -337,21 +279,7 @@ impl Workspace {
             .nodes
             .get(&node)
             .ok_or(StorageError::NotFound("node"))?;
-        let (kind, size) = match &value.data {
-            Data::File(FileData::Base { len, .. }) => (Kind::File, *len),
-            Data::File(FileData::Edited { pieces, .. }) => (Kind::File, pieces.len()),
-            Data::Directory(_) => (Kind::Directory, 0),
-            Data::Symlink(target) => (Kind::Symlink, target.len() as u64),
-        };
-        Ok(Attr {
-            node,
-            size,
-            kind,
-            mode: value.mode,
-            links: value.links,
-            mtime_seconds: value.mtime_seconds,
-            mtime_nanoseconds: value.mtime_nanoseconds,
-        })
+        Ok(value.attr(node))
     }
 
     pub fn lookup(&mut self, parent: NodeId, name: &[u8]) -> Result<Attr> {
@@ -1286,10 +1214,7 @@ mod tests {
         let (root, mut workspace) = fixture("failed-write");
         let file = workspace.create_file(ROOT, b"file", 0o600).unwrap();
         workspace.write(file.node, 0, b"base").unwrap();
-        workspace
-            .spool_segments
-            .values()
-            .next()
+        crate::file_io::spool_segment(workspace.spool_segments.values().next().unwrap())
             .unwrap()
             .file
             .set_len(3)
@@ -1303,10 +1228,7 @@ mod tests {
         let (root, mut workspace) = fixture("failed-truncate");
         let file = workspace.create_file(ROOT, b"file", 0o600).unwrap();
         workspace.write(file.node, 0, b"base").unwrap();
-        workspace
-            .spool_segments
-            .values()
-            .next()
+        crate::file_io::spool_segment(workspace.spool_segments.values().next().unwrap())
             .unwrap()
             .file
             .set_len(3)

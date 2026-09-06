@@ -348,6 +348,7 @@ version = "0.1.2"
 dependencies = [
  "fuser",
  "layerfs-content",
+ "layerfs-workspace-core",
 ]
 
 [[package]]
@@ -394,7 +395,15 @@ dependencies = [
  "layerfs-fuse",
  "layerfs-layerstack-store",
  "layerfs-materialization",
+ "layerfs-workspace-core",
  "rusqlite",
+]
+
+[[package]]
+name = "layerfs-workspace-core"
+version = "0.1.2"
+dependencies = [
+ "layerfs-content",
 ]
 
 [[package]]

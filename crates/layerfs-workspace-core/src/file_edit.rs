@@ -1,26 +1,26 @@
+use crate::{Error, Result};
 use layerfs_content::file::rope::FileStateRoot;
-use layerfs_layerstack_store::{Result, StoreError};
 use std::sync::Arc;
 
-pub(crate) const MAX_EDITS_PER_FILE: u32 = 4_096;
-pub(crate) const MAX_PIECES_PER_FILE: usize = 8_193;
-pub(crate) const MAX_INLINE_PER_EDIT: usize = 1024 * 1024;
-pub(crate) const MAX_INLINE_PER_WORKSPACE: u64 = 8 * 1024 * 1024;
-pub(crate) const MAX_PIECE_ALLOCATION: u64 = 2 * 1024 * 1024;
-pub(crate) const MAX_RESULT_BYTES: u64 = 1024 * 1024 * 1024 * 1024;
-pub(crate) const MAX_LOGICAL_ZERO_BYTES: u64 = 1024 * 1024 * 1024;
-pub(crate) const MAX_PREDICTED_ZERO_EXTENTS: u64 = 131_072;
+pub const MAX_EDITS_PER_FILE: u32 = 4_096;
+pub const MAX_PIECES_PER_FILE: usize = 8_193;
+pub const MAX_INLINE_PER_EDIT: usize = 1024 * 1024;
+pub const MAX_INLINE_PER_WORKSPACE: u64 = 8 * 1024 * 1024;
+pub const MAX_PIECE_ALLOCATION: u64 = 2 * 1024 * 1024;
+pub const MAX_RESULT_BYTES: u64 = 1024 * 1024 * 1024 * 1024;
+pub const MAX_LOGICAL_ZERO_BYTES: u64 = 1024 * 1024 * 1024;
+pub const MAX_PREDICTED_ZERO_EXTENTS: u64 = 131_072;
 
-pub(crate) fn check_logical_allocation_charge(bytes: u64) -> Result<()> {
+pub fn check_logical_allocation_charge(bytes: u64) -> Result<()> {
     if bytes <= MAX_PIECE_ALLOCATION {
         Ok(())
     } else {
-        Err(StoreError::InvalidInput("workspace piece allocation limit"))
+        Err(Error::InvalidInput("workspace piece allocation limit"))
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum Piece {
+pub enum Piece {
     Base {
         root: FileStateRoot,
         offset: u64,
@@ -35,14 +35,14 @@ pub(crate) enum Piece {
         len: u64,
     },
     Spool {
-        segment: Arc<crate::file_io::SpoolSegment>,
+        segment: crate::backing::BackingRef,
         offset: u64,
         len: u64,
     },
 }
 
 impl Piece {
-    pub(crate) fn len(&self) -> u64 {
+    pub fn len(&self) -> u64 {
         match self {
             Self::Base { len, .. }
             | Self::Inline { len, .. }
@@ -53,7 +53,7 @@ impl Piece {
 
     fn slice(&self, start: u64, len: u64) -> Result<Self> {
         if len == 0 || start.checked_add(len).is_none_or(|end| end > self.len()) {
-            return Err(StoreError::Integrity("piece slice"));
+            return Err(Error::Integrity("piece slice"));
         }
         Ok(match self {
             Self::Base { root, offset, .. } => Self::Base {
@@ -77,7 +77,7 @@ impl Piece {
         })
     }
 
-    pub(crate) fn inline_len(&self) -> u64 {
+    pub fn inline_len(&self) -> u64 {
         matches!(self, Self::Inline { .. })
             .then(|| self.len())
             .unwrap_or(0)
@@ -105,15 +105,15 @@ impl PieceNode {
         let len = link_len(&left)
             .checked_add(piece.len())
             .and_then(|len| len.checked_add(link_len(&right)))
-            .ok_or(StoreError::InvalidInput("file length"))?;
+            .ok_or(Error::InvalidInput("file length"))?;
         let count = link_count(&left)
             .checked_add(1)
             .and_then(|count| count.checked_add(link_count(&right)))
-            .ok_or(StoreError::InvalidInput("piece count"))?;
+            .ok_or(Error::InvalidInput("piece count"))?;
         let inline_len = link_inline_len(&left)
             .checked_add(piece.inline_len())
             .and_then(|len| len.checked_add(link_inline_len(&right)))
-            .ok_or(StoreError::InvalidInput("inline bytes"))?;
+            .ok_or(Error::InvalidInput("inline bytes"))?;
         let zero_len = link_zero_len(&left)
             .checked_add(
                 matches!(piece, Piece::Zero { .. })
@@ -121,7 +121,7 @@ impl PieceNode {
                     .unwrap_or(0),
             )
             .and_then(|len| len.checked_add(link_zero_len(&right)))
-            .ok_or(StoreError::InvalidInput("logical zero bytes"))?;
+            .ok_or(Error::InvalidInput("logical zero bytes"))?;
         let spool_len = link_spool_len(&left)
             .checked_add(
                 matches!(piece, Piece::Spool { .. })
@@ -129,7 +129,7 @@ impl PieceNode {
                     .unwrap_or(0),
             )
             .and_then(|len| len.checked_add(link_spool_len(&right)))
-            .ok_or(StoreError::InvalidInput("spool bytes"))?;
+            .ok_or(Error::InvalidInput("spool bytes"))?;
         let height = 1 + link_height(&left).max(link_height(&right));
         Ok(Arc::new(Self {
             piece,
@@ -147,14 +147,14 @@ impl PieceNode {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct SpoolSlice {
-    pub(crate) segment: Arc<crate::file_io::SpoolSegment>,
-    pub(crate) offset: u64,
-    pub(crate) len: u64,
+pub struct SpoolSlice {
+    pub segment: crate::backing::BackingRef,
+    pub offset: u64,
+    pub len: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct PieceTree {
+pub struct PieceTree {
     root: Link,
     serial: u64,
     // A compact physical-range handle replaces per-file path/descriptor ownership.
@@ -163,7 +163,7 @@ pub(crate) struct PieceTree {
 }
 
 impl PieceTree {
-    pub(crate) fn empty() -> Self {
+    pub fn empty() -> Self {
         Self {
             root: None,
             serial: 0,
@@ -171,7 +171,7 @@ impl PieceTree {
         }
     }
 
-    pub(crate) fn base(root: FileStateRoot, len: u64) -> Result<Self> {
+    pub fn base(root: FileStateRoot, len: u64) -> Result<Self> {
         let mut tree = Self::empty();
         if len != 0 {
             let priority = tree.priority()?;
@@ -189,7 +189,7 @@ impl PieceTree {
         Ok(tree)
     }
 
-    pub(crate) fn compact_spool(&self) -> Option<&SpoolSlice> {
+    pub fn compact_spool(&self) -> Option<&SpoolSlice> {
         self.compact_spool.as_deref()
     }
 
@@ -197,36 +197,36 @@ impl PieceTree {
         self.compact_spool.as_ref().map_or(0, |slice| slice.len)
     }
 
-    pub(crate) fn len(&self) -> u64 {
+    pub fn len(&self) -> u64 {
         self.compact_len() + link_len(&self.root)
     }
 
-    pub(crate) fn count(&self) -> usize {
+    pub fn count(&self) -> usize {
         usize::from(self.compact_len() != 0) + link_count(&self.root)
     }
 
-    pub(crate) fn inline_len(&self) -> u64 {
+    pub fn inline_len(&self) -> u64 {
         link_inline_len(&self.root)
     }
 
-    pub(crate) fn height(&self) -> usize {
+    pub fn height(&self) -> usize {
         usize::from(self.compact_len() != 0).max(link_height(&self.root))
     }
 
-    pub(crate) fn spool_len(&self) -> u64 {
+    pub fn spool_len(&self) -> u64 {
         self.compact_len() + link_spool_len(&self.root)
     }
 
-    pub(crate) fn logical_allocation_charge(&self) -> Result<u64> {
+    pub fn logical_allocation_charge(&self) -> Result<u64> {
         if self.compact_len() != 0 {
             return Ok(std::mem::size_of::<u64>() as u64);
         }
         (self.count() as u64)
             .checked_mul(std::mem::size_of::<PieceNode>() as u64)
-            .ok_or(StoreError::InvalidInput("piece allocation charge"))
+            .ok_or(Error::InvalidInput("piece allocation charge"))
     }
 
-    pub(crate) fn replace(
+    pub fn replace(
         &self,
         start: u64,
         delete_len: u64,
@@ -234,9 +234,9 @@ impl PieceTree {
     ) -> Result<Self> {
         let end = start
             .checked_add(delete_len)
-            .ok_or(StoreError::InvalidInput("file range"))?;
+            .ok_or(Error::InvalidInput("file range"))?;
         if end > self.len() {
-            return Err(StoreError::InvalidInput("file range"));
+            return Err(Error::InvalidInput("file range"));
         }
         let mut replacement = replacement.into_iter();
         let first = replacement.next();
@@ -250,13 +250,13 @@ impl PieceTree {
             {
                 if replacement.peek().is_none()
                     && self.compact_spool.as_ref().is_none_or(|slice| {
-                        Arc::ptr_eq(&slice.segment, segment) && slice.offset + slice.len == *offset
+                        slice.segment == *segment && slice.offset + slice.len == *offset
                     })
                 {
                     let len = start
                         .checked_add(*len)
                         .filter(|len| *len <= MAX_RESULT_BYTES)
-                        .ok_or(StoreError::InvalidInput("workspace piece limit"))?;
+                        .ok_or(Error::InvalidInput("workspace piece limit"))?;
                     let mut next = self.clone();
                     next.compact_spool = Some(Arc::new(SpoolSlice {
                         segment: segment.clone(),
@@ -315,12 +315,12 @@ impl PieceTree {
             || link_zero_len(&next.root) > MAX_LOGICAL_ZERO_BYTES
             || predicted_zero_extents > MAX_PREDICTED_ZERO_EXTENTS
         {
-            return Err(StoreError::InvalidInput("workspace piece limit"));
+            return Err(Error::InvalidInput("workspace piece limit"));
         }
         Ok(next)
     }
 
-    pub(crate) fn pieces(&self) -> Vec<Piece> {
+    pub fn pieces(&self) -> Vec<Piece> {
         if let Some(slice) = &self.compact_spool {
             return vec![Piece::Spool {
                 segment: slice.segment.clone(),
@@ -333,13 +333,13 @@ impl PieceTree {
         output
     }
 
-    pub(crate) fn range(&self, start: u64, end: u64) -> Result<Vec<Piece>> {
-        self.range_inner(start, end).map(|(pieces, _)| pieces)
+    pub fn range(&self, start: u64, end: u64) -> Result<Vec<Piece>> {
+        self.range_with_visits(start, end).map(|(pieces, _)| pieces)
     }
 
-    fn range_inner(&self, start: u64, end: u64) -> Result<(Vec<Piece>, usize)> {
+    pub fn range_with_visits(&self, start: u64, end: u64) -> Result<(Vec<Piece>, usize)> {
         if start > end || end > self.len() {
-            return Err(StoreError::InvalidInput("file range"));
+            return Err(Error::InvalidInput("file range"));
         }
         if let Some(slice) = &self.compact_spool {
             let pieces = if start == end {
@@ -352,7 +352,6 @@ impl PieceTree {
                 }]
             };
             let visited = usize::from(start != end);
-            layerfs_layerstack_store::note_workspace_commit_tree_visits(visited as u64);
             return Ok((pieces, visited));
         }
         let mut output = Vec::new();
@@ -375,7 +374,6 @@ impl PieceTree {
                 );
             },
         );
-        layerfs_layerstack_store::note_workspace_commit_tree_visits(visited as u64);
         Ok((output, visited))
     }
 
@@ -383,7 +381,7 @@ impl PieceTree {
         self.serial = self
             .serial
             .checked_add(1)
-            .ok_or(StoreError::InvalidInput("piece serial"))?;
+            .ok_or(Error::InvalidInput("piece serial"))?;
         let mut value = self.serial.wrapping_add(0x9e37_79b9_7f4a_7c15);
         value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
         value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
@@ -439,13 +437,13 @@ fn split(root: &Link, offset: u64, tree: &mut PieceTree) -> Result<(Link, Link)>
         return if offset == 0 {
             Ok((None, None))
         } else {
-            Err(StoreError::InvalidInput("piece split"))
+            Err(Error::InvalidInput("piece split"))
         };
     };
     let left_len = link_len(&node.left);
     let piece_end = left_len
         .checked_add(node.piece.len())
-        .ok_or(StoreError::InvalidInput("piece split"))?;
+        .ok_or(Error::InvalidInput("piece split"))?;
     if offset < left_len {
         let (left, middle) = split(&node.left, offset, tree)?;
         return Ok((
@@ -559,7 +557,7 @@ mod tests {
                         0,
                         0,
                         [Piece::Spool {
-                            segment: crate::file_io::test_segment(),
+                            segment: crate::backing::test_backing(),
                             offset: 0,
                             len,
                         }],
@@ -579,7 +577,7 @@ mod tests {
         assert_eq!(
             original.range(98, 106).unwrap(),
             vec![Piece::Spool {
-                segment: crate::file_io::test_segment(),
+                segment: crate::backing::test_backing(),
                 offset: 98,
                 len: 8
             }]
@@ -608,7 +606,7 @@ mod tests {
             edited.range(98, 106).unwrap(),
             vec![
                 Piece::Spool {
-                    segment: crate::file_io::test_segment(),
+                    segment: crate::backing::test_backing(),
                     offset: 98,
                     len: 2
                 },
@@ -618,7 +616,7 @@ mod tests {
                     len: 4
                 },
                 Piece::Spool {
-                    segment: crate::file_io::test_segment(),
+                    segment: crate::backing::test_backing(),
                     offset: 104,
                     len: 2
                 },
@@ -632,7 +630,7 @@ mod tests {
         assert_eq!(
             truncated.pieces(),
             vec![Piece::Spool {
-                segment: crate::file_io::test_segment(),
+                segment: crate::backing::test_backing(),
                 offset: 0,
                 len: 1_024
             }]
@@ -647,7 +645,7 @@ mod tests {
                 0,
                 0,
                 [Piece::Spool {
-                    segment: crate::file_io::test_segment(),
+                    segment: crate::backing::test_backing(),
                     offset: 0,
                     len: MAX_RESULT_BYTES + 1
                 }]
@@ -680,7 +678,7 @@ mod tests {
                     index * 1024,
                     0,
                     [Piece::Spool {
-                        segment: crate::file_io::test_segment(),
+                        segment: crate::backing::test_backing(),
                         offset: index * 1024,
                         len: 1024,
                     }],
@@ -694,7 +692,7 @@ mod tests {
         assert_eq!(
             tree.pieces(),
             vec![Piece::Spool {
-                segment: crate::file_io::test_segment(),
+                segment: crate::backing::test_backing(),
                 offset: 0,
                 len: 512000
             }]
@@ -705,7 +703,7 @@ mod tests {
                     tree.len(),
                     0,
                     [Piece::Spool {
-                        segment: crate::file_io::test_segment(),
+                        segment: crate::backing::test_backing(),
                         offset: source,
                         len: 1,
                     }],
@@ -716,12 +714,12 @@ mod tests {
                 next.range(tree.len() - 1, tree.len() + 1).unwrap(),
                 vec![
                     Piece::Spool {
-                        segment: crate::file_io::test_segment(),
+                        segment: crate::backing::test_backing(),
                         offset: tree.len() - 1,
                         len: 1
                     },
                     Piece::Spool {
-                        segment: crate::file_io::test_segment(),
+                        segment: crate::backing::test_backing(),
                         offset: source,
                         len: 1
                     },
@@ -733,7 +731,7 @@ mod tests {
                 7,
                 1,
                 [Piece::Spool {
-                    segment: crate::file_io::test_segment(),
+                    segment: crate::backing::test_backing(),
                     offset: tree.len(),
                     len: 1,
                 }],
@@ -742,7 +740,7 @@ mod tests {
         assert_eq!(
             overwritten.range(7, 8).unwrap(),
             vec![Piece::Spool {
-                segment: crate::file_io::test_segment(),
+                segment: crate::backing::test_backing(),
                 offset: tree.len(),
                 len: 1
             }]
@@ -750,7 +748,7 @@ mod tests {
         assert_eq!(
             tree.range(7, 8).unwrap(),
             vec![Piece::Spool {
-                segment: crate::file_io::test_segment(),
+                segment: crate::backing::test_backing(),
                 offset: 7,
                 len: 1
             }]
@@ -760,7 +758,7 @@ mod tests {
                 tree.len(),
                 0,
                 [Piece::Spool {
-                    segment: crate::file_io::test_segment(),
+                    segment: crate::backing::test_backing(),
                     offset: tree.len(),
                     len: MAX_RESULT_BYTES,
                 }]
@@ -815,7 +813,7 @@ mod tests {
         assert!(tree.logical_allocation_charge().unwrap() <= MAX_PIECE_ALLOCATION);
         assert!(depth(&tree.root) < 64, "depth={}", depth(&tree.root));
         for offset in [0, 4_096, 8_192] {
-            let (pieces, visited) = tree.range_inner(offset, offset + 1).unwrap();
+            let (pieces, visited) = tree.range_with_visits(offset, offset + 1).unwrap();
             assert_eq!(pieces.iter().map(Piece::len).sum::<u64>(), 1);
             assert!(visited < 64, "offset={offset} visited={visited}");
         }

@@ -6,6 +6,7 @@ members = [
     "crates/layerfs-layerstack-store",
     "crates/layerfs-sdk",
     "crates/layerfs-workspace",
+    "crates/layerfs-workspace-core",
     "crates/layerfs-fuse",
     "crates/layerfs-materialization",
     "crates/layerfs-monitor",

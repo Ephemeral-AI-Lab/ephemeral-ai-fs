@@ -7,12 +7,11 @@ mod daemon;
 mod docker;
 mod docker_engine;
 mod execution;
-mod file_edit;
+pub(crate) use layerfs_workspace_core::file_edit;
 mod file_io;
 mod lifecycle;
 
 mod cow_tree;
-mod limits;
 mod output;
 mod projection;
 mod reconcile;
@@ -27,13 +26,13 @@ pub use container::{
 pub(crate) use cow_tree::{Attr, Kind, NodeId, Workspace, ROOT};
 pub use layerfs_daemon::protocol::CgroupResourceSample;
 pub use layerfs_daemon::ResourceSampleClock;
+pub(crate) use layerfs_workspace_core::ResourcePolicy;
 pub use lifecycle::WorkspaceState;
 #[cfg(feature = "test-instrumentation")]
 pub use lifecycle::{
     arm_verification_fault, take_verification_fault_receipt, VerificationFault,
     VerificationFaultReceipt, VerificationWorkspaceState,
 };
-pub(crate) use limits::ResourcePolicy;
 pub use output::{OutputPage, OutputReader};
 pub use reconcile::{
     ConflictCursor, ConflictId, ConflictKind, ConflictPage, ResolveChoice, ResolveResult,
@@ -65,4 +64,14 @@ pub fn inject_projection_resume_failure_once() {
 #[doc(hidden)]
 pub fn inject_candidate_failure_once() {
     changes::inject_candidate_failure_once();
+}
+
+fn live_error(error: layerfs_workspace_core::Error) -> layerfs_layerstack_store::StoreError {
+    use layerfs_layerstack_store::StoreError;
+    use layerfs_workspace_core::Error;
+    match error {
+        Error::InvalidInput(message) => StoreError::InvalidInput(message),
+        Error::Integrity(message) => StoreError::Integrity(message),
+        Error::NotFound(message) => StoreError::NotFound(message),
+    }
 }

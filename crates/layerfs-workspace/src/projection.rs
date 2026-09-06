@@ -503,12 +503,10 @@ impl FilesystemPort for FuseView {
         name: &[u8],
     ) -> layerfs_fuse::PortResult<layerfs_fuse::Attr> {
         self.with(|workspace| workspace.lookup(NodeId(parent.0), name))
-            .map(fuse_attr)
     }
 
     fn attr(&self, node: layerfs_fuse::NodeId) -> layerfs_fuse::PortResult<layerfs_fuse::Attr> {
         self.with(|workspace| workspace.attr(NodeId(node.0)))
-            .map(fuse_attr)
     }
 
     fn readlink(&self, node: layerfs_fuse::NodeId) -> layerfs_fuse::PortResult<Vec<u8>> {
@@ -519,26 +517,14 @@ impl FilesystemPort for FuseView {
         &self,
         node: layerfs_fuse::NodeId,
     ) -> layerfs_fuse::PortResult<Vec<(layerfs_fuse::NodeId, layerfs_fuse::Kind, Vec<u8>)>> {
-        self.with(|workspace| workspace.readdir(NodeId(node.0)))
-            .map(|entries| {
-                entries
-                    .into_iter()
-                    .map(|(node, kind, name)| (layerfs_fuse::NodeId(node.0), fuse_kind(kind), name))
-                    .collect()
-            })
+        self.with(|workspace| workspace.readdir(node))
     }
 
     fn readdirplus(
         &self,
         node: layerfs_fuse::NodeId,
     ) -> layerfs_fuse::PortResult<Vec<(layerfs_fuse::Attr, Vec<u8>)>> {
-        self.with(|workspace| workspace.readdirplus(NodeId(node.0)))
-            .map(|entries| {
-                entries
-                    .into_iter()
-                    .map(|(attr, name)| (fuse_attr(attr), name))
-                    .collect()
-            })
+        self.with(|workspace| workspace.readdirplus(node))
     }
 
     fn create_file(
@@ -548,7 +534,6 @@ impl FilesystemPort for FuseView {
         mode: u32,
     ) -> layerfs_fuse::PortResult<layerfs_fuse::Attr> {
         self.with(|workspace| workspace.create_file(NodeId(parent.0), name, mode))
-            .map(fuse_attr)
     }
 
     fn create_file_open(
@@ -570,7 +555,7 @@ impl FilesystemPort for FuseView {
             attr
         };
         worker.note_writer(true).map_err(workspace_port_error)?;
-        Ok(fuse_attr(attr))
+        Ok(attr)
     }
 
     fn reserve_nodes(&self, count: u32) -> layerfs_fuse::PortResult<layerfs_fuse::NodeId> {
@@ -598,7 +583,7 @@ impl FilesystemPort for FuseView {
             attr
         };
         worker.note_writer(true).map_err(workspace_port_error)?;
-        Ok(fuse_attr(attr))
+        Ok(attr)
     }
 
     fn create_files_closed_reserved(
@@ -644,7 +629,6 @@ impl FilesystemPort for FuseView {
         mode: u32,
     ) -> layerfs_fuse::PortResult<layerfs_fuse::Attr> {
         self.with(|workspace| workspace.mkdir(NodeId(parent.0), name, mode))
-            .map(fuse_attr)
     }
 
     fn mkdir_reserved(
@@ -657,7 +641,6 @@ impl FilesystemPort for FuseView {
         self.with(|workspace| {
             workspace.mkdir_reserved(NodeId(parent.0), name, mode, NodeId(node.0))
         })
-        .map(fuse_attr)
     }
 
     fn symlink(
@@ -667,7 +650,6 @@ impl FilesystemPort for FuseView {
         target: Vec<u8>,
     ) -> layerfs_fuse::PortResult<layerfs_fuse::Attr> {
         self.with(|workspace| workspace.symlink(NodeId(parent.0), name, target))
-            .map(fuse_attr)
     }
 
     fn link(
@@ -677,7 +659,6 @@ impl FilesystemPort for FuseView {
         name: &[u8],
     ) -> layerfs_fuse::PortResult<layerfs_fuse::Attr> {
         self.with(|workspace| workspace.link(NodeId(node.0), NodeId(parent.0), name))
-            .map(fuse_attr)
     }
 
     fn unlink(
@@ -1212,26 +1193,6 @@ fn parent(
     };
     let parent = layerfs_content::CanonicalPath::from_bytes(parent_path)?;
     Ok((node(workspace, &parent)?, name.to_vec()))
-}
-
-fn fuse_attr(attr: crate::Attr) -> layerfs_fuse::Attr {
-    layerfs_fuse::Attr {
-        node: layerfs_fuse::NodeId(attr.node.0),
-        size: attr.size,
-        kind: fuse_kind(attr.kind),
-        mode: attr.mode,
-        links: attr.links,
-        mtime_seconds: attr.mtime_seconds,
-        mtime_nanoseconds: attr.mtime_nanoseconds,
-    }
-}
-
-fn fuse_kind(kind: Kind) -> layerfs_fuse::Kind {
-    match kind {
-        Kind::File => layerfs_fuse::Kind::File,
-        Kind::Directory => layerfs_fuse::Kind::Directory,
-        Kind::Symlink => layerfs_fuse::Kind::Symlink,
-    }
 }
 
 fn materialized_attr(attr: crate::Attr) -> MaterializedAttr {

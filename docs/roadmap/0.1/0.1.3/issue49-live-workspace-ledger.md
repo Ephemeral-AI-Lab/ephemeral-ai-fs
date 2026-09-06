@@ -43,3 +43,21 @@ Status: P0 complete; P1 in progress. No rewritten-product performance claim.
 ## Evidence
 
 No new build, test, performance sample or proof at P0. Resource scale 100 remains inferred/unverified; no physical campaign scheduled. Requirements are not marked implemented from this ledger.
+
+## P1a — portable identity and retained range checkpoint
+
+Native Workspace and the actual FUSE `port` now depend on `layerfs-workspace-core`. `NodeId`/`ROOT`, `Kind`, `Attr`, `Node`/`Data`/`FileData`/`DirectoryData`, `Node::attr`, ResourcePolicy and the existing PieceTree algorithms have one definition. Removed the old Workspace `file_edit.rs`/`limits.rs` implementation files and FUSE identity/attribute conversion bodies. This is shared data/range code, not yet daemon live-operation ownership.
+
+`BackingRef(Arc<Backing>)` replaces `Arc<SpoolSegment>` inside Piece/SpoolSlice and the native registry/construction reader. It remains one machine word per reference. Each segment adds an Arc header, BackingId and a boxed adapter resource; this fixed per-segment cost is distinct from the inherited 8-byte **logical** compact-piece charge (which is not actual heap accounting). Equality uses owner-reference identity, so two mounts using the same numeric ID cannot coalesce. Host `spool_segment(&BackingRef) -> StoreResult<&SpoolSegment>` checks placement. The portable core contains no Store/SnapshotReader/SQLite/Unix File/fuser dependency or physical I/O. Host retirement requires a unique backing reference; held plans/frozen inputs keep the physical resource and its physical accounting alive through the last release.
+
+`PieceTree::range_with_visits(start, end) -> Result<(Vec<Piece>, usize)>` returns the existing visit count; native ReadPlan records it at the same call boundary. Core InvalidInput/Integrity/NotFound errors map to the same Store classes/messages in the native adapter.
+
+Checks under the shared measurement lock, Rust 1.85.1, two build jobs:
+- `cargo check -p layerfs-workspace --no-default-features -j2`: PASS, 9.13 s first build.
+- `cargo test -p layerfs-workspace-core -p layerfs-workspace --no-default-features --lib -j2`: PASS, 50 Workspace tests (1.09 s) and 9 core tests (0.05 s), 4.98 s final build.
+- New ownership check retains a sliced old range after the live tree and registry reference drop, releases the resource exactly once, checks one-word reference size and separate-owner identity.
+- Inherited compact/fragmentation/sparse/limit tests moved into core. Native tests retain actual host-file rollback/physical high-water, open-unlinked/old read, captured output, old snapshots and exact checkpoint-install recovery coverage.
+- Two intermediate test compilations caught incomplete caller migration (obsolete converters/test file access, then borrowed/materialization NodeId conversions). Corrected the adapter scope rather than changing semantics. No runtime test failed.
+- Rust 1.96.0 formatting applied only to the affected packages.
+
+No performance build/sample/proof: this extraction has not yet changed live placement and is not P3's coherent create candidate. Next: portable read plans and prepared write/version ownership, then minimal runtime entry. All C3–C8 supported-operation transfers remain pending.

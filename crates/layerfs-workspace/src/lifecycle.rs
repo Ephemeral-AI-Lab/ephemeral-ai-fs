@@ -346,9 +346,11 @@ impl Workspace {
                 };
                 self.spool_bytes = self.spool_bytes.saturating_add(*spool_high_water);
                 self.inline_bytes = self.inline_bytes.saturating_add(pieces.inline_len());
-                self.piece_allocation_bytes = self
-                    .piece_allocation_bytes
-                    .saturating_add(pieces.logical_allocation_charge()?);
+                self.piece_allocation_bytes = self.piece_allocation_bytes.saturating_add(
+                    pieces
+                        .logical_allocation_charge()
+                        .map_err(crate::live_error)?,
+                );
             }
             self.retire_spool_segments();
             self.reader = reader;

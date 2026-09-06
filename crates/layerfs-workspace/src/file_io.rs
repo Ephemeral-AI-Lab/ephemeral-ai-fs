@@ -5,6 +5,7 @@ use crate::file_edit::{
 };
 use layerfs_content::file::rope::read_range;
 use layerfs_layerstack_store::{CoreReader, Result, SnapshotReader, StoreError};
+use layerfs_workspace_core::backing::{BackingId, BackingRef};
 use std::fs::{File, OpenOptions};
 #[cfg(test)]
 use std::os::unix::fs::MetadataExt;
@@ -26,13 +27,6 @@ pub(crate) struct SpoolSegment {
     capacity: u64,
     physical: Arc<Mutex<crate::cow_tree::PhysicalSpoolMetrics>>,
 }
-
-impl PartialEq for SpoolSegment {
-    fn eq(&self, other: &Self) -> bool {
-        std::ptr::eq(self, other)
-    }
-}
-impl Eq for SpoolSegment {}
 
 impl SpoolSegment {
     fn new(
@@ -96,16 +90,10 @@ impl Drop for SpoolSegment {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn test_segment() -> Arc<SpoolSegment> {
-    static SEGMENT: std::sync::OnceLock<Arc<SpoolSegment>> = std::sync::OnceLock::new();
-    SEGMENT
-        .get_or_init(|| {
-            Arc::new(
-                SpoolSegment::new(&std::env::temp_dir(), 1, u64::MAX, Default::default()).unwrap(),
-            )
-        })
-        .clone()
+pub(crate) fn spool_segment(backing: &BackingRef) -> Result<&SpoolSegment> {
+    backing
+        .resource()
+        .ok_or(StoreError::Integrity("host spool backing"))
 }
 
 pub(crate) struct EditCheckpoint {
@@ -145,7 +133,13 @@ impl ReadPlan {
         let end = len.min(offset.saturating_add(size as u64));
         let source = match data {
             FileData::Base { root, .. } => ReadSource::Base(*root, offset, end),
-            FileData::Edited { pieces, .. } => ReadSource::Edited(pieces.range(offset, end)?),
+            FileData::Edited { pieces, .. } => {
+                let (ranges, visited) = pieces
+                    .range_with_visits(offset, end)
+                    .map_err(crate::live_error)?;
+                layerfs_layerstack_store::note_workspace_commit_tree_visits(visited as u64);
+                ReadSource::Edited(ranges)
+            }
         };
         Ok(Self {
             reader,
@@ -176,7 +170,11 @@ impl ReadPlan {
                         } => {
                             let start = output.len();
                             output.resize(start + as_usize(len)?, 0);
-                            read_exact_at(&segment.file, &mut output[start..], offset)?;
+                            read_exact_at(
+                                &spool_segment(&segment)?.file,
+                                &mut output[start..],
+                                offset,
+                            )?;
                         }
                     }
                 }
@@ -207,7 +205,10 @@ impl Workspace {
                 edits = edits.saturating_add(u64::from(*file_edits));
                 pieces = pieces.saturating_add(tree.count() as u64);
                 height = height.max(tree.height() as u64);
-                charge = charge.saturating_add(tree.logical_allocation_charge()?);
+                charge = charge.saturating_add(
+                    tree.logical_allocation_charge()
+                        .map_err(crate::live_error)?,
+                );
                 spool_live = spool_live.saturating_add(tree.spool_len());
             }
         }
@@ -341,7 +342,9 @@ impl Workspace {
                 len: byte_len as u64,
             }
         });
-        let next = old.replace(start, delete_len, replacement)?;
+        let next = old
+            .replace(start, delete_len, replacement)
+            .map_err(crate::live_error)?;
         let next_edits = next_edit(edits)?;
         let generation = self.next_generation()?;
         let paths = self.nodes[&node].paths.iter().cloned().collect();
@@ -356,17 +359,21 @@ impl Workspace {
         {
             let mut lowered = self.policy;
             lowered.max_spool_bytes = self.spool_bytes;
-            lowered.check(
+            lowered
+                .check(
+                    self.spool_bytes
+                        .checked_add(appended)
+                        .ok_or(StoreError::InvalidInput("workspace spool limit"))?,
+                )
+                .map_err(crate::live_error)?;
+        }
+        self.policy
+            .check(
                 self.spool_bytes
                     .checked_add(appended)
                     .ok_or(StoreError::InvalidInput("workspace spool limit"))?,
-            )?;
-        }
-        self.policy.check(
-            self.spool_bytes
-                .checked_add(appended)
-                .ok_or(StoreError::InvalidInput("workspace spool limit"))?,
-        )?;
+            )
+            .map_err(crate::live_error)?;
         self.check_piece_resources(&old, &next)?;
         if let Some(bytes) = bytes {
             let started = std::time::Instant::now();
@@ -376,7 +383,8 @@ impl Workspace {
                 crate::lifecycle::VerificationFault::ShortAppend,
                 self.spool_bytes,
             );
-            let (segment, physical_start) = physical.as_ref().unwrap();
+            let (backing, physical_start) = physical.as_ref().unwrap();
+            let segment = spool_segment(backing)?;
             segment.check()?;
             let file = &segment.file;
             #[cfg(feature = "test-instrumentation")]
@@ -456,7 +464,11 @@ impl Workspace {
         }
         self.ensure_active()?;
         let (old, prior_edits, was_base) = match &self.nodes[&node].data {
-            Data::File(FileData::Base { root, len }) => (PieceTree::base(*root, *len)?, 0, true),
+            Data::File(FileData::Base { root, len }) => (
+                PieceTree::base(*root, *len).map_err(crate::live_error)?,
+                0,
+                true,
+            ),
             Data::File(FileData::Edited { pieces, edits, .. }) => (pieces.clone(), *edits, false),
             _ => return Err(StoreError::InvalidInput("file")),
         };
@@ -488,14 +500,19 @@ impl Workspace {
                     (len != 0).then_some(Piece::Zero { len })
                 }
             };
-            next = next.replace(start, delete_len, piece)?;
+            next = next
+                .replace(start, delete_len, piece)
+                .map_err(crate::live_error)?;
             if was_base {
                 self.inline_bytes
                     .checked_add(next.inline_len())
                     .filter(|value| *value <= MAX_INLINE_PER_WORKSPACE)
                     .ok_or(StoreError::InvalidInput("workspace inline limit"))?;
                 self.piece_allocation_bytes
-                    .checked_add(next.logical_allocation_charge()?)
+                    .checked_add(
+                        next.logical_allocation_charge()
+                            .map_err(crate::live_error)?,
+                    )
                     .filter(|value| *value <= MAX_PIECE_ALLOCATION)
                     .ok_or(StoreError::InvalidInput("workspace piece allocation limit"))?;
             } else {
@@ -529,7 +546,7 @@ impl Workspace {
         let (high_water, old, edits) = self.edited_state(node)?;
         for piece in old.pieces() {
             if let Piece::Spool { segment, .. } = piece {
-                segment.check()?;
+                spool_segment(&segment)?.check()?;
             }
         }
         let (start, delete_len, replacement) = if size < old_len {
@@ -543,7 +560,9 @@ impl Workspace {
                 }),
             )
         };
-        let next = old.replace(start, delete_len, replacement)?;
+        let next = old
+            .replace(start, delete_len, replacement)
+            .map_err(crate::live_error)?;
         let generation = self.next_generation()?;
         let paths = self.nodes[&node].paths.iter().cloned().collect();
         self.check_piece_resources(&old, &next)?;
@@ -582,7 +601,7 @@ impl Workspace {
             .filter(|v| *v <= MAX_INLINE_PER_WORKSPACE)
             .ok_or(StoreError::InvalidInput("workspace inline limit"))?;
         self.piece_allocation_bytes
-            .checked_sub(old.logical_allocation_charge()?)
+            .checked_sub(old.logical_allocation_charge().map_err(crate::live_error)?)
             .and_then(|v| v.checked_add(next.logical_allocation_charge().ok()?))
             .filter(|v| *v <= MAX_PIECE_ALLOCATION)
             .ok_or(StoreError::InvalidInput("workspace piece allocation limit"))?;
@@ -606,8 +625,10 @@ impl Workspace {
         let emptied = old.len() != 0 && next.len() == 0;
         self.inline_bytes = self.inline_bytes - old.inline_len() + next.inline_len();
         self.piece_allocation_bytes = self.piece_allocation_bytes
-            - old.logical_allocation_charge()?
-            + next.logical_allocation_charge()?;
+            - old.logical_allocation_charge().map_err(crate::live_error)?
+            + next
+                .logical_allocation_charge()
+                .map_err(crate::live_error)?;
         self.spool_bytes += appended;
         self.spool_bytes_peak = self.spool_bytes_peak.max(self.spool_bytes);
         let Data::File(FileData::Edited {
@@ -642,18 +663,18 @@ impl Workspace {
             {
                 for piece in pieces.pieces() {
                     if let Piece::Spool { segment, .. } = piece {
-                        segments.insert(segment.id, segment);
+                        segments.insert(segment.id(), segment);
                     }
                 }
             }
             for segment in segments.values() {
-                segment.check()?;
-                segment.observe();
+                spool_segment(&segment)?.check()?;
+                spool_segment(segment)?.observe();
             }
         } else {
             for segment in self.spool_segments.values() {
-                segment.check()?;
-                segment.observe();
+                spool_segment(&segment)?.check()?;
+                spool_segment(segment)?.observe();
             }
         }
         self.finish_capture(node);
@@ -738,10 +759,14 @@ impl Workspace {
     }
     fn ensure_edited(&mut self, node: NodeId) -> Result<()> {
         if let Data::File(FileData::Base { root, len }) = self.nodes[&node].data {
-            let pieces = PieceTree::base(root, len)?;
+            let pieces = PieceTree::base(root, len).map_err(crate::live_error)?;
             let next_allocation = self
                 .piece_allocation_bytes
-                .checked_add(pieces.logical_allocation_charge()?)
+                .checked_add(
+                    pieces
+                        .logical_allocation_charge()
+                        .map_err(crate::live_error)?,
+                )
                 .filter(|v| *v <= MAX_PIECE_ALLOCATION)
                 .ok_or(StoreError::InvalidInput("workspace piece allocation limit"))?;
             self.nodes.get_mut(&node).unwrap().data = Data::File(FileData::Edited {
@@ -763,22 +788,25 @@ impl Workspace {
             .map_or((None, None, 1, 0), |metrics| metrics.snapshot())
     }
 
-    fn append_segment(&mut self, bytes: u64) -> Result<(Arc<SpoolSegment>, u64)> {
+    fn append_segment(&mut self, bytes: u64) -> Result<(BackingRef, u64)> {
         if self.segment_bytes.saturating_add(bytes) > self.policy.max_spool_bytes {
             self.retire_spool_segments();
         }
-        self.policy.check(
-            self.spool_bytes
-                .max(self.segment_bytes)
-                .checked_add(bytes)
-                .ok_or(StoreError::InvalidInput("workspace spool limit"))?,
-        )?;
+        self.policy
+            .check(
+                self.spool_bytes
+                    .max(self.segment_bytes)
+                    .checked_add(bytes)
+                    .ok_or(StoreError::InvalidInput("workspace spool limit"))?,
+            )
+            .map_err(crate::live_error)?;
         if let Some(segment) = self
             .current_spool
             .and_then(|id| self.spool_segments.get(&id))
         {
-            let offset = segment.len.load(Ordering::Relaxed);
-            if offset.saturating_add(bytes) <= segment.capacity {
+            let physical = spool_segment(segment)?;
+            let offset = physical.len.load(Ordering::Relaxed);
+            if offset.saturating_add(bytes) <= physical.capacity {
                 return Ok((segment.clone(), offset));
             }
         }
@@ -788,14 +816,17 @@ impl Workspace {
         self.next_spool = id
             .checked_add(1)
             .ok_or(StoreError::Integrity("spool segment identity"))?;
-        let segment = Arc::new(SpoolSegment::new(
-            &self.spool,
-            id,
-            SPOOL_SEGMENT_BYTES
-                .max(bytes)
-                .min(self.policy.max_spool_bytes),
-            self.physical_spool.clone(),
-        )?);
+        let segment = BackingRef::new(
+            BackingId(id),
+            SpoolSegment::new(
+                &self.spool,
+                id,
+                SPOOL_SEGMENT_BYTES
+                    .max(bytes)
+                    .min(self.policy.max_spool_bytes),
+                self.physical_spool.clone(),
+            )?,
+        );
         self.spool_segments.insert(id, segment.clone());
         self.current_spool = Some(id);
         self.note_spool_open(elapsed_ns(started));
@@ -808,11 +839,14 @@ impl Workspace {
         let mut retired = 0_u64;
         self.spool_segments.retain(|id, segment| {
             let scan_started = std::time::Instant::now();
-            let keep = Arc::strong_count(segment) != 1;
+            let keep = !segment.is_unique();
             if !keep {
-                self.segment_bytes = self
-                    .segment_bytes
-                    .saturating_sub(segment.len.load(Ordering::Relaxed));
+                self.segment_bytes = self.segment_bytes.saturating_sub(
+                    spool_segment(segment)
+                        .expect("host segment registry")
+                        .len
+                        .load(Ordering::Relaxed),
+                );
                 if self.current_spool == Some(*id) {
                     self.current_spool = None;
                 }
@@ -1048,7 +1082,12 @@ mod tests {
             workspace
                 .spool_segments
                 .values()
-                .map(|segment| segment.file.metadata().unwrap().len())
+                .map(|segment| spool_segment(segment)
+                    .unwrap()
+                    .file
+                    .metadata()
+                    .unwrap()
+                    .len())
                 .sum::<u64>(),
             1
         );
@@ -1081,7 +1120,12 @@ mod tests {
             workspace
                 .spool_segments
                 .values()
-                .map(|segment| segment.file.metadata().unwrap().len())
+                .map(|segment| spool_segment(segment)
+                    .unwrap()
+                    .file
+                    .metadata()
+                    .unwrap()
+                    .len())
                 .sum::<u64>(),
             before_charge
         );
@@ -1104,7 +1148,7 @@ mod tests {
             workspace
                 .spool_segments
                 .values()
-                .map(|f| f.file.metadata().unwrap().blocks() * 512)
+                .map(|f| spool_segment(f).unwrap().file.metadata().unwrap().blocks() * 512)
                 .sum::<u64>()
         };
         assert_eq!(workspace.physical_spool_snapshot().0, Some(actual()));
@@ -1127,7 +1171,12 @@ mod tests {
             workspace
                 .spool_segments
                 .values()
-                .map(|segment| segment.file.metadata().unwrap().len())
+                .map(|segment| spool_segment(segment)
+                    .unwrap()
+                    .file
+                    .metadata()
+                    .unwrap()
+                    .len())
                 .sum::<u64>(),
             logical_before.0
         );
@@ -1135,7 +1184,7 @@ mod tests {
         let actual = workspace
             .spool_segments
             .values()
-            .map(|f| f.file.metadata().unwrap().blocks() * 512)
+            .map(|f| spool_segment(f).unwrap().file.metadata().unwrap().blocks() * 512)
             .sum::<u64>();
         assert_eq!(current, Some(actual));
         assert!(

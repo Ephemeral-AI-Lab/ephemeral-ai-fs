@@ -354,7 +354,9 @@ impl Workspace {
         worker_limit: usize,
     ) -> Result<PreparedCommit> {
         let started = Instant::now();
-        self.policy.check_final_delta(1024)?;
+        self.policy
+            .check_final_delta(1024)
+            .map_err(crate::live_error)?;
         let batch_size = (self.policy.max_final_delta_memory_bytes / 4096).clamp(1, 128) as usize;
         let io_bytes = journal_io_bytes(self.policy.max_final_delta_memory_bytes);
         // Task-index and all worker-result buffers split one existing journal allowance.
@@ -694,7 +696,8 @@ impl Workspace {
         let batch_allowance =
             (self.policy.max_final_delta_memory_bytes / 4096).clamp(1, 128) * 1024;
         self.policy
-            .check_final_delta(batch_allowance.saturating_add(path_charge(path)))?;
+            .check_final_delta(batch_allowance.saturating_add(path_charge(path)))
+            .map_err(crate::live_error)?;
         layerfs_layerstack_store::note_workspace_namespace_visits(0, 1, 0, 0, 0);
         // Bind new identity to this base snapshot: replacing one alias must not
         // accidentally reuse the still-live inode originally allocated at its path.
@@ -797,7 +800,9 @@ impl Workspace {
                             record: resolved.record,
                         },
                     );
-                    self.policy.check_final_delta(charge)?;
+                    self.policy
+                        .check_final_delta(charge)
+                        .map_err(crate::live_error)?;
                 }
                 let Some(next) = page.continuation else { break };
                 after = Some(next);
@@ -830,7 +835,9 @@ impl Workspace {
                 let attr = self.attr(node)?;
                 charge = charge.saturating_add(path_charge(&path));
                 output.insert(path.clone(), FinalEntry { node, attr });
-                self.policy.check_final_delta(charge)?;
+                self.policy
+                    .check_final_delta(charge)
+                    .map_err(crate::live_error)?;
                 if attr.kind == Kind::Directory {
                     pending.push((node, path));
                 }
@@ -2158,7 +2165,7 @@ struct WorkspaceFileReader {
 }
 
 enum WorkspaceFileSource {
-    Direct(std::sync::Arc<crate::file_io::SpoolSegment>, u64),
+    Direct(layerfs_workspace_core::backing::BackingRef, u64),
     Mixed(FrozenFile),
 }
 
@@ -2221,7 +2228,8 @@ impl Read for WorkspaceFileReader {
             WorkspaceFileSource::Direct(file, start) => {
                 let mut read = 0;
                 while read < count {
-                    let next = file
+                    let next = crate::file_io::spool_segment(file)
+                        .map_err(std::io::Error::other)?
                         .file
                         .read_at(&mut output[read..count], start + self.offset + read as u64)?;
                     if next == 0 {
@@ -2363,7 +2371,8 @@ mod tests {
         let captured_slice = pieces.compact_spool().unwrap();
         let captured_segment = captured_slice.segment.clone();
         let captured_offset = captured_slice.offset;
-        captured_segment
+        crate::file_io::spool_segment(&captured_segment)
+            .unwrap()
             .file
             .write_all_at(&vec![0; files[0].1.len()], captured_offset)
             .unwrap();
@@ -2387,7 +2396,8 @@ mod tests {
         assert_eq!(workspace.store.store_counts().unwrap(), before);
         assert!(workspace.take_capture().is_none());
         drop(parallel);
-        captured_segment
+        crate::file_io::spool_segment(&captured_segment)
+            .unwrap()
             .file
             .write_all_at(&files[0].1, captured_offset)
             .unwrap();
