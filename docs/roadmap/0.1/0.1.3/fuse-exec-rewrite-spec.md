@@ -23,6 +23,8 @@ Integration CI requires Rust 1.96.0 formatting. The follow-up formats two benchm
 
 Timings are seconds rounded to four decimals; decisions use unrounded receipts. Full per-case results and provenance are preserved in [#46 results](https://github.com/Ephemeral-AI-Lab/layerfs/issues/46#issuecomment-5555290362) and [evidence](https://github.com/Ephemeral-AI-Lab/layerfs/issues/46#issuecomment-5555291106). The strict tier100 create lifecycle target still misses; its strict final proof pair remains deferred. The campaign does not include the separate retained #48 research implementation. S2's research timings are a second-source comparator, never additive phases of this adopted product.
 
+Detailed execution order, exact file/type/method transfers, confidence/exploration captions and create-100 iteration instructions are in the [reviewed implementation plan](issue49-fuse-exec-implementation-plan.md). Its narrower observer semantics avoid unnecessary payload fences.
+
 ## S1. Decision and scope
 
 Use **one execution-side authoritative live Workspace core per mounted workspace**, thin platform adapters, existing host-owned shared spool backing, and the existing host construction/SQLite pipeline. Host SDK operations on live state invoke that same owner. The host may retain acknowledged recovery facts, but it must not independently decide live namespace mutations.
@@ -118,7 +120,8 @@ A backing acknowledgment identifies the last completely installed operation grou
 |---|---|
 | Local mutation success | Valid owner state and required local byte/fact ownership exist; all synchronous failure conditions within its authority were checked |
 | Backing acknowledgment | Host accepted the identified range/fact prefix into its existing backing/recovery ownership; only then may transfer ownership be released |
-| Observation/fence | Required prior operations and backing/facts for the declared cut are visible at the selected owner/view |
+| Logical observation | Coherent owner metadata/generation read; current session/diff fields do not require payload transfer |
+| Backing fence | Required prior backing/facts for the declared synchronization cut are acknowledged and available |
 | Commit | Existing expected-head publication and exact live checkpoint contract, with its actual configured durability |
 
 Reserve transfer capacity before applying a mutation that needs it. Unacknowledged byte buffers and facts remain charged and available for local reads or explicit failure reporting. After acknowledgment, logical pieces retain host-range ownership; memory is released only when no active read still holds it. Host quota acceptance must be established before operations whose synchronous semantics depend on it: allocate each mount its declared bounded quota at admission and retain ordinary filesystem I/O errors at their established write/sync boundary. Socket capacity is not disk capacity.
@@ -129,7 +132,7 @@ Namespace/metadata success cannot be followed by a routine host semantic rejecti
 
 Backing I/O can fail after a buffered write, as allowed by the explicit baseline error contract. Retain failed pending data within its budget; stop further affected admission, report the error at the required boundary, and preserve successful prefixes. A recoverable ENOSPC is not automatically permanent failure of every mounted workspace. No blind mutation replay after an uncertain connection loss.
 
-A read orders only relevant inode/alias predecessors; it does not globally flush unrelated writes. Global observation/Exec completion/freeze covers the complete required cut. Metadata may coalesce between unobserved dependency boundaries only if local operation counts/generation/error semantics remain exact. Do not keep an independent opcode journal plus a competing final-state cache.
+A read orders only relevant inode/alias predecessors; it does not globally flush unrelated writes. Current `session()`/`diff()` fields use a short coherent owner metadata/generation read without payload transfer or a global backing fence. Exec completion, explicit backing synchronization and freeze cover their actual required cuts. Metadata may coalesce between unobserved dependency boundaries only if local operation counts/generation/error semantics remain exact. Do not keep an independent opcode journal plus a competing final-state cache.
 
 Before rollout, compare daemon-loss/host-loss/write/close/fsync behavior with the actual retained implementation and fill T4's failure matrix. Existing flags and historical receipts do not establish power-loss durability. In particular, retain host-acknowledged facts at successful synchronization/Exec completion so a daemon failure does not silently reduce the previously supported recovery boundary. Recovery views never masquerade as complete live state after an uncertain suffix.
 
@@ -155,13 +158,16 @@ FUSE callbacks must copy borrowed payloads or retain reply/request objects only 
 
 ## S7. Numeric initial envelope
 
+**Static review amendment:** the [100-workspace resource review](fuse-exec-100-workspace-resource-review.md) found hidden fuser receive/coordinator costs, lifecycle task multiplication, and missing capture/descriptor/global-admission ownership. The table below is provisional and is not a statically accepted complete envelope. That review governs the corrections, including an explicitly scoped memory-budget alternative; do not implement the old numbers by hiding omitted allocations. The user treats 100 workspaces as a design guideline supported by existing lower-volume evidence and source-based accounting. Physical 100-workspace exercises are deferred and are not a current implementation, optimization or completion gate. Preserve known resource findings and label capacity projections as inferred/unverified.
+
+
 These are proposed finite design defaults, not measured/enforced properties of current code. Validate actual allocation charges and current supported workloads before adopting them. Resource configuration may vary by deployment; it cannot select different algorithms. Do not silently reduce an existing API's supported single-operation size; stream it within bounds.
 
 | Resource | Initial envelope / enforcement |
 |---|---|
-| Mounted live workspaces | 100 per daemon as the required default capacity; configurable higher with an explicit deployment budget; reject the 101st at the default capacity |
+| Mounted live workspaces | Design for at least 100 independent agent workspaces; 100 is the reference scale, not a mandatory physical test or an artificial cap. Actual admission follows explicit deployment resource limits |
 | FUSE ingress | Initially at most 1 receive thread per mount, 100 aggregate; bounded ingestion only, not 100 execution workers; count actual fuser helper threads before adoption |
-| Active execution workers | 2 across the Linux daemon, shared fairly; at most 2 state operations per Workspace |
+| Filesystem operation workers | 2 across the Linux daemon, shared fairly; at most 2 state operations per Workspace |
 | Ordinary admitted requests | 128 aggregate, at most 8 per Workspace; includes one reserved ordinary slot for each of 100 admitted mounts; request bytes have their separate stricter budget |
 | Per-mount progress reservation | 1 ordinary request, 256 KiB transfer space and 64 KiB operation/result space per mount, inside aggregate budgets; 25 MiB transfer and 6.25 MiB operation reserves at 100 mounts; unavailable to other mounts |
 | Control admission | 2 reserved entries per mount; included in managed-memory envelope |
@@ -218,11 +224,13 @@ Release/forget/cancellation and required drain completion remain admissible thro
 
 After conditional expected-head/base publication, retain its exact outcome and candidate installation facts until the same owner checkpoints existing nodes/handles and clears only that frozen change set. A lost installation reply cannot trigger another Commit. Failure before publication preserves the old visible head and retry/discard state. Failure after publication remains `PublishedPendingInstall`; reopen live mutation only after exact installation/recovery succeeds.
 
-`session()`/`diff()` take a finite observation cut when they require a coherent view; per-file SDK reads/edits use only relevant ordering. Cache invalidation covers changed parent/name entries as well as inode attrs/data. Unlink removes a name, not a live handle's storage. Segment/root references outlive reads and aliases as required; namespace deletion never reclaims immutable history.
+`session()`/`diff()` observe the owner's current metadata/generation without freezing the Workspace or waiting for payload transfer; `sessions()` copies registry references before invoking owners. Per-file SDK reads/edits use only relevant ordering. Cache invalidation covers changed parent/name entries as well as inode attrs/data. Unlink removes a name, not a live handle's storage. Segment/root references outlive reads and aliases as required; namespace deletion never reclaims immutable history.
 
 Normal unmount closes admission and applies the declared drain/Busy timeout policy. Forced teardown returns explicit errors to remaining requests and records recovery status; it never presents the last committed snapshot as though unsynchronized writes had succeeded there. Release ranges/handles/reservations once. No automatic reconnection of ambiguous mutating calls; bounded recovery/discard is explicit.
 
 ## S10. Implementation boundaries and deletion ledger
+
+The [implementation plan](issue49-fuse-exec-implementation-plan.md) supplies concrete C1–C8 component transfers and P0–P6 execution order. Start with the minimum portable ownership/acquisition seam needed by the create-100 vertical slice, rather than extracting every subsystem before demonstrating useful behavior.
 
 Freeze an integrated source combining reviewed retained #48 changes with actual #49 commits. Current main/integration and research source identities differ; preserve both receipts and port responsibilities, not full stale files. A single owner edits core/Workspace/Store seams; the Exec owner controls its current FUSE changes until an explicit handoff.
 
@@ -247,11 +255,11 @@ Test identifiers below are referenced by the checklist map. Each is a focused gr
 | T2 Canonical/continuation | fresh/incremental/zero/captured state, unchanged extents and old roots, exact reference counts, NodeId/handle continuity, private preview, published-install retry |
 | T3 Concurrency/coherence | simultaneous same/different inode operations, opposing renames, multiple processes and mounts, owner SDK edit/read, observer during drain, stale acquisition/replaced mount, namespace-only/no-op Commit |
 | T4 Failure/durability | partial append and cleanup failure, resource exhaustion before mutation, host I/O failure, lost reply/no replay, mid-transfer disconnect, daemon/host loss at every acknowledgment cut, cancellation/unmount with open readers/mappings |
-| T5 Resource/load | 100 simultaneously admitted mounts plus rejected 101st at default capacity; concurrent clients across all 100, idle/resident footprint, fair operation progress, saturated queues, stalled mounts while others progress, reserved control progress, checked allocation failures, actual thread/PID/socket/descriptor accounting and repeated teardown cycles without retained growth |
+| T5 Resource/load | Current review: existing lower-volume receipts plus source-based thread/buffer/descriptor/admission accounting and clearly labeled inference to 100 agent workspaces. Physical 100-mount idle/concurrent/saturated/stalled/teardown scenarios are deferred reference qualification, not a current completion gate. Preserve applicable lower-volume semantic/resource checks within their agreed scope |
 | T6 Performance/custody | exact optimized baseline vs replacement source/recipe, diagnostics off, complete Exec/Commit/End, CPU/RSS/backing and queue/lock waits, explicit actual work/copies/acquisitions/acks, unchanged raw history |
 | T7 Integration/adoption | actual #48/#49 source adoption, native direct-host parity, private SDK/reconciliation behavior, deleted caller ledger, no unsupported platform or combined-phase claims |
 
-Required first experiments:
+Deferred runtime sequence (do not launch or schedule for this review; physical 100-workspace exercise is not a prerequisite for current lower-volume work):
 
 1. Integrate retained proven semantics and establish one source-bound baseline using unchanged mixed-v3 tier100 create/delete. Existing branch timings are context until the integrated product is identified; do not add favorable phases from different products.
 2. Implement a vertical slice of known-state metadata/binding operations in the shared owner, with bounded backing/fact acknowledgment and SDK observation. Keep kernel flags/TTL unchanged. Run its semantic tests, then one selected real-FUSE sample. Hypothesis: callback decision/host dependency time decreases without moving equal work to Commit/End or worsening load behavior.
@@ -264,6 +272,8 @@ No speedup magnitude is promised. Acceptance requires a measured improvement in 
 All builds/tests/samples use the shared host measurement lock; preserve other task artifacts. Iterate one substantive change and one selected performance sample. Independent sampled proofs remain final-stage only, 45 seconds work / 59 seconds hard end-to-end. Performance diagnostic allowances retain their separately approved values; a longer watchdog is not a looser pass threshold. Each focused overload/failure check is deadline-bounded and reaps its own workers. Preserve rejected hypotheses and do not search for favorable repeats.
 
 ## S12. Design acceptance and remaining evidence obligations
+
+The 100-workspace resource target is a design reference, evaluated now through existing lower-volume measurements and source-based accounting. No physical 100-workspace run is required for the current work. Report measured lower-volume outcomes and inferred larger-scale feasibility separately; retain unknown contention, tails and process/RSS costs without converting them into a new blocking verification campaign.
 
 The accompanying map covers every unchecked requirement as a design/test obligation. Nothing is marked implemented by this spec. Before implementation commits, finalize the core extraction/caller map, exact wire bounds/version, allocation charge equation, existing acknowledgment/durability matrix and platform support table. These are concrete interface inventories and compatibility checks, not permission to leave behavior unspecified.
 

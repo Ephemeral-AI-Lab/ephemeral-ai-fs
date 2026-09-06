@@ -67,7 +67,7 @@ The portable principle is to execute ordinary operations beside the application'
 
 - [ ] Multiple processes can use one workspace concurrently.
 - [ ] Independent operations can progress concurrently; conflicting operations have defined ordering and atomicity.
-- [ ] Support at least 100 simultaneously mounted independent live workspaces per daemon, with concurrent clients, isolated mutable state/handles/errors/accounting, and shared bounded execution resources.
+- [ ] Design for at least 100 independent live agent workspaces with isolated state/handles/errors/accounting and shared bounded execution resources; assess this scale using source accounting and existing lower-volume evidence for now, with physical 100-workspace qualification deferred and not a current completion gate.
 - [ ] Mutable cache and handle keys distinguish workspace and mount lifetime; NodeId alone must not accidentally alias state across workspaces.
 - [ ] All hardlink aliases of an inode share content and metadata state.
 - [ ] Cross-directory rename and other multi-object operations use a deliberate atomicity/locking protocol.
