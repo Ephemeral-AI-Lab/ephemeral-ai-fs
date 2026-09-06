@@ -26,10 +26,19 @@ pub(crate) struct BackingOwner {
     pub(crate) facts: HashMap<NodeId, Node>,
     pub(crate) dirty: BTreeSet<NodeId>,
     pub(crate) generation: u64,
+    facts_complete: bool,
     fact_reservations: Vec<layerfs_fuse::live_runtime::LiveReservation>,
     incoming_reservations: Vec<layerfs_fuse::live_runtime::LiveReservation>,
     incoming_charge: usize,
+    partial_fact: Option<PartialFact>,
     incoming: Option<(u64, HashMap<NodeId, Node>, BTreeSet<NodeId>)>,
+}
+
+struct PartialFact {
+    dirty: bool,
+    total: usize,
+    encoded: Vec<u8>,
+    _charge: layerfs_fuse::live_runtime::LiveReservation,
 }
 
 impl BackingOwner {
@@ -50,11 +59,65 @@ impl BackingOwner {
             facts: HashMap::new(),
             dirty: BTreeSet::new(),
             generation: 0,
+            facts_complete: true,
             incoming: None,
             fact_reservations: Vec::new(),
             incoming_reservations: Vec::new(),
             incoming_charge: 0,
+            partial_fact: None,
         }
+    }
+
+    pub(crate) fn frozen_generation(&self) -> Result<u64> {
+        if !self.facts_complete {
+            return Err(StoreError::Integrity("incomplete backing group"));
+        }
+        Ok(self.generation)
+    }
+
+    fn install_fact(&mut self, dirty: bool, encoded: &[u8]) -> Result<()> {
+        let charge = encoded
+            .len()
+            .checked_mul(8)
+            .and_then(|n| n.checked_add(1024))
+            .ok_or(StoreError::InvalidInput("backing fact limit"))?;
+        let total = self
+            .incoming_charge
+            .checked_add(charge)
+            .filter(|n| *n <= wire::MAX_FACT_MEMORY)
+            .ok_or(StoreError::InvalidInput("backing fact limit"))?;
+        let reservation = layerfs_fuse::live_runtime::LiveRuntime::shared()?
+            .scheduler()
+            .reserve_live(charge)?;
+        let (id, node) = wire::node_in(encoded, |id, offset, len| {
+            let reference = self
+                .retained
+                .get(&id)
+                .or_else(|| self.spool.segments.get(&id.0))
+                .ok_or_else(wire::invalid)?;
+            let segment = spool_segment(reference).map_err(|_| wire::invalid())?;
+            if offset
+                .checked_add(len)
+                .is_none_or(|end| end > segment.len.load(std::sync::atomic::Ordering::Relaxed))
+            {
+                return Err(wire::invalid());
+            }
+            Ok(reference.clone())
+        })?;
+        let (_, nodes, changed) = self
+            .incoming
+            .as_mut()
+            .ok_or(StoreError::Integrity("missing backing group"))?;
+        if nodes.contains_key(&id) {
+            return Err(StoreError::Integrity("duplicate backing fact"));
+        }
+        nodes.insert(id, node);
+        self.incoming_charge = total;
+        self.incoming_reservations.push(reservation);
+        if dirty {
+            changed.insert(id);
+        }
+        Ok(())
     }
 
     pub(crate) fn request(&mut self, bytes: &[u8]) -> Result<Vec<u8>> {
@@ -319,11 +382,20 @@ impl BackingOwner {
                 if self.incoming.is_some() {
                     return Err(StoreError::Integrity("unfinished backing group"));
                 }
+                // Construction holds this same backing lock through consumption.
+                // No producer can retain these facts after this lock is acquired.
+                self.facts.clear();
+                self.dirty.clear();
+                self.fact_reservations.clear();
+                self.facts_complete = false;
                 self.incoming_charge = 0;
                 self.incoming_reservations.clear();
                 self.incoming = Some((generation, HashMap::new(), BTreeSet::new()));
             }
             wire::FACTS_NODE => {
+                if self.partial_fact.is_some() {
+                    return Err(StoreError::Integrity("unfinished backing node"));
+                }
                 let mut count = 0;
                 while !input.0.is_empty() {
                     if count == wire::FACT_PAGE_NODES {
@@ -336,49 +408,57 @@ impl BackingOwner {
                         _ => return Err(StoreError::Integrity("backing dirty flag")),
                     };
                     let encoded = input.bytes()?;
-                    let charge = encoded
-                        .len()
-                        .checked_mul(8)
-                        .and_then(|n| n.checked_add(1024))
-                        .ok_or(StoreError::InvalidInput("backing fact limit"))?;
-                    let total = self
-                        .incoming_charge
-                        .checked_add(charge)
-                        .filter(|n| *n <= 16 * 1024 * 1024)
-                        .ok_or(StoreError::InvalidInput("backing fact limit"))?;
-                    let reservation = layerfs_fuse::live_runtime::LiveRuntime::shared()?
-                        .scheduler()
-                        .reserve_live(charge)?;
-                    let (id, node) = wire::node_in(encoded, |id, offset, len| {
-                        let reference = self
-                            .retained
-                            .get(&id)
-                            .or_else(|| self.spool.segments.get(&id.0))
-                            .ok_or_else(wire::invalid)?;
-                        let segment = spool_segment(reference).map_err(|_| wire::invalid())?;
-                        if offset.checked_add(len).is_none_or(|end| {
-                            end > segment.len.load(std::sync::atomic::Ordering::Relaxed)
-                        }) {
-                            return Err(wire::invalid());
-                        }
-                        Ok(reference.clone())
-                    })?;
-                    let (_, nodes, changed) = self
-                        .incoming
-                        .as_mut()
-                        .ok_or(StoreError::Integrity("missing backing group"))?;
-                    if nodes.contains_key(&id) {
-                        return Err(StoreError::Integrity("duplicate backing fact"));
-                    }
-                    nodes.insert(id, node);
-                    self.incoming_charge = total;
-                    self.incoming_reservations.push(reservation);
-                    if dirty {
-                        changed.insert(id);
-                    }
+                    self.install_fact(dirty, encoded)?;
+                }
+            }
+            wire::FACTS_NODE_BEGIN => {
+                let dirty = match input.byte()? {
+                    0 => false,
+                    1 => true,
+                    _ => return Err(StoreError::Integrity("backing dirty flag")),
+                };
+                let total = usize::try_from(input.u64()?)
+                    .map_err(|_| StoreError::InvalidInput("backing node length"))?;
+                input.done()?;
+                if total == 0
+                    || total > wire::MAX_NODE_BYTES
+                    || self.partial_fact.is_some()
+                    || self.incoming.is_none()
+                {
+                    return Err(StoreError::InvalidInput("backing node length"));
+                }
+                let charge = layerfs_fuse::live_runtime::LiveRuntime::shared()?
+                    .scheduler()
+                    .reserve_live(total)?;
+                let mut encoded = Vec::new();
+                encoded
+                    .try_reserve_exact(total)
+                    .map_err(|_| StoreError::InvalidInput("backing node allocation"))?;
+                self.partial_fact = Some(PartialFact {
+                    dirty,
+                    total,
+                    encoded,
+                    _charge: charge,
+                });
+            }
+            wire::FACTS_NODE_CHUNK => {
+                let partial = self
+                    .partial_fact
+                    .as_mut()
+                    .ok_or(StoreError::Integrity("missing backing node"))?;
+                if input.0.is_empty() || input.0.len() > partial.total - partial.encoded.len() {
+                    return Err(StoreError::InvalidInput("backing node chunk"));
+                }
+                partial.encoded.extend_from_slice(input.0);
+                if partial.encoded.len() == partial.total {
+                    let partial = self.partial_fact.take().unwrap();
+                    self.install_fact(partial.dirty, &partial.encoded)?;
                 }
             }
             wire::FACTS_END => {
+                if self.partial_fact.is_some() {
+                    return Err(StoreError::Integrity("unfinished backing node"));
+                }
                 let generation = input.u64()?;
                 let count = input.u64()?;
                 input.done()?;
@@ -405,6 +485,7 @@ impl BackingOwner {
                 self.fact_reservations = std::mem::take(&mut self.incoming_reservations);
                 self.dirty = dirty;
                 self.generation = generation;
+                self.facts_complete = true;
             }
             _ => return Err(StoreError::InvalidInput("backing request")),
         }
@@ -444,7 +525,7 @@ mod tests {
             .unwrap();
         let mut workspace = crate::Workspace::open(store, branch, directory.join("spool")).unwrap();
         let remote = RemoteWorkspace::start(&workspace).unwrap();
-        let runtime = LiveRuntime::shared().unwrap();
+        let runtime = LiveRuntime::new().unwrap();
         let endpoint = format!("127.0.0.1:{}", remote.server.port());
         let owner = runtime
             .block_on(LiveOwner::connect(
@@ -614,9 +695,35 @@ mod tests {
             )
             .is_err());
         assert_eq!(owner.read(streamed, 0, 10).unwrap(), vec![8; 10]);
+        owner.write(file, 0, b"later").unwrap();
+        remote
+            .edit(
+                "streamed",
+                (0..8)
+                    .map(|index| {
+                        splice(
+                            index * 1024 * 1024,
+                            if index == 0 { 1024 * 1024 } else { 0 },
+                            vec![index as u8; 1024 * 1024],
+                        )
+                    })
+                    .collect(),
+            )
+            .unwrap();
+        assert_eq!(owner.attr(streamed).unwrap().size, 8 * 1024 * 1024);
+        owner
+            .fsync(None)
+            .expect("accepted eight-MiB inline file can transfer frozen facts");
+        assert!(remote.backing.lock().unwrap().facts.contains_key(&streamed));
+        remote
+            .edit("streamed", vec![splice(0, 1, vec![42])])
+            .unwrap();
+        owner
+            .fsync(None)
+            .expect("replacement facts reuse the released prior group budget");
+        assert_eq!(owner.read(streamed, 0, 1).unwrap(), vec![42]);
         owner.unlink(crate::ROOT, b"streamed", false).unwrap();
         owner.unpin(streamed, true).unwrap();
-        owner.write(file, 0, b"later").unwrap();
         remote.server.control("pause").unwrap();
         let (second, _) = workspace.lock().unwrap().commit().unwrap();
         install_checkpoint(&workspace).unwrap();

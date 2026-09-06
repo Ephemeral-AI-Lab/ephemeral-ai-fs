@@ -358,6 +358,7 @@ impl Workspace {
                 .backing
                 .lock()
                 .map_err(|_| StorageError::Integrity("live backing lock"))?;
+            backing.frozen_generation()?;
             let canonical_nodes = backing
                 .facts
                 .iter()

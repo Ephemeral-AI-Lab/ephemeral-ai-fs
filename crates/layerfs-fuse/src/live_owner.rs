@@ -1293,7 +1293,7 @@ impl LiveOwner {
                             .and_then(|n| n.checked_add(1024))
                             .ok_or(PortError::NoSpace)?,
                     )
-                    .filter(|n| *n <= 16 * 1024 * 1024)
+                    .filter(|n| *n <= wire::MAX_FACT_MEMORY)
                     .ok_or(PortError::NoSpace)?;
             }
             let reservation = self
@@ -1308,9 +1308,10 @@ impl LiveOwner {
             let mut count = 0;
             for id in &ids {
                 let node = state.nodes.get(id).ok_or(PortError::Io)?;
-                let mut record = vec![u8::from(state.dirty.contains(id))];
-                wire::bytes_out(&mut record, &wire::node_out(*id, node).map_err(io)?)
-                    .map_err(io)?;
+                let dirty = u8::from(state.dirty.contains(id));
+                let encoded = wire::node_out(*id, node).map_err(io)?;
+                let mut record = vec![dirty];
+                wire::bytes_out(&mut record, &encoded).map_err(io)?;
                 if count != 0
                     && (count == wire::FACT_PAGE_NODES
                         || page.len() + record.len() > wire::FACT_PAGE_BYTES)
@@ -1319,7 +1320,15 @@ impl LiveOwner {
                     count = 0;
                 }
                 if record.len() + 1 > wire::MAX_FRAME {
-                    return Err(PortError::NoSpace);
+                    let mut begin = vec![wire::FACTS_NODE_BEGIN, dirty];
+                    wire::u64_out(&mut begin, encoded.len() as u64);
+                    pages.push(begin);
+                    for chunk in encoded.chunks(wire::MAX_FRAME - 1) {
+                        let mut frame = vec![wire::FACTS_NODE_CHUNK];
+                        frame.extend_from_slice(chunk);
+                        pages.push(frame);
+                    }
+                    continue;
                 }
                 page.extend(record);
                 count += 1;

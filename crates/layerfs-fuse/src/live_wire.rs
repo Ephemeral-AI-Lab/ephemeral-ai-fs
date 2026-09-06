@@ -10,6 +10,8 @@ use std::io::{self, Read, Write};
 
 pub const FACT_PAGE_BYTES: usize = 64 * 1024;
 pub const FACT_PAGE_NODES: usize = 128;
+pub const MAX_NODE_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_FACT_MEMORY: usize = 96 * 1024 * 1024;
 
 pub const MAX_FRAME: usize = 1024 * 1024 + 64 * 1024;
 pub const SEED: u8 = 1;
@@ -25,6 +27,8 @@ pub const FACTS_NODE: u8 = 10;
 pub const FACTS_END: u8 = 11;
 pub const CANCEL_RESERVATION: u8 = 12;
 pub const DIRECTORY_PAGE: u8 = 13;
+pub const FACTS_NODE_BEGIN: u8 = 14;
+pub const FACTS_NODE_CHUNK: u8 = 15;
 
 pub fn invalid() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "live owner transport")
@@ -133,7 +137,7 @@ pub fn node_encoded_bound(node: &Node) -> io::Result<usize> {
     let capacity = 128usize
         .checked_add(paths)
         .and_then(|n| n.checked_add(data))
-        .filter(|n| *n <= MAX_FRAME)
+        .filter(|n| *n <= MAX_NODE_BYTES)
         .ok_or_else(invalid)?;
     Ok(capacity)
 }
@@ -229,7 +233,7 @@ pub fn node_out(id: NodeId, node: &Node) -> io::Result<Vec<u8>> {
             bytes_out(&mut out, target)?;
         }
     }
-    if out.len() > MAX_FRAME {
+    if out.len() > MAX_NODE_BYTES {
         return Err(invalid());
     }
     Ok(out)
@@ -239,7 +243,7 @@ pub fn node_in(
     bytes: &[u8],
     mut backing: impl FnMut(BackingId, u64, u64) -> io::Result<BackingRef>,
 ) -> io::Result<(NodeId, Node)> {
-    if bytes.len() > MAX_FRAME {
+    if bytes.len() > MAX_NODE_BYTES {
         return Err(invalid());
     }
     let mut input = Input(bytes);

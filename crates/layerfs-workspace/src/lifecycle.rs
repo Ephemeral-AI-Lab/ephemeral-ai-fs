@@ -105,7 +105,7 @@ impl Workspace {
                 .backing
                 .lock()
                 .map_err(|_| StorageError::Integrity("live backing lock"))?
-                .generation
+                .frozen_generation()?
         } else {
             self.live.mutation_generation
         };
