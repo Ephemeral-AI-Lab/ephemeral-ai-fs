@@ -58,6 +58,17 @@ RUN test "${#LAYERFS_SOURCE_COMMIT}" -eq 40 \
  && case "$LAYERFS_SOURCE_COMMIT$LAYERFS_SOURCE_TREE$LAYERFS_SOURCE_SEAL" in *[!0-9a-f]*) exit 1 ;; esac
 
 
+FROM build AS runtime-check
+
+# Explicit component checks; this stage never starts a Store or benchmark.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo test --locked --jobs 2 -p layerfs-daemon --bin layerfs-daemon \
+ && CARGO_TARGET_DIR=/src/target cargo test --locked --jobs 2 \
+      --manifest-path crates/vendor/fuser/Cargo.toml --lib layerfs_session_tests \
+ && CARGO_TARGET_DIR=/src/target cargo test --locked --jobs 2 \
+      --manifest-path crates/vendor/fuser/Cargo.toml --lib read_buf::tests
+
 FROM rust:1.85.1-bookworm@sha256:e51d0265072d2d9d5d320f6a44dde6b9ef13653b035098febd68cce8fa7c0bc4
 
 

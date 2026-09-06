@@ -69,7 +69,8 @@ mod linux {
 
     struct Active {
         workspace_id: [u8; 16],
-        pgid: i32,
+        // None is an admitted start: shutdown must account for it before spawn.
+        pgid: Option<i32>,
         termination: Arc<Termination>,
     }
 
@@ -236,16 +237,18 @@ mod linux {
             }
         }
 
-        fn terminate(&self, pgid: i32, reason: u8) {
-            if self.finished.load(Ordering::Acquire)
-                || self
+        fn request(&self, reason: u8) -> bool {
+            !self.finished.load(Ordering::Acquire)
+                && self
                     .reason
                     .compare_exchange(0, reason, Ordering::AcqRel, Ordering::Acquire)
-                    .is_err()
-            {
-                return;
+                    .is_ok()
+        }
+
+        fn terminate(&self, pgid: i32, reason: u8) {
+            if self.request(reason) {
+                terminate_group(pgid);
             }
-            terminate_group(pgid);
         }
     }
 
@@ -456,18 +459,24 @@ mod linux {
                 let mut active = state
                     .active
                     .values()
-                    .map(|active| (active.pgid, active.termination.clone()))
+                    .filter_map(|active| {
+                        active
+                            .termination
+                            .request(2)
+                            .then_some(active.pgid)
+                            .flatten()
+                    })
                     .collect::<Vec<_>>();
                 active.extend(
                     state
                         .mounts
                         .values()
-                        .map(|mount| (mount.pgid, mount.termination.clone())),
+                        .filter_map(|mount| mount.termination.request(2).then_some(mount.pgid)),
                 );
                 (active, std::mem::take(&mut state.samples))
             };
-            for (pgid, termination) in active {
-                termination.terminate(pgid, 2);
+            for pgid in active {
+                terminate_group(pgid);
             }
             drop(samples);
             shared.drained.notify_all();
@@ -1088,6 +1097,71 @@ mod linux {
             .map_err(|_| protocol::invalid("cgroup value"))
     }
 
+    fn reserve_execution(
+        shared: &Shared,
+        owner_id: [u8; 16],
+        workspace_id: [u8; 16],
+        execution_id: [u8; 16],
+        cwd: &[u8],
+        termination: Arc<Termination>,
+    ) -> Result<(), RemoteError> {
+        let mut state = shared
+            .state
+            .lock()
+            .map_err(|_| RemoteError::InfrastructureLost)?;
+        if !state.owner_live || state.owner_id != owner_id {
+            return Err(RemoteError::Unauthorized);
+        }
+        if !state
+            .mounts
+            .get(&workspace_id)
+            .is_some_and(|mount| mount.ready && mount.root == cwd)
+        {
+            return Err(RemoteError::InvalidRequest);
+        }
+        if state.active.len().saturating_add(state.mounts.len()) >= shared.limit {
+            return Err(RemoteError::LimitExceeded);
+        }
+        if state.active.contains_key(&execution_id) {
+            return Err(RemoteError::InvalidRequest);
+        }
+        state.active.insert(
+            execution_id,
+            Active {
+                workspace_id,
+                pgid: None,
+                termination,
+            },
+        );
+        Ok(())
+    }
+
+    fn install_execution(shared: &Shared, execution_id: [u8; 16], pgid: i32) -> bool {
+        let Ok(mut state) = shared.state.lock() else {
+            return false;
+        };
+        if !state.owner_live {
+            return false;
+        }
+        let Some(active) = state.active.get(&execution_id) else {
+            return false;
+        };
+        if active.termination.reason.load(Ordering::Acquire) != 0
+            || !state
+                .mounts
+                .get(&active.workspace_id)
+                .is_some_and(|mount| mount.ready)
+        {
+            return false;
+        }
+        let active = state.active.get_mut(&execution_id).expect("reserved start");
+        if active.pgid.is_some() {
+            return false;
+        }
+        active.pgid = Some(pgid);
+        true
+    }
+
     fn handle_exec(
         mut stream: ControlStream,
         accepted: Instant,
@@ -1117,62 +1191,47 @@ mod linux {
             .collect::<Vec<_>>();
         let termination = Arc::new(Termination::new());
         let spawn_started = Instant::now();
-        let mut child = {
-            let Ok(mut state) = shared.state.lock() else {
-                send_error(&mut stream, RemoteError::InfrastructureLost);
-                return;
-            };
-            if !state.owner_live || state.owner_id != request.owner_id {
-                send_error(&mut stream, RemoteError::Unauthorized);
-                return;
-            }
-            if !state
-                .mounts
-                .get(&request.workspace_id)
-                .is_some_and(|mount| mount.ready && mount.root == cwd_bytes)
-            {
-                send_error(&mut stream, RemoteError::InvalidRequest);
-                return;
-            }
-            if state.active.len().saturating_add(state.mounts.len()) >= shared.limit {
-                send_error(&mut stream, RemoteError::LimitExceeded);
-                return;
-            }
-            if state.active.contains_key(&request.execution_id) {
-                send_error(&mut stream, RemoteError::InvalidRequest);
-                return;
-            }
-            let mut command = Command::new(&argv[0]);
-            command
-                .args(&argv[1..])
-                .current_dir(&cwd)
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .process_group(0);
-            let child = match command.spawn() {
-                Ok(child) => child,
-                Err(_) => {
-                    send_error(&mut stream, RemoteError::InvalidRequest);
-                    return;
-                }
-            };
-            state.active.insert(
-                request.execution_id,
-                Active {
-                    workspace_id: request.workspace_id,
-                    pgid: child.id() as i32,
-                    termination: termination.clone(),
-                },
-            );
-            child
-        };
+        if let Err(error) = reserve_execution(
+            &shared,
+            request.owner_id,
+            request.workspace_id,
+            request.execution_id,
+            &cwd_bytes,
+            termination.clone(),
+        ) {
+            send_error(&mut stream, error);
+            return;
+        }
         let _guard = ActiveGuard {
             shared: shared.clone(),
             id: request.execution_id,
         };
-        let spawn_ns = elapsed_ns(spawn_started);
+        let mut command = Command::new(&argv[0]);
+        command
+            .args(&argv[1..])
+            .current_dir(&cwd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .process_group(0);
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(_) => {
+                send_error(&mut stream, RemoteError::InvalidRequest);
+                return;
+            }
+        };
         let pgid = child.id() as i32;
+        if !install_execution(&shared, request.execution_id, pgid) {
+            // A stop recorded while pgid was None cannot signal a child until now.
+            termination.request(2);
+            terminate_group(pgid);
+            let status = child.wait();
+            let _ = finish_terminated_group(pgid, &termination, status);
+            send_error(&mut stream, RemoteError::InfrastructureLost);
+            return;
+        }
+        let spawn_ns = elapsed_ns(spawn_started);
         let reader = match stream.try_clone() {
             Ok(reader) => reader,
             Err(_) => {
@@ -1748,12 +1807,18 @@ mod linux {
                     .active
                     .values()
                     .filter(|active| active.workspace_id == workspace_id)
-                    .map(|active| (active.pgid, active.termination.clone()))
+                    .filter_map(|active| {
+                        active
+                            .termination
+                            .request(2)
+                            .then_some(active.pgid)
+                            .flatten()
+                    })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        for (pgid, termination) in active {
-            termination.terminate(pgid, 2);
+        for pgid in active {
+            terminate_group(pgid);
         }
     }
 
@@ -1941,6 +2006,100 @@ mod linux {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn starting_execution_is_reserved_cancelable_and_spawn_holds_no_registry_lock() {
+            let workspace_id = [7; 16];
+            let owner_id = [1; 16];
+            let root = b"/workspace/starting".to_vec();
+            let shared = Arc::new(Shared {
+                state: Mutex::new(State {
+                    owner_live: true,
+                    owner: Binding::Tcp,
+                    owner_id,
+                    active: BTreeMap::new(),
+                    mounts: BTreeMap::from([(
+                        workspace_id,
+                        ActiveMount {
+                            root: root.clone(),
+                            alive: true,
+                            ready: true,
+                            pgid: 0,
+                            termination: Arc::new(Termination::new()),
+                        },
+                    )]),
+                    samples: BTreeMap::new(),
+                    sample_starting: false,
+                }),
+                drained: Condvar::new(),
+                limit: 2,
+                capability: [0; 32],
+                boot_id: [0; 16],
+            });
+            let id = [2; 16];
+            let termination = Arc::new(Termination::new());
+            reserve_execution(
+                &shared,
+                owner_id,
+                workspace_id,
+                id,
+                &root,
+                termination.clone(),
+            )
+            .unwrap();
+            let guard = ActiveGuard {
+                shared: shared.clone(),
+                id,
+            };
+            assert!(shared.state.try_lock().unwrap().active[&id].pgid.is_none());
+            assert!(reserve_execution(
+                &shared,
+                owner_id,
+                workspace_id,
+                [3; 16],
+                &root,
+                Arc::new(Termination::new())
+            )
+            .is_err());
+            terminate_workspace_execs(&shared, workspace_id);
+            assert_eq!(termination.reason.load(Ordering::Acquire), 2);
+            assert!(!install_execution(&shared, id, i32::MAX));
+            assert!(
+                !shared.state.lock().unwrap().active.is_empty(),
+                "start remains tracked until resolved"
+            );
+            drop(guard);
+            assert!(shared.state.lock().unwrap().active.is_empty());
+
+            reserve_execution(
+                &shared,
+                owner_id,
+                workspace_id,
+                id,
+                &root,
+                Arc::new(Termination::new()),
+            )
+            .unwrap();
+            let guard = ActiveGuard {
+                shared: shared.clone(),
+                id,
+            };
+            // The production handler spawns between these same short boundaries.
+            drop(shared.state.try_lock().unwrap());
+            let mut child = Command::new("/bin/sh")
+                .args(["-c", "exit 23"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .process_group(0)
+                .spawn()
+                .unwrap();
+            assert!(install_execution(&shared, id, child.id() as i32));
+            assert!(!install_execution(&shared, id, i32::MAX));
+            assert_eq!(child.wait().unwrap().code(), Some(23));
+            drop(guard);
+            assert!(shared.state.lock().unwrap().active.is_empty());
+        }
 
         #[test]
         fn forced_group_cleanup_reaps_descendants_without_stealing_status() {
