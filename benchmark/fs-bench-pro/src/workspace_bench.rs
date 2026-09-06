@@ -798,11 +798,18 @@ pub(crate) fn fixture_info(case: &Case, seed: u8, branch: Option<BranchId>) -> A
             populated.len() - total_files,
             manifest_sha256,
         ))
+    } else if workload_source::ordinary_workloads::mixed_v4(case) {
+        plan = workload_source::sdk_edit_common::sha256_hex(
+            format!("workspace-mixed-v4\n{plan}").as_bytes(),
+        );
+        None
     } else {
         None
     };
     let profile = if workload_source::ordinary_workloads::mixed_bulk(case) {
         workload_source::ordinary_workloads::MIXED_BULK_PROFILE
+    } else if workload_source::ordinary_workloads::mixed_v4(case) {
+        workload_source::ordinary_workloads::MIXED_V4_PROFILE
     } else {
         "workspace-input-v1"
     };
@@ -883,11 +890,7 @@ fn docker_output(args: &[&str]) -> AnyResult<std::process::Output> {
 fn docker_success(args: &[&str], context: &str) -> AnyResult<()> {
     let output = docker_output(args)?;
     if !output.status.success() {
-        return Err(format!(
-            "{context}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )
-        .into());
+        return Err(format!("{context}: {}", String::from_utf8_lossy(&output.stderr)).into());
     }
     Ok(())
 }
@@ -1269,7 +1272,9 @@ fn run_case(
 ) -> AnyResult<()> {
     let fast = mode == "fast-verify";
     let verification = mode == "verify" || fast;
-    let sampled = verification && case.family == "tiny_file_churn";
+    let sampled = verification
+        && (case.family == "tiny_file_churn"
+            || workload_source::ordinary_workloads::mixed_v4(case));
     if fast
         && (case.kind == "git-tool"
             || case.kind == "boundaries"
@@ -1844,7 +1849,7 @@ fn run_case(
             {
                 return Err("sampled publication/reconnect identity".into());
             }
-            let sample = workload_source::ordinary_workloads::tiny_sample(case, seed)?;
+            let sample = workload_source::ordinary_workloads::workspace_sample(case, seed)?;
             let receipt =
                 super::workspace_verify::verify_sample(&pinned.reader, pinned.root, &sample)?;
             emit(

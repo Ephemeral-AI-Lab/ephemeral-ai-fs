@@ -68,6 +68,12 @@ class RunnerTests(unittest.TestCase):
                 fourth = runner._host_acquire(args, selection, time.monotonic() + 5)
                 self.assertFalse(fourth["cache_hit"])
                 self.assertNotEqual(third["cache_key"], fourth["cache_key"])
+                fixture["fixture_profile"] = "workspace-mixed-v4"
+                fixture["fixture_bytes"] = 104857600
+                fixture["regular_files"] = 2000
+                fifth = runner._host_acquire(args, selection, time.monotonic() + 5)
+                self.assertFalse(fifth["cache_hit"])
+                self.assertNotEqual(fourth["cache_key"], fifth["cache_key"])
 
     def test_mixed_v3_strict_classifier_and_cache_invalidation(self):
         for operation in ("create", "delete"):
@@ -78,7 +84,17 @@ class RunnerTests(unittest.TestCase):
                 self.assertIsNone(runner.issue47_assessment({**selection, "case": case}, 1))
         old = {"fixture_profile": "workspace-input-v1", "input_plan_sha256": "old-target"}
         new = {"fixture_profile": "tiny-bulk-mixed-v3", "input_plan_sha256": "new-target", "populated_manifest_sha256": "full-digests"}
+        mixed_v4 = {"fixture_profile": "workspace-mixed-v4", "input_plan_sha256": "mixed-v4-target", "fixture_bytes": 104857600, "regular_files": 2000}
         self.assertNotEqual(runner.digest(old), runner.digest(new))
+        self.assertNotEqual(runner.digest(old), runner.digest(mixed_v4))
+        self.assertNotEqual(runner.digest(new), runner.digest(mixed_v4))
+
+    def test_mixed_v4_profile_is_isolated_from_shards_and_compact(self):
+        shards = {"fixture_profile": "workspace-input-v1", "input_plan_sha256": "plan", "fixture_bytes": 104857600}
+        compact = {"fixture_profile": "compact-low-tier-v2", "input_plan_sha256": "plan", "fixture_bytes": 10485760}
+        mixed = {"fixture_profile": "workspace-mixed-v4", "input_plan_sha256": "plan", "fixture_bytes": 104857600}
+        self.assertNotEqual(runner.digest(shards), runner.digest(mixed))
+        self.assertNotEqual(runner.digest(compact), runner.digest(mixed))
 
     def test_mixed_oracle_identity_reuse_keeps_proof_bounded(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(runner, "HOST_ROOT", Path(directory)):

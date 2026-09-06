@@ -27,14 +27,23 @@ scenario IDs each.
 
 | Scenario IDs | Primary load | Measured operation | Expected Commit |
 | --- | --- | --- | --- |
-| `directory-construct-{N}` | N directory chains | Create each missing chain with ordinary root-to-leaf `mkdir` calls | `Created` |
-| `directory-metadata-scan-{N}` | N shared-profile shards | Enumerate the complete workspace, `lstat` every entry, and count completed entries | `UpToDate` |
-| `directory-content-scan-{N}` | N shared-profile shards | Enumerate the complete workspace, open/read/close every regular file, and count completed bytes | `UpToDate` |
+| `directory-construct-{N}-compact-v2` (N=1,10) | N directory chains on compact background | Create each missing chain with ordinary root-to-leaf `mkdir` calls | `Created` |
+| `directory-construct-{N}-mixed-v4` (N=100,500) | N directory chains on mixed-v4 background | Create each missing chain with ordinary root-to-leaf `mkdir` calls | `Created` |
+| `directory-metadata-scan-{N}-compact-v2` (N=1,10) | compact tree | Enumerate the complete workspace, `lstat` every entry, and count completed entries | `UpToDate` |
+| `directory-metadata-scan-{N}-mixed-v4` (N=100,500) | mixed-v4 2,000/5,000 files | Enumerate the complete mixed tree, `lstat` every entry, and count completed entries | `UpToDate` |
+| `directory-content-scan-{N}-compact-v2` (N=1,10) | compact tree | Enumerate the complete workspace, open/read/close every regular file, and count completed bytes | `UpToDate` |
+| `directory-content-scan-{N}-mixed-v4` (N=100,500) | mixed-v4 2,000/5,000 files / 100/500 MiB | Enumerate the complete mixed tree, open/read/close every regular file, and count completed bytes | `UpToDate` |
 
-Construction uses a fixed 500-shard untouched shared workspace, with new chains
-under `new-directories/`. Its 500-chain seed-bound schedule uses domain
-`directory-construction`; each smaller case is an exact prefix. Chain depths
-repeat by scheduled ordinal:
+Tiers 100/500 use the [`workspace-mixed-v4`](workspace-mixed-v4.md) tree as the
+whole Workspace (Wave 2 of [#62](https://github.com/Ephemeral-AI-Lab/layerfs/issues/62)).
+Wide-directory fan-out is hundreds to low thousands, not 32,000. Compact 1/10
+IDs and file lists are unchanged. Old unversioned 100/500 IDs are historical.
+
+Construction uses an untouched shared workspace, with new chains under
+`new-directories/`. Compact 1/10 keep the compact background; mixed-v4 100/500
+use the mixed tree as background and do not stack a second 100k-file parent.
+Its 500-chain seed-bound schedule uses domain `directory-construction`; each
+smaller case is an exact prefix. Chain depths repeat by scheduled ordinal:
 
 ```text
 1, 4, 2, 8, 3, 10, 5, 7, 6, 9

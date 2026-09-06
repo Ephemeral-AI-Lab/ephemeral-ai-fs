@@ -77,6 +77,22 @@ python3 benchmark/fs-bench-pro/shared/runner.py --topology host-store --family t
 
 Then select `tiny-bulk-delete-500-mixed-v3` with the same options and source. This authorization supersedes the earlier tier500-performance deferral above. Other runs retain the120second product/130second outer defaults. Independent proof budgets remain45/59seconds.
 
+## Issue 62 workspace-mixed-v4 Wave 1
+
+High-tier locality 100/500 IDs use [`workspace-mixed-v4`](../../docs/roadmap/0.1/0.1.3/workspace-mixed-v4.md): 2,000 files / 100 MiB including one 50 MiB object, and 5,000 files / 500 MiB including 300 MiB + 100 MiB objects. Compact 1/10 IDs are unchanged. Old unversioned 100k-file receipts stay historical; fewer files are not a product speedup.
+
+```bash
+python3 benchmark/fs-bench-pro/shared/runner.py --build-host
+export LAYERFS_BENCH_IMAGE="$(python3 benchmark/fs-bench-pro/shared/runner.py --build-image)"
+python3 benchmark/fs-bench-pro/shared/runner.py \
+  --topology host-store --family workspace_change_locality \
+  --case workspace-dense-rewrite-100-mixed-v4 --seed 1 --setup clone \
+  --collection-mode --product-timeout 300 --timeout 310 --setup-timeout 600 \
+  --output benchmark-results/host-store/campaigns/issue62-mixed-v4/dense-rewrite-100
+```
+
+Collect the eight Wave 1 locality 100/500 IDs serially. Compact 1/10 are not rerun. After performance, run sampled proofs only for completed cases; skip proofs when performance is INCOMPLETE. Proofs stay 45/59 seconds.
+
 ## Issue 54 remaining-family statistics collection
 
 Issue #54 collects one full seed-1 sample of every remaining family without a 15-second performance acceptance gate. Use the existing host-store runner with `--collection-mode`, a 300-second product timeout covering the whole declared workload, and a 310-second outer command allowance. Preparation stays separately bounded. Historical 15-second classification is recorded as reporting-only and does not fail collection.

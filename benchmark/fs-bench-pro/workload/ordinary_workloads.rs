@@ -40,10 +40,36 @@ fn case_shards(case:&Case,seed:u8,n:usize,prefix:&str)->Result<Vec<Entry>> {
     Ok(entries.into_values().collect())
 }
 pub(crate) const MIXED_BULK_PROFILE: &str = "tiny-bulk-mixed-v3";
+pub(crate) const MIXED_V4_PROFILE: &str = common::MIXED_V4_PROFILE;
 
 pub(crate) fn mixed_bulk(case: &Case) -> bool {
     case.family == "tiny_file_churn" && case.kind.starts_with("tiny-bulk-")
         && matches!(case.tier, 100 | 500) && case.id.ends_with("-mixed-v3")
+}
+
+pub(crate) fn mixed_v4(case: &Case) -> bool {
+    matches!(case.tier, 100 | 500) && case.id.ends_with("-mixed-v4")
+}
+
+fn mixed_v4_content(case: &Case, seed: u8, shard: usize, file: usize) -> Result<Content> {
+    let ordinal = shard * 200 + file;
+    let count = common::mixed_v4_file_count(case.tier)?;
+    if file >= 200 || ordinal >= count {
+        return Err("workspace-mixed-v4 ordinal".into());
+    }
+    let path = shard_path(shard, file);
+    Ok(Content::Seed {
+        seed: common::frame_seed(&[MIXED_V4_PROFILE, &seed_label(seed)?, &path], &[ordinal as u64]),
+        len: common::mixed_v4_len(case.tier, ordinal)?,
+    })
+}
+
+fn workspace_tree(case: &Case, seed: u8, shards: usize) -> Result<Vec<Entry>> {
+    if mixed_v4(case) {
+        common::mixed_v4_entries(seed, case.tier, "")
+    } else {
+        case_shards(case, seed, shards, "")
+    }
 }
 
 fn bulk_shard_count(case: &Case) -> usize {
@@ -117,19 +143,7 @@ fn rank(seed: u8, domain: &str) -> Result<Vec<usize>> {
 }
 
 pub(crate) fn shard_path(s: usize, j: usize) -> String {
-    if j < 64 {
-        format!("wide/s{s:03}-f{j:03}.dat")
-    } else if j < 199 {
-        format!("regular/s{s:03}/f{j:03}.dat")
-    } else {
-        format!(
-            "spine/{}/s{s:03}.dat",
-            (1..=128)
-                .map(|d| format!("d{d:03}"))
-                .collect::<Vec<_>>()
-                .join("/")
-        )
-    }
+    common::workspace_shard_path(s, j)
 }
 
 fn shard_content(seed: u8, s: usize, j: usize) -> Result<Content> {
@@ -243,6 +257,86 @@ pub(crate) fn tiny_sample(case: &Case, seed: u8) -> Result<common::TreeSample> {
     Ok(sample)
 }
 
+fn mixed_v4_large_ranges(len: u64) -> Result<Vec<(u64, usize)>> {
+    let range = common::MIXED_V4_SAMPLE_RANGE as u64;
+    if len < range * 2 {
+        return Err("workspace-mixed-v4 large file shorter than sampled ranges".into());
+    }
+    Ok(vec![
+        (0, common::MIXED_V4_SAMPLE_RANGE),
+        (len / 2, common::MIXED_V4_SAMPLE_RANGE),
+        (len - range, common::MIXED_V4_SAMPLE_RANGE),
+    ])
+}
+
+fn mixed_v4_sample(case: &Case, seed: u8) -> Result<common::TreeSample> {
+    if !mixed_v4(case) {
+        return Err("mixed-v4 sample family".into());
+    }
+    let large = common::mixed_v4_large_sizes(case.tier)?;
+    let small = common::mixed_v4_small_count(case.tier)?;
+    let count = common::mixed_v4_file_count(case.tier)?;
+    let mut selected = BTreeSet::new();
+    for ordinal in 0..large.len() {
+        selected.insert(ordinal);
+    }
+    selected.insert(large.len());
+    selected.insert(large.len() + small - 1);
+    selected.insert(large.len() + small);
+    selected.insert(count - 1);
+    selected.insert(64);
+    selected.insert(199);
+    let expected = expected(case, seed, 1)?;
+    let by_path = expected
+        .iter()
+        .map(|entry| (entry.path.as_str(), entry))
+        .collect::<BTreeMap<_, _>>();
+    let mut sample = common::TreeSample {
+        entries: vec![
+            Entry::directory("."),
+            Entry::directory("dest"),
+            Entry::directory("wide"),
+        ],
+        absent: vec![],
+        ranges: BTreeMap::new(),
+    };
+    for ordinal in selected {
+        let path = shard_path(ordinal / 200, ordinal % 200);
+        if case.kind == "workspace-fixed-move" && path == "regular/s000/f064.dat" {
+            sample.absent.push(path);
+            if let Some(moved) = by_path.get("dest/moved.dat") {
+                if matches!(moved.kind, EntryKind::File(_)) {
+                    sample.entries.push((*moved).clone());
+                }
+            }
+            continue;
+        }
+        let Some(entry) = by_path.get(path.as_str()) else {
+            return Err(format!("workspace-mixed-v4 sample path absent: {path}").into());
+        };
+        if let EntryKind::File(content) = &entry.kind {
+            if content.len() >= 50 * MIB {
+                sample
+                    .ranges
+                    .insert(path.clone(), mixed_v4_large_ranges(content.len())?);
+            }
+            sample.entries.push((*entry).clone());
+        }
+    }
+    sample.validate()?;
+    Ok(sample)
+}
+
+pub(crate) fn workspace_sample(case: &Case, seed: u8) -> Result<common::TreeSample> {
+    if mixed_v4(case) {
+        mixed_v4_sample(case, seed)
+    } else if case.family == "tiny_file_churn" {
+        tiny_sample(case, seed)
+    } else {
+        Err("no sampled proof recipe for case".into())
+    }
+}
+
 pub(crate) fn git_targets(seed: u8) -> Result<Vec<(&'static str, String, Content)>> {
     rank(seed, "git-tool-workflow")?
         .into_iter()
@@ -293,15 +387,15 @@ pub(crate) fn fixture(case: &Case, seed: u8) -> Result<Vec<Entry>> {
             }
         }
         "directory-construct" => {
-            merge(&mut entries, case_shards(case,seed, background_shards(case,500), "")?);
+            merge(&mut entries, workspace_tree(case, seed, background_shards(case,500))?);
             dir(&mut entries, "new-directories");
         }
         "directory-metadata-scan"
         | "directory-content-scan"
         | "workspace-clean-commit"
-        | "workspace-fixed-move" => merge(&mut entries, case_shards(case,seed, case.tier, "")?),
+        | "workspace-fixed-move" => merge(&mut entries, workspace_tree(case, seed, case.tier)?),
         "workspace-distributed-sdk-edit" | "workspace-dense-rewrite" => {
-            merge(&mut entries, case_shards(case,seed, background_shards(case,500), "")?)
+            merge(&mut entries, workspace_tree(case, seed, background_shards(case,500))?)
         }
         "git-tool" => {
             merge(&mut entries, case_shards(case,seed, if compact(case) {case.tier.min(4)} else {32}, "background")?);
@@ -433,9 +527,48 @@ fn episode_expected(seed: u8, i: usize) -> Result<(Content, Content, Content)> {
     ))
 }
 
+fn mixed_v4_sdk_ordinals(case: &Case, seed: u8) -> Result<Vec<usize>> {
+    let large = common::mixed_v4_large_sizes(case.tier)?.len();
+    let count = common::mixed_v4_file_count(case.tier)?;
+    let label = seed_label(seed)?;
+    let mut ranks = (large..count)
+        .map(|ordinal| {
+            let mut hash = Sha256::new();
+            hash.update(&(label.len() as u64).to_le_bytes());
+            hash.update(label.as_bytes());
+            hash.update(&(b"workspace-distributed-sdk".len() as u64).to_le_bytes());
+            hash.update(b"workspace-distributed-sdk");
+            hash.update(&(ordinal as u64).to_le_bytes());
+            (hash.finish(), ordinal)
+        })
+        .collect::<Vec<_>>();
+    ranks.sort();
+    Ok(ranks.into_iter().take(case.tier).map(|(_, ordinal)| ordinal).collect())
+}
+
 pub(crate) fn sdk_edits(case: &Case, seed: u8) -> Result<Vec<SdkEdit>> {
     if case.kind != "workspace-distributed-sdk-edit" {
         return Err("case does not use SDK edits".into());
+    }
+    if mixed_v4(case) {
+        return mixed_v4_sdk_ordinals(case, seed)?
+            .into_iter()
+            .map(|ordinal| {
+                let shard = ordinal / 200;
+                let file = ordinal % 200;
+                let original = mixed_v4_content(case, seed, shard, file)?;
+                if original.len() < 4096 {
+                    return Err("workspace-mixed-v4 SDK target shorter than 4 KiB".into());
+                }
+                let replacement = read_content(&original.xor(0, 4096, 0x5a)?.slice(0, 4096)?)?;
+                Ok(SdkEdit {
+                    path: shard_path(shard, file),
+                    start: 0,
+                    delete_len: 4096,
+                    replacement,
+                })
+            })
+            .collect();
     }
     case_rank(case,seed, "workspace-distributed-sdk")?
         .into_iter()
@@ -541,15 +674,26 @@ pub(crate) fn expected(case: &Case, seed: u8, step: usize) -> Result<Vec<Entry>>
             }
         }
         "workspace-dense-rewrite" => {
-            for s in case_rank(case,seed, "workspace-dense-rewrite")?
-                .into_iter()
-                .take(case.tier)
-            {
-                for j in shard_ordinals(case) {
-                    let p = shard_path(s, j);
-                    let len = case_shard_content(case,seed, s, j)?.len();
-                    let data = content(seed, "workspace-dense-rewrite", &p, len)?;
-                    file(&mut entries, p, data);
+            if mixed_v4(case) {
+                for shard in 0..common::mixed_v4_shard_count(case.tier)? {
+                    for file_ordinal in 0..200 {
+                        let p = shard_path(shard, file_ordinal);
+                        let len = mixed_v4_content(case, seed, shard, file_ordinal)?.len();
+                        let data = content(seed, "workspace-dense-rewrite", &p, len)?;
+                        file(&mut entries, p, data);
+                    }
+                }
+            } else {
+                for s in case_rank(case,seed, "workspace-dense-rewrite")?
+                    .into_iter()
+                    .take(case.tier)
+                {
+                    for j in shard_ordinals(case) {
+                        let p = shard_path(s, j);
+                        let len = case_shard_content(case,seed, s, j)?.len();
+                        let data = content(seed, "workspace-dense-rewrite", &p, len)?;
+                        file(&mut entries, p, data);
+                    }
                 }
             }
         }
@@ -612,11 +756,15 @@ pub(crate) fn check_cases(rows: &[Case], expected: usize) -> Result<()> {
     }
     for row in rows {
         let versioned=row.id.ends_with("-compact-v2");
-        let identity=row.id.strip_suffix("-compact-v2").or_else(|| row.id.strip_suffix("-mixed-v3")).unwrap_or(&row.id);
+        let identity=row.id.strip_suffix("-compact-v2").or_else(|| row.id.strip_suffix("-mixed-v3")).or_else(|| row.id.strip_suffix("-mixed-v4")).unwrap_or(&row.id);
         if ![1, 10, 100, 500].contains(&row.tier)
             || versioned!=(row.tier<=10)
             || row.id.ends_with("-mixed-v3") != mixed_bulk(row)
+            || row.id.ends_with("-mixed-v4") != mixed_v4(row)
             || (row.family == "tiny_file_churn" && row.kind.starts_with("tiny-bulk-") && row.tier >= 100 && !mixed_bulk(row))
+            || (matches!(row.family, "workspace_change_locality" | "directory_construction_traversal")
+                && row.tier >= 100
+                && !mixed_v4(row))
             || !identity.ends_with(&row.tier.to_string())
                 && identity != format!("payload-create-{}m", row.tier)
         {
@@ -1963,16 +2111,31 @@ pub(crate) fn apply(case: &Case, seed: u8, step: usize, verify: bool) -> Result<
             }
             "workspace-fixed-move" => ops.rename("regular/s000/f064.dat", "dest/moved.dat")?,
             "workspace-dense-rewrite" => {
-                for s in order.iter().copied().take(case.tier) {
-                    for j in shard_ordinals(case) {
-                        let path = shard_path(s, j);
-                        let data = content(
-                            seed,
-                            "workspace-dense-rewrite",
-                            &path,
-                            case_shard_content(case,seed, s, j)?.len(),
-                        )?;
-                        ops.write_content(&path, &data, false, false)?;
+                if mixed_v4(case) {
+                    for shard in 0..common::mixed_v4_shard_count(case.tier)? {
+                        for file_ordinal in 0..200 {
+                            let path = shard_path(shard, file_ordinal);
+                            let data = content(
+                                seed,
+                                "workspace-dense-rewrite",
+                                &path,
+                                mixed_v4_content(case, seed, shard, file_ordinal)?.len(),
+                            )?;
+                            ops.write_content(&path, &data, false, false)?;
+                        }
+                    }
+                } else {
+                    for s in order.iter().copied().take(case.tier) {
+                        for j in shard_ordinals(case) {
+                            let path = shard_path(s, j);
+                            let data = content(
+                                seed,
+                                "workspace-dense-rewrite",
+                                &path,
+                                case_shard_content(case,seed, s, j)?.len(),
+                            )?;
+                            ops.write_content(&path, &data, false, false)?;
+                        }
                     }
                 }
             }

@@ -541,6 +541,142 @@ pub(crate) fn shards(seed: u8, n: usize, prefix: &str) -> Result<Vec<Entry>> {
     validate_entries(&entries)?;
     Ok(entries)
 }
+
+pub(crate) const MIXED_V4_PROFILE: &str = "workspace-mixed-v4";
+pub(crate) const MIXED_V4_SAMPLE_RANGE: usize = 65_536;
+const CONTAINER_MEMORY_BYTES: u64 = 2 * 1024 * MIB;
+
+pub(crate) fn workspace_shard_path(shard: usize, ordinal: usize) -> String {
+    if ordinal < 64 {
+        format!("wide/s{shard:03}-f{ordinal:03}.dat")
+    } else if ordinal < 199 {
+        format!("regular/s{shard:03}/f{ordinal:03}.dat")
+    } else {
+        format!(
+            "spine/{}/s{shard:03}.dat",
+            (1..=128)
+                .map(|depth| format!("d{depth:03}"))
+                .collect::<Vec<_>>()
+                .join("/")
+        )
+    }
+}
+
+pub(crate) fn mixed_v4_file_count(tier: usize) -> Result<usize> {
+    match tier {
+        100 => Ok(2_000),
+        500 => Ok(5_000),
+        _ => Err("workspace-mixed-v4 is defined only for tiers 100 and 500".into()),
+    }
+}
+
+pub(crate) fn mixed_v4_shard_count(tier: usize) -> Result<usize> {
+    Ok(mixed_v4_file_count(tier)? / 200)
+}
+
+pub(crate) fn mixed_v4_large_sizes(tier: usize) -> Result<Vec<u64>> {
+    match tier {
+        100 => Ok(vec![50 * MIB]),
+        500 => Ok(vec![300 * MIB, 100 * MIB]),
+        _ => Err("workspace-mixed-v4 large sizes".into()),
+    }
+}
+
+pub(crate) fn mixed_v4_small_count(tier: usize) -> Result<usize> {
+    match tier {
+        100 => Ok(1_600),
+        500 => Ok(4_000),
+        _ => Err("workspace-mixed-v4 small count".into()),
+    }
+}
+
+pub(crate) fn mixed_v4_len(tier: usize, ordinal: usize) -> Result<u64> {
+    let count = mixed_v4_file_count(tier)?;
+    if ordinal >= count {
+        return Err("workspace-mixed-v4 ordinal".into());
+    }
+    let large = mixed_v4_large_sizes(tier)?;
+    if ordinal < large.len() {
+        return Ok(large[ordinal]);
+    }
+    let small = mixed_v4_small_count(tier)?;
+    if ordinal < large.len() + small {
+        return Ok(4096);
+    }
+    let medium_count = count - large.len() - small;
+    let medium_bytes = tier as u64 * MIB - large.iter().sum::<u64>() - small as u64 * 4096;
+    let medium_ordinal = ordinal - large.len() - small;
+    Ok(medium_bytes / medium_count as u64
+        + u64::from(medium_ordinal < (medium_bytes % medium_count as u64) as usize))
+}
+
+pub(crate) fn mixed_v4_peak_bytes(kind: &str, tier: usize) -> Result<u64> {
+    let parent = tier as u64 * MIB;
+    let dirty = match kind {
+        "workspace-dense-rewrite" => parent,
+        "workspace-distributed-sdk-edit" => tier as u64 * 4096,
+        "workspace-fixed-move" => 4096,
+        _ => 0,
+    };
+    Ok(parent.saturating_add(dirty))
+}
+
+pub(crate) fn mixed_v4_container_bound() -> u64 {
+    CONTAINER_MEMORY_BYTES
+}
+
+pub(crate) fn mixed_v4_entries(seed: u8, tier: usize, prefix: &str) -> Result<Vec<Entry>> {
+    let label = seed_label(seed)?;
+    let shards = mixed_v4_shard_count(tier)?;
+    let count = mixed_v4_file_count(tier)?;
+    let prefix = prefix.trim_end_matches('/');
+    if !prefix.is_empty() && prefix != "." {
+        validate_path(prefix)?;
+    }
+    let join = |path: &str| {
+        if prefix.is_empty() || prefix == "." {
+            path.to_owned()
+        } else {
+            format!("{prefix}/{path}")
+        }
+    };
+    let mut entries = vec![Entry::directory(".")];
+    let mut directories = BTreeSet::new();
+    for shard in 0..shards {
+        for file in 0..200 {
+            let ordinal = shard * 200 + file;
+            if ordinal >= count {
+                return Err("workspace-mixed-v4 shard overflow".into());
+            }
+            let path = join(&workspace_shard_path(shard, file));
+            add_parents(&path, &mut directories);
+            entries.push(Entry::file(
+                path.clone(),
+                Content::Seed {
+                    seed: frame_seed(&[MIXED_V4_PROFILE, &label, &path], &[ordinal as u64]),
+                    len: mixed_v4_len(tier, ordinal)?,
+                },
+            ));
+        }
+    }
+    let dest = join("dest");
+    add_parents(&dest, &mut directories);
+    directories.insert(dest);
+    entries.extend(directories.into_iter().map(Entry::directory));
+    entries.sort_by(|left, right| left.path.cmp(&right.path));
+    let bytes = validate_entries(&entries)?;
+    if bytes != tier as u64 * MIB
+        || entries
+            .iter()
+            .filter(|entry| matches!(entry.kind, EntryKind::File(_)))
+            .count()
+            != count
+    {
+        return Err("workspace-mixed-v4 fixture totals".into());
+    }
+    Ok(entries)
+}
+
 fn add_parents(path: &str, directories: &mut BTreeSet<String>) {
     let mut parent = Path::new(path).parent();
     while let Some(value) = parent {
