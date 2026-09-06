@@ -807,6 +807,15 @@ pub(crate) fn fixture_info(case: &Case, seed: u8, branch: Option<BranchId>) -> A
         plan =
             workload_source::sdk_edit_common::sha256_hex(format!("{profile}\n{plan}").as_bytes());
         None
+    } else if workload_source::dedup_workloads::history_unrelated_mixed_v2(case) {
+        plan = workload_source::sdk_edit_common::sha256_hex(
+            format!(
+                "{}\n{plan}",
+                workload_source::dedup_workloads::HISTORY_UNRELATED_MIXED_V2_PROFILE
+            )
+            .as_bytes(),
+        );
+        None
     } else {
         None
     };
@@ -816,6 +825,8 @@ pub(crate) fn fixture_info(case: &Case, seed: u8, branch: Option<BranchId>) -> A
         workload_source::ordinary_workloads::MIXED_V4_GIT_PROFILE
     } else if workload_source::ordinary_workloads::mixed_v4(case) {
         workload_source::ordinary_workloads::MIXED_V4_PROFILE
+    } else if workload_source::dedup_workloads::history_unrelated_mixed_v2(case) {
+        workload_source::dedup_workloads::HISTORY_UNRELATED_MIXED_V2_PROFILE
     } else {
         "workspace-input-v1"
     };
@@ -1280,7 +1291,8 @@ fn run_case(
     let verification = mode == "verify" || fast;
     let sampled = verification
         && (case.family == "tiny_file_churn"
-            || workload_source::ordinary_workloads::mixed_v4(case));
+            || workload_source::ordinary_workloads::mixed_v4(case)
+            || workload_source::dedup_workloads::history_unrelated_mixed_v2(case));
     if fast
         && (case.kind == "git-tool"
             || case.kind == "boundaries"
@@ -2058,7 +2070,32 @@ fn run_case(
                 return Err("history Commit query exact membership".into());
             }
             observed(&client, &mut verifier_operation)?;
-            if fast {
+            if workload_source::dedup_workloads::history_unrelated_mixed_v2(case) {
+                for (offset, commit_id) in history.iter().enumerate() {
+                    let expected_parent = if offset == 0 {
+                        None
+                    } else {
+                        Some(history[offset - 1])
+                    };
+                    if records[commit_id].parent_commit_id != expected_parent {
+                        return Err("sampled history parent topology".into());
+                    }
+                }
+                emit(
+                    "sampled-history-topology",
+                    &[
+                        ("commit_count", history.len().to_string()),
+                        ("topology_status", quote("pass")),
+                        ("full_history_payload_verified", "false".into()),
+                        (
+                            "omissions",
+                            quote(
+                                "unselected paths, bytes beyond selected ranges, exhaustive unique 1 MiB snapshots, inode/object/reference census, alias and failure injection",
+                            ),
+                        ),
+                    ],
+                );
+            } else if fast {
                 let input = fast_fixture.as_deref().ok_or("fast history fixture")?;
                 let certificate = fast_certificate.as_ref().ok_or("fast history reference")?;
                 let first = history.first().ok_or("empty history")?;

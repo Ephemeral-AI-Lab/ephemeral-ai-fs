@@ -221,6 +221,23 @@ Wide-directory fan-out is hundreds to low thousands, not 32,000. Prepared-cache
 identity includes this profile so v1/v3/compact masters cannot cache-hit.
 Product code must not branch on the profile string.
 
+### history-unrelated-mixed-v2
+
+Active `dedup-history-unrelated-{100,500}` membership uses profile
+`history-unrelated-mixed-v2`: 10 regular files / 1,048,576 bytes on a dedicated
+tree (`mixed/f000.dat` … `mixed/f009.dat`), not `workspace-shards-v1`. Exact
+mix: 1 × 640 KiB, 6 × 4 KiB, 3 × 120 KiB. Assignment is large, then small, then
+medium by ordinal 0..9. Depth 100 is a prefix of depth 500 on the same tree.
+`dedup-history-unrelated-{1,10}` and the other four history kinds keep the
+200-file shard. Old unversioned unrelated-100/500 IDs are historical.
+
+Prepared-cache identity includes this profile so the 200-file shard cannot
+cache-hit v2. Sampled proofs cover the 640 KiB file with three 64 KiB ranges
+plus declared small/medium paths and Commit topology; they do not walk 500
+full unique 1 MiB snapshots. Skip proofs when performance is INCOMPLETE.
+Product code must not branch on the profile string. Details:
+[dedup-branch-history.md](dedup-branch-history.md#history-unrelated-mixed-v2).
+
 ## Make preparation reusable and lazy
 
 1. Resolve the selected case/seed/arm before building or preparing anything.

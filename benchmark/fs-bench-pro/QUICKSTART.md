@@ -93,6 +93,22 @@ python3 benchmark/fs-bench-pro/shared/runner.py \
 
 Collect the eight Wave 1 locality 100/500 IDs serially. Compact 1/10 are not rerun. After performance, run sampled proofs only for completed cases; skip proofs when performance is INCOMPLETE. Proofs stay 45/59 seconds.
 
+## Issue 65 history-unrelated-mixed-v2
+
+High-tier unrelated history 100/500 IDs use [`history-unrelated-mixed-v2`](../../docs/roadmap/0.1/0.1.3/dedup-branch-history.md#history-unrelated-mixed-v2): 10 files / 1 MiB including one 640 KiB object. Unrelated 1/10 and the other four history kinds stay on the 200-file shard. Old unversioned 200×N receipts stay historical; fewer file writes are not a product speedup.
+
+```bash
+python3 benchmark/fs-bench-pro/shared/runner.py --build-host
+export LAYERFS_BENCH_IMAGE="$(python3 benchmark/fs-bench-pro/shared/runner.py --build-image)"
+python3 benchmark/fs-bench-pro/shared/runner.py \
+  --topology host-store --family dedup_branch_history \
+  --case dedup-history-unrelated-100-mixed-v2 --seed 1 --setup clone \
+  --collection-mode --product-timeout 300 --timeout 310 --setup-timeout 600 \
+  --output benchmark-results/host-store/campaigns/issue65-unrelated-mixed-v2/unrelated-100
+```
+
+Then `dedup-history-unrelated-500-mixed-v2` serially. Do not rerun unrelated-1/10 or the other four kinds. After performance, run sampled proofs only for completed cases; skip proofs when performance is INCOMPLETE. Proofs stay 45/59 seconds.
+
 ## Issue 54 remaining-family statistics collection
 
 Issue #54 collects one full seed-1 sample of every remaining family without a 15-second performance acceptance gate. Use the existing host-store runner with `--collection-mode`, a 300-second product timeout covering the whole declared workload, and a 310-second outer command allowance. Preparation stays separately bounded. Historical 15-second classification is recorded as reporting-only and does not fail collection.

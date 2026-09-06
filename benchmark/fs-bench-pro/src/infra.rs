@@ -63,6 +63,8 @@ fn row(
         workload_source::ordinary_workloads::MIXED_V4_GIT_PROFILE
     } else if id.ends_with("-mixed-v4") {
         workload_source::ordinary_workloads::MIXED_V4_PROFILE
+    } else if family == "dedup_branch_history" && id.ends_with("-mixed-v2") {
+        workload_source::dedup_workloads::HISTORY_UNRELATED_MIXED_V2_PROFILE
     } else if id.contains("compact-") || id.contains("low-v") {
         "compact-low-tier-v2"
     } else {

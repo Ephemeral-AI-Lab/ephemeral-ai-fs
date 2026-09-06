@@ -397,6 +397,8 @@ pub(crate) fn workspace_sample(case: &Case, seed: u8) -> Result<common::TreeSamp
         mixed_v4_sample(case, seed)
     } else if case.family == "tiny_file_churn" {
         tiny_sample(case, seed)
+    } else if super::dedup_workloads::history_unrelated_mixed_v2(case) {
+        super::dedup_workloads::history_sample(case, seed)
     } else {
         Err("no sampled proof recipe for case".into())
     }
@@ -834,7 +836,7 @@ pub(crate) fn check_cases(rows: &[Case], expected: usize) -> Result<()> {
     }
     for row in rows {
         let versioned=row.id.ends_with("-compact-v2");
-        let identity=row.id.strip_suffix("-compact-v2").or_else(|| row.id.strip_suffix("-mixed-v3")).or_else(|| row.id.strip_suffix("-mixed-v4")).unwrap_or(&row.id);
+        let identity=row.id.strip_suffix("-compact-v2").or_else(|| row.id.strip_suffix("-mixed-v3")).or_else(|| row.id.strip_suffix("-mixed-v4")).or_else(|| row.id.strip_suffix("-mixed-v2")).unwrap_or(&row.id);
         if ![1, 10, 100, 500].contains(&row.tier)
             || versioned!=(row.tier<=10)
             || row.id.ends_with("-mixed-v3") != mixed_bulk(row)
