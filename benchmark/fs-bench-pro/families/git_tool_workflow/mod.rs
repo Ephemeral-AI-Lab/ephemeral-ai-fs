@@ -61,10 +61,10 @@ fn mixed_v4_check() -> Result<()> {
             let mut ignore = false;
             for entry in &entries {
                 if let EntryKind::File(content) = &entry.kind {
-                    if entry.path == common::MIXED_V4_GIT_BLOB_PATH {
-                        if content.len() != 50 * common::MIB {
-                            return Err("git mixed-v4 50 MiB blob".into());
-                        }
+                    if entry.path == common::MIXED_V4_GIT_BLOB_PATH
+                        && content.len() != 50 * common::MIB
+                    {
+                        return Err("git mixed-v4 50 MiB blob".into());
                     }
                     if entry.path == ".gitignore" {
                         ignore = content.len() == common::MIXED_V4_GIT_IGNORE.len() as u64;

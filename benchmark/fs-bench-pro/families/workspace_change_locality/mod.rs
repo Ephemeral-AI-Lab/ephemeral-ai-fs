@@ -169,7 +169,7 @@ fn mixed_v4_check() -> Result<()> {
             {
                 return Err("workspace-mixed-v4 dense-rewrite totals".into());
             }
-            for case in [&case, move_case, sdk_case, rewrite] {
+            for case in [case, move_case, sdk_case, rewrite] {
                 let sample = ordinary_workloads::workspace_sample(case, seed)?;
                 sample.validate()?;
                 let final_entries = expected(case, seed, 1)?;
