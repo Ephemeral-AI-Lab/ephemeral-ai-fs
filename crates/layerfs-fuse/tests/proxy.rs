@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 #[derive(Default)]
 struct Fixture {
     #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
-    parked: Mutex<Option<std::sync::mpsc::SyncSender<layerfs_fuse::WriteReply>>>,
+    parked: Mutex<Option<std::sync::mpsc::SyncSender<(layerfs_fuse::WriteReply, bool)>>>,
     bytes: Mutex<Vec<u8>>,
     created: Mutex<Vec<Vec<u8>>>,
     links: Mutex<Vec<Vec<u8>>>,
@@ -246,11 +246,12 @@ impl FilesystemPort for Fixture {
         node: NodeId,
         offset: u64,
         bytes: &[u8],
+        writeback: bool,
         reply: layerfs_fuse::WriteReply,
     ) {
         let parked = self.parked.lock().unwrap().clone();
         if let Some(parked) = parked {
-            assert!(parked.send(reply).is_ok());
+            assert!(parked.send((reply, writeback)).is_ok());
         } else {
             reply.complete(self.write(node, offset, bytes));
         }
@@ -878,9 +879,11 @@ fn owned_write_reply_releases_receive_loop_and_completes_once() {
             let mut write = frame(16, unique, 2, 44);
             write[40..48].copy_from_slice(&handle.to_ne_bytes());
             write[56..60].copy_from_slice(&4_u32.to_ne_bytes());
+            write[60..64].copy_from_slice(&u32::from(unique == 7).to_ne_bytes());
             write[80..].copy_from_slice(b"data");
             kernel.write_all(&write).unwrap();
-            let reply = receive.recv_timeout(Duration::from_secs(2)).unwrap();
+            let (reply, writeback) = receive.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert_eq!(writeback, unique == 7);
             // A later unrelated callback must run before the parked write completes.
             kernel.write_all(&frame(3, unique + 1, 1, 16)).unwrap();
             let (id, error, _) = response(&mut kernel);

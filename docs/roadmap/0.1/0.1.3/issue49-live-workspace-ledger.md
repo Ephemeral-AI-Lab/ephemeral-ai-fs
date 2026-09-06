@@ -1,6 +1,6 @@
 # Issue 49 implementation ledger
 
-Status: P0 complete; P1 in progress. No rewritten-product performance claim.
+Status: P0 source custody complete; portable core, frozen construction and owned read/write reply seams implemented through P3h. Execution-owner activation, remaining supported transfers and P4-P6 are incomplete. No rewritten-product performance claim.
 
 ## Source custody and frozen workload
 
@@ -19,14 +19,14 @@ Status: P0 complete; P1 in progress. No rewritten-product performance claim.
 
 | Component | Current callers and retained responsibility | Transfer / deletion status |
 |---|---|---|
-| C1 identity/live state | Workspace `cow_tree`, host `FuseView`, FUSE `port` and adapter | Extract shared identity, inode values and attribute body first; namespace/lifecycle transfer pending |
-| C2 ranges | `file_io` live reads/writes/truncate/SDK edits; `changes::FrozenFile`, direct construction reader; checkpoint/reclaim | Move existing PieceTree unchanged in algorithm; replace physical segment coupling with owned portable reference; host retains physical adapter |
-| C3 adapter/proxy | `LayerFs` callbacks → synchronous `FilesystemPort` → `ProxyClient`/host `FuseView` | Pending. No runtime owner switch until coherent supported slice; proxy paths are not yet dead |
-| C4 runtime/fuser | `ActiveMount`, `handle_mount`, helper binary, `HostMount` | Pending request-max audit, one-loop patch and mount ownership transfer |
+| C1 identity/live state | Workspace `cow_tree`, host `FuseView`, FUSE `port` and adapter | Shared identity/state, metadata, create/mkdir/symlink, acquisition installation, pin/reclaim transferred; link/unlink/rename and lifecycle transfer pending |
+| C2 ranges | `file_io` live reads/writes/truncate/SDK edits; `changes::FrozenFile`, direct construction reader; checkpoint/reclaim | PieceTree and owned BackingRef shared; write/truncate use PreparedFileEdit; host HostSpool isolated; SDK multi-edit transfer pending |
+| C3 adapter/proxy | `LayerFs` callbacks → synchronous `FilesystemPort` → `ProxyClient`/host `FuseView` | Read/write own their replies at submission; native/proxy synchronous defaults remain until runtime owner switch. Other submissions and proxy retirement pending |
+| C4 runtime/fuser | `ActiveMount`, `handle_mount`, helper binary, `HostMount` | Maintained request-size/one-loop patch tested natively and Linux; mount ownership transfer pending |
 | C5 backing/capture | `SpoolSegment`, append/rollback/retirement, Running/Ready capture | Physical resources remain host-side; shared admission pending |
-| C6 construction/checkpoint | `StableFileInputs`, `FrozenFile`, journals, frontier/references, `PreparedCommit` | Delivered producers retained; frozen-owner boundary and exact installation transport pending |
+| C6 construction/checkpoint | `StableFileInputs`, `FrozenFile`, journals, frontier/references, `PreparedCommit` | Existing producers now consume FrozenWorkspaceChanges through host CandidateInputs; detached changed-input test passes. Exact installation transport pending |
 | C7 SDK | `WorkspaceWorker`, lifecycle observer/edit/Commit, projections, preview/reconcile | Current semantics retained; one-owner routing/cut pending |
-| C8 commands/packaging | daemon exec/start/watch/pump; Docker launcher/helper image | Pending tracked start reservation and consolidated supervision; helper remains a real caller |
+| C8 commands/packaging | daemon exec/start/watch/pump; Docker launcher/helper image | Tracked command start reservation implemented and Linux-tested; consolidated supervision pending; helper remains a real caller |
 
 ## Confidence / bounded exploration
 
@@ -191,3 +191,21 @@ Checks: all 53 native Workspace and 14 existing core unit checks PASS (5.42 s bu
 Native pin/unpin and unlink reclamation now use the shared live core's pin counts and existing canonical/path/dirty/edited cleanup algorithm. Host capture completion and physical retirement remain in native adapters; shared unpin reports when released edited ranges permit retirement. Pin overflow is checked before a dependent native truncate. Pin-only changes do not advance content revision.
 
 Focused native interleaved-write/rollback/open-unlinked lifetime check PASS (0.07 s); all 16 core checks PASS, including pin overflow/underflow, two-handle last-release reclamation and prepared write/truncate across real shared pin calls. Clippy PASS. No runtime ownership transfer or performance claim at this checkpoint.
+
+### Next runtime slice (in progress, not acceptance)
+
+Using Tokio 1.48.0 with only rt-multi-thread/sync/net/io-util/time, keeping it out of the portable core. Its existing readiness, executor and owned semaphore primitives cover the required suspension seam; no custom actor/effect framework or FUSE multiplexer. Source: https://docs.rs/tokio/1.48.0/tokio/runtime/struct.Builder.html . `max_blocking_threads` alone leaves an unbounded queue, so physical work separately acquires a permit before spawn_blocking.
+
+Initial LiveRuntime component uses two execution workers and at most two admitted physical workers. Scheduler handles do not own Runtime, avoiding last-runtime destruction on its own worker. Request capacity (256) and transfer bytes (32 MiB) are distinct owned permits; receive-loop capacity waits precede borrowed-argument copying and occupy no filesystem worker. These are runtime component bounds, not whole-process budgets, mount fairness, or RSS proof. Runtime is not yet connected to real daemon mounts.
+
+Native 1.85.1 dependency check PASS (10.81 s); lock adds exactly Tokio, bytes, mio, pin-project-lite, socket2 and wasi. Native real-TCP component check PASS (5.32 s build, 0.02 s test bodies): two parked socket operations leave execution capacity for another task, reply wakeups complete, all count/byte reservations return, oversized requests reject and a cancelled capacity wait leaks no request slot. Daemon integration, per-Workspace/inode ordering, source-sealed Linux check and backing protocol are next; no performance candidate yet.
+
+Runtime implementation hypothesis for the corrected mapping contract: first queue conflicting ordinary callbacks and drain already-admitted reads/writes; perform kernel inode/page invalidation while allowing kernel FUSE_WRITE_CACHE writeback callbacks to finish on the same owner; only then close writeback admission and establish the cut. Publish/install under the bounded mutation pause and resume the same handles. SDK edits use the affected-inode version of that sequence with the required post-edit invalidation/error retention. A blanket write pause before invalidation would deadlock laundering. This is an unimplemented hypothesis pending Linux mmap/dirty-page checks and kernel-return-value audit, not accepted mapping correctness. Ordinary cache hits and in-flight read replies must be accounted for before declaring the cache-flush boundary complete.
+
+First backing candidate should reuse host segment allocation and append checking, with one exact prepared write held across an async physical acknowledgment, before adding payload batching. Missing immutable input goes through a separate adapter acquisition step and shared complete_name revalidation. Measure the coherent create candidate before deciding whether write-ack latency warrants another transfer mechanism. Preserve compact references by sharing the returned physical segment identity across its ranges. Host frozen records are immutable construction/recovery facts, never a POSIX replay target or another live Workspace.
+
+## P3i — async execution and operation-cut components
+
+LiveRuntime/Scheduler implement distinct request-count/transfer-byte admission and separately admitted physical jobs with Tokio. OperationGate/CacheFlush/OperationCut encode the two-phase ordinary-callback drain then writeback drain; neither commands, persistent handles nor owner metadata observations take those guards. LayerFs passes the actual FUSE_WRITE_CACHE bit through owned write submission. These components are not yet activated on daemon mounts; the kernel cache-flush mechanism and full owner routing are still pending. The gate test proves its ordering/resumption, not kernel mmap correctness.
+
+Native tests and warnings-denied Clippy PASS. Sealed Linux runtime-check PASS: both new runtime tests, owned fuser reply/writeback-class check, 5 daemon tests and 3 maintained-fuser checks. Receipt `benchmark-results/issue49/async-check-1788667367281489000`, source seal `16fb6f1054fb0f7b75656b25896e19eb8075f145b41b2017f049412cf7082502`, product seal `4b7afac2588b0cb1ec56fcdd51ce0ea8d9b4f06d4614ab022ef72298dad75683`, image `layerfs-runtime-check:16fb6f1054fb0f7b`. External build 39.4790 s including new dependency compilation; exit 0, no timeout/truncation. No create/delete sample yet.

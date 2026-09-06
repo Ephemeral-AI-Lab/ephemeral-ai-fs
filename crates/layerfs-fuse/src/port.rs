@@ -159,7 +159,14 @@ pub trait FilesystemPort: Send + Sync {
     /// The adapter transfers the one-shot kernel reply. Implementations may park it
     /// while acquiring backing; reserve retained argument bytes before copying them.
     #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
-    fn submit_write(&self, node: NodeId, offset: u64, bytes: &[u8], reply: WriteReply) {
+    fn submit_write(
+        &self,
+        node: NodeId,
+        offset: u64,
+        bytes: &[u8],
+        _writeback: bool,
+        reply: WriteReply,
+    ) {
         reply.complete(self.write(node, offset, bytes));
     }
     #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]

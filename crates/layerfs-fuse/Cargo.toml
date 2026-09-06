@@ -9,8 +9,10 @@ license.workspace = true
 default = ["host"]
 host = ["dep:fuser"]
 proxy = ["dep:fuser"]
+live = ["dep:tokio"]
 
 [dependencies]
+tokio = { version = "=1.48.0", default-features = false, features = ["rt-multi-thread", "sync", "net", "io-util", "time"], optional = true }
 layerfs-workspace-core = { path = "../layerfs-workspace-core" }
 fuser = { version = "=0.18.0", default-features = false, optional = true }
 layerfs-content = { path = "../layerfs-content" }

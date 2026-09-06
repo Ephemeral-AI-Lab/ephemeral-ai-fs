@@ -31,3 +31,6 @@ pub use write_metrics::{FuseReadMetrics, FuseWriteMetrics};
 
 #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
 pub use port::{ReadReply, WriteReply};
+
+#[cfg(feature = "live")]
+pub mod live_runtime;

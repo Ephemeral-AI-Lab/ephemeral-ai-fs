@@ -366,7 +366,7 @@ impl Filesystem for LayerFs {
         handle: FileHandle,
         offset: u64,
         data: &[u8],
-        _write_flags: WriteFlags,
+        write_flags: WriteFlags,
         _flags: OpenFlags,
         _lock_owner: Option<LockOwner>,
         reply: ReplyWrite,
@@ -378,6 +378,7 @@ impl Filesystem for LayerFs {
                 node,
                 offset,
                 data,
+                write_flags.contains(WriteFlags::FUSE_WRITE_CACHE),
                 crate::WriteReply {
                     reply,
                     maximum: data.len(),
