@@ -3,6 +3,7 @@
 pub mod backing;
 pub mod file_edit;
 mod limits;
+pub mod namespace;
 pub use limits::ResourcePolicy;
 
 use layerfs_content::file::rope::FileStateRoot;
@@ -16,6 +17,7 @@ pub enum Error {
     InvalidInput(&'static str),
     Integrity(&'static str),
     NotFound(&'static str),
+    Core(layerfs_content::CoreError),
 }
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -25,6 +27,12 @@ impl std::fmt::Display for Error {
     }
 }
 impl std::error::Error for Error {}
+
+impl From<layerfs_content::CoreError> for Error {
+    fn from(error: layerfs_content::CoreError) -> Self {
+        Self::Core(error)
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct NodeId(pub u64);
@@ -275,6 +283,8 @@ mod tests {
 /// The live inode table and its coherent change generation. Native and daemon
 /// adapters own one instance per writable Workspace lifetime.
 pub struct LiveWorkspace {
+    pub next_node: u64,
+    pub reserved: BTreeSet<NodeId>,
     pub inline_bytes: u64,
     pub piece_allocation_bytes: u64,
     pub spool_bytes: u64,
@@ -290,6 +300,8 @@ pub struct LiveWorkspace {
 impl LiveWorkspace {
     pub fn new(root: Node, policy: ResourcePolicy) -> Self {
         Self {
+            next_node: 2,
+            reserved: BTreeSet::new(),
             inline_bytes: 0,
             piece_allocation_bytes: 0,
             spool_bytes: 0,

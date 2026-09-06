@@ -673,54 +673,6 @@ impl Workspace {
         self.live.piece_allocation_bytes = 0;
         Ok(())
     }
-    pub(crate) fn new_spool_node(&mut self, mode: u32, path: String) -> Result<NodeId> {
-        let node = NodeId(self.next_node);
-        self.new_spool_node_reserved_inner(node, mode, path, false)?;
-        Ok(node)
-    }
-    pub(crate) fn new_spool_node_reserved(
-        &mut self,
-        node: NodeId,
-        mode: u32,
-        path: String,
-    ) -> Result<()> {
-        self.new_spool_node_reserved_inner(node, mode, path, true)
-    }
-    fn new_spool_node_reserved_inner(
-        &mut self,
-        node: NodeId,
-        mode: u32,
-        path: String,
-        reserved: bool,
-    ) -> Result<()> {
-        let data = Data::File(FileData::Edited {
-            base: None,
-            spool_high_water: 0,
-            pieces: PieceTree::empty(),
-            edits: 0,
-        });
-        let value = Node {
-            revision: 0,
-            canonical: None,
-            paths: [path].into(),
-            mode,
-            links: 1,
-            pins: 0,
-            mtime_seconds: 0,
-            mtime_nanoseconds: 0,
-            data,
-        };
-        if reserved {
-            if self.live.nodes.insert(node, value).is_some() {
-                return Err(StoreError::Integrity("reserved node"));
-            }
-        } else {
-            let allocated = self.allocate(value);
-            debug_assert_eq!(allocated, node);
-        }
-        self.live.edited_nodes.insert(node);
-        Ok(())
-    }
     fn ensure_edited(&mut self, node: NodeId) -> Result<()> {
         if let Data::File(FileData::Base { root, len }) = self.live.nodes[&node].data {
             let pieces = PieceTree::base(root, len).map_err(crate::live_error)?;

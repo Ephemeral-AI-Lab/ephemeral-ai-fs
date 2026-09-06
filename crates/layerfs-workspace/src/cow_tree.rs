@@ -113,8 +113,6 @@ pub struct Workspace {
     pub(crate) segment_bytes: u64,
     pub(crate) canonical_nodes: HashMap<InodeId, NodeId>,
     directory_parents: HashMap<NodeId, NodeId>,
-    pub(crate) reserved: BTreeSet<NodeId>,
-    pub(crate) next_node: u64,
     pub(crate) state: WorkspaceState,
     pub(crate) presentation_failed: bool,
     pub(crate) resolution: Option<crate::reconcile::ResolutionState>,
@@ -246,8 +244,6 @@ impl Workspace {
             segment_bytes: 0,
             canonical_nodes: HashMap::from([(resolved.inode, ROOT)]),
             directory_parents: HashMap::from([(ROOT, ROOT)]),
-            reserved: BTreeSet::new(),
-            next_node: 2,
             state: WorkspaceState::Active,
             presentation_failed: false,
             resolution: None,
@@ -299,11 +295,8 @@ impl Workspace {
         Ok(output.into())
     }
 
-    pub(crate) fn allocate(&mut self, node: Node) -> NodeId {
-        let id = NodeId(self.next_node);
-        self.next_node += 1;
-        self.live.nodes.insert(id, node);
-        id
+    pub(crate) fn allocate(&mut self, node: Node) -> Result<NodeId> {
+        self.live.allocate_node(node).map_err(crate::live_error)
     }
 
     pub(crate) fn reserve_nodes(&mut self, count: u32) -> Result<NodeId> {
@@ -311,12 +304,15 @@ impl Workspace {
         if count == 0 || count > 65_536 {
             return Err(StorageError::InvalidInput("node reservation"));
         }
-        let start = self.next_node;
-        self.next_node = self
+        let start = self.live.next_node;
+        self.live.next_node = self
+            .live
             .next_node
             .checked_add(u64::from(count))
             .ok_or(StorageError::Integrity("node reservation"))?;
-        self.reserved.extend((start..self.next_node).map(NodeId));
+        self.live
+            .reserved
+            .extend((start..self.live.next_node).map(NodeId));
         Ok(NodeId(start))
     }
 
@@ -328,14 +324,35 @@ impl Workspace {
         node: NodeId,
     ) -> Result<Attr> {
         self.ensure_active()?;
-        if !self.reserved.remove(&node) {
-            return Err(StorageError::Integrity("reserved node"));
+        let name = self.acquire_name(parent, name)?;
+        self.live
+            .create_file(name, mode, Some(node))
+            .map_err(crate::live_error)
+    }
+
+    fn acquire_name(
+        &mut self,
+        parent: NodeId,
+        name: &[u8],
+    ) -> Result<layerfs_workspace_core::namespace::ResolvedName> {
+        use layerfs_workspace_core::namespace::NameLookup;
+        match self
+            .live
+            .prepare_name(parent, name)
+            .map_err(crate::live_error)?
+        {
+            NameLookup::Ready(name) => Ok(name),
+            NameLookup::Acquire(input) => {
+                let existing = match self.lookup_node(parent, input.name.as_bytes()) {
+                    Ok(node) => Some(node),
+                    Err(StorageError::NotFound(_)) => None,
+                    Err(error) => return Err(error),
+                };
+                self.live
+                    .resolve_name(input, existing)
+                    .map_err(crate::live_error)
+            }
         }
-        let path = self.child_path(parent, name)?;
-        self.new_spool_node_reserved(node, mode & 0o777, path.clone())?;
-        self.insert_name(parent, name, node)?;
-        self.note_mutation([path])?;
-        self.attr(node)
     }
 
     pub(crate) fn note_mutation(&mut self, paths: impl IntoIterator<Item = String>) -> Result<()> {
@@ -440,7 +457,7 @@ impl Workspace {
             mtime_seconds: portable.mtime_seconds,
             mtime_nanoseconds: portable.mtime_nanoseconds,
             data,
-        });
+        })?;
         self.canonical_nodes.insert(inode, node);
         Ok(node)
     }
@@ -576,46 +593,21 @@ impl Workspace {
     }
 
     fn directory(&self, node: NodeId) -> Result<&DirectoryData> {
-        match &self
-            .live
-            .nodes
-            .get(&node)
-            .ok_or(StorageError::NotFound("node"))?
-            .data
-        {
-            Data::Directory(directory) => Ok(directory),
-            _ => Err(StorageError::InvalidInput("directory")),
-        }
+        self.live.directory(node).map_err(crate::live_error)
     }
 
     pub(crate) fn directory_mut(&mut self, node: NodeId) -> Result<&mut DirectoryData> {
-        match &mut self
-            .live
-            .nodes
-            .get_mut(&node)
-            .ok_or(StorageError::NotFound("node"))?
-            .data
-        {
-            Data::Directory(directory) => {
-                self.live.dirty.insert(node);
-                Ok(directory)
-            }
-            _ => Err(StorageError::InvalidInput("directory")),
-        }
+        self.live.directory_mut(node).map_err(crate::live_error)
     }
 
     pub(crate) fn path_of(&self, node: NodeId) -> Result<String> {
-        self.live
-            .nodes
-            .get(&node)
-            .and_then(|node| node.paths.first())
-            .cloned()
-            .ok_or(StorageError::NotFound("node path"))
+        self.live.path_of(node).map_err(crate::live_error)
     }
 
     pub(crate) fn child_path(&self, parent: NodeId, name: &[u8]) -> Result<String> {
-        validate_name(name)?;
-        join(&self.path_of(parent)?, name)
+        self.live
+            .child_path(parent, name)
+            .map_err(crate::live_error)
     }
 
     fn parent_of(&self, node: NodeId) -> Result<NodeId> {
@@ -708,17 +700,16 @@ fn validate_name(name: &[u8]) -> Result<()> {
 impl Workspace {
     pub fn create_file(&mut self, parent: NodeId, name: &[u8], mode: u32) -> Result<Attr> {
         self.ensure_active()?;
-        let path = self.child_path(parent, name)?;
-        let node = self.new_spool_node(mode & 0o777, path.clone())?;
-        self.insert_name(parent, name, node)?;
-        self.note_mutation([path])?;
-        self.attr(node)
+        let name = self.acquire_name(parent, name)?;
+        self.live
+            .create_file(name, mode, None)
+            .map_err(crate::live_error)
     }
 
     pub fn mkdir(&mut self, parent: NodeId, name: &[u8], mode: u32) -> Result<Attr> {
         self.ensure_active()?;
         let path = self.child_path(parent, name)?;
-        let node = self.allocate(new_directory(path.clone(), mode));
+        let node = self.allocate(new_directory(path.clone(), mode))?;
         self.insert_name(parent, name, node)?;
         self.note_mutation([path])?;
         self.attr(node)
@@ -733,7 +724,7 @@ impl Workspace {
     ) -> Result<Attr> {
         self.ensure_active()?;
         let path = self.child_path(parent, name)?;
-        if !self.reserved.remove(&node) {
+        if !self.live.reserved.remove(&node) {
             return Err(StorageError::Integrity("reserved node"));
         }
         self.live
@@ -760,7 +751,7 @@ impl Workspace {
             mtime_seconds: 0,
             mtime_nanoseconds: 0,
             data: Data::Symlink(target.clone()),
-        });
+        })?;
         self.insert_name(parent, name, node)?;
         self.note_mutation([path])?;
         self.attr(node)
@@ -1037,7 +1028,7 @@ mod tests {
             canonical_nodes: workspace.canonical_nodes.clone(),
             directory_parents: workspace.directory_parents.clone(),
             dirty: workspace.live.dirty.clone(),
-            next_node: workspace.next_node,
+            next_node: workspace.live.next_node,
             spool_bytes: workspace.live.spool_bytes,
             inline_bytes: workspace.live.inline_bytes,
             piece_allocation_bytes: workspace.live.piece_allocation_bytes,

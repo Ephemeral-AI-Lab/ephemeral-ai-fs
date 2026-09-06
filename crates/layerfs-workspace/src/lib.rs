@@ -73,5 +73,6 @@ fn live_error(error: layerfs_workspace_core::Error) -> layerfs_layerstack_store:
         Error::InvalidInput(message) => StoreError::InvalidInput(message),
         Error::Integrity(message) => StoreError::Integrity(message),
         Error::NotFound(message) => StoreError::NotFound(message),
+        Error::Core(error) => error.into(),
     }
 }
