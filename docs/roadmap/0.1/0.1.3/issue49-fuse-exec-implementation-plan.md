@@ -256,6 +256,16 @@ This document specifies the implementation workflow; it launches no experiments 
 
 Current adopted product reference, seconds to four decimals: create Exec **0.9172**, Commit **0.3587**, complete **1.2914**; delete Exec **0.2684**, Commit **0.0148**, complete **0.2980**. Their source/product IDs are in the spec and [campaign ledger](issue49-ten-family-refresh.md). Retained research create Exec **0.4792** / complete **0.9680** is a different product. Never add its Exec to the adopted Commit number or call mixed-v3 count reduction a code speedup.
 
+### Fixed development/test topology and reset policy
+
+Use the actual macOS-host + Docker Linux + real FUSE path for performance and end-to-end behavior. Host owns SQLite, SDK/benchmark coordination, physical spool backing and canonical construction/publication. Linux owns workloads, FUSE and the new live operation core. Moving that core is the intended rewrite; it does not move SQLite or the benchmark coordinator into Docker. Native focused tests are supplemental and cannot substitute for the product topology. No data mounts, container SQLite or native-directory benchmark shortcut.
+
+Normal reset is **`--setup clone`**, through existing family scripts. `setup.sh` delegates to the shared runner's `--prepare-only`, creates or validates/reuses the protected host master, and does no performance run. `perf.sh` acquires compatible preparation itself, makes an independent disposable sample Store, and owns fresh container/FUSE lifetime plus cleanup. Do not call setup before every iteration unnecessarily, reset Docker, prune build caches, discard the preparation cache or replay namespace initialization routinely.
+
+The copy implementation is `runtime.closed_store_copy` (`closed-quiescent-byte-copy`), not APFS clone/reflink. Retain validation, SQLite quiescence and unchanged-master checks. A new source version does not alone invalidate the reusable fixture; the runner's schema/fixture/seed/content compatibility remains authoritative. Workload/schema changes must acquire the correct new master instead of forcing reuse. The CLI alternative is `fresh`, not `refresh`; it is not the normal iteration reset.
+
+After product-source edits, run existing cached host/image build commands to obtain matching seals; do not hand-edit identity sidecars or use a stale image. Reuse sealed artifacts when still matching. Read cache-hit/clone-method/master-unchanged/cleanup evidence in each sample. Preserve 2CPU/2GiB/no-swap/256PID container limits and host resource reporting.
+
 Cycle:
 
 1. Read the last retained attempt and choose one hypothesis affecting create-100: local metadata/binding decisions, repeated acquisition/normalization work, dispatch/reply waiting, backing ownership/copies, or required fences. Keep unrelated mechanisms fixed.
@@ -268,11 +278,19 @@ Cycle:
 Performance command using the current entrypoint (for implementation execution, not run by this review):
 
 ```bash
-python3 benchmark/fs-bench-pro/shared/runner.py \
-  --topology host-store \
-  --family tiny_file_churn \
-  --case tiny-bulk-create-100-mixed-v3 \
-  --seed 1 --setup clone --perf-fast
+# Build/refresh sealed artifacts only when relevant source changes.
+python3 benchmark/fs-bench-pro/shared/runner.py --build-host
+export LAYERFS_BENCH_IMAGE="$(python3 benchmark/fs-bench-pro/shared/runner.py --build-image)"
+
+# Prepare once; repeat only to ensure new/changed compatible input when needed.
+bash benchmark/fs-bench-pro/families/tiny_file_churn/setup.sh \
+  --topology host-store --case tiny-bulk-create-100-mixed-v3 \
+  --seed 1 --setup clone --image "$LAYERFS_BENCH_IMAGE"
+
+# Normal reset and one full sample.
+bash benchmark/fs-bench-pro/families/tiny_file_churn/perf.sh \
+  --topology host-store --case tiny-bulk-create-100-mixed-v3 \
+  --seed 1 --setup clone --perf-fast --image "$LAYERFS_BENCH_IMAGE"
 ```
 
 Build commands remain `runner.py --build-host` and `runner.py --build-image`; bind the resulting image/source as documented in QUICKSTART. Default performance watchdog 120 seconds product / 130 seconds outer is a diagnostic allowance, not the pass target. Do not replace create-100 with a tiny smoke case as performance proof, and do not run tier500 or all families routinely.

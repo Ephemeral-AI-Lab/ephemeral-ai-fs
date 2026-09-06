@@ -1,7 +1,8 @@
 # LayerFS benchmark quick note
 
+
 - **Permanent policy:** Docker-owned SQLite and container-side benchmark coordinators are prohibited. Use host-owned Stores for preparation, performance, and verification; migrate unsupported families to the host instead of restoring a Docker fallback.
-- **Environment:** macOS runs the SDK, Workspace processing, and embedded SQLite. Docker Linux runs the daemon, workload helper, and real FUSE.
+- **Environment:** macOS runs the SDK/benchmark coordinator, canonical construction/Commit publication, physical spool backing, and embedded SQLite. Docker Linux runs the daemon, workload helper, and real FUSE; #49 moves live operation state into that daemon while keeping backing and Store publication on the host.
 - **Limits:** container **2 CPUs / 2 GiB RAM / no swap / 256 PIDs**. Host CPU is uncapped. No Docker data mounts.
 - **Iteration:** reuse preparation and run **one explicit performance sample** per experiment. Collect selected independent proofs only after performance collection and the candidate are stable. Keep builds, samples, and proofs serial.
 - **Performance allowance:** Workspace calls may execute for **120 seconds** to expose complete timings; the outer command defaults to 130 seconds. The complete product-call pass target stays **15 seconds**. Completed slower runs are `TARGET_MISS`; timeouts are incomplete. Optimize the lowest failing tier before advancing.
@@ -75,3 +76,32 @@ python3 benchmark/fs-bench-pro/shared/runner.py --topology host-store --family t
 ```
 
 Then select `tiny-bulk-delete-500-mixed-v3` with the same options and source. This authorization supersedes the earlier tier500-performance deferral above. Other runs retain the120second product/130second outer defaults. Independent proof budgets remain45/59seconds.
+
+## Issue49 create-100 fast iteration: prepare once, clone each sample
+
+The primary selection is `tiny-bulk-create-100-mixed-v3`, seed1: 1,000 created files /100MiB including one50MiB file, plus the unchanged separate200-file/1MiB witness. Use the family scripts below; they delegate to the existing host-store runner. Do not add a benchmark engine or direct benchmark execution inside Docker.
+
+Build a matching pair after product-source changes, using the existing incremental Cargo and Docker caches. Reuse an already matching sealed pair when no relevant source changed; documentation-only changes do not require a rebuild. The runner rejects a stale host binary or differing host/image product seals.
+
+```bash
+python3 benchmark/fs-bench-pro/shared/runner.py --build-host
+export LAYERFS_BENCH_IMAGE="$(python3 benchmark/fs-bench-pro/shared/runner.py --build-image)"
+
+# Initial preparation, or ensure compatible preparation after an input/schema change.
+bash benchmark/fs-bench-pro/families/tiny_file_churn/setup.sh \
+  --topology host-store --case tiny-bulk-create-100-mixed-v3 \
+  --seed 1 --setup clone --image "$LAYERFS_BENCH_IMAGE"
+
+# One full, serial sample after a substantive implementation change.
+bash benchmark/fs-bench-pro/families/tiny_file_churn/perf.sh \
+  --topology host-store --case tiny-bulk-create-100-mixed-v3 \
+  --seed 1 --setup clone --perf-fast --image "$LAYERFS_BENCH_IMAGE"
+```
+
+`setup.sh` is preparation-only and does not run a performance sample. It creates a protected host master only when a compatible one is absent. The performance script also acquires preparation automatically, so do not run setup before every sample when it adds no value. Compatibility uses the existing fixture/schema/seed rules and content identity; a new product revision alone does not require deleting a compatible master. Preserve the master's producing identity and the new candidate's identity separately.
+
+**Use `--setup clone` for normal create-100 reset.** The actual clone method is `closed-quiescent-byte-copy`: the runner copies a closed validated host master into a fresh disposable host sample Store and checks master isolation. It is not an APFS clone/reflink, not a live SQLite file copy, and not permission to reuse the previously mutated sample. The runner still starts and cleans up each sample's container/FUSE session. Do not prune Docker/build caches, restart Docker, delete protected preparation or recreate the base namespace as routine reset. The CLI alternative is `fresh`, not `refresh`; use fresh preparation only for an explicit preparation/invalidation investigation. Native initialization's fresh-output policy remains unchanged.
+
+Inspect preparation `cache_hit`, compatibility, setup mode/clone method, source/image identity, `prepared_master_unchanged`, complete product timings and cleanup. A new input/schema incompatibility should create/acquire the appropriate master through the runner; never force an incompatible cache hit or weaken isolation checks. Setup and cleanup retain their declared timer scopes.
+
+During implementation: one hypothesis, smallest changed-seam checks, matching build artifacts, one create-100 sample, inspect, retain/revise. Keep serial shared-lock coordination. Component checks supplement real FUSE execution; a host-only synthetic test cannot establish Docker/FUSE performance. Do not multiply performance seeds or rerun passing suites without a relevant change. Independent sampled proofs stay final-only through `verify.sh`/`verify-selected.py`, with exact receipt identities and45-second work/59-second hard limits. Physical100-workspace qualification remains deferred. These are execution instructions, not a request to run a benchmark during documentation work.
