@@ -1,4 +1,4 @@
-use crate::{Data, Error, FileData, LiveWorkspace, Node, NodeId, Result};
+use crate::{Data, Error, FileData, LiveWorkspace, NodeId, Result};
 use layerfs_content::file::rope::FileStateRoot;
 use std::sync::Arc;
 
@@ -16,7 +16,8 @@ pub const MAX_PREDICTED_ZERO_EXTENTS: u64 = 131_072;
 #[derive(Debug)]
 pub struct PreparedWrite {
     node: NodeId,
-    expected: Node,
+    expected_revision: u64,
+    before: FileData,
     next: FileData,
     appended: u64,
     bytes: usize,
@@ -44,17 +45,19 @@ impl LiveWorkspace {
         offset
             .checked_add(bytes as u64)
             .ok_or(Error::InvalidInput("write length"))?;
-        let (base, high_water, old, edits) = match &expected.data {
-            Data::File(FileData::Base { root, len }) => {
+        let Data::File(before) = &expected.data else {
+            return Err(Error::InvalidInput("file"));
+        };
+        let (base, high_water, old, edits) = match before {
+            FileData::Base { root, len } => {
                 (Some((*root, *len)), 0, PieceTree::base(*root, *len)?, 0)
             }
-            Data::File(FileData::Edited {
+            FileData::Edited {
                 base,
                 spool_high_water,
                 pieces,
                 edits,
-            }) => (*base, *spool_high_water, pieces.clone(), *edits),
-            _ => return Err(Error::InvalidInput("file")),
+            } => (*base, *spool_high_water, pieces.clone(), *edits),
         };
         let appended = if backing.is_some() { bytes as u64 } else { 0 };
         let piece = match backing {
@@ -78,7 +81,8 @@ impl LiveWorkspace {
         let next = old.replace(start, delete_len, gap.into_iter().chain([piece]))?;
         let prepared = PreparedWrite {
             node,
-            expected: expected.clone(),
+            expected_revision: expected.revision,
+            before: before.clone(),
             next: FileData::Edited {
                 base,
                 spool_high_water: high_water
@@ -95,13 +99,15 @@ impl LiveWorkspace {
     }
 
     pub fn apply_write(&mut self, prepared: PreparedWrite) -> Result<usize> {
-        if self.nodes.get(&prepared.node) != Some(&prepared.expected) {
+        if !self.nodes.get(&prepared.node).is_some_and(|node| {
+            node.revision == prepared.expected_revision
+                && matches!(&node.data, Data::File(data) if *data == prepared.before)
+        }) {
             return Err(Error::Integrity("stale prepared write"));
         }
         let generation = self.next_generation()?;
         let revision = prepared
-            .expected
-            .revision
+            .expected_revision
             .checked_add(1)
             .ok_or(Error::Integrity("inode revision"))?;
         let (inline, allocation, spool) = self.write_resources(&prepared)?;
@@ -125,8 +131,8 @@ impl LiveWorkspace {
     }
 
     fn write_resources(&self, prepared: &PreparedWrite) -> Result<(u64, u64, u64)> {
-        let old = match &prepared.expected.data {
-            Data::File(FileData::Edited { pieces, .. }) => Some(pieces),
+        let old = match &prepared.before {
+            FileData::Edited { pieces, .. } => Some(pieces),
             _ => None,
         };
         let FileData::Edited { pieces: next, .. } = &prepared.next else {

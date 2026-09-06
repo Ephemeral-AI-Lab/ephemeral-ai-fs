@@ -216,6 +216,7 @@ mod tests {
         assert_eq!(live.nodes[&file], before, "prepare mutated live state");
         assert_eq!(live.spool_bytes, 0);
         live.chmod(ROOT, 0o700).unwrap();
+        live.nodes.get_mut(&file).unwrap().pins += 1;
         assert_eq!(live.apply_write(prepared).unwrap(), 5);
         assert_eq!(live.attr(file).unwrap().size, 8);
         assert_eq!(live.spool_bytes, 5);
