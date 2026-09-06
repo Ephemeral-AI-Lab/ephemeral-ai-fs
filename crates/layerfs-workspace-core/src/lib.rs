@@ -174,6 +174,7 @@ mod tests {
                 }),
             },
             ResourcePolicy::default(),
+            layerfs_content::ObjectId::for_bytes(b"base namespace"),
         );
         let file = NodeId(2);
         let mut node = live.nodes[&ROOT].clone();
@@ -283,6 +284,7 @@ mod tests {
 /// The live inode table and its coherent change generation. Native and daemon
 /// adapters own one instance per writable Workspace lifetime.
 pub struct LiveWorkspace {
+    pub base_root: layerfs_content::ObjectId,
     pub canonical_nodes: HashMap<InodeId, NodeId>,
     pub directory_parents: HashMap<NodeId, NodeId>,
     pub next_node: u64,
@@ -300,13 +302,14 @@ pub struct LiveWorkspace {
 }
 
 impl LiveWorkspace {
-    pub fn new(root: Node, policy: ResourcePolicy) -> Self {
+    pub fn new(root: Node, policy: ResourcePolicy, base_root: layerfs_content::ObjectId) -> Self {
         let canonical_nodes = root
             .canonical
             .map(|inode| (inode, ROOT))
             .into_iter()
             .collect();
         Self {
+            base_root,
             canonical_nodes,
             directory_parents: HashMap::from([(ROOT, ROOT)]),
             next_node: 2,

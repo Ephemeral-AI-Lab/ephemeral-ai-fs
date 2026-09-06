@@ -157,3 +157,9 @@ The legacy native refresh moves the retained HostSpool as one value, retaining n
 Checks under the shared lock: 52 native Workspace tests PASS (4.82 s build, 1.10 s test bodies), including rollback, stale append, physical peaks, old readers, refresh and exact install retry. New HostSpool test runs with no Store or live namespace, checks foreign/stale append rejection, unchanged earlier bytes and last-reader retirement. Test-instrumentation feature check PASS (1.84 s); Clippy with Rust 1.96.0 and warnings denied PASS. The initial extraction compilation found four mechanical receiver field accesses and a now feature-only local variable; corrected before the passing checks.
 
 Network backing service/submission/frozen construction and the new operation-level Commit cut remain pending. No performance candidate or terminal PASS.
+
+## P3d — immutable acquisition facts independent of live installation
+
+Host acquisition now returns `AcquiredInode` containing immutable identity/data/metadata without live paths, pins or revision. Shared `complete_name` validates the exact directory revision, directory root and base namespace identity before installing a NodeId/path. Native lookup/create reuse this path; removed the old duplicate materialize path. The base namespace check rejects an old inode-table reply even when a checkpoint retains the same directory root. Existing acquired aliases retain edited inode state.
+
+Checks: full 52 Workspace and 14 core unit checks passed after extraction; subsequent wrapper consolidation and base identity guard passed the 5 native namespace checks, both portable namespace checks, and affected-package Clippy with warnings denied. `git diff --check` clean. Native acquisition is still synchronous in its adapter; this establishes the input/installation seam, not runtime suspension. No performance claim.

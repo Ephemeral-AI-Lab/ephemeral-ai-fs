@@ -362,6 +362,7 @@ impl Workspace {
             self.expected_head = head;
             self.expected_base = expected_base;
             self.base_root = root;
+            self.live.base_root = root;
             self.base_inodes =
                 layerfs_content::tree::inode::InodeTableRoot(namespace.inode_table_root);
             self.directory_lookup_cache = Default::default();

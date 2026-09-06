@@ -13,7 +13,7 @@ use layerfs_content::tree::inode::{
     InodeTableRoot,
 };
 use layerfs_content::tree::metadata::{metadata_lookup, MetadataKey, PortableMetadataV1};
-use layerfs_content::{CanonicalName, CanonicalPath};
+use layerfs_content::CanonicalPath;
 use layerfs_layerstack_store::{
     BranchId, CommitId, CoreReader, LayerId, LayerStackStore, Result, SnapshotReader,
     StoreError as StorageError,
@@ -150,7 +150,7 @@ impl Workspace {
             }),
         };
         Ok(Self {
-            live: layerfs_workspace_core::LiveWorkspace::new(root, policy),
+            live: layerfs_workspace_core::LiveWorkspace::new(root, policy, base_root),
             store,
             workspace_id,
             reader,
@@ -251,23 +251,36 @@ impl Workspace {
         name: &[u8],
     ) -> Result<layerfs_workspace_core::namespace::ResolvedName> {
         use layerfs_workspace_core::namespace::NameLookup;
-        match self
+        let input = match self
             .live
             .prepare_name(parent, name)
             .map_err(crate::live_error)?
         {
-            NameLookup::Ready(name) => Ok(name),
-            NameLookup::Acquire(input) => {
-                let existing = match self.lookup_node(parent, input.name.as_bytes()) {
-                    Ok(node) => Some(node),
-                    Err(StorageError::NotFound(_)) => None,
-                    Err(error) => return Err(error),
-                };
-                self.live
-                    .resolve_name(input, existing)
-                    .map_err(crate::live_error)
-            }
+            NameLookup::Ready(name) => return Ok(name),
+            NameLookup::Acquire(input) => input,
+        };
+        let inode = self.directory_lookup_cache.lookup(
+            &CoreReader(&self.reader),
+            input.directory,
+            &input.name,
+            &mut NamespaceCounters::default(),
+        )?;
+        if let Some(node) = inode.and_then(|inode| self.live.canonical_nodes.get(&inode).copied()) {
+            let path = self.child_path(parent, name)?;
+            let resolved = self
+                .live
+                .resolve_name(input, Some(node))
+                .map_err(crate::live_error)?;
+            self.remember_directory_parent(node, parent)?;
+            self.live.nodes.get_mut(&node).unwrap().paths.insert(path);
+            return Ok(resolved);
         }
+        let acquired = inode
+            .map(|inode| acquire_inode(&self.reader, self.base_inodes, inode))
+            .transpose()?;
+        self.live
+            .complete_name(input, acquired)
+            .map_err(crate::live_error)
     }
 
     pub(crate) fn note_mutation(&mut self, paths: impl IntoIterator<Item = String>) -> Result<()> {
@@ -278,43 +291,9 @@ impl Workspace {
     }
 
     pub(crate) fn lookup_node(&mut self, parent: NodeId, name: &[u8]) -> Result<NodeId> {
-        validate_name(name)?;
-        if let Some(change) = self.directory(parent)?.changes.get(name) {
-            return change.ok_or(StorageError::NotFound("name"));
-        }
-        let Some(base) = self.directory(parent)?.base else {
-            return Err(StorageError::NotFound("name"));
-        };
-        let inode = self
-            .directory_lookup_cache
-            .lookup(
-                &CoreReader(&self.reader),
-                base,
-                &CanonicalName::from_bytes(name)?,
-                &mut NamespaceCounters::default(),
-            )?
-            .ok_or(StorageError::NotFound("name"))?;
-        let path = self.child_path(parent, name)?;
-        let node = self.materialize(inode, path)?;
-        self.remember_directory_parent(node, parent)?;
-        Ok(node)
-    }
-
-    fn materialize(&mut self, inode: InodeId, path: String) -> Result<NodeId> {
-        if let Some(node) = self.live.canonical_nodes.get(&inode).copied() {
-            self.live.nodes.get_mut(&node).unwrap().paths.insert(path);
-            return Ok(node);
-        }
-        let reader = CoreReader(&self.reader);
-        let record_id = inode_table_lookup(
-            &reader,
-            self.base_inodes,
-            inode,
-            &mut InodeTableCounters::default(),
-        )?
-        .ok_or(StorageError::Integrity("Workspace inode"))?;
-        let record = reader.with_authenticated_canonical(record_id, decode_inode_record)?;
-        self.materialize_record(inode, path, record, None)
+        self.acquire_name(parent, name)?
+            .existing()
+            .ok_or(StorageError::NotFound("name"))
     }
 
     fn materialize_record(
@@ -328,55 +307,10 @@ impl Workspace {
             self.live.nodes.get_mut(&node).unwrap().paths.insert(path);
             return Ok(node);
         }
-        let reader = CoreReader(&self.reader);
-        let portable = portable_metadata(&reader, record.metadata_root, record.kind)?;
-        let data = match record.kind {
-            InodeKind::RegularFile => {
-                let len = match file_len {
-                    Some(len) => len,
-                    None => {
-                        state(
-                            &reader,
-                            FileStateRoot(record.content_root),
-                            &mut RopeCounters::default(),
-                        )?
-                        .logical_len
-                    }
-                };
-                Data::File(FileData::Base {
-                    root: FileStateRoot(record.content_root),
-                    len,
-                })
-            }
-            InodeKind::Directory => Data::Directory(DirectoryData {
-                base: Some(DirectoryStateRoot(record.content_root)),
-                changes: BTreeMap::new(),
-            }),
-            InodeKind::Symlink => Data::Symlink(
-                reader
-                    .with_authenticated_canonical(record.content_root, decode_symlink)?
-                    .target,
-            ),
-        };
-        let node = self
-            .live
-            .install_immutable_node(Node {
-                revision: 0,
-                canonical: Some(inode),
-                paths: BTreeSet::from([path]),
-                mode: portable.permission_mode,
-                links: if record.kind == InodeKind::Directory {
-                    2
-                } else {
-                    record.namespace_ref_count as u32
-                },
-                pins: 0,
-                mtime_seconds: portable.mtime_seconds,
-                mtime_nanoseconds: portable.mtime_nanoseconds,
-                data,
-            })
-            .map_err(crate::live_error)?;
-        Ok(node)
+        let acquired = acquire_inode_record(&self.reader, inode, record, file_len)?;
+        self.live
+            .install_immutable_node(acquired, path)
+            .map_err(crate::live_error)
     }
 
     pub(crate) fn directory_entries(&mut self, node: NodeId) -> Result<BTreeMap<Vec<u8>, NodeId>> {
@@ -538,6 +472,70 @@ impl Workspace {
     }
 }
 
+pub(crate) fn acquire_inode(
+    reader: &SnapshotReader,
+    inodes: InodeTableRoot,
+    inode: InodeId,
+) -> Result<layerfs_workspace_core::namespace::AcquiredInode> {
+    let core = CoreReader(reader);
+    let record_id = inode_table_lookup(&core, inodes, inode, &mut InodeTableCounters::default())?
+        .ok_or(StorageError::Integrity("Workspace inode"))?;
+    let record = core.with_authenticated_canonical(record_id, decode_inode_record)?;
+    acquire_inode_record(reader, inode, record, None)
+}
+
+fn acquire_inode_record(
+    reader: &SnapshotReader,
+    inode: InodeId,
+    record: layerfs_content::tree::inode::InodeRecordV1,
+    file_len: Option<u64>,
+) -> Result<layerfs_workspace_core::namespace::AcquiredInode> {
+    record.validate(false)?;
+    let reader = CoreReader(reader);
+    let portable = portable_metadata(&reader, record.metadata_root, record.kind)?;
+    let data = match record.kind {
+        InodeKind::RegularFile => {
+            let len = match file_len {
+                Some(len) => len,
+                None => {
+                    state(
+                        &reader,
+                        FileStateRoot(record.content_root),
+                        &mut RopeCounters::default(),
+                    )?
+                    .logical_len
+                }
+            };
+            Data::File(FileData::Base {
+                root: FileStateRoot(record.content_root),
+                len,
+            })
+        }
+        InodeKind::Directory => Data::Directory(DirectoryData {
+            base: Some(DirectoryStateRoot(record.content_root)),
+            changes: BTreeMap::new(),
+        }),
+        InodeKind::Symlink => Data::Symlink(
+            reader
+                .with_authenticated_canonical(record.content_root, decode_symlink)?
+                .target,
+        ),
+    };
+    Ok(layerfs_workspace_core::namespace::AcquiredInode {
+        inode,
+        mode: portable.permission_mode,
+        links: if record.kind == InodeKind::Directory {
+            2
+        } else {
+            u32::try_from(record.namespace_ref_count)
+                .map_err(|_| StorageError::Integrity("inode link count"))?
+        },
+        mtime_seconds: portable.mtime_seconds,
+        mtime_nanoseconds: portable.mtime_nanoseconds,
+        data,
+    })
+}
+
 pub(crate) fn portable_metadata<S: ObjectRead>(
     store: &S,
     root: layerfs_content::ObjectId,
@@ -588,12 +586,6 @@ fn join(parent: &str, name: &[u8]) -> Result<String> {
     } else {
         format!("{parent}/{name}")
     })
-}
-
-fn validate_name(name: &[u8]) -> Result<()> {
-    CanonicalName::from_bytes(name)
-        .map(drop)
-        .map_err(Into::into)
 }
 
 impl Workspace {

@@ -37,6 +37,7 @@ mod tests {
                 }),
             },
             ResourcePolicy::default(),
+            layerfs_content::ObjectId::for_bytes(b"base namespace"),
         );
         live
     }
@@ -57,13 +58,10 @@ mod tests {
         };
         let link = live.symlink(name, b"target".to_vec()).unwrap();
         assert_eq!(link.kind, crate::Kind::Symlink);
-        let mut acquired = Node {
-            revision: 0,
-            canonical: Some(InodeId([9; 32])),
-            paths: ["cold".to_owned()].into(),
+        let mut acquired = AcquiredInode {
+            inode: InodeId([9; 32]),
             mode: 0o600,
             links: 2,
-            pins: 0,
             mtime_seconds: 0,
             mtime_nanoseconds: 0,
             data: Data::File(FileData::Base {
@@ -71,16 +69,23 @@ mod tests {
                 len: 8,
             }),
         };
-        let node = live.install_immutable_node(acquired.clone()).unwrap();
+        let node = live
+            .install_immutable_node(acquired.clone(), "cold".to_owned())
+            .unwrap();
         let write = live.prepare_write(node, 0, 1, None).unwrap();
         live.apply_write(write).unwrap();
         let changed = live.nodes[&node].data.clone();
-        acquired.paths = ["alias".to_owned()].into();
-        assert_eq!(live.install_immutable_node(acquired.clone()).unwrap(), node);
+        assert_eq!(
+            live.install_immutable_node(acquired.clone(), "alias".to_owned())
+                .unwrap(),
+            node
+        );
         assert_eq!(live.nodes[&node].data, changed);
         assert_eq!(live.nodes[&node].paths.len(), 2);
         acquired.mtime_nanoseconds = 1_000_000_000;
-        assert!(live.install_immutable_node(acquired).is_err());
+        assert!(live
+            .install_immutable_node(acquired, "bad".to_owned())
+            .is_err());
         assert_eq!(live.nodes[&node].data, changed);
     }
 
@@ -134,6 +139,13 @@ mod tests {
         let NameLookup::Acquire(input) = live.prepare_name(ROOT, b"cold").unwrap() else {
             panic!("immutable acquisition")
         };
+        let nodes = live.nodes.len();
+        live.base_root = layerfs_content::ObjectId::for_bytes(b"new inode table, same directory");
+        assert!(live.complete_name(input, None).is_err());
+        assert_eq!(live.nodes.len(), nodes);
+        let NameLookup::Acquire(input) = live.prepare_name(ROOT, b"cold").unwrap() else {
+            panic!("immutable acquisition")
+        };
         let cold = live.resolve_name(input, None).unwrap();
         live.next_node = u64::MAX;
         let before = (live.nodes.clone(), live.mutation_generation);
@@ -143,7 +155,18 @@ mod tests {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct AcquiredInode {
+    pub inode: layerfs_content::tree::inode::InodeId,
+    pub mode: u32,
+    pub links: u32,
+    pub mtime_seconds: i64,
+    pub mtime_nanoseconds: u32,
+    pub data: Data,
+}
+
 pub struct NameInput {
+    base_root: layerfs_content::ObjectId,
     parent: NodeId,
     revision: u64,
     pub directory: DirectoryStateRoot,
@@ -210,6 +233,7 @@ impl LiveWorkspace {
             None => match directory.base {
                 Some(directory) => {
                     return Ok(NameLookup::Acquire(NameInput {
+                        base_root: self.base_root,
                         parent,
                         revision,
                         directory,
@@ -229,7 +253,8 @@ impl LiveWorkspace {
 
     /// Called after immutable acquisition, never while an adapter waits on I/O.
     pub fn resolve_name(&self, input: NameInput, existing: Option<NodeId>) -> Result<ResolvedName> {
-        if self.nodes.get(&input.parent).map(|node| node.revision) != Some(input.revision)
+        if self.base_root != input.base_root
+            || self.nodes.get(&input.parent).map(|node| node.revision) != Some(input.revision)
             || self.directory(input.parent)?.base != Some(input.directory)
         {
             return Err(Error::Integrity("stale name acquisition"));
@@ -243,6 +268,41 @@ impl LiveWorkspace {
             name: input.name,
             existing,
         })
+    }
+
+    pub fn complete_name(
+        &mut self,
+        input: NameInput,
+        acquired: Option<AcquiredInode>,
+    ) -> Result<ResolvedName> {
+        if self.base_root != input.base_root
+            || self.nodes.get(&input.parent).map(|node| node.revision) != Some(input.revision)
+            || self.directory(input.parent)?.base != Some(input.directory)
+        {
+            return Err(Error::Integrity("stale name acquisition"));
+        }
+        let path = self.child_path(input.parent, input.name.as_bytes())?;
+        let existing = if let Some(acquired) = acquired {
+            if matches!(acquired.data, Data::Directory(_)) {
+                if self
+                    .canonical_nodes
+                    .get(&acquired.inode)
+                    .and_then(|node| self.directory_parents.get(node))
+                    .is_some_and(|parent| *parent != input.parent)
+                {
+                    return Err(Error::Integrity("Workspace parent"));
+                }
+                self.directory_parents
+                    .try_reserve(1)
+                    .map_err(|_| Error::InvalidInput("workspace live allocation"))?;
+            }
+            let node = self.install_immutable_node(acquired, path)?;
+            self.remember_directory_parent(node, input.parent)?;
+            Some(node)
+        } else {
+            None
+        };
+        self.resolve_name(input, existing)
     }
 
     pub fn allocate_node(&mut self, node: Node) -> Result<NodeId> {
@@ -332,18 +392,10 @@ impl LiveWorkspace {
         }
     }
 
-    pub fn install_immutable_node(&mut self, node: Node) -> Result<NodeId> {
+    pub fn install_immutable_node(&mut self, node: AcquiredInode, path: String) -> Result<NodeId> {
         use layerfs_content::tree::inode::InodeKind;
         use layerfs_content::tree::metadata::PortableMetadataV1;
-        let inode = node
-            .canonical
-            .ok_or(Error::Integrity("acquired inode identity"))?;
-        if node.revision != 0
-            || node.pins != 0
-            || matches!(node.data, Data::File(FileData::Edited { .. }))
-        {
-            return Err(Error::Integrity("acquired mutable inode"));
-        }
+        let inode = node.inode;
         let kind = match &node.data {
             Data::File(FileData::Base { .. }) => InodeKind::RegularFile,
             Data::Directory(directory)
@@ -367,16 +419,31 @@ impl LiveWorkspace {
                 .nodes
                 .get_mut(&id)
                 .ok_or(Error::Integrity("Workspace inode"))?;
-            if live.attr(id).kind != node.attr(id).kind {
+            let live_kind = match live.attr(id).kind {
+                crate::Kind::File => InodeKind::RegularFile,
+                crate::Kind::Directory => InodeKind::Directory,
+                crate::Kind::Symlink => InodeKind::Symlink,
+            };
+            if live_kind != kind {
                 return Err(Error::Integrity("acquired inode kind"));
             }
-            live.paths.extend(node.paths);
+            live.paths.insert(path);
             return Ok(id);
         }
         self.canonical_nodes
             .try_reserve(1)
             .map_err(|_| Error::InvalidInput("workspace live allocation"))?;
-        let id = self.allocate_node(node)?;
+        let id = self.allocate_node(Node {
+            revision: 0,
+            canonical: Some(inode),
+            paths: [path].into(),
+            mode: node.mode,
+            links: node.links,
+            pins: 0,
+            mtime_seconds: node.mtime_seconds,
+            mtime_nanoseconds: node.mtime_nanoseconds,
+            data: node.data,
+        })?;
         self.canonical_nodes.insert(inode, id);
         Ok(id)
     }
