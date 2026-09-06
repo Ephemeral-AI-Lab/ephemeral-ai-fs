@@ -507,6 +507,12 @@ int main(int argc, char **argv) {
 #endif
         nanosleep(&delay, 0);
     }
+    if (p[0] != 'A' || p[4095] != 'B' || p[777] != 'S') {
+        unsigned char ordinary[4096] = {0};
+        ssize_t count = pread(fd, ordinary, sizeof ordinary, 0);
+        fprintf(stderr, "after SDK boundary path=%s mapped[0,4095,777]=%u,%u,%u pread_count=%zd pread[0,4095,777]=%u,%u,%u expected=65,66,83\n",
+                argv[1], p[0], p[4095], p[777], count, ordinary[0], ordinary[4095], ordinary[777]);
+    }
     assert(p[0] == 'A' && p[4095] == 'B' && p[777] == 'S');
     assert(fstat(fd, &after) == 0 && before.st_ino == after.st_ino && before.st_dev == after.st_dev);
     assert(lseek(fd, 0, SEEK_CUR) == 19);
@@ -670,7 +676,26 @@ int main(int argc, char **argv) {
     )?;
     eprintln!("live-cut stage=second-commit");
     for id in &executions {
-        wait_live_marker(&client, *id, "after")?;
+        if let Err(error) = wait_live_marker(&client, *id, "after") {
+            let diagnostic_commit = client.commit_workspace_session(session.id);
+            eprintln!("after failed boundary diagnostic Commit: {diagnostic_commit:?}");
+            if diagnostic_commit.is_ok() {
+                let root = store.pin_branch(branch)?.root;
+                let reader = store.snapshot_reader(root);
+                for path in ["held-a", "held-b"] {
+                    let mut bytes = Vec::new();
+                    let read = layerfs_content::filesystem::read_range(
+                        &layerfs_layerstack_store::CoreReader(&reader),
+                        root,
+                        &layerfs_content::CanonicalPath::new(path)?,
+                        777..778,
+                        &mut bytes,
+                    );
+                    eprintln!("after failed boundary committed path={path} byte777={bytes:?} read={read:?}");
+                }
+            }
+            return Err(error);
+        }
     }
     require(
         matches!(
