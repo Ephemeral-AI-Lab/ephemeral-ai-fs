@@ -730,6 +730,24 @@ mod tests {
         remote.server.control("resume").unwrap();
         assert_ne!(first, second);
         assert_eq!(owner.read(file, 0, 20).unwrap(), b"later");
+        let orphan = owner
+            .create_file_open(crate::ROOT, b"orphan", 0o600)
+            .unwrap()
+            .node;
+        owner.write(orphan, 0, b"open after unlink").unwrap();
+        owner.unlink(crate::ROOT, b"orphan", false).unwrap();
+        remote.server.control("pause").unwrap();
+        workspace.lock().unwrap().commit().unwrap();
+        install_checkpoint(&workspace).unwrap();
+        remote.server.control("resume").unwrap();
+        assert_eq!(owner.read(orphan, 0, 100).unwrap(), b"open after unlink");
+        assert!(!remote.backing.lock().unwrap().spool.segments.is_empty());
+        owner.unpin(orphan, true).unwrap();
+        owner.fsync(None).unwrap();
+        assert!(
+            remote.backing.lock().unwrap().spool.segments.is_empty(),
+            "last-release backing retires at a no-op fence"
+        );
         owner
             .write(file, 0, b"retained after host failure")
             .unwrap();

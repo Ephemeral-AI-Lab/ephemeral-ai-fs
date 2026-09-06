@@ -883,7 +883,29 @@ impl FilesystemPort for LiveOwner {
         self.unpin(node, false)
     }
     fn unpin(&self, node: NodeId, _: bool) -> PortResult<()> {
-        self.state()?.unpin(node).map(drop).map_err(core)
+        let reclaimed = {
+            let mut state = self.state()?;
+            state.unpin(node).map_err(core)?;
+            !state.nodes.contains_key(&node)
+        };
+        if reclaimed {
+            self.0
+                .ordering
+                .lock()
+                .map_err(|_| PortError::Io)?
+                .remove(&node);
+            self.0
+                .directories
+                .lock()
+                .map_err(|_| PortError::Io)?
+                .remove(&node);
+            self.0
+                .cached
+                .lock()
+                .map_err(|_| PortError::Io)?
+                .remove(&node);
+        }
+        Ok(())
     }
     fn truncate(&self, node: NodeId, size: u64) -> PortResult<()> {
         self.run(self.truncate_async(node, size))
@@ -950,7 +972,8 @@ impl FilesystemPort for LiveOwner {
                 wire::u64_out(&mut check, id.0);
             }
             self.0.backing.call(&check).await?;
-            self.publish_facts().await
+            self.publish_facts().await?;
+            self.retire_ranges().await
         })
     }
     fn readdir(&self, node: NodeId) -> PortResult<Vec<(NodeId, Kind, Vec<u8>)>> {
@@ -1262,7 +1285,8 @@ impl LiveOwner {
         let cut = flush.finish().await;
         *self.0.cut.lock().map_err(|_| PortError::Io)? = Some(cut);
         self.flush_append(&mut *self.0.append.lock().await).await?;
-        self.publish_facts().await
+        self.publish_facts().await?;
+        self.retire_ranges().await
     }
 
     async fn publish_facts(&self) -> PortResult<()> {
