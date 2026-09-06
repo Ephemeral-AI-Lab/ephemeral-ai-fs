@@ -8,6 +8,9 @@ use layerfs_workspace_core::file_edit::{Piece, PieceTree};
 use layerfs_workspace_core::{Data, DirectoryData, FileData, Node, NodeId};
 use std::io::{self, Read, Write};
 
+pub const FACT_PAGE_BYTES: usize = 64 * 1024;
+pub const FACT_PAGE_NODES: usize = 128;
+
 pub const MAX_FRAME: usize = 1024 * 1024 + 64 * 1024;
 pub const SEED: u8 = 1;
 pub const LOOKUP: u8 = 2;

@@ -373,6 +373,15 @@ impl Workspaces {
             .map_err(|_| WorkspaceError::WorkspaceBusy)?;
         let (physical_current, physical_peak, physical_errors, physical_observations) =
             workspace.physical_spool_snapshot();
+        let (open_spool_files, spool_segment_bytes) = if let Some(remote) = &workspace.remote {
+            let backing = remote
+                .backing
+                .lock()
+                .map_err(|_| WorkspaceError::WorkspaceBusy)?;
+            (backing.spool.segments.len(), backing.spool.bytes)
+        } else {
+            (workspace.backing.segments.len(), workspace.backing.bytes)
+        };
         Ok(VerificationWorkspaceState {
             spool_bytes: workspace.live.spool_bytes,
             spool_peak_bytes: workspace.live.spool_bytes_peak,
@@ -381,8 +390,8 @@ impl Workspaces {
             physical_spool_observation_errors: physical_errors,
             physical_spool_observation_count: physical_observations,
             mutation_generation: workspace.live.mutation_generation,
-            open_spool_files: workspace.backing.segments.len(),
-            spool_segment_bytes: workspace.backing.bytes,
+            open_spool_files,
+            spool_segment_bytes,
         })
     }
 
@@ -622,8 +631,13 @@ impl Workspaces {
             )) => match transition {
                 CommitTransition::Checkpointed => {
                     let started = Instant::now();
-                    let resumed = crate::live_backing::install_checkpoint(&worker.workspace)
-                        .and_then(|()| crate::projection::resume(&worker));
+                    let installed = crate::live_backing::install_checkpoint(&worker.workspace);
+                    layerfs_layerstack_store::note_workspace_commit_phase(
+                        WorkspaceCommitPhase::Checkpoint,
+                        elapsed_ns(started),
+                    );
+                    let started = Instant::now();
+                    let resumed = installed.and_then(|()| crate::projection::resume(&worker));
                     layerfs_layerstack_store::note_workspace_commit_phase(
                         WorkspaceCommitPhase::Resume,
                         elapsed_ns(started),

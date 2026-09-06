@@ -513,15 +513,33 @@ impl LiveOwner {
         let mut begin = vec![wire::FACTS_BEGIN];
         wire::u64_out(&mut begin, generation);
         self.0.backing.call(&begin).await?;
+        let mut page = vec![wire::FACTS_NODE];
+        let mut count = 0;
         for id in &ids {
-            let frame = {
+            let record = {
                 let state = self.state()?;
                 let node = state.nodes.get(id).ok_or(PortError::Io)?;
-                let mut frame = vec![wire::FACTS_NODE, u8::from(state.dirty.contains(id))];
-                wire::bytes_out(&mut frame, &wire::node_out(*id, node).map_err(io)?).map_err(io)?;
-                frame
+                let mut record = vec![u8::from(state.dirty.contains(id))];
+                wire::bytes_out(&mut record, &wire::node_out(*id, node).map_err(io)?)
+                    .map_err(io)?;
+                record
             };
-            self.0.backing.call(&frame).await?;
+            if count != 0
+                && (count == wire::FACT_PAGE_NODES
+                    || page.len() + record.len() > wire::FACT_PAGE_BYTES)
+            {
+                self.0.backing.call(&page).await?;
+                page.truncate(1);
+                count = 0;
+            }
+            if record.len() + 1 > wire::MAX_FRAME {
+                return Err(PortError::NoSpace);
+            }
+            page.extend(record);
+            count += 1;
+        }
+        if count != 0 {
+            self.0.backing.call(&page).await?;
         }
         let mut end = vec![wire::FACTS_END];
         wire::u64_out(&mut end, generation);
@@ -578,22 +596,30 @@ impl LiveOwner {
                 *install = Some((root, generation, Default::default()));
             }
             wire::INSTALL_NODE => {
-                let content = input.object().map_err(io)?;
-                let (id, node) =
-                    wire::node_in(input.0, |_, _, _| Err(wire::invalid())).map_err(io)?;
-                let inode = node.canonical.ok_or(PortError::Invalid)?;
-                self.state()?
-                    .validate_checkpoint_record(id, inode, node.attr(id))
-                    .map_err(core)?;
-                let mut install = self.0.install.lock().map_err(|_| PortError::Io)?;
-                let (_, _, records) = install.as_mut().ok_or(PortError::Invalid)?;
-                if records.len() >= 16384 {
-                    return Err(PortError::NoSpace);
+                let mut count = 0;
+                while !input.0.is_empty() {
+                    if count == wire::FACT_PAGE_NODES {
+                        return Err(PortError::Invalid);
+                    }
+                    let content = input.object().map_err(io)?;
+                    let (id, node) =
+                        wire::node_in(input.bytes().map_err(io)?, |_, _, _| Err(wire::invalid()))
+                            .map_err(io)?;
+                    let inode = node.canonical.ok_or(PortError::Invalid)?;
+                    self.state()?
+                        .validate_checkpoint_record(id, inode, node.attr(id))
+                        .map_err(core)?;
+                    let mut install = self.0.install.lock().map_err(|_| PortError::Io)?;
+                    let (_, _, records) = install.as_mut().ok_or(PortError::Invalid)?;
+                    if records.len() >= 16384 {
+                        return Err(PortError::NoSpace);
+                    }
+                    if records.contains_key(&id) {
+                        return Err(PortError::Invalid);
+                    }
+                    records.insert(id, (inode, content, node.attr(id)));
+                    count += 1;
                 }
-                if records.contains_key(&id) {
-                    return Err(PortError::Invalid);
-                }
-                records.insert(id, (inode, content, node.attr(id)));
             }
             wire::INSTALL_END => {
                 let root = input.object().map_err(io)?;

@@ -233,7 +233,12 @@ impl BackingOwner {
                 self.incoming = Some((generation, HashMap::new(), BTreeSet::new()));
             }
             wire::FACTS_NODE => {
+                let mut count = 0;
                 while !input.0.is_empty() {
+                    if count == wire::FACT_PAGE_NODES {
+                        return Err(StoreError::InvalidInput("backing fact page"));
+                    }
+                    count += 1;
                     let dirty = match input.byte()? {
                         0 => false,
                         1 => true,
@@ -369,7 +374,16 @@ mod tests {
             .node;
         owner.write(file, 0, b"first").unwrap();
         owner.fsync(None).unwrap();
-        assert_eq!(remote.observe().unwrap().0, 3);
+        for index in 0..130 {
+            let id = owner
+                .create_file(directory_id, format!("sibling-{index}").as_bytes(), 0o600)
+                .unwrap()
+                .node;
+            owner
+                .write(id, 0, b"retained across a fact page boundary")
+                .unwrap();
+        }
+        assert_eq!(remote.observe().unwrap().0, 263);
         remote.server.control("pause").unwrap();
         let (first, _) = workspace.lock().unwrap().commit().unwrap();
         install_checkpoint(&workspace).unwrap();
@@ -547,6 +561,8 @@ pub(crate) fn install_checkpoint(
                 .request(&begin)
                 .map_err(|_| WorkspaceError::InvalidExecution)?;
             let mut count = 0;
+            let mut page = vec![wire::INSTALL_NODE];
+            let mut page_count = 0;
             checkpoint.visit(|id, inode, content, attr| {
                 let mut node = remote
                     .backing
@@ -560,8 +576,7 @@ pub(crate) fn install_checkpoint(
                 if node.attr(id) != attr {
                     return Err(StoreError::Integrity("checkpoint fact attr"));
                 }
-                let mut frame = vec![wire::INSTALL_NODE];
-                frame.extend_from_slice(content.as_bytes());
+                let mut record = content.as_bytes().to_vec();
                 // No mutable ranges are needed to validate/install a canonical checkpoint.
                 match &mut node.data {
                     layerfs_workspace_core::Data::File(data) => {
@@ -576,14 +591,32 @@ pub(crate) fn install_checkpoint(
                     }
                     _ => {}
                 }
-                frame.extend(wire::node_out(id, &node)?);
-                remote
-                    .server
-                    .request(&frame)
-                    .map_err(|_| StoreError::Integrity("remote checkpoint record"))?;
+                wire::bytes_out(&mut record, &wire::node_out(id, &node)?)?;
+                if page_count != 0
+                    && (page_count == wire::FACT_PAGE_NODES
+                        || page.len() + record.len() > wire::FACT_PAGE_BYTES)
+                {
+                    remote
+                        .server
+                        .request(&page)
+                        .map_err(|_| StoreError::Integrity("remote checkpoint page"))?;
+                    page.truncate(1);
+                    page_count = 0;
+                }
+                if record.len() + 1 > wire::MAX_FRAME {
+                    return Err(StoreError::InvalidInput("checkpoint page"));
+                }
+                page.extend(record);
+                page_count += 1;
                 count += 1;
                 Ok(())
             })?;
+            if page_count != 0 {
+                remote
+                    .server
+                    .request(&page)
+                    .map_err(|_| WorkspaceError::InvalidExecution)?;
+            }
             let mut end = vec![wire::INSTALL_END];
             end.extend_from_slice(root.as_bytes());
             wire::u64_out(&mut end, count);
