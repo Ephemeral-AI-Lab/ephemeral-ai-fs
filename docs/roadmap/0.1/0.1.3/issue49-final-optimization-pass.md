@@ -8,7 +8,7 @@ Finish the active concurrent mapping/SDK-edit/Commit coherence correction first.
 
 Current measured create reference: Exec 0.5716 s, Commit 0.4046 s, complete 0.9946 s. Earlier daemon integration: 0.5718 s / 0.3638 s / 0.9533 s. Different development sources, one observation each; no statistical or isolated causal conclusion. Latest receipt records 1,000 FLUSH, 1,000 RELEASE, 1,099 WRITE callbacks, 273 backing calls and 0.1759 s cumulative exchange wait; host dispatch 0.0360 s, physical queue 0.0018 s, shared edit work 0.0016 s. Timings overlap. Exchange wait is not a removable budget or proof of exact savings.
 
-Formal parent requirement remains same-source tier 100 create/delete complete lifecycles strictly <1.0000 s. Preferred create 0.7000–0.8000 s is an ambition, not another hard threshold. The current ~0.0054 s create margin is narrow and must be disclosed, but do not invent a mandatory headroom gate. Physical 100-workspace qualification remains deferred/inferred.
+Formal parent requirement remains same-source tier 100 create/delete complete lifecycles strictly <1.0000 s. Preferred create complete-lifecycle target is now 0.9000 s (latest user revision), replacing the earlier 0.7000–0.8000 s ambition; it is not another hard threshold. Roughly 0.0500 s above this target is acceptable and must not trigger prolonged minor tuning. The current ~0.0054 s create margin is narrow and must be disclosed, but do not invent a mandatory headroom gate. Physical 100-workspace qualification remains deferred/inferred.
 
 ## A. Targeted NOFLUSH
 
