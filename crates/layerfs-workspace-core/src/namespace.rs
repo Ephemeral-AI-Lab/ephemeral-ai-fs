@@ -73,7 +73,7 @@ mod tests {
             .install_immutable_node(acquired.clone(), "cold".to_owned())
             .unwrap();
         let write = live.prepare_write(node, 0, 1, None).unwrap();
-        live.apply_write(write).unwrap();
+        live.apply_edit(write).unwrap();
         let changed = live.nodes[&node].data.clone();
         assert_eq!(
             live.install_immutable_node(acquired.clone(), "alias".to_owned())

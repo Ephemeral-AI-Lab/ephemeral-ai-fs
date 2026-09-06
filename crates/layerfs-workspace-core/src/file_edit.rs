@@ -14,13 +14,34 @@ pub const MAX_PREDICTED_ZERO_EXTENTS: u64 = 131_072;
 /// One prepared inode revision and exact backing range. Consumed once at apply;
 /// the adapter retains and charges any unused append if revalidation fails.
 #[derive(Debug)]
-pub struct PreparedWrite {
+pub struct PreparedFileEdit {
     node: NodeId,
     expected_revision: u64,
     before: FileData,
     next: FileData,
     appended: u64,
     bytes: usize,
+}
+
+impl PreparedFileEdit {
+    pub fn backing_ranges(&self) -> impl Iterator<Item = SpoolSlice> {
+        let pieces = match &self.before {
+            FileData::Edited { pieces, .. } => pieces.pieces(),
+            FileData::Base { .. } => Vec::new(),
+        };
+        pieces.into_iter().filter_map(|piece| match piece {
+            Piece::Spool {
+                segment,
+                offset,
+                len,
+            } => Some(SpoolSlice {
+                segment,
+                offset,
+                len,
+            }),
+            _ => None,
+        })
+    }
 }
 
 impl LiveWorkspace {
@@ -32,7 +53,7 @@ impl LiveWorkspace {
         offset: u64,
         bytes: usize,
         backing: Option<SpoolSlice>,
-    ) -> Result<PreparedWrite> {
+    ) -> Result<PreparedFileEdit> {
         self.next_generation()?;
         let expected = self.nodes.get(&node).ok_or(Error::NotFound("node"))?;
         expected
@@ -79,7 +100,7 @@ impl LiveWorkspace {
         let start = offset.min(old.len());
         let delete_len = old.len().saturating_sub(offset).min(bytes as u64);
         let next = old.replace(start, delete_len, gap.into_iter().chain([piece]))?;
-        let prepared = PreparedWrite {
+        let prepared = PreparedFileEdit {
             node,
             expected_revision: expected.revision,
             before: before.clone(),
@@ -98,7 +119,64 @@ impl LiveWorkspace {
         Ok(prepared)
     }
 
-    pub fn apply_write(&mut self, prepared: PreparedWrite) -> Result<usize> {
+    pub fn prepare_truncate(&self, node: NodeId, size: u64) -> Result<Option<PreparedFileEdit>> {
+        let expected = self.nodes.get(&node).ok_or(Error::NotFound("node"))?;
+        let Data::File(before) = &expected.data else {
+            return Err(Error::InvalidInput("file"));
+        };
+        if expected.attr(node).size == size {
+            return Ok(None);
+        }
+        let (base, high_water, old, edits) = match before {
+            FileData::Base { root, len } => {
+                (Some((*root, *len)), 0, PieceTree::base(*root, *len)?, 0)
+            }
+            FileData::Edited {
+                base,
+                spool_high_water,
+                pieces,
+                edits,
+            } => (*base, *spool_high_water, pieces.clone(), *edits),
+        };
+        let old_len = old.len();
+        self.next_generation()?;
+        expected
+            .revision
+            .checked_add(1)
+            .ok_or(Error::Integrity("inode revision"))?;
+        let (start, delete_len, replacement) = if size < old_len {
+            (size, old_len - size, None)
+        } else {
+            (
+                old_len,
+                0,
+                Some(Piece::Zero {
+                    len: size - old_len,
+                }),
+            )
+        };
+        let next = old.replace(start, delete_len, replacement)?;
+        // An explicit empty state retires the old logical edit generation only
+        // after checking the existing edit budget; old ranges stay retained.
+        let edits = next_edit(edits)?;
+        let prepared = PreparedFileEdit {
+            node,
+            expected_revision: expected.revision,
+            before: before.clone(),
+            next: FileData::Edited {
+                base,
+                spool_high_water: high_water,
+                pieces: next,
+                edits: if size == 0 { 0 } else { edits },
+            },
+            appended: 0,
+            bytes: 0,
+        };
+        self.write_resources(&prepared)?;
+        Ok(Some(prepared))
+    }
+
+    pub fn apply_edit(&mut self, prepared: PreparedFileEdit) -> Result<usize> {
         if !self.nodes.get(&prepared.node).is_some_and(|node| {
             node.revision == prepared.expected_revision
                 && matches!(&node.data, Data::File(data) if *data == prepared.before)
@@ -130,7 +208,7 @@ impl LiveWorkspace {
         Ok(prepared.bytes)
     }
 
-    fn write_resources(&self, prepared: &PreparedWrite) -> Result<(u64, u64, u64)> {
+    fn write_resources(&self, prepared: &PreparedFileEdit) -> Result<(u64, u64, u64)> {
         let old = match &prepared.before {
             FileData::Edited { pieces, .. } => Some(pieces),
             _ => None,
@@ -143,7 +221,11 @@ impl LiveWorkspace {
             .spool_bytes
             .checked_add(prepared.appended)
             .ok_or(Error::InvalidInput("workspace spool limit"))?;
-        self.policy.check(spool)?;
+        // Truncate keeps the existing payload charge and may proceed after a
+        // lowered spool limit; writes retain their existing quota check.
+        if prepared.bytes != 0 {
+            self.policy.check(spool)?;
+        }
         Ok((inline, allocation, spool))
     }
 

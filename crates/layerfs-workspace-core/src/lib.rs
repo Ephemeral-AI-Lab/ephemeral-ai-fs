@@ -260,16 +260,16 @@ mod tests {
         assert_eq!(live.spool_bytes, 0);
         live.chmod(ROOT, 0o700).unwrap();
         live.nodes.get_mut(&file).unwrap().pins += 1;
-        assert_eq!(live.apply_write(prepared).unwrap(), 5);
+        assert_eq!(live.apply_edit(prepared).unwrap(), 5);
         assert_eq!(live.attr(file).unwrap().size, 8);
         assert_eq!(live.spool_bytes, 5);
         let revision = live.nodes[&file].revision;
         let stale = live.prepare_write(file, 0, 5, range()).unwrap();
         let newer = live.prepare_write(file, 0, 1, None).unwrap();
-        live.apply_write(newer).unwrap();
+        live.apply_edit(newer).unwrap();
         let installed = live.nodes[&file].clone();
         assert_eq!(
-            live.apply_write(stale),
+            live.apply_edit(stale),
             Err(Error::Integrity("stale prepared write"))
         );
         assert_eq!(live.nodes[&file], installed);
@@ -283,13 +283,70 @@ mod tests {
         let mode = live.attr(file).unwrap().mode;
         live.chmod(file, mode).unwrap();
         assert_eq!(
-            live.apply_write(stale_metadata),
+            live.apply_edit(stale_metadata),
             Err(Error::Integrity("stale prepared write"))
         );
         live.policy.max_spool_bytes = 5;
         assert!(live.prepare_write(file, 0, 5, range()).is_err());
         assert!(live.prepare_write(file, u64::MAX, 5, range()).is_err());
         assert!(live.prepare_write(file, 0, 4, range()).is_err());
+    }
+
+    #[test]
+    fn truncate_preparation_preserves_exact_inode_ranges_and_edit_budget() {
+        use crate::backing::{BackingId, BackingRef};
+        use crate::file_edit::{SpoolSlice, MAX_EDITS_PER_FILE};
+        let (mut live, file) = live_file();
+        let backing = BackingRef::new(BackingId(1), vec![7; 8]);
+        let write = live
+            .prepare_write(
+                file,
+                0,
+                8,
+                Some(SpoolSlice {
+                    segment: backing.clone(),
+                    offset: 0,
+                    len: 8,
+                }),
+            )
+            .unwrap();
+        live.apply_edit(write).unwrap();
+        let prepared = live.prepare_truncate(file, 0).unwrap().unwrap();
+        assert_eq!(prepared.backing_ranges().next().unwrap().len, 8);
+        assert_eq!(live.attr(file).unwrap().size, 8);
+        live.set_mtime(file, 42, 0).unwrap();
+        assert!(live.apply_edit(prepared).is_err());
+        assert_eq!(live.attr(file).unwrap().size, 8);
+        let old_read = ReadPlan::for_file(
+            match &live.nodes[&file].data {
+                Data::File(data) => data,
+                _ => unreachable!(),
+            },
+            0,
+            8,
+        )
+        .unwrap();
+        let prepared = live.prepare_truncate(file, 0).unwrap().unwrap();
+        live.nodes.get_mut(&file).unwrap().pins += 1;
+        live.policy.max_spool_bytes = 0;
+        live.apply_edit(prepared).unwrap();
+        assert_eq!(live.attr(file).unwrap().size, 0);
+        assert_eq!(live.spool_bytes, 8, "truncate retains range history charge");
+        assert!(!backing.is_unique());
+        drop(old_read);
+        assert!(backing.is_unique());
+        assert!(live.prepare_truncate(file, 0).unwrap().is_none());
+        let grow = live.prepare_truncate(file, 8).unwrap().unwrap();
+        live.apply_edit(grow).unwrap();
+        let Data::File(FileData::Edited { edits, .. }) =
+            &mut live.nodes.get_mut(&file).unwrap().data
+        else {
+            unreachable!()
+        };
+        *edits = MAX_EDITS_PER_FILE;
+        let before = live.nodes[&file].clone();
+        assert!(live.prepare_truncate(file, 0).is_err());
+        assert_eq!(live.nodes[&file], before);
     }
 
     #[test]

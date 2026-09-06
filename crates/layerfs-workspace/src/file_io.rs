@@ -454,7 +454,7 @@ impl Workspace {
                 .set_mtime(node, 123, 0)
                 .map_err(crate::live_error)?;
         }
-        self.live.apply_write(prepared).map_err(crate::live_error)?;
+        self.live.apply_edit(prepared).map_err(crate::live_error)?;
         if let Some(bytes) = bytes {
             self.capture_write(node, offset, old_len, bytes);
         }
@@ -549,49 +549,22 @@ impl Workspace {
     pub fn truncate(&mut self, node: NodeId, size: u64) -> Result<()> {
         self.invalidate_capture();
         self.ensure_active()?;
-        let old_len = self.attr(node)?.size;
-        if size == old_len {
+        let Some(prepared) = self
+            .live
+            .prepare_truncate(node, size)
+            .map_err(crate::live_error)?
+        else {
             return Ok(());
-        }
-        self.ensure_edited(node)?;
-        let (high_water, old, edits) = self.edited_state(node)?;
-        for piece in old.pieces() {
-            if let Piece::Spool { segment, .. } = piece {
-                spool_segment(&segment)?.check()?;
-            }
-        }
-        let (start, delete_len, replacement) = if size < old_len {
-            (size, old_len - size, None)
-        } else {
-            (
-                old_len,
-                0,
-                Some(Piece::Zero {
-                    len: size - old_len,
-                }),
-            )
         };
-        let next = old
-            .replace(start, delete_len, replacement)
-            .map_err(crate::live_error)?;
-        let generation = self.next_generation()?;
-        let paths = self.live.nodes[&node].paths.iter().cloned().collect();
-        self.check_piece_resources(&old, &next)?;
-        self.install_edit(
-            node,
-            old,
-            next,
-            next_edit(edits)?,
-            high_water,
-            0,
-            generation,
-            paths,
-        )
+        for range in prepared.backing_ranges() {
+            spool_segment(&range.segment)?.check()?;
+        }
+        self.live
+            .apply_edit(prepared)
+            .map(|_| ())
+            .map_err(crate::live_error)
     }
 
-    fn next_generation(&self) -> Result<u64> {
-        self.live.next_generation().map_err(crate::live_error)
-    }
     fn edited_state(&self, node: NodeId) -> Result<(u64, PieceTree, u32)> {
         match &self.live.nodes[&node].data {
             Data::File(FileData::Edited {
@@ -764,9 +737,6 @@ impl Workspace {
     }
 }
 
-fn next_edit(edits: u32) -> Result<u32> {
-    crate::file_edit::next_edit(edits).map_err(crate::live_error)
-}
 fn elapsed_ns(started: std::time::Instant) -> u64 {
     u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
