@@ -344,11 +344,16 @@ impl Filesystem for LayerFs {
     ) {
         self.port
             .note_kernel_operation(crate::KernelOperation::Read);
-        match self
-            .handle(handle)
-            .and_then(|node| self.port.read(node, offset, size as usize).map_err(errno))
-        {
-            Ok(bytes) => reply.data(&bytes),
+        match self.handle(handle) {
+            Ok(node) => self.port.submit_read(
+                node,
+                offset,
+                size as usize,
+                crate::ReadReply {
+                    reply,
+                    maximum: size as usize,
+                },
+            ),
             Err(error) => reply.error(error),
         }
     }
@@ -368,11 +373,16 @@ impl Filesystem for LayerFs {
     ) {
         self.port
             .note_kernel_operation(crate::KernelOperation::Write);
-        match self
-            .handle(handle)
-            .and_then(|node| self.port.write(node, offset, data).map_err(errno))
-        {
-            Ok(size) => reply.written(size as u32),
+        match self.handle(handle) {
+            Ok(node) => self.port.submit_write(
+                node,
+                offset,
+                data,
+                crate::WriteReply {
+                    reply,
+                    maximum: data.len(),
+                },
+            ),
             Err(error) => reply.error(error),
         }
     }

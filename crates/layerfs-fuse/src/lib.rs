@@ -28,3 +28,6 @@ pub use proxy_client::ProxyClient;
 pub use proxy_client::{serve_remote_control, RemoteControl};
 pub use proxy_host::ProxyHost;
 pub use write_metrics::{FuseReadMetrics, FuseWriteMetrics};
+
+#[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
+pub use port::{ReadReply, WriteReply};

@@ -64,6 +64,8 @@ FROM build AS runtime-check
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo test --locked --jobs 2 -p layerfs-daemon --bin layerfs-daemon \
+ && cargo test --locked --jobs 2 -p layerfs-fuse --features proxy \
+      --test proxy owned_write_reply_releases_receive_loop_and_completes_once \
  && CARGO_TARGET_DIR=/src/target cargo test --locked --jobs 2 \
       --manifest-path crates/vendor/fuser/Cargo.toml --lib layerfs_session_tests \
  && CARGO_TARGET_DIR=/src/target cargo test --locked --jobs 2 \

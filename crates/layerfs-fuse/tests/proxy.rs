@@ -6,6 +6,8 @@ use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
 struct Fixture {
+    #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
+    parked: Mutex<Option<std::sync::mpsc::SyncSender<layerfs_fuse::WriteReply>>>,
     bytes: Mutex<Vec<u8>>,
     created: Mutex<Vec<Vec<u8>>>,
     links: Mutex<Vec<Vec<u8>>>,
@@ -238,6 +240,21 @@ impl FilesystemPort for Fixture {
         bytes[start..start + value.len()].copy_from_slice(value);
         Ok(value.len())
     }
+    #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
+    fn submit_write(
+        &self,
+        node: NodeId,
+        offset: u64,
+        bytes: &[u8],
+        reply: layerfs_fuse::WriteReply,
+    ) {
+        let parked = self.parked.lock().unwrap().clone();
+        if let Some(parked) = parked {
+            assert!(parked.send(reply).is_ok());
+        } else {
+            reply.complete(self.write(node, offset, bytes));
+        }
+    }
     fn truncate(&self, _: NodeId, size: u64) -> PortResult<()> {
         self.bytes
             .lock()
@@ -268,6 +285,8 @@ impl FilesystemPort for Fixture {
 #[test]
 fn owner_edit_invalidates_warm_file_caches_without_remounting() {
     let fixture = Arc::new(Fixture {
+        #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
+        parked: Mutex::new(None),
         bytes: Mutex::new(vec![7; 128 * 1024]),
         created: Mutex::new(Vec::new()),
         links: Mutex::new(Vec::new()),
@@ -344,6 +363,8 @@ fn owner_edit_invalidates_warm_file_caches_without_remounting() {
 #[test]
 fn capability_scopes_a_bounded_typed_proxy_session() {
     let fixture = Arc::new(Fixture {
+        #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
+        parked: Mutex::new(None),
         bytes: Mutex::new(Vec::new()),
         created: Mutex::new(Vec::new()),
         links: Mutex::new(Vec::new()),
@@ -613,6 +634,8 @@ fn capability_scopes_a_bounded_typed_proxy_session() {
 #[test]
 fn connect_does_not_enumerate_or_reserve_a_hundred_thousand_entry_root() {
     let fixture = Arc::new(Fixture {
+        #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
+        parked: Mutex::new(None),
         bytes: Mutex::new(Vec::new()),
         created: Mutex::new(Vec::new()),
         links: Mutex::new(Vec::new()),
@@ -651,6 +674,8 @@ fn read_ahead_never_returns_short_before_source_eof() {
         .map(|index| (index % 251) as u8)
         .collect::<Vec<_>>();
     let fixture = Arc::new(Fixture {
+        #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
+        parked: Mutex::new(None),
         bytes: Mutex::new(expected.clone()),
         created: Mutex::new(Vec::new()),
         links: Mutex::new(Vec::new()),
@@ -707,6 +732,8 @@ fn read_ahead_never_returns_short_before_source_eof() {
 #[test]
 fn deferred_mutation_errors_surface_at_the_next_synchronization_point() {
     let fixture = Arc::new(Fixture {
+        #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
+        parked: Mutex::new(None),
         bytes: Mutex::new(Vec::new()),
         created: Mutex::new(Vec::new()),
         links: Mutex::new(Vec::new()),
@@ -759,6 +786,8 @@ fn deferred_mutation_errors_surface_at_the_next_synchronization_point() {
 #[test]
 fn cached_directory_pages_are_bounded_and_keep_first_and_later_offsets_consistent() {
     let fixture = Arc::new(Fixture {
+        #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
+        parked: Mutex::new(None),
         root_entries: 1000,
         ..Fixture::default()
     });
@@ -789,4 +818,100 @@ fn cached_directory_pages_are_bounded_and_keep_first_and_later_offsets_consisten
         fixture.readdirs.load(std::sync::atomic::Ordering::Relaxed),
         1
     );
+}
+
+#[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
+#[test]
+fn owned_write_reply_releases_receive_loop_and_completes_once() {
+    use std::io::{Read, Write};
+    use std::os::fd::OwnedFd;
+    use std::os::unix::net::UnixStream;
+    use std::time::Duration;
+    fn frame(op: u32, unique: u64, node: u64, payload: usize) -> Vec<u8> {
+        let mut frame = vec![0; 40 + payload];
+        frame[..4].copy_from_slice(&((40 + payload) as u32).to_ne_bytes());
+        frame[4..8].copy_from_slice(&op.to_ne_bytes());
+        frame[8..16].copy_from_slice(&unique.to_ne_bytes());
+        frame[16..24].copy_from_slice(&node.to_ne_bytes());
+        frame
+    }
+    fn response(kernel: &mut UnixStream) -> (u64, i32, Vec<u8>) {
+        let mut header = [0; 16];
+        kernel.read_exact(&mut header).unwrap();
+        let size = u32::from_ne_bytes(header[..4].try_into().unwrap()) as usize;
+        assert!((16..=1024).contains(&size));
+        let mut body = vec![0; size - 16];
+        kernel.read_exact(&mut body).unwrap();
+        (
+            u64::from_ne_bytes(header[8..].try_into().unwrap()),
+            i32::from_ne_bytes(header[4..8].try_into().unwrap()),
+            body,
+        )
+    }
+    let (server, mut kernel) = UnixStream::pair().unwrap();
+    kernel
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    server
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let (send, receive) = std::sync::mpsc::sync_channel(1);
+    let fixture = Arc::new(Fixture::default());
+    *fixture.parked.lock().unwrap() = Some(send);
+    let peer = std::thread::spawn(move || {
+        let mut init = frame(26, 1, 1, 64);
+        init[40..44].copy_from_slice(&7_u32.to_ne_bytes());
+        init[44..48].copy_from_slice(&40_u32.to_ne_bytes());
+        kernel.write_all(&init).unwrap();
+        assert_eq!(response(&mut kernel).1, 0);
+        let mut open = frame(14, 2, 2, 8);
+        open[40..44].copy_from_slice(&2_u32.to_ne_bytes());
+        kernel.write_all(&open).unwrap();
+        let (id, error, body) = response(&mut kernel);
+        assert_eq!((id, error), (2, 0));
+        let handle = u64::from_ne_bytes(body[..8].try_into().unwrap());
+        for (unique, result) in [
+            (3, Some(Err(PortError::NoSpace))),
+            (5, Some(Ok(5))),
+            (7, None),
+        ] {
+            let mut write = frame(16, unique, 2, 44);
+            write[40..48].copy_from_slice(&handle.to_ne_bytes());
+            write[56..60].copy_from_slice(&4_u32.to_ne_bytes());
+            write[80..].copy_from_slice(b"data");
+            kernel.write_all(&write).unwrap();
+            let reply = receive.recv_timeout(Duration::from_secs(2)).unwrap();
+            // A later unrelated callback must run before the parked write completes.
+            kernel.write_all(&frame(3, unique + 1, 1, 16)).unwrap();
+            let (id, error, _) = response(&mut kernel);
+            assert_eq!((id, error), (unique + 1, 0));
+            let expected = if let Some(result) = result {
+                let expected = if result == Err(PortError::NoSpace) {
+                    -28
+                } else {
+                    -5
+                };
+                reply.complete(result);
+                expected
+            } else {
+                drop(reply); // fuser supplies exactly one EIO on cancellation.
+                -5
+            };
+            let (id, error, body) = response(&mut kernel);
+            assert_eq!((id, error), (unique, expected));
+            assert!(body.is_empty());
+        }
+        kernel.write_all(&frame(38, 9, 1, 0)).unwrap();
+        let (id, error, _) = response(&mut kernel);
+        assert_eq!((id, error), (9, 0));
+    });
+    let session = fuser::Session::from_fd(
+        layerfs_fuse::LayerFs::new(fixture, 0, 0),
+        OwnedFd::from(server),
+        fuser::SessionACL::All,
+        fuser::Config::default(),
+    )
+    .unwrap();
+    session.run().unwrap();
+    peer.join().unwrap();
 }

@@ -156,6 +156,16 @@ pub trait FilesystemPort: Send + Sync {
     fn unpin(&self, node: NodeId, writable: bool) -> PortResult<()>;
     fn read(&self, node: NodeId, offset: u64, size: usize) -> PortResult<Vec<u8>>;
     fn write(&self, node: NodeId, offset: u64, bytes: &[u8]) -> PortResult<usize>;
+    /// The adapter transfers the one-shot kernel reply. Implementations may park it
+    /// while acquiring backing; reserve retained argument bytes before copying them.
+    #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
+    fn submit_write(&self, node: NodeId, offset: u64, bytes: &[u8], reply: WriteReply) {
+        reply.complete(self.write(node, offset, bytes));
+    }
+    #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
+    fn submit_read(&self, node: NodeId, offset: u64, size: usize, reply: ReadReply) {
+        reply.complete(self.read(node, offset, size));
+    }
     fn write_zero(&self, node: NodeId, offset: u64, len: usize) -> PortResult<usize> {
         self.write(node, offset, &vec![0; len])
     }
@@ -166,3 +176,40 @@ pub trait FilesystemPort: Send + Sync {
 }
 
 pub type SharedPort = Arc<dyn FilesystemPort>;
+
+/// Owned kernel completion; neither borrowed request bytes nor adapter state escape.
+#[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
+pub struct WriteReply {
+    pub(crate) reply: fuser::ReplyWrite,
+    pub(crate) maximum: usize,
+}
+
+#[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
+impl WriteReply {
+    pub fn complete(self, result: PortResult<usize>) {
+        match result {
+            Ok(size) if size <= self.maximum && u32::try_from(size).is_ok() => {
+                self.reply.written(size as u32)
+            }
+            Ok(_) => self.reply.error(fuser::Errno::EIO),
+            Err(error) => self.reply.error(crate::adapter::errno(error)),
+        }
+    }
+}
+
+#[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
+pub struct ReadReply {
+    pub(crate) reply: fuser::ReplyData,
+    pub(crate) maximum: usize,
+}
+
+#[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
+impl ReadReply {
+    pub fn complete(self, result: PortResult<Vec<u8>>) {
+        match result {
+            Ok(bytes) if bytes.len() <= self.maximum => self.reply.data(&bytes),
+            Ok(_) => self.reply.error(fuser::Errno::EIO),
+            Err(error) => self.reply.error(crate::adapter::errno(error)),
+        }
+    }
+}
