@@ -262,6 +262,9 @@ P3 is a branch-local coherent vertical slice, not permission to ship a mount who
 
 ## 5. Create-100 fast iteration and acceptance
 
+**Final optimization scope amendment:** the user has selected [targeted NOFLUSH and combined backing rollover](issue49-final-optimization-pass.md) as the last optional performance pass. Finish active correctness corrections first; apply the linked feasibility/ownership/stop rules. Do not reopen the earlier broad hypothesis list or optional tuning after that pass. Required supported behavior, recovery, cleanup and final qualification remain.
+
+
 This document specifies the implementation workflow; it launches no experiments now. The physical 100-workspace scenarios stay deferred. During the resumed implementation use the ordinary agreed lower-volume workflow, not a new scale campaign.
 
 Current adopted product reference, seconds to four decimals: create Exec **0.9172**, Commit **0.3587**, complete **1.2914**; delete Exec **0.2684**, Commit **0.0148**, complete **0.2980**. Their source/product IDs are in the spec and [campaign ledger](issue49-ten-family-refresh.md). Retained research create Exec **0.4792** / complete **0.9680** is a different product. Never add its Exec to the adopted Commit number or call mixed-v3 count reduction a code speedup.
@@ -305,7 +308,7 @@ bash benchmark/fs-bench-pro/families/tiny_file_churn/perf.sh \
 
 Build commands remain `runner.py --build-host` and `runner.py --build-image`; bind the resulting image/source as documented in QUICKSTART. Default performance watchdog 120 seconds product / 130 seconds outer is a diagnostic allowance, not the pass target. Do not replace create-100 with a tiny smoke case as performance proof, and do not run tier500 or all families routinely.
 
-**Working ambition is now create-100 complete lifecycle around 0.7000–0.8000 s**, with an indicative Exec budget around 0.3000–0.4000 s while preserving current Commit efficiency. These are planning objectives, not measured predictions or separate hard phase gates. The earlier approximately 0.5000 s Exec expectation is a reference checkpoint, not the rewrite's ambition. The research run used an older Commit implementation (0.4718 s versus the finalized reference 0.3587 s), so its 0.9680 s total is not the desired endpoint. Do not combine measurements from different products into a claimed achieved lifecycle. A roughly 0.0500 s difference from the working band should not trigger prolonged minor tuning when the structural result is sound.
+**Working target is now create-100 complete lifecycle around 0.9000 s**, replacing the earlier 0.7000–0.8000 s ambition. This is a planning objective, not a separate hard gate; roughly 0.0500 s above the target is acceptable and must not trigger prolonged minor tuning. Preserve Commit efficiency without imposing an independent Exec phase budget. The formal same-source create/delete complete-lifecycle gate remains strictly below 1.0000 s. Finish the final optional performance pass under its keep/reject rules, then required correctness and qualification; do not reopen optional tuning to chase the target. Do not combine measurements from different products into a claimed achieved lifecycle.
 
 **Parent target remains both tier100 create/delete complete lifecycles strictly below 1.0000 s using unrounded measurements.** No new isolated Exec/Commit millisecond gate. A roughly 0.0500 s phase difference is not a reason for prolonged minor tuning, but a strict total MISS remains a MISS. Preserve Commit's existing gain; a faster Exec offset by Commit/End is insufficient.
 
