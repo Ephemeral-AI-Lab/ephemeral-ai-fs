@@ -3,15 +3,19 @@
 Status: owner-directed planning boundary, 2026-09-08. This records storage scope
 and tradeoff guidance. It is not a benchmark contract, selected implementation,
 or permission to collect qualification samples. Benchmark and test-environment
-sections are deliberately placeholders for the next discussion.
+sections are deliberately placeholders for a separate owner discussion after
+specification correction. Test-verification plans and execution are also deferred;
+this documentation task does not design or run tests or benchmarks.
 
 Related: [v0.1.4 scope](README.md), [supporting evidence](evidence.md),
 [issue #18](https://github.com/Ephemeral-AI-Lab/layerfs/issues/18), and
 [issue #72](https://github.com/Ephemeral-AI-Lab/layerfs/issues/72).
 
 The [proposed architecture](storage-architecture-spec.md) develops this boundary
-into a shared packed-object design. It does not freeze the benchmark/environment
-placeholders or override compatibility requirements.
+into a concrete proposed shared packed-object design. Its revised ownership,
+framing and engineering bounds resolve design ambiguities without qualifying
+performance. It does not freeze evaluation/verification placeholders or override
+compatibility requirements.
 
 ## Objective
 
@@ -101,8 +105,9 @@ not assume every read decompresses or every write recompresses an entire file.
 
 Research should consider avoiding re-encoding reused objects, excessive decode
 size for small reads, repeated decoding of shared metadata, and unnecessary
-compression of tiny or incompressible values. These are questions for a shared
-implementation, not selected cache, codec, threshold, or layout policies.
+compression of tiny or incompressible values. This boundary poses questions for the shared implementation; the architecture
+companion now recommends concrete cache, codec, threshold and layout policies
+without treating them as approved implementation or measured conclusions.
 Any cache benefit must include its memory cost and behavior on misses. Read and
 write amplification and any delta-base reconstruction must remain visible.
 
@@ -118,8 +123,10 @@ write amplification and any delta-base reconstruction must remain visible.
 These are possible investigations, not four required implementations or a frozen
 execution order. External-pack comparison is excluded by the SQLite-only
 boundary. Algorithm, codec, thresholds, schema, and implementation choices remain
-open. Representation changes require explicit compatibility review rather than
-being treated as physical encoding changes automatically.
+open. The architecture and format companion now recommend concrete choices for these
+mechanisms, subject to the proposed compatibility transition. Representation
+changes require explicit compatibility review rather than being treated as
+compatible merely because logical identities are preserved.
 
 ## Performance versus storage tradeoff
 
@@ -217,7 +224,20 @@ this section open does not authorize a conflicting environment.
 - Input preparation, transfer, build reuse, cache policy, and sample isolation: **TBD**.
 - Resource sampling, Store/temporary allocation measurement, and cleanup: **TBD**.
 
-## Next decision
+## Specification correction and next discussion
 
-Define the new benchmark family and its consistent test environment, then agree
-numerical tradeoff gates before implementing or measuring storage candidates.
+First correct and review the specification. The [architecture v2](storage-architecture-spec.md)
+now owns the proposed format transition, admission protocol, operation/connection/
+transaction boundaries, bounded hint/codec work, flush/read ownership and cloud
+portability descriptions. [Finding disposition](review-disposition.md) records closure.
+
+The remaining owner policy decision is whether to accept the new-Store-only
+compatibility transition and place the incompatible format under a narrow 0.1
+exception or in 0.2; any required legacy support must be agreed explicitly. The
+current contract is not amended by this recommendation. No in-place or automatic
+migration is authorized.
+
+Only after those documents are discussed should the owner define the new family,
+population, environment, numerical acceptance criteria and verification plans.
+Keep all of those placeholders open here. No product tests, benchmark campaign or
+candidate collection belongs to this documentation revision.

@@ -123,7 +123,7 @@ with a newer Branch head.
 Workspace Commit
       |
       v
-active execution? -- yes --> Busy
+non-remote backing with active execution? -- yes --> Busy
       |
       no
       v
@@ -181,6 +181,13 @@ UpToDate  no logical Workspace mutation
 Busy      active execution or writer prevented capture
 HeadMoved expected Branch position no longer current
 ```
+
+In the inspected live remote-backed path, command lifetime alone is not the Busy
+condition: Commit freezes a backing generation and waits for the relevant writer
+cut. The non-remote path still checks active execution. Preserve the implemented
+projection-specific capture condition rather than extending this diagram into a
+new global command-lifetime prohibition. This does not provide automatic stale-
+Branch reconciliation.
 
 Both the pre-build check and final SQL compare-and-swap require the expected
 Branch head and base. The Branch pointer is the last visibility update. Earlier

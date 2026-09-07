@@ -1,395 +1,518 @@
 # v0.1.4 proposed storage architecture
 
-Status: **proposed architecture v1**, 2026-09-08. Owner-requested synthesis of
-the storage discussion. This specifies the intended research design, not shipped
-behavior, a frozen binary format, or permission to begin benchmark collection.
-Prototype parameters are distinguished from agreed boundaries. Benchmark family,
-test environment, numerical acceptance gates, and format compatibility decisions
-remain open.
+Status: **proposed architecture v2**, 2026-09-08. Revises the independent review
+of PR #77 against product revision `28177560c8f049c02192e18c263cdc5543c1ab52`.
+This is a concrete design recommendation, not shipped behavior or implementation
+approval. Proposed bounds below are engineering choices, not measured optima.
+The compatibility disposition requires an owner decision. Benchmark family,
+population, environment, numerical acceptance criteria, verification plans and
+execution are deferred until the specification is discussed with the owner.
 
 Authority: [research boundary](storage-efficiency-boundary.md).
-Context: [release scope](README.md), [evidence index](evidence.md),
-[issue #18](https://github.com/Ephemeral-AI-Lab/layerfs/issues/18), and
-[issue #72](https://github.com/Ephemeral-AI-Lab/layerfs/issues/72).
+The [physical format](sqlite-storage-format.md) owns exact wire fields and limits;
+this document owns construction, selection, admission and lifecycle policy.
+[Evidence](evidence.md) owns historical attribution. [Review disposition](review-disposition.md)
+tracks finding closure and distinguishes design confidence from measurement.
 
-See the [SQLite storage-format walkthrough](sqlite-storage-format.md) for
-conceptual SQL, binary-layout diagrams, and read/write sequence diagrams.
+## 1. Objective and boundaries
 
-## 1. Objective and agreed boundaries
+Reduce retained allocation through one synchronous object path shared by namespace
+Init and Workspace capture/Commit. Preserve CAS, current CDC, extent/namespace COW,
+FUSE, canonical identities, ordinary correctness and historical reads. All
+selected representations, packs, locations and published history remain in SQLite.
+Existing temporary spools remain separately accounted. Full/delta records and
+raw/compressed groups are independent choices in one format.
 
-Reduce retained allocation aggressively through one synchronous storage pipeline
-shared by namespace Init and Workspace Commit. Keep mounted Workspace reads and
-writes efficient, preserve CAS/CDC/COW semantics, and keep all authoritative
-stored representations inside SQLite.
+A Workspace per tool call is an expected application flow, not a second storage
+engine or mandatory cadence. About 1 call/s typical and up to about 10 call/s is
+an individual/workload expectation; its per-agent/per-project scope must be stated
+in any calculation. It is never an aggregate Store or machine ceiling.
 
-A Workspace per agent tool call is an expected application workflow, not the
-core abstraction or a mandatory cadence. The owner expects about 1 QPS normally
-and no more than about 10 QPS of tool calls. Whether this applies per agent or
-per Store is **TBD**; aggregate per-Store rate is an explicit planning assumption,
-not a capacity guarantee. Calls differ greatly in changed bytes and file count.
+Required encoding finishes before public success; later compaction does not
+rescue the reported footprint. Multiple bounded admission transactions are allowed.
+Synchronous does not mean one transaction, holding a writer during compression,
+or a new durability guarantee. New fsync policy, crash recovery, failover and
+power-loss work remain excluded. No background packer, external durable packs,
+cloud service or second authoritative backend is added.
 
-Agreed boundaries:
+## Compatibility transition
 
-- SQLite-only authoritative storage; packs are SQLite BLOBs, not external files.
-- Required representation work finishes synchronously before the corresponding
-  Init/Commit operation returns success. Internal bounded parallel work is allowed.
-- Multiple SQLite admission transactions are allowed; final root/head publication
-  remains consistent with existing operation semantics.
-- No background encoding or later repack is required to reach the claimed footprint.
-- Read-heavy and write-heavy behavior both matter; cache hits cannot stand in for
-  miss behavior, and fast final publication cannot hide expensive capture work.
-- New durability guarantees, crash recovery, and power-loss qualification are
-  outside this phase. Existing ordinary behavior is not intentionally weakened.
-- A new benchmark family is required. Existing families are supporting evidence
-  and separate regression obligations, not automatically its acceptance population.
-- Broader multi-Branch scaling remains v0.1.5; shared-object correctness remains
-  necessary for any storage change.
+Packed storage is an incompatible, explicitly versioned physical Store format.
+The proposed next schema identity is **6**, paired with pack wire version **1**;
+these are proposed assignments, not changes to the current schema-5 verifier.
+Retain the application ID, canonical encodings, ObjectIds, current CDC profile,
+public operation outcomes and acknowledgement behavior. A schema version is not
+part of a logical ObjectId. The existing exact-schema check must dispatch only to
+explicitly supported schemas, never accept arbitrary tables or reinterpret bytes.
 
-## 2. End-to-end shape
+**Recommended transition package:** first implement only explicit new packed-Store
+creation after the owner approves the format change. Opening an existing Store
+never converts or rewrites it. The packed implementation rejects legacy formats
+explicitly; existing compatible tools remain usable for those Stores. This is
+source preservation, not a claim of legacy support in the new implementation.
+Do not retain parallel writable object encoders just to minimize the patch.
+
+If the owner requires existing Stores to move to the packed implementation, the
+recommended route is an explicit separate-destination conversion using the legacy
+reader as an import adapter. The source remains unchanged, and no automatic
+replacement, deletion or conversion-on-open occurs. That subsequently authorized
+contract must preserve supported IDs, canonical bytes, history and staging state,
+or reject unsupported source state before making a destination usable. This
+revision specifies no converter, migration procedure or conversion deliverable.
+
+**Owner decision before implementation:** accept this new-Store-only transition
+and either a narrow exception to the [0.1 schema rule](../README.md#compatibility-boundary)
+or placement of the incompatible mechanism in 0.2. If legacy access in the new
+binary is required, agree its read/write/conversion scope with that same decision.
+Until then the current 0.1 contract remains in force. All non-format compatibility
+obligations remain; a release label or this proposal grants no migration authority.
+
+## 2. Shared owners and operation boundaries
 
 ```mermaid
 flowchart TD
-    I["Namespace Init: source discovery"] --> C
-    W["Workspace: mounted FUSE edits"] --> F["Capture filesystem changes"]
-    F --> C["Shared canonical construction: CAS + CDC + COW"]
-    C --> D["Exact reuse: identify missing objects"]
-    D --> E["Choose full or shallow-delta records"]
-    E --> G["Form bounded groups and compress"]
-    G --> P["Assemble immutable SQLite pack BLOBs"]
-    P --> A["Bounded admission transactions: packs + locations"]
-    A --> H["Existing staging and final publication semantics"]
-    H --> R["Required finalization, then return result"]
-    A --> DB[("SQLite")]
-    H --> DB
-    DB --> L["Locate groups, decode, reconstruct, authenticate"]
-    L --> V["Existing Workspace/FUSE read path"]
+    I["Init owner: native discovery"] --> C
+    W["Workspace owner: live FUSE/COW and spool"] --> F["Freeze and capture"]
+    F --> C["Existing content constructors: CDC, COW, canonical objects"]
+    C --> A["Store object admission: exact reuse, optional hints, records/groups/packs"]
+    A --> T["StoreDb: bounded pack + location transactions"]
+    T --> DB[("SQLite")]
+    T --> IP["Init: final batch and Layer/LayerStack publication"]
+    T --> WP["Workspace: durable stage then conditional Commit publication"]
+    IP --> DB
+    WP --> DB
+    WP --> Z["Install checkpoint, resume, return typed result"]
+    W --> R["SnapshotReader: extract ranges; unlock; decode/authenticate"]
+    R <--> DB
 ```
 
-Reuse the current shared construction/admission code rather than creating an
-Init encoder and a separate Commit encoder. Source discovery, mutation capture,
-and operation-specific publication stay with their existing owners. No new
-public storage API, backend plugin registry, or agent-specific storage engine is
-required by this proposal.
+| Owner | Input and required output | Mutable state / memory | Lock and failure boundary |
+| --- | --- | --- | --- |
+| Init discovery | Native source -> bounded file/namespace tasks | Existing discovery and producer state | No Store permit/connection while discovering or waiting; failure publishes no root |
+| Workspace capture | Frozen generation and COW/spool facts -> changed-state input | Existing live owner, host backing and spool | Preserve freeze, writer-quiescence and capture outcomes; these are not physical deltas |
+| Content constructors | Input + retained roots -> authenticated canonical objects and complete candidate root | Existing builders, bounded output, root/child facts, optional hints | Source and canonical work outside Store serialization; fresh untrusted/spooled reads authenticate |
+| Shared object admission | Owned canonical output -> committed or validated object/dependency facts | One bounded operation-owned accumulator and physical scratch | Protocol below; never return provisional inserts as admitted |
+| Init publisher | Complete root/final prepared batch -> Layer and LayerStack | Existing Init result/receipt | Short permit and final transaction; name conflict leaves earlier admitted objects |
+| Workspace publisher | Complete candidate -> retained stage -> conditional Commit/head | Existing expected head/base, stage and pending-publication state | Stage and publication stay distinct; head movement cannot roll back the retained stage |
+| Workspace finalizer | Published outcome + prepared checkpoint -> installed active state | Existing checkpoint and spool lifecycle | Preserve installation/resume and published-but-finalization-failed distinction |
+| Object reader | ObjectId -> authenticated canonical bytes -> role interpretation | Owned encoded buffers, decoder/output and existing bounded cache | Extract under connection; decode/hash outside it; malformed or unequal bytes fail before use |
 
-## 3. Logical objects and physical representations
+The existing `objects.rs` admission/access owner gains a private physical codec;
+no public codec API, backend trait, service, scheduler or plugin registry is needed.
+Source discovery and capture stay distinct. Physical batch construction does not
+make Init and Commit identical state machines.
 
-Keep logical identities derived from canonical bytes, independently of physical
-compression and placement. A successful read reconstructs the canonical object
-and authenticates it before callers consume it.
+## 3. Identity, reuse and small files
 
-| Layer | Responsibility |
+CAS supplies exact identity and sharing within a Store; CDC discovers reusable
+content regions; COW retains unchanged extents and namespace structure. Keep the
+current 8/16/32-KiB CDC profile and logical file graph. The 8-KiB minimum is not
+padding: short final chunks are valid, and crossing it relocates no old object.
+An accurate range edit can retain old slices directly; whole-file replacement
+requires content discovery and does not inherit an accurate diff from writes.
+
+Small and large files use the same full/delta record and group/pack path. Full
+records may be group-compressed; raw groups are the same backend. Metadata and
+content have separate group accumulators within the same pack accumulator.
+Tiny-file inlining or removal of extent nodes is deferred until residual logical
+metadata/index cost justifies a separately compatible canonical change.
+
+Exact duplicates are filtered before delta search or compression. Reused IDs keep
+their selected representation and location. Canonical length lives in the selected
+object index, so membership and canonical-byte receipts never use compressed size
+or decode groups merely to obtain a length. Required equality/integrity checks
+still read and authenticate stored bytes; membership alone does not authorize use.
+
+The source distribution (64.51% of unique regular contents below 8 KiB, only
+15.88% of bytes) is historical Git-blob evidence, not SQLite allocation or read
+frequency. No file-size population or different CDC profile is adopted here.
+
+## 4. Delta hints and bounded selection
+
+The record wire format supports FULL and depth-one DELTA. A base must already be
+admitted, authenticated and selected as FULL, including when its group is compressed.
+A speculative FULL in the same unadmitted batch is never a base: it might lose an
+admission race to an existing delta representation. No forward references, base
+copies for locality, global similarity index or scan of retained history is used.
+
+### Hint provenance
+
+Hints are optional internal facts attached to canonical output, not changes to
+canonical bytes or the public API. Use up to four distinct prior IDs already known
+while building that output, in producer-provided order with ObjectId as the tie
+break. For payload construction, these come from prior extents intersecting the
+replaced range that the builder already visits; metadata construction may supply
+the prior corresponding page it replaces. Do not perform a new whole-file/tree
+walk solely to find hints. Accurate small range edits may have no useful physical
+base because COW already retained the old bytes.
+
+Fresh Init supplies no predecessor hints in this revision. Nonempty-Store Init
+also does not invent a predecessor from path names or Store occupancy. It still
+uses the identical encoder with an empty hint list, exact reuse and full-record
+group compression. Reconciliation uses available canonical construction context,
+not a separate delta encoder. Whole-file replacements may provide only weak or
+no hints. Missing context is a full-record outcome, not an error or hidden search.
+
+### Preparation and selection policy
+
+These deterministic caps are proposed engineering limits, not performance gates:
+
+| Scope | Proposed limit / rule |
 | --- | --- |
-| CAS | Exact content identity, authentication, global reuse within the Store |
-| CDC | Discover reusable payload boundaries during content construction |
-| COW extent and namespace trees | Preserve unchanged ranges and structure |
-| Workspace/FUSE | Mutable filesystem operations, visibility, and capture |
-| Physical encoder | Full/delta records, compression groups, pack construction |
-| SQLite | Object lookup, stored representations, filesystem/history publication |
+| Delta target/base eligibility | Same known canonical role; each canonical object <=64 KiB; other roles/sizes use FULL |
+| Prior IDs per target | At most four; deduplicate before lookup |
+| Full anchors | Prior FULL itself, or one decoded prior DELTA's declared FULL base; deduplicate anchors before fetching/trial |
+| Per-target preparation | At most eight distinct record/group fetch paths, 512 KiB encoded bytes including framing, and 512 KiB decoded group bytes |
+| Per-target trials | At most four, one per eligible full anchor; one base/index and one best delta retained at a time |
+| Per-admission-batch preparation | At most 8 MiB fetched encoded bytes and 8 MiB decoded group bytes for hint/base preparation |
+| Per-admission-batch delta work | At most 512 base trials and 16 MiB of candidate match-byte comparisons |
+| Exhausted optional budget | Keep best complete eligible delta so far or FULL; never skip required integrity validation to fit a budget |
 
-The first physical-format prototype retains canonical file/namespace encodings
-and the current CDC profile: minimum 8 KiB, target 16 KiB, maximum 32 KiB.
-These are variable-boundary parameters, not allocation sizes or exact chunk sizes.
-The final fragment can be smaller than the minimum. A file at least 8 KiB can
-still produce a single chunk.
+A hint exceeding a declared size/budget is skipped before its optional fetch. A
+missing optional hint is ignored. Prior-record inspection validates framing and
+codec output, but does not claim authentication of an unused prior DELTA target:
+its extracted base ID remains an untrusted hint. The selected FULL base must be
+fully authenticated and role-validated before a trial. Detected framing/integrity
+errors or an invalid selected base fail the operation rather than being hidden.
+If a prior target's canonical bytes are actually consumed, reconstruct/authenticate
+it through the normal reader, charging that work. Account for prior-record inspection
+separately from applying a delta; no unnecessary reconstruction is required merely
+to discover an untrusted anchor hint. Sharing groups or
+anchors can reduce actual work; cache hits cannot enlarge these policy budgets.
+Required duplicate validation and public object reads are not optional hint work.
 
-A 4/8/32 KiB profile is a separate research candidate, not silently enabled here.
-It needs its own profile identity, compatibility decision, and attribution. Do
-not combine chunk-profile changes with the first physical-encoding comparison.
+Use one bounded greedy COPY/INSERT matcher inside the physical encoder: index
+non-overlapping 16-byte base seeds, retain at most four increasing offsets per
+seed, and scan target offsets in increasing order. Compare at most those four
+matches at each offset, extend matches within the remaining comparison budget,
+choose longest match (lowest base offset breaks ties), and emit COPY only for at
+least 16 matching bytes. Otherwise accumulate INSERT bytes. Charge seed inspection
+and extension comparisons to the comparison budget. On budget/instruction-limit
+exhaustion, discard the incomplete trial; do not emit a partial program. The base
+seed table has at most 4,096 entries, fits a charged 256-KiB scratch allowance, and
+is rebuilt for only one base at a time. This is an operation-local index, not a
+persistent similarity database. No optimized-match or Git-equivalent claim follows.
 
-## 4. Exact reuse before physical encoding
+Choose the smallest complete delta by raw record size (tie: base ObjectId), only
+if it saves at least `max(64 bytes, ceil(FULL record size / 8))` over FULL including
+the delta base ID, lengths and instructions. Record-directory cost is the same
+for these choices. This is deliberately an approximate **pre-compression** score:
+compressed FULL may beat the chosen delta. Do not trial every combination or
+compress records independently to pretend to know their group contribution.
+Compress each selected group once; use RAW unless compression saves at least 16
+bytes. Final allocation, anchors and all trial CPU decide whether this policy is
+worth retaining. If it is not, remove or revise the policy prospectively rather
+than claiming optimality. No numerical acceptance gate is implied.
 
-Construct or reuse canonical object identities through the existing authenticated
-pipeline. Filter exact duplicates within the current operation and against the
-Store before compression or delta search. Preserve existing trust boundaries:
-knowing an ID does not justify bypassing required canonical validation.
+A target with no worthwhile delta becomes a new FULL anchor. Anchor renewal is
+this local decision, not a timed rewrite or periodic maintenance pass. Exact A/B/A
+recurrence still reuses the existing ID/representation. Depth one deliberately
+trades potential compression for bounded dependency depth; Git parity is unknown.
 
-Reused objects keep their existing location and representation. New roots may
-reference objects in any existing pack. There is no per-file, per-Branch, or
-per-Commit duplication merely to achieve locality.
+## 5. Grouping, framing and memory
 
-Use current batched membership and bounded queues. A concurrent admission can
-make an earlier missing-object observation stale. The implementation must define
-a serialized admission recheck and consistent conflict handling. It must never
-silently redirect an ObjectId to unequal canonical content. If physical records
-become redundant during admission, account for their actual bytes; never call
-them payload reuse savings. Exact race/waste handling is a pre-implementation
-layout decision, not grounds to add a second storage service.
+The [format](sqlite-storage-format.md) defines all wire sizes and rejection rules.
+Normal metadata/content groups target 16/32 KiB decoded representation bytes;
+normal packs cap decoded representation plus pack framing at 256 KiB. Oversized
+records use the specified bounded singleton route. The current modern maximum
+chunk is 32,789 **canonical** bytes including framing, not exactly 32 KiB.
+The general canonical codec allows 16 MiB; ordinary new Store admission remains
+at most 4 MiB minus one byte and 8,191 objects per transaction. Do not conflate
+these limits or reject valid stored objects using the nominal group target.
 
-## 5. Small and large files use one pipeline
+No pack pads to capacity or waits for future calls. Each object has one selected
+locator; unused records caused by an admission race are physical waste, not another
+selected representation. Pack/group/record directories carry access/framing facts;
+ObjectId and membership length belong in the selected index. Delta output length
+is independently needed to bound reconstruction. No reverse index or duplicate
+ObjectId in every header is added.
 
-```text
-Small file -> one or few payload objects -> full/delta records -> groups -> packs
-Large file -> several payload objects   -> full/delta records -> groups -> packs
-                         existing objects are reused in both paths
-```
+Reuse existing bounded queues, output owners and temporary spill mechanisms.
+There is no current universal operation-memory pool: `objects.rs` separately
+bounds candidate resident output (`CANDIDATE_MEMORY_BYTES`, 8 MiB), its index
+(64 MiB), admission canonical payload (4 MiB minus one), and queued 256-KiB slabs;
+Workspace mutation policy has its own `max_final_delta_memory_bytes` and partition
+allowances. Do not borrow an index, live-mutation or queue budget for codec memory.
 
-Small objects are not excluded from compression or packing. Several small full
-or delta records can share a compressed group. Metadata records are grouped by
-compatible role separately from content. A record may remain logically full
-while benefiting from group compression; full does not mean raw physical bytes.
+The proposed shared accumulator **replaces** the candidate/output ownership at
+this boundary with one inclusive resident allowance no greater than that existing
+8-MiB candidate limit (or a smaller caller-derived limit). Reserve up to **2 MiB**
+of it for physical scratch, not 2 MiB in addition. Reduce resident canonical and
+prepared-output capacity by that reservation and use the existing spill path for
+the remainder. This is an explicit ownership refactor, not a claim that today's
+CheckedOutputAdmission already shares this accounting. Upstream bounded input
+slabs, private mutation state and the separate bounded identity index retain their
+own charges; transfers move ownership rather than retaining two charged copies.
 
-File size does not select a separate row-versus-pack backend. Decisions use object
-role, representation size, available similarity, and bounded read cost. Raw groups
-are an encoding option inside the same pack format, not a separate storage path.
-No hybrid placement policy is required for the initial prototype.
+The scratch charge includes metadata/content group buffers, pack assembly buffers,
+one base, one current trial and one best program, the <=256-KiB match table, codec
+context/window, and physical directories/locators. Canonical bytes and prepared
+encoded bytes retained outside scratch use the remainder of the same allowance.
+Cumulative 8-MiB hint-fetch/decode work limits are work counters, not resident
+memory reservations. One active codec/base index per accumulator is permitted;
+a codec adapter must bound actual allocation, not infer it from window size.
 
-Keep the current extent representation initially. A growing file creates a new
-file state referencing existing and additional objects. Crossing 8 KiB requires
-no migration of old objects or historical states. Exact range capture can retain
-old slices; complete replacement relies on discovery of reusable content.
+If a smaller allowance cannot fit optional delta scratch, skip that trial. Drain
+or spill pending output and reduce grouping to fit required codec scratch; if the
+minimum required codec plus current record cannot fit, report the ordinary resource
+failure before admitting that batch. Do not silently store RAW because a required
+compression attempt lacked memory. The explicit oversized RAW route is governed
+by format size, not memory pressure. A valid large input may be streamed from its
+existing spool while forming its RAW pack, avoiding two complete resident copies.
+Codec-library/API selection must honor this reservation or require a prospective
+spec change; no public resource bound is silently raised to fit an implementation.
 
-Inline content or direct-payload file states remain later representation options
-if canonical metadata/index overhead dominates after physical encoding. They
-change the logical graph and need a separate compatibility decision. Packing
-existing objects does not eliminate their object IDs or location-index entries.
+No source read, producer wait, encoding or private-spool I/O retains a Store permit,
+connection guard or transaction. Required reauthentication after spool reads remains
+a trust boundary. Per-owner bounds and their simultaneous sums do not establish
+a machine-wide bound when many operations/Stores are active.
 
-Source-analysis evidence from the frozen 157-checkpoint population: 75,922 unique
-regular-file contents contain 891,893,067 bytes. Of these, 48,976 (64.51%) are
-below 8 KiB but account for only 15.88% of payload bytes. Contents between 8 and
-64 KiB account for 56.99% of bytes. Thus both small-record overhead and broader
-payload encoding matter. These are Git blob statistics, not SQLite allocation
-or access-frequency measurements. See the evidence index for analysis custody.
+## Admission protocol
 
-## 6. Shallow delta records
+### Three distinct synchronization boundaries
 
-“Shallow delta” means a bounded reconstruction dependency, not a shadow copy.
-The proposed first prototype has maximum depth **one**:
+`StoreDb` has a FIFO operation permit and one connection mutex shared by readers
+and writers. A SQLite transaction is a third, narrower scope. Reuse them; add no
+per-Branch mutex map, reservation table, worker pool or scheduler. Only top-level
+bounded admission and metadata-publication entrypoints acquire the permit; their
+helpers accept existing context and never reacquire it.
 
-```text
-Full anchor A (may be compressed)
-  ├── B = delta against A
-  ├── C = delta against A
-  └── D = delta against A
+Selected locators and admitted packs are immutable for this phase. No concurrent
+reclamation, representation replacement or repacking is allowed. All object
+writers, including direct candidate and reconciliation callers, route through this
+same admission protocol. Current exclusive/single-owner Store access assumptions
+remain; this permit is not a distributed lock.
 
-No A <- B <- C <- D delta chain in this prototype.
-```
+### Bounded preparation, recheck and insertion
 
-A delta contains a base identity, reconstructed length, and bounded COPY/INSERT
-instructions sufficient to reproduce the complete canonical target. Canonical
-IDs are not computed from delta instructions. A base may be in another pack;
-pack containers are not assumed self-contained.
+1. Receive a fixed bounded batch of owned authenticated canonical objects with
+   lengths, child/root facts and optional hints. Deduplicate with equality checks.
+   Query up to 128 IDs at a time. Extract any required existing representations,
+   then release the connection before authenticating and comparing their bytes.
+   Carry bounded validated-existing facts; do not run both old and new validation
+   passes. New untrusted bytes must still authenticate.
+2. Prepare hints/full bases and encode still-missing records/groups/packs outside
+   both permit and connection. Bases must already be admitted FULL. Keep prepared
+   bytes and original candidate bytes available, resident or in the existing spool,
+   for the bounded late-duplicate comparison. Before taking the final permit, load
+   the prepared pack subset into bounded owned memory; reduce the admission batch
+   if necessary. Never perform private-spool reads while inserting under that permit.
+   If physical prepared bytes were spooled, carry their exact-byte digest in the
+   operation's sealed-output facts and verify it after rereading, before taking
+   the permit. This is temporary integrity metadata, not a durable pack identity
+   or another local index. In-memory immutable prepared bytes retain their fact.
+   Never recompress just because an equal object wins an admission race.
+3. Acquire the FIFO permit, acquire the connection and recheck membership for
+   previously missing IDs. If any now exist but have not been compared, release
+   **both** guards before extracting/decoding/authenticating and comparing them.
+   Add their immutable representation facts and repeat this step. Every repeat
+   retires at least one previously missing ID from this fixed batch: at most N
+   late-duplicate rounds for N <=8,191 candidates, rather than an open-ended retry.
+   Query only the remaining missing set on later rounds. Account for this repeated
+   query cost; in the adversarial one-new-ID-per-round case it is quadratic in N.
+   No source/construction/codec work restarts. A previously validated locator
+   disappearing or changing is an integrity failure under the immutability rule.
+4. Once no unchecked duplicates remain, retain the permit and connection, begin
+   the bounded transaction, insert prepared packs having at least one winning
+   object, and insert locations only for still-missing objects. Never UPSERT an
+   existing location. Skip packs with zero winners; retain and count redundant
+   records inside mixed packs. Do not rewrite groups in the transaction. With all
+   writers coordinated, an unexpected insert conflict is an error, not a new loop.
+5. Commit, release the connection and permit, then issue admitted/validated facts
+   and receipts. No result from an uncommitted insert is authoritative. Earlier
+   successful batches remain if a later step fails, and their allocation counts.
 
-Base selection:
+This monotonic retry uses immutable storage rather than a reservation subsystem.
+The N-round worst case is a disclosed ceiling, not an expected latency claim;
+changing it to hold the permit across conflict decoding would trade retry cost for
+reader-independent writer queue time and is not the selected first policy.
 
-1. Use a bounded candidate set informed by prior-file extents or corresponding
-   prior metadata where that context is already available.
-2. If the previous object is a delta, consider its full anchor; do not accidentally
-   create depth two. If unsuitable, use a new full representation.
-3. Prefer already-stored full bases for the first implementation. Do not rely on
-   unresolved forward references or duplicate a base solely for pack locality.
-4. Never scan all retained history to find an optimal base. No persistent global
-   similarity index is required initially.
-5. Keep the full representation whenever the selected delta is not worthwhile.
+### Replacement of existing caller assumptions
 
-At most four base candidates is a proposed starting bound, not an accepted
-performance target. Missing context reduces delta opportunity; it does not
-justify changing the filesystem input or admitting a benchmark-specific hint.
+Remove the operation-long permits from Init, `commit_candidate`, and
+`commit_workspace_candidate` around construction/admission. Remove nested delivery
+callback/final-flush permit acquisition from `construct_workspace_files`; the
+shared admission entrypoint now owns it. `fork_branch`, `add_layer`, and stage
+discard may keep their short metadata permits, with no nested acquisition.
 
-Compare total encoded costs including base references, lengths, framing, and
-index implications. Group compression can change the ranking of full and delta
-records. Freeze a bounded selection heuristic before measurements; report actual
-final group sizes and CPU rather than claiming per-record optimality. Avoid
-combinatorial trials of every group representation.
+Delete `clear_failed_direct_initialization` and **all four** callers, including
+root-construction fallback/hard-link-overlap paths, when enabling interleaving.
+Never run `DELETE FROM objects` after an interleaved Init. An empty observation
+may skip an initial probe but never the serialized admission recheck. Construction
+fallback reuses already admitted objects through the shared path. Private buffers
+and temporary spools still release normally; committed unreachable packs/locations
+remain and count. No operation ownership index or new reclamation pass is added.
 
-As an anchor becomes dissimilar, admit a newer full object. Read cost stays
-bounded, but extra anchors may cost more space than deeper Git delta chains.
-Exact recurring content still reuses its existing ObjectId and representation.
+The replacement covers raw checked/planned/direct insert and collision helpers,
+not only the named fast path. Existing source discovery strategies may remain
+where they serve real inputs, but they cannot select a different physical writer.
 
-Base dependencies are physical storage dependencies even when the base has no
-logical filesystem reference. Bases and their containing groups must remain
-available while referenced by retained delta representations. There is no new
-reclamation implementation in this phase; future reclamation must understand
-these dependencies. Do not copy a base for every dependent object.
+## 7. Flush, publication and finalization
 
-## 7. Compression groups and pack layout
+An operation-owned accumulator spans file and metadata output. Producer-phase end
+alone does not force a flush. A flush is required when count, canonical, physical
+or simultaneous-memory bounds would be exceeded; when a constructor needs data
+not available through carried trusted facts or the existing pending object source;
+and before durable stage/publication needs those objects. Never add another
+pending-object cache solely to save a transaction. Never wait for a future call.
 
-A pack is a container, not a compressed chunk and not a whole-pack compression
-stream. It can contain independently decoded groups of full and delta records.
+After admission, the Workspace publisher takes one short metadata permit for its
+existing committed stage followed by the distinct conditional-publication
+transaction. Preserve expected Branch head/base checks, source ownership, no-change
+behavior and stage deletion after successful publication. A `HeadMoved` result
+can leave a complete retained stage; rolling that stage back with publication
+would change the lifecycle. The direct candidate publisher preserves its own
+current outcomes. Init's final batch executes the same preparation and late-duplicate recheck steps
+1-3 above. After a successful recheck it retains that same permit and connection
+through insertion of winning packs/locations and Layer/LayerStack publication in
+one final transaction. It neither reacquires the permit nor bypasses canonical
+duplicate comparison. No encoding or dependency read occurs in that transaction.
 
-```text
-SQLite pack BLOB
-  header: format version and group directory
-  group 0: metadata records, compressed or raw
-  group 1: small content records, compressed or raw
-  group 2: content/delta records, compressed or raw
+Publication uses carried authenticated graph and admitted-dependency facts plus
+existing validation, not an exhaustive retained-history scan. An arbitrary
+object's presence is not proof of complete logical or physical closure. Full bases
+remain available even without a logical reference. Required physical work finishes
+before publication, and required runtime finalization finishes before public success.
 
-Object location: ObjectId -> pack ID, group number, record position
-```
+Carry the namespace root's already-authenticated inode-table-root field in the
+existing prepared checkpoint, bound to the candidate root ID. If the published
+outcome has that root, finalization may install this fact without rereading the
+newly compressed namespace. If no matching trusted fact is available (including
+an existing special lifecycle path), use the bounded authenticated read. Do not
+retain a whole graph or create another cache to avoid one read. Preserve
+INSTALL_BEGIN, paged INSTALL_NODE, INSTALL_END, pending-publication state, attribute
+checks, spool retirement and resume. Report a published result followed by
+finalization failure honestly; do not blindly republish.
 
-The concrete directory/record codec and SQL DDL are **TBD**. They must support:
-object location, canonical length, representation kind, optional base identity,
-group codec, encoded range, and bounded decoded length. Avoid duplicate copies
-of information unless justified. Pack framing and references are validated, and
-target/base canonical authentication remains authoritative.
+## 8. Object reads and ownership
 
-Starting prototype settings, subject to the later measurement contract:
+Use SQLite incremental BLOB reads on the rowid pack table. Query selected locations
+in existing bounded batches, then read the fixed header, selected directory entry
+and required encoded group ranges. Group repeated requests within the current
+read batch by `(pack_id, group_number)` and decode each distinct group once in
+that batch. The [format](sqlite-storage-format.md) specifies framing validation.
 
-| Setting | Proposal, not qualification target |
-| --- | --- |
-| Pack input-byte cap | 256 KiB of uncompressed representation records and framing |
-| Metadata group | Up to 16 KiB uncompressed records |
-| Content group | Up to 32 KiB uncompressed records |
-| Codec | A fast Zstandard setting; exact version/level TBD |
-| Delta depth | At most one |
-| Base candidate count | At most four |
-| Compression-benefit threshold | TBD; include framing and raw alternative |
-| Pack/group record-count bounds | TBD; required independently of byte caps |
+Close all BLOB/statement handles and release the connection before decompression,
+canonical hashing, role interpretation, delta application or a base request. A
+base miss performs another bounded extraction and release; it must select FULL,
+then authenticate before COPY/INSERT. Authenticate the reconstructed target and
+check canonical length against its untrusted locator before returning it.
 
-Canonical object headers can make a maximum payload chunk exceed a nominal
-32-KiB group. Such an object uses a single-record unit sized to its declared
-canonical bound. Group/pack caps need an explicit bounded oversized-record rule
-for other supported object roles; a nominal payload size must not become an
-accidental rejection of valid metadata. No unbounded exception is permitted.
+Reuse the current SnapshotReader's bounded cache. Do not add a persistent decoded-
+group cache by default. Release request-local group buffers as soon as their last
+requested record is consumed; dependent later tree lookups can therefore decode
+a group again, an explicit cost rather than an assumed cache hit. Drain internal
+read batches on memory limits; the public batch still preserves its existing
+count/output contract. Large raw singletons are extracted/decoded one at a time within their canonical
+bound, limiting scratch rather than total returned output. The current authenticated
+batch API returns owned canonical objects; earlier results remain resident, and
+its output charge is the sum of their canonical lengths. The codec-only ceiling
+of 128 objects times 16 MiB is 2 GiB, not a small-memory guarantee. Ordinary filesystem
+payload batches retain their existing tighter bounds. Do not silently narrow the
+public batch contract to claim a lower output bound; caller/output memory remains
+separate from bounded extraction scratch and persistent cache charges.
 
-Bound canonical bytes represented as well as encoded/representation bytes: many
-small deltas can represent much more canonical data than their encoded size.
-Compression does not relax existing memory or admission budgets.
+Remove the scalar temporary clone used only to construct a cache argument. Carry
+identity authentication through the existing trusted internal read method so core
+metadata does not hash the same immutable bytes again. Generic ObjectSource and
+fresh persisted/spooled bytes still authenticate. Cache insertion may require one
+owned copy; a shared backing slice is allowed only when it replaces actual copies
+and charges the entire retained backing allocation. No zero-copy claim is made.
 
-Compress bounded compatible groups once using the selected policy. A group can
-stay raw when compression does not pay; report the CPU spent trying. Do not
-exclude all small files from compression based on the CDC minimum. Dictionaries,
-multiple codecs, and adaptive classifiers are not required for the first design.
+A cold object delta miss can require target and base directories/groups. Depth one
+bounds physical dependency depth, not the number of metadata objects, extent
+nodes, groups, copies or cache misses in a filesystem read. Warm CPU-bound reads
+can regress while cold I/O improves. Small random reads, sequential reads,
+namespace traversal and finalization reads remain distinct costs for later evidence.
 
-Packs are immutable once admitted. Flush partial groups/packs at operation or
-required admission boundaries without padding to capacity or waiting for future
-calls. No one-pack-per-file, one-pack-per-Commit, or large-old-pack rewrite rule.
-Many tiny synchronous operations can still create small pack/index overhead;
-measure it honestly. Later merging is not assumed to repair the primary footprint.
+## 9. Operation crossings and minimal replacement
 
-## 8. SQLite admission and publication
+These are source-derived or design counts, not measured samples. N is attempted
+objects, A early admission batches, R other construction/finalization queries,
+F changed-fact pages and J checkpoint-install pages. SQL counts exclude transaction
+control unless stated; local SQL is not a network round trip.
 
-Reuse the shared constructor and bounded admission paths in
-[objects.rs](../../../../crates/layerfs-layerstack-store/src/objects.rs),
-Init publication in [layerstack.rs](../../../../crates/layerfs-layerstack-store/src/layerstack.rs),
-and existing [Workspace staging](../../../../crates/layerfs-layerstack-store/src/staging.rs).
-
-```text
-Outside writer ownership:
-    canonical construction -> reuse plan -> representation/group/pack assembly
-
-Admission transaction(s):
-    insert complete packs and corresponding object locations consistently
-
-Existing operation-specific staging/publication:
-    make selected complete root available
-    validate expected destination/head
-    publish Layer/Commit and applicable references
-    finish required runtime finalization
-    return public operation result
-```
-
-Do not hold the SQLite writer while waiting for source discovery, base retrieval,
-compression, or producer work. Do not create a transaction per record or per pack
-when an existing bounded admission transaction can carry several. Preserve the
-current Workspace stage/no-change/publication lifecycle; sharing the encoder
-does not require making Init and Commit identical state machines.
-
-The inspected baseline caps admission at 8,191 objects and 4 MiB minus one byte
-of canonical content. Preserve those bounds unless explicitly revised, and count
-encoded bytes, index overhead, and physical writes separately. Pack count does
-not replace object count. Final batch handling may follow the existing publisher.
-
-A root/head must not become visible before all required logical and physical
-base dependencies are available. Establish closure through carried construction
-facts and the existing validation path; do not add an exhaustive historical scan
-to each final transaction. Retained rows from failed attempts are not proof that
-an arbitrary root has complete closure.
-
-Prior admission transactions may remain committed if final publication fails.
-Preserve and account for those bytes; do not claim whole-operation rollback.
-Use authoritative existing operation results to distinguish unpublished failure
-from a published result followed by presentation/finalization failure. No blind
-republication or extra crash-recovery framework is introduced.
-
-## 9. Reads, FUSE, and bounded memory
-
-```text
-Existing authenticated object/Workspace hit -> use available data
-Miss -> batched object locations -> required encoded group ranges
-     -> decode groups -> reconstruct full or depth-one delta object
-     -> authenticate -> interpret canonical object -> serve requested bytes
-```
-
-Use partial BLOB access or another measured range-access mechanism so a lookup
-does not materialize the entire pack. If using SQLite incremental BLOB I/O, its
-rowid/table restrictions must be reflected in schema design. Whole-pack retrieval
-is not an acceptable hidden fallback for a partial-read claim.
-
-A depth-one delta may require its group's data plus the base's group. This bounds
-delta dependency depth, not the total groups in a file-range or tree traversal.
-Batch/coalesce requests to the same group where possible. Authenticate a base
-before applying its bytes, validate COPY ranges and output lengths, and reject
-invalid framing, cycles, excessive expansion, or wrong reconstructed identity.
-
-Reuse existing batched reads and caches. Any decoded-group cache must be bounded
-and integrated into declared memory accounting. Avoid automatic duplicate full
-copies in both group and object caches; consider backing slices when compatible
-with existing ownership. Cache misses remain correct and measured. No dedicated
-new cache hierarchy is required by this specification.
-
-Warm CPU-bound reads can regress even when cold I/O improves. Report small random
-reads, metadata traversal, and larger sequential reads separately when the family
-is defined. Avoid repeatedly decoding large groups for tiny requests. Read/write
-amplification, copied bytes, base fetches, and encode/decode work must stay visible.
-
-## 10. Git comparison and expected sources of improvement
-
-| Mechanism | Expected opportunity | Limitation |
+| Operation | Current source at 28177560 | Proposed required work |
 | --- | --- | --- |
-| Exact CAS/COW reuse | Avoid unchanged payload/structure and re-encoding | Does not encode similarity between different objects |
-| Group compression | Reduce repeated small-record and payload patterns | Benefits depend on batch contents and read amplification |
-| Shallow deltas | Reuse bytes inside changed objects | Bounded online search/depth may miss Git's better bases/chains |
-| SQLite packing | Reduce physical payload-record overhead | Lookup rows, SQLite allocation, and logical metadata still cost space |
-| Compact future file representation | Remove unnecessary graph overhead | Requires a separate canonical-format decision |
+| Small changed Commit with content/metadata each fitting one batch | Typically four commits: two admissions, stage, publication; >=4 writer acquisitions plus reads | Three commits if dependency/memory-safe phase accumulation combines admissions; otherwise four or more. No guaranteed reduction |
+| Its SQL | N+9+R plus conflict queries; four transactions add eight BEGIN/COMMIT statements | Membership/recheck queries plus pack/location inserts; retained stage/publication steps unchanged; exact SQL batching is implementation detail |
+| Its process/transport calls | One public Commit, no intrinsic Exec; remote live capture F+2 backing calls, installation J+2 requests, plus pause/metrics/resume and conditional spool work | Zero additional public methods, Exec or RPC requirements from physical encoding; local versus transport placement remains explicit |
+| Bulk Init | One Init, no intrinsic Exec/RPC; A+1 commits; whole-operation permit | A'+1 bounded admission/publication commits, permit released between batches and during construction; queries depend on exact reuse and races |
+| Object miss | One SELECT/connection acquisition, no explicit commit, one Store hash, no codec | One locator query and three cold BLOB range calls for header/entry/group; second path for a cold separate-group full base; RAW has no decompression |
+| Copies | SQLite-to-Vec, scalar temporary clone, possible cache clone, file-output copy; core metadata may rehash | Encoded extraction, decode output, optional record/output copies, delta output and necessary cache copy; remove redundant scalar copy/rehash, charge actual owners |
 
-The matched #72 control reports 289,480,704 allocated bytes for compressed Git
-packs without deltas, 56,373,248 with deltas, and 940,310,528 for LayerFS. These
-are evidence of opportunity, not size predictions for this design. Git retains
-the selected contents, paths, executable bits and symlinks; it does not retain
-LayerFS's full metadata. Original clone history differs and is not the matched
-comparison. See [evidence](evidence.md) for immutable reports and limitations.
+An already-open cold small-file read with a leaf extent root needs FileState,
+extent root and payload: three current object lookups, plus namespace lookup if
+needed. The scalar wrappers can cause five hashes in that example. The same
+logical graph remains in the proposed format; deltas can add up to three distinct
+full-base paths. Coalescing does not eliminate dependent traversal.
 
-Git-like efficiency is a target, not something already attained or guaranteed by
-using the same mechanisms. This design has less look-ahead than offline Git
-repacking and incurs SQLite plus filesystem-specific overhead. All metadata,
-indexes, full bases, group framing, unreferenced admitted records, and allocation
-slack count. Do not compare only compressed payload with a complete Git repository.
+| Action | Final component or removed work |
+| --- | --- |
+| KEEP | Canonical codecs, CAS/CDC/COW, source/capture owners, existing bounded producers/spools and lifecycle results |
+| MERGE | Physical checked/planned/direct placement into existing object admission; one accumulator with existing pending source/facts |
+| REPLACE | Raw objects.bytes SQL/access/collision helpers with selected-object index and packed reader/writer; compatibility transition remains explicit |
+| DELETE | Whole-Store Init cleanup under interleaving; phase-only flushes without dependency reason; redundant scalar clone and trusted rehash |
+| DEFER | Global similarity index, deep chains, separate tiny-file backend, new cache hierarchy, plugin interface, worker pool, repacker and cloud services |
 
-Compare matched logical populations and report exact differences. Foreground
-Git construction and later Git packing are distinct costs. LayerFS's primary
-footprint must already exist at synchronous operation completion. No later
-compact measurement substitutes for that figure.
+The indispensable addition is physical record/group/pack encoding and decoding.
+The existing Store object owner can own it; it replaces raw placement rather than
+adding another public API or retained data backend.
 
-## 11. Performance and measurement boundary
+## 10. Benefit and evidence limits
 
-The owner's tradeoff remains conditional: about 50% more elapsed latency can be
-acceptable for genuinely Git-comparable storage; 50% more latency for only 10%
-less allocation is unacceptable. No universal 50% regression allowance or 1.25×
-Git tolerance is adopted. Per-operation ceilings and comparability are **TBD**.
+Exact CAS/COW already contributes to the baseline; count only incremental effects.
+Compression of FULL records, DELTA programs and metadata affects overlapping
+bytes. Add no independent percentage savings for the same bytes. Packed placement
+still pays per-object index entries, logical metadata, group/record framing,
+full-anchor retention, SQLite allocation and partial/unreferenced packs.
 
-At 10 aggregate operations/s, average inter-arrival is 100 ms; this is not a
-universal operation deadline. Queueing depends on total serialized work, changed
-bytes, file count, and burst behavior. Record queue/wait time separately from
-encoding, admission, and publication. Start with existing bounded execution and
-serialized database access; no per-Workspace worker pools or background service
-are prescribed.
+The matched historical control reports 940,310,528 allocated LayerFS bytes,
+289,480,704 allocated Git bytes without deltas and 56,373,248 with deltas. Its
+799,638,421 canonical LayerFS bytes alone are about 14.19 times delta-packed Git;
+even eliminating all noncanonical allocation cannot achieve that objective.
+Compression/delta opportunity is material, but online shallow hints may miss Git's
+bases/chains and force more anchors. See [evidence](evidence.md) for immutable
+sources and candidate-specific qualifications; no new ratios are predicted here.
 
-Keep separate: Init, filesystem capture/Commit, ordinary reads, historical reads,
-and application lifecycle when selected. Count synchronous work wherever it
-occurs, even before the final Commit timer. Decompose compression/decompression,
-canonical encoding/decoding, authentication, base search, SQLite I/O, index work,
-and buffering where practical. Reuse current monitors/receipts before extending.
+Git retains selected contents, paths, executable bits and symlinks, not all LayerFS
+filesystem metadata. Use matched selected roots, not the original clone history.
+Git foreground construction and later packing are separate costs. LayerFS's claimed
+footprint exists at synchronous acknowledgement; no later compact value replaces
+it. Tiny operations flush partial groups and cannot wait for later compression
+context. Required preparation, collision reads and finalization count wherever
+they occur, even when the final SQL Commit timer is short.
 
-Never trade correctness for footprint. Do not average a severe individual
-regression away, hide CPU in an uncounted host, or depend on unbounded caches.
-Report actual allocated storage, logical retained bytes, canonical bytes, encoded
-bytes, exact reuse, delta savings, group compression, indexes, and temporary peaks
-separately. Overlapping savings must not be added together as independent gains.
+## 11. Aggregate load and tradeoff
+
+For a declared per-agent/per-project rate r_i, aggregate arrivals are
+`lambda_store = sum(r_i)` and serialized utilization is approximately
+`lambda_store * E(total serialized service per operation)`. Connection-held service
+sums all lookups, admissions and publication; permit-held service is a separate
+quantity. Tool-call rate is not SQL transaction rate. A formatter or Init can
+produce much more work than a small edit at the same call rate.
+
+Shared projects in one Store contend on its permit/connection and host resources.
+Separate project Stores have separate DB locks but share CPU, disk, memory/cache
+and scheduler capacity, with no assumed cross-Store deduplication. Bounded FIFO
+admissions improve opportunities to interleave; they guarantee neither p99 latency
+nor a global memory cap. No new concurrency service is selected. Account for
+queue time, retries, compression CPU, reads and simultaneous active-operation
+memory instead of inferring capacity from LLM delay.
+
+The owner may accept about 50% more elapsed time for genuinely Git-comparable
+allocation, but rejects that slowdown for only 10% less storage. This is no blanket
+allowance for each operation, read latency, Init throughput or resource use. No
+1.25x Git tolerance is adopted. Actual allocation, foreground latency, queue time,
+read behavior and CPU/memory/I/O qualification remain unavailable until separately
+authorized evidence. The existing boundary/correctness checklist follows unchanged
+in scope; this revision does not design or run its verification.
 
 ## 12. Boundary and correctness checklists
 
 These are obligations for the future implementation, not claims of passing tests.
-Exact test IDs, populations, and sample counts remain in the new-family placeholder.
+Test-verification plans, IDs, populations and execution are deferred for the
+owner discussion after these documents; this revision does not expand the checklist.
 
 ### Shared architecture and storage
 
@@ -431,40 +554,87 @@ Exact test IDs, populations, and sample counts remain in the new-family placehol
 - [ ] Implementation uses existing shared modules and focused regressions rather
       than scenario-specific product paths or a new backend framework.
 
-## 13. Benchmark and environment placeholders
+## 13. Cloud evolution seams
 
-**New benchmark family:** TBD. Name/IDs, fixtures, file-size distributions, edit
-schedules, baseline/candidate revisions, public operation surfaces, timing,
-repetitions, ordering, cache conditions, Git scope, verifier coverage, resource
-budgets, acceptance and artifact layout will be discussed separately. Existing
-reports are supporting evidence, not automatically the acceptance population.
-No existing tier sequence or sample count is imported here.
+Canonical IDs and root semantics do not depend on paths, rowids or local pack IDs.
+The pack format has explicit versioning, self-contained offset origins and codec
+bounds; the selected index is a location hint, never an authentication authority.
+Those are format requirements now. No cloud-facing trait or service is added.
 
-**Test environment:** TBD. Host/container ownership, hardware/runtime identities,
-limits, timeouts, preparation, transport, build/cache reuse, isolation, sampling,
-coordination and cleanup remain placeholders. Existing repository instructions
-apply until explicitly amended. This placeholder authorizes no conflicting run.
+A future exporter can preserve pack BLOB bytes and generate a portable locator
+manifest mapping ObjectIds/canonical lengths to portable pack references and
+record locations. Local numeric pack IDs are translated, not treated as global
+identities. All authoritative **local** locators remain in SQLite; this future
+manifest is transfer metadata, not a second local index. Whole selected packs need
+no reframing/recompression; selective transfer may carry unrelated records or
+require a separately scoped repack to avoid them. No universal zero-repack promise.
 
-## 14. Decisions needed before implementation
+Physical closure is enumerable without a persistent dependency table: traverse
+selected roots' logical object graph, inspect each selected record using bounded
+group decoding, collect each DELTA's base ObjectId, resolve and authenticate its
+selected FULL representation, and include its group/pack/locator. Bases contribute
+physical decode bytes, not new logical filesystem roots; their own canonical graph
+need not be traversed solely to apply COPY. FULL bases terminate physical recursion.
+Retain all required selected bases for as long as dependent representations live.
+Export/GC implementation is deferred; a future repacker must preserve this invariant.
 
-- [ ] Resolve existing 0.1.x schema compatibility and existing-Store handling;
-      adopting this architecture does not silently override that contract.
-- [ ] Specify exact pack/group framing, record bounds, locator schema and partial
-      BLOB read mechanism, including concurrent admission policy.
-- [ ] Freeze codec, bounded delta/base selection and representation-choice policy.
-- [ ] Confirm proposed byte/count/memory bounds and oversized-record handling.
-- [ ] Define the new benchmark family and environment, then numerical gates.
+Cold remote access may require locator, header/directory and group requests, then
+the corresponding full-base path; logical metadata traversal adds dependencies.
+Small decoded groups and depth one do not imply one request or low network latency.
+Cache/coalescing benefits include memory and miss costs. Oversized raw singleton
+objects retain their explicit larger transfer bound.
 
-Prototype settings may change prospectively with a recorded rationale. Once
-measurements are frozen, version any contract change and retain earlier evidence.
+| Cloud concern | Disposition |
+| --- | --- |
+| Versioned framing, portable canonical/base identity, bounded decoding, dependency enumeration | Format obligations specified now |
+| Translated locator manifest, selective-transfer overfetch/repack, cross-pack request fan-out | Documented migration costs |
+| SQLite replication versus immutable objects plus authoritative metadata | Future topology choice; not both implementations |
+| Metadata service and conditional publication | Existing publication seam is suitable; service implementation deferred |
+| Tenant authorization and cross-project dedup permission | CAS equality is not access authorization; future service policy |
+| Replication, failover, consensus, remote recovery/fsync, cloud benchmarks | Deferred cloud work, outside this phase |
+
+[Issue #52](https://github.com/Ephemeral-AI-Lab/layerfs/issues/52) records cloud intent.
+Its referenced `docs/roadmap/0.3/README.md` is absent from the inspected published
+revision; do not invent it from a local draft. The older architecture roadmap puts
+platform work at 0.3 and synchronization at 0.4; #52's newer sequencing is a planning
+status gap, not a v0.1.4 implementation gate. SQLite cannot simply become a mutable
+shared object-storage file; replication does not merge independently writable DBs.
+Its current MEMORY/OFF/EXCLUSIVE/WAL-rejection policy needs a separate cloud contract.
+Current Workspace leasing and HeadMoved behavior are not future automatic Branch
+reconciliation, and physical packing changes neither.
+
+## 14. Deferred discussion and remaining decision
+
+**Owner policy decision:** the compatibility/release transition above. This is the
+remaining policy blocker, not a request to approve an irreversible conversion.
+
+**Documentation decisions now specified:** shared ownership, interleaved admission,
+immutable race handling, canonical-length index/FKs, range extraction, codec/wire
+bounds, hint provenance/work ceilings, approximate selection, accumulation and
+physical dependency/export seams. Implementation must honor them or revise this
+proposal explicitly; it may choose private function names and a pinned codec
+library/API without introducing another architecture. The format defines the
+codec capability contract; no dependency or executable implementation is added here.
+
+**New benchmark family and population: TBD. Test environment: TBD. Numerical
+acceptance criteria: TBD. Test-verification plans and execution: deferred.**
+These discussions follow document correction and owner review. Do not populate
+fixtures, schedules, sample counts, test IDs, matrices, budgets or campaign rules
+here, import old family populations, run product tests, or collect candidates.
+Existing benchmark rules and immutable historical contracts remain in force.
+
+The proposed design constants can be changed prospectively with rationale before
+implementation selection; they are not measured conclusions. A later wire/schema
+change needs an explicit version/compatibility disposition. Nothing in design
+confidence establishes actual storage ratios, latency or empirical qualification.
 
 ## References
 
-- [Git pack format](https://git-scm.com/docs/gitformat-pack): full and delta
-  representations, copy/insert instructions, and indexed packing.
-- [Git pack-objects](https://git-scm.com/docs/git-pack-objects): base search and
-  depth tradeoffs; no claim that bounded online encoding matches its output.
-- [Zstandard](https://github.com/facebook/zstd): codec and small-data background;
-  library throughput is not a LayerFS performance result.
-- [SQLite incremental BLOB access](https://sqlite.org/c3ref/blob_open.html): partial
-  BLOB interface and schema restrictions.
+- [Current object owner](../../../../crates/layerfs-layerstack-store/src/objects.rs)
+- [Init and its fallback callers](../../../../crates/layerfs-layerstack-store/src/layerstack.rs)
+- [Direct and Workspace candidate publication](../../../../crates/layerfs-layerstack-store/src/workspace.rs)
+- [Store mutex, FIFO permit and schema validation](../../../../crates/layerfs-layerstack-store/src/schema.rs)
+- [Workspace construction context](../../../../crates/layerfs-workspace/src/changes.rs)
+- [Live checkpoint installation](../../../../crates/layerfs-workspace/src/live_backing.rs)
+- [Git pack format](https://git-scm.com/docs/gitformat-pack)
+- [SQLite incremental BLOB access](https://sqlite.org/c3ref/blob_open.html)

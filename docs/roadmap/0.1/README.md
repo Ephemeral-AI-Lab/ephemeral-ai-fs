@@ -90,6 +90,11 @@ bytes and identities, CDC profile, public SDK and CLI behavior, daemon protocol,
 visibility and acknowledgement semantics, and resource bounds. Only the item
 that fails this boundary moves to 0.2.0.
 
+The [storage proposal's compatibility transition](0.1.4/storage-architecture-spec.md#compatibility-transition)
+identifies its packed schema as incompatible with this rule. Its proposed new-Store
+policy and release placement require an explicit owner decision; the proposal
+itself grants no exception, automatic conversion or migration authority.
+
 ## Acceptance criteria
 
 The 0.1.x phase is complete when:

@@ -1,7 +1,7 @@
 # v0.1.4 storage design review prompt
 
 Copy the prompt below into a review task. It requests a review and recommendations,
-not implementation or a new benchmark campaign. The review must distinguish
+not implementation, test-verification planning, or a new benchmark campaign. The review must distinguish
 mechanistic reasoning from measured proof; document review cannot guarantee
 storage ratios or latency.
 
@@ -28,7 +28,9 @@ contract. Do not repeatedly ask for approval for normal read-only investigation.
 Read applicable AGENTS.md and review skills. Record the repository revision,
 branch, and reviewed document identities. Preserve unrelated working-tree edits.
 Inspect the proposed PR/branch if the files are not on main; do not substitute an
-older roadmap silently. The original proposal is in PR #77:
+older roadmap silently. PR #77 merged at `28177560c8f049c02192e18c263cdc5543c1ab52`; the revised
+specification builds on its independent audit. Use the actual revision under
+review, not the original worktree as an authority. The original proposal is in PR #77:
 https://github.com/Ephemeral-AI-Lab/layerfs/pull/77
 
 The original documentation worktree is:
@@ -45,6 +47,7 @@ Read these documents in full:
 - `docs/roadmap/0.1/0.1.4/storage-architecture-spec.md`
 - `docs/roadmap/0.1/0.1.4/sqlite-storage-format.md`
 - `docs/roadmap/0.1/0.1.4/evidence.md`
+- `docs/roadmap/0.1/0.1.4/review-disposition.md`
 
 Read relevant compatibility and architecture context:
 
@@ -107,10 +110,15 @@ are intentionally TBD. Review whether the design states what needs validation,
 but do not fill those placeholders, adopt old family populations, or turn this
 review into benchmark implementation. Existing benchmark rules still apply.
 
-Proposed pack/group sizes, codec, delta depth, base-search count, schema, and
-format compatibility are not frozen measured conclusions. Identify the decisions
-that must be resolved before implementation. A large code change is acceptable;
-a silent incompatible format or public-semantic change is not.
+The revised architecture/format specify proposed wire fields, bounds, codec,
+hint provenance, admission races and selection approximation. Review those concrete
+rules rather than treating them as unspecified; they are not measured conclusions.
+The compatibility transition remains an explicit owner policy decision. The new
+benchmark family/population, environment, numerical gates, test-verification plans
+and all execution are deferred until specification discussion; do not fill them
+or classify their intentional deferral as an architecture defect. Identify only
+remaining architectural contradictions or owner-required decisions. A large code
+change is acceptable; a silent incompatible format or public-semantic change is not.
 
 ## A. Clarity and end-to-end consistency
 
@@ -305,10 +313,15 @@ Then provide:
    explicitly deferred cloud responsibilities.
 7. **Concrete document corrections.** Quote replacement wording or provide small
    proposed text snippets for the important ambiguities; do not edit the source.
-8. **Prioritized next decisions.** Only decisions necessary before implementation.
-   Keep the new benchmark family and environment for their separate discussion.
+8. **Finding closure and next decisions.** Map every original finding to resolved,
+   remaining decision, or deferred measurement. Identify only necessary remaining
+   architecture/policy decisions; leave family/population, environment, numerical
+   gates and test-verification plans for the separate discussion. Assess design
+   clarity, consistency, bounded mechanisms, minimalism and cloud seams separately
+   from empirical storage/speed confidence. Do not manufacture very-high empirical
+   confidence from improved prose.
 
 If a proposed mechanism does not justify its complexity, recommend removing or
 simplifying it explicitly. If a larger rewrite yields a cleaner final system,
 state the replacement boundary and deletion scope. The review should leave us
-with a clearer, smaller design and testable claims, not a larger wish list.
+with a clearer, smaller design and precise bounded claims, not a larger wish list or a new verification plan.

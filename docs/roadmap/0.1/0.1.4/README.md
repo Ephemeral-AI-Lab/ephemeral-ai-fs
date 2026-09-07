@@ -1,9 +1,10 @@
 # LayerFS 0.1.4 — Storage efficiency
 
 > **Status (2026-09-08):** Planned storage-efficiency phase following the
-> completed v0.1.3 benchmark checkpoint. Optimization design, numerical targets,
-> implementation scope, and new benchmark admission remain open. The proposed
-> architecture is recorded below; no implementation has started.
+> completed v0.1.3 benchmark checkpoint. Architecture v2 now specifies physical
+> framing, shared ownership, admission races and read/write bounds. Compatibility/release policy requires an owner
+> decision. Evaluation and implementation remain deferred; no implementation
+> has started.
 >
 > **Compatibility:** Existing compatibility and acknowledgement requirements
 > remain in force. This roadmap decision authorizes no Store-format or public
@@ -27,7 +28,8 @@ checks remain obligations in v0.1.4; only the broader benchmark expansion moves.
 Reduce storage cost through the shared filesystem capture/construction and
 SQLite publication path used by namespace initialization and Workspace Commit.
 Preserve correctness, ordinary and historical reads, and demonstrated operation
-performance. Workspaces per tool call are an expected agent usage flow. The direction is an outcome, not a selected storage design.
+performance. Workspaces per tool call are an expected agent usage flow. The
+proposal targets that outcome without claiming measured qualification.
 No speedup, storage ratio, or universal advantage over Git is promised.
 
 ## Research boundary
@@ -47,12 +49,19 @@ the proposed shared Init/Commit design: exact CAS/COW reuse, current CDC,
 shallow delta records, bounded compression groups, and immutable SQLite pack
 BLOBs. Small and large files use one pipeline. It includes read/write costs,
 multiple-transaction publication, Git-comparison limits, and boundary checklists.
-Prototype parameters are proposals; binary format, compatibility, benchmark and
-environment decisions remain open.
+Exact proposed wire framing and engineering bounds are specified; they are not
+measured settings. The [compatibility transition](storage-architecture-spec.md#compatibility-transition)
+proposes a new versioned Store with no conversion on open and leaves the release/legacy
+policy to the owner. Benchmark, environment and verification planning remain deferred.
 
 The [SQLite storage-format walkthrough](sqlite-storage-format.md) illustrates
 the proposed database, pack/group/record layouts, shallow deltas, and shared
-read/write flows with SQL examples and diagrams. Its schema is conceptual.
+read/write flows with SQL examples and diagrams. Its proposed schema and wire
+format are precise but not an executable migration.
+
+The [review disposition](review-disposition.md) records each original finding,
+its correction and remaining policy/measurement limitations. Design confidence
+does not qualify storage ratios or speed.
 
 Use the [design-review prompt](design-review-prompt.md) for an independent
 review of clarity, storage/speed tradeoffs, aggregate multi-project load, future
@@ -83,14 +92,16 @@ cloud compatibility, and minimal final components and operation paths.
   implementation/release gates separately before implementation begins.
 
 The durable storage boundary is SQLite-only; packs inside SQLite are permitted
-as research candidates. No encoding, packing layout, compaction policy, chunk
-profile, or small-file representation is selected. It starts no implementation or
-benchmark campaign and does not import historical footprint targets as new gates.
+as research candidates. The revised encoding/layout is a concrete recommendation,
+not implementation authorization. It changes no canonical chunk profile or
+small-file representation. It starts no implementation or benchmark campaign and
+does not import historical footprint targets as new gates.
 
 ## Follow-up planning
 
 - [ ] Agree the optimization proposal and compatibility scope.
-- [ ] Freeze evaluation populations, accounting, budgets, and acceptance gates.
+- [ ] Discuss the new benchmark family, population, environment, numerical gates
+      and verification plans after the specification is corrected and reviewed.
 - [ ] Implement and validate only the agreed scope.
 - [ ] Publish candidate-specific storage and operation results, limitations, and
   required regression evidence before release closure.
