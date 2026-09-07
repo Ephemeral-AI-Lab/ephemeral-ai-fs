@@ -527,8 +527,11 @@ pub(crate) fn run(
                 }
                 unchanged(&store, branch, &before, before_commits)?;
                 workspace_verify::verify_root(&old.reader, old.root, &family::fixture()?)?;
-                live(&client, session.id, &case, "done", 0)?;
+                // A retained publication stage intentionally excludes new Exec
+                // until retry/discard resolves it. Verify retained dirty data
+                // after the supported Commit retry, not through a forbidden Exec.
                 created(&client, session.id)?;
+                live(&client, session.id, &case, "done", 0)?;
                 uptodate(&client, session.id)?;
             }
             "published-presentation-failure" => {

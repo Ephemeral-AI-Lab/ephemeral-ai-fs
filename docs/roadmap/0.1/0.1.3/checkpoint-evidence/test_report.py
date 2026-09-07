@@ -17,7 +17,9 @@ class ReportTest(unittest.TestCase):
             identity = {'case': case, 'family': family, 'source_identity': 'source',
                         'product_identity': 'product', 'image': 'image', 'input_identity': 'input'}
             sample = {'kind': 'sample', 'status': 'PASS', 'identities': identity,
-                      'cleanup': {'status': 'PASS'}, 'records': [{'pure_call_sum_ns': 2_000_000_000}]}
+                      'cleanup': {'status': 'PASS'}, 'prepared_master_unchanged': True,
+                      'environment_observation': {'validated': True},
+                      'resources': {'oom_kill_delta': 0, 'swap_current_bytes': 0}, 'records': [{'pure_call_sum_ns': 2_000_000_000}]}
             performance = root / 'performance' / family / case / 'perf.jsonl'
             performance.parent.mkdir(parents=True)
             performance.write_text(json.dumps(sample) + '\n')

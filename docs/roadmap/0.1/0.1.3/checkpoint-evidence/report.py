@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Derive checkpoint tables from the frozen registry and immutable runner receipts."""
 import argparse
-from collections import Counter
+from collections import Counter, defaultdict
 import csv
 import hashlib
 import importlib.util
 import json
+import statistics
 from pathlib import Path
 import sys
 
@@ -23,9 +24,49 @@ def read(path):
     return json.loads(path.read_text())
 
 
+def previous_results():
+    """Published host-store observations; comparisons remain descriptive."""
+    base = Path(__file__).parents[1]
+    result = {}
+    for filename in ('issue38-main-refresh-results.json', 'issue54-remaining-family-stats.json'):
+        data = read(base / filename)
+        rows = data['performance']
+        if isinstance(rows, dict):
+            rows = rows['results']
+        for row in rows:
+            if row.get('status') != 'PASS' or row.get('family') == 'git_tool_workflow':
+                continue
+            result[row['case']] = {'elapsed_ns': row['elapsed_ns'], 'timer': row['timer'],
+                                  'sample_count': 1, 'source_identity': row.get('source_identity') or row.get('identities', {}).get('source_identity'),
+                                  'report': '../' + filename, 'scope': 'historical host-store observation; original verification limits retained'}
+    for path in sorted(base.glob('issue62-*-results.json')) + [base / 'issue65-unrelated-mixed-v2-results.json']:
+        data = read(path)
+        for row in data['cases']:
+            case = row['case_id']
+            if case.startswith('git-tool-') or row.get('status') not in ('PASS', 'COMPLETE'):
+                continue
+            result[case] = {'elapsed_ns': row['pure_call_sum_ns'], 'timer': row['timer'],
+                            'sample_count': 1, 'fixture_bytes': row['fixture_bytes'],
+                            'fixture_files': row['fixture_files'], 'report': '../' + path.name,
+                            'source_identity': data.get('source_identity') or data.get('identities', {}).get('source_identity'),
+                            'scope': 'same versioned workload, host-store; sampled verification'}
+    data = read(base / 'issue68-evidence/report.json')
+    for case in ('git-tool-100-mixed-v4', 'git-tool-500-mixed-v4'):
+        rows = [r for r in data['rows'] if r.get('case') == case and r.get('run', '').startswith('final-') and r.get('arm') == 'LayerFS']
+        if len(rows) != 3:
+            raise ValueError('published corrected Git cohort cardinality')
+        result[case] = {'elapsed_ns': statistics.median(r['complete_lifecycle_ns'] for r in rows),
+                        'timer': 'pure_call_sum_ns', 'sample_count': 3,
+                        'source_identity': rows[0]['identities']['source_identity'],
+                        'report': '../issue68-evidence/report.json',
+                        'scope': 'corrected-input host-store final median, full Git proofs; compared to one checkpoint observation'}
+    return result
+
+
 def derive(campaign, registry):
     rows, proofs, errors, evidence = [], [], [], {}
     identities = set()
+    previous = previous_results()
     admitted = [r for r in registry if r['family_id'] in runner.HOST_FAMILIES]
     keys = [(r['family_id'], r['scenario_id']) for r in admitted]
     if len(keys) != len(set(keys)):
@@ -92,6 +133,7 @@ def derive(campaign, registry):
                    workload_receipts=[r for r in records if r.get('kind') == 'workload-receipt'],
                    metric_groups=git_report.metric_groups(records),
                    host_resources=[r for r in records if r.get('kind') == 'host-resources'],
+                   route_metrics=[r for r in records if timer in r or r.get('receipt_kind') == 'performance'],
                    container_resources=sample.get('resources'), cleanup=sample.get('cleanup'),
                    preparation_wall_ns=sample.get('preparation_wall_ns'), command_wall_ns=sample.get('command_wall_ns'),
                    setup=sample.get('setup'), preparation=sample.get('preparation'),
@@ -99,6 +141,39 @@ def derive(campaign, registry):
                    observations=[r for r in records if r.get('kind') in ('store-observation', 'workspace-spool-observation', 'workspace-physical-spool')],
                    evidence=str(path.relative_to(campaign)), error=sample.get('error'),
                    unavailable_policy='Absent fields are unavailable or inapplicable; no zero is inferred.')
+        phase_totals = defaultdict(int)
+        for phase in row['phases']:
+            phase_totals[phase['phase']] += phase['elapsed_ns']
+        for phase in ('create', 'exec', 'sdk-edit', 'commit', 'visibility', 'end'):
+            row[phase.replace('-', '_') + '_ns'] = phase_totals.get(phase)
+        for record in row['route_metrics']:
+            for phase, key in (('create', 'workspace_create_ns'), ('sdk_edit', 'edit_call_ns'),
+                               ('commit', 'commit_call_ns'), ('end', 'workspace_end_ns')):
+                if isinstance(record.get(key), int): row[phase + '_ns'] = record[key]
+        host_peaks = [r['peak_resident_bytes'] for r in row['host_resources'] if isinstance(r.get('peak_resident_bytes'), int)]
+        host_peaks += [r['process_lifetime_peak_rss_bytes'] for r in row['route_metrics'] if isinstance(r.get('process_lifetime_peak_rss_bytes'), int)]
+        row['host_peak_rss_bytes'] = max(host_peaks) if host_peaks else None
+        row['container_peak_bytes'] = (sample.get('resources') or {}).get('sample_container_lifetime_peak_bytes')
+        row['verification_wall_seconds'] = proof.get('wall_seconds')
+        row['resource_scope'] = 'Host process high-water and container lifetime peak, not incremental per-operation memory'
+        old = previous.get(case)
+        compatible = old and old['timer'] == timer and all(
+            old.get(key) in (None, definition.get(key)) for key in ('fixture_bytes', 'fixture_files'))
+        row['previous'] = old if compatible else None
+        row['comparison_reason'] = ('Same registered case/version, host-store and timer; descriptive cross-source comparison, not statistical speedup evidence'
+                                    if compatible else 'No compatible published observation; old Git compact fixtures are excluded')
+        row['previous_elapsed_ns'] = old['elapsed_ns'] if compatible else None
+        row['difference_ns'] = elapsed - old['elapsed_ns'] if compatible and elapsed is not None else None
+        row['difference_percent'] = 100 * row['difference_ns'] / old['elapsed_ns'] if row['difference_ns'] is not None and old['elapsed_ns'] else None
+        resources = sample.get('resources') or {}
+        resource_ok = (sample.get('environment_observation', {}).get('validated') is True
+                       and resources.get('oom_kill_delta') == 0
+                       and resources.get('swap_current_bytes') == 0)
+        row['resource_status'] = 'PASS' if resource_ok else 'INCOMPLETE_OR_FAIL'
+        if not resource_ok:
+            errors.append(f'missing or failed environment/resource evidence: {case}')
+        if definition.get('setup_policy') != 'fresh-output' and sample.get('prepared_master_unchanged') is not True:
+            errors.append(f'missing or failed master isolation evidence: {case}')
         if sample.get('status') != 'PASS' or elapsed is None or sample.get('cleanup', {}).get('status') != 'PASS':
             errors.append(f'performance did not pass: {case}')
     if len(identities) != 1 or any(value is None for identity in identities for value in identity):
@@ -126,7 +201,7 @@ def milliseconds(value):
 def write(report, output):
     output.mkdir(parents=True, exist_ok=True)
     (output / 'report.json').write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
-    columns = ['family', 'case', 'sample_count', 'timer', 'elapsed_ns', 'status', 'verification', 'target_ns', 'target_status', 'preparation_wall_ns', 'command_wall_ns', 'evidence']
+    columns = ['family', 'case', 'sample_count', 'timer', 'elapsed_ns', 'status', 'verification', 'target_ns', 'target_status', 'preparation_wall_ns', 'command_wall_ns', 'create_ns', 'exec_ns', 'sdk_edit_ns', 'commit_ns', 'visibility_ns', 'end_ns', 'host_peak_rss_bytes', 'container_peak_bytes', 'verification_wall_seconds', 'previous_elapsed_ns', 'difference_ns', 'difference_percent', 'evidence']
     with (output / 'performance.csv').open('w', newline='') as stream:
         writer = csv.DictWriter(stream, fieldnames=columns, extrasaction='ignore')
         writer.writeheader()
@@ -138,10 +213,12 @@ def write(report, output):
     for family, row in report['families'].items():
         text.append(f"| {family} | {row['performance_cases']} | {row['performance_statuses']} | {row['verification_statuses']} | {milliseconds(row['across_case_min_ns'])}–{milliseconds(row['across_case_max_ns'])} |")
     for family in report['families']:
-        text += ['', f'## {family}', '', '| Test | Timer | Time (ms) | Execution | Verification | Latency target |', '|---|---|---:|---|---|---|']
+        text += ['', f'## {family}', '', '| Test | Timer | Time (ms) | Exec / SDK / Commit (ms) | Host / container peak (MiB) | Previous (ms) | Execution / verification | Target |', '|---|---|---:|---|---|---:|---|---|']
         for row in report['performance']:
             if row['family'] == family:
-                text.append(f"| {row['case']} | {row['timer']} | {milliseconds(row['elapsed_ns'])} | {row['status']} | {row['verification']} | {row.get('target_status', '—')} |")
+                phases = ' / '.join(milliseconds(row.get(key)) for key in ('exec_ns', 'sdk_edit_ns', 'commit_ns'))
+                memory = ' / '.join('—' if row.get(key) is None else f"{row[key] / 2**20:.2f}" for key in ('host_peak_rss_bytes', 'container_peak_bytes'))
+                text.append(f"| {row['case']} | {row['timer']} | {milliseconds(row['elapsed_ns'])} | {phases} | {memory} | {milliseconds(row.get('previous_elapsed_ns'))} | {row['status']} / {row['verification']} | {row.get('target_status', '—')} |")
     text += ['', '## Verification', '', '| Test | Result | Wall (s) |', '|---|---|---:|']
     text += [f"| {r['case']} | {r['status']} | {r.get('wall_seconds', '—')} |" for r in report['verification']]
     if report['errors']:

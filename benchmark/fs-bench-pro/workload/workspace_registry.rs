@@ -59,7 +59,7 @@ macro_rules! dispatch_family {
 pub(crate) fn fixture(case: &Case, seed: u8) -> Result<Vec<Entry>> {
     if case.family=="edit_length_changing_capped" {return super::edit_length_changing_capped::fixture(case,seed);}
     valid_seed(seed)?;
-    if case.family=="workspace_reliability" { return super::workspace_reliability::fixture(); }
+    if case.family=="workspace_reliability" { return super::workspace_reliability::fixture_for(case); }
     if case.kind=="boundaries" { return super::dedup_cdc_locality::boundaries(); }
     dispatch_family!(case, fixture, seed)
 }

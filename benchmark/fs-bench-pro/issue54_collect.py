@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -41,6 +42,12 @@ SEED = 1
 
 
 def _run(argv, cwd=None):
+    if "--list" not in argv:
+        # Queue before invoking the existing lock-owning runner. Waiting is
+        # orchestration time, never a product or verification measurement.
+        lock_path = Path(os.environ.get("TMPDIR", "/tmp")) / "layerfs-infra-measurement.lock"
+        with lock_path.open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
     return subprocess.run(argv, cwd=cwd or REPO, text=True, capture_output=True)
 
 
@@ -79,35 +86,47 @@ def perf_status(path: Path):
     return last
 
 
+def load_performance(path, family, row, source, image):
+    records = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    samples = [record for record in records if record.get("kind") == "sample"]
+    if len(samples) != 1 or records[-1].get("kind") != "summary":
+        raise ValueError(f"incomplete or duplicate performance receipt: {path}")
+    sample = samples[0]
+    identity = sample.get("identities", {})
+    if any(identity.get(key) != value for key, value in (
+        ("family", family), ("case", row["scenario_id"]),
+        ("source_identity", source), ("image", image),
+        ("harness_identity", runner.harness_identity()),
+    )):
+        raise ValueError(f"incompatible performance receipt: {path}")
+    timer, elapsed = runner._timer(sample)
+    ids = [record["row_id"] for record in sample.get("records", []) if "row_id" in record]
+    if row.get("route") == "sdk" and len(ids) != 1:
+        raise ValueError("SDK sample must supply one performance row identity")
+    identity = {**identity, "performance_rows": ",".join(ids) or "-"}
+    return {"family": family, "case": row["scenario_id"], "proof_only": False,
+            "fixture_profile": row.get("fixture_profile"), "tier": row.get("tier"),
+            "seed": SEED, "sample_count": 1, "route": row.get("route"),
+            "status": records[-1].get("status"), "execution_status": sample.get("status"),
+            "completion_status": sample.get("completion_status"),
+            "historical_product_target_status": sample.get("historical_product_target_status"),
+            "cleanup": sample.get("cleanup"), "resources": sample.get("resources"),
+            "preparation_wall_ns": sample.get("preparation_wall_ns"),
+            "command_wall_ns": sample.get("command_wall_ns"), "error": sample.get("error"),
+            "timer": timer, "elapsed_ns": elapsed, "identities": identity,
+            "receipt": str(path), "receipt_sha256": _sha256(path)}
+
+
 def collect_row(args, family, row, output):
     case = row["scenario_id"]
-    proof_only = bool(row.get("proof_only"))
-    case_dir = output / ("verification" if proof_only else "performance") / family / case
-    receipt_name = "verification.json" if proof_only else "perf.jsonl"
-    existing = case_dir / receipt_name
-    result = {
-        "family": family,
-        "case": case,
-        "proof_only": proof_only,
-        "fixture_profile": row.get("fixture_profile"),
-        "tier": row.get("tier"),
-        "seed": SEED,
-        "sample_count": 0 if proof_only else 1,
-        "route": row.get("route"),
-    }
-    if proof_only:
-        return result, "proof"
-    if existing.is_file():
-        summary = perf_status(existing)
-        if summary and summary.get("kind") == "summary" and summary.get("status") in ("PASS", "TARGET_MISS"):
-            result.update(reused=True, status=summary["status"], receipt=str(existing),
-                          receipt_sha256=_sha256(existing))
-            return result, "reuse-pass"
-        if summary and summary.get("kind") == "summary":
-            result.update(reused=True, status=summary.get("status"), receipt=str(existing),
-                          receipt_sha256=_sha256(existing))
-            return result, "reuse-incomplete"
-    case_dir.mkdir(parents=True, exist_ok=True)
+    case_dir = output / "performance" / family / case
+    receipt = case_dir / "perf.jsonl"
+    listed = args.listed_families[family]
+    if receipt.exists():
+        result = load_performance(receipt, family, row, listed["source_identity"], listed["image"])
+        return {**result, "reused": True}, "reuse"
+    if case_dir.exists():
+        raise ValueError(f"attempt directory exists without a receipt: {case_dir}")
     command = [
         sys.executable, str(HERE / "shared/runner.py"),
         "--family", family, "--case", case,
@@ -121,52 +140,12 @@ def collect_row(args, family, row, output):
     ]
     started = time.monotonic()
     proc = _run(command)
-    result.update(
-        status="PASS" if proc.returncode == 0 else "FAIL",
-        returncode=proc.returncode,
-        wall_seconds=time.monotonic() - started,
-        stdout_tail=proc.stdout[-4000:],
-        stderr_tail=proc.stderr[-4000:],
-        receipt=str(existing) if existing.is_file() else None,
-    )
-    if existing.is_file():
-        result["receipt_sha256"] = _sha256(existing)
-        summary = perf_status(existing)
-        if summary:
-            sample = None
-            header = None
-            with existing.open() as stream:
-                for line in stream:
-                    parsed = json.loads(line)
-                    if parsed.get("kind") == "header":
-                        header = parsed
-                    elif parsed.get("kind") == "sample":
-                        sample = parsed
-            if sample:
-                result["execution_status"] = sample.get("status")
-                result["completion_status"] = sample.get("completion_status")
-                result["historical_product_target_status"] = sample.get("historical_product_target_status")
-                result["cleanup"] = sample.get("cleanup")
-                result["resources"] = sample.get("resources")
-                result["preparation_wall_ns"] = sample.get("preparation_wall_ns")
-                result["command_wall_ns"] = sample.get("command_wall_ns")
-                result["error"] = sample.get("error")
-                timer, elapsed = runner._timer(sample)
-                result["timer"] = timer
-                result["elapsed_ns"] = elapsed
-                identities = sample.get("identities") or (header or {}).get("identities") or {}
-                result["identities"] = {
-                    "source_identity": identities.get("source_identity"),
-                    "product_identity": identities.get("product_identity"),
-                    "harness_identity": identities.get("harness_identity"),
-                    "input_identity": identities.get("input_identity"),
-                    "image": identities.get("image"),
-                    "setup_identity": identities.get("setup_identity"),
-                }
-            if summary.get("status"):
-                result["status"] = summary["status"]
+    if receipt.exists():
+        result = load_performance(receipt, family, row, listed["source_identity"], listed["image"])
     else:
-        result["status"] = "TIMEOUT" if "timeout" in (proc.stderr + proc.stdout).lower() else "FAIL"
+        result = {"family": family, "case": case, "status": "INCOMPLETE", "sample_count": 0}
+    result.update(returncode=proc.returncode, wall_seconds=time.monotonic() - started,
+                  stdout_tail=proc.stdout[-4000:], stderr_tail=proc.stderr[-4000:])
     return result, "ran"
 
 
@@ -186,18 +165,24 @@ def verify_row(args, family, row, output, identities):
         return result
     if receipt.is_file():
         saved = json.loads(receipt.read_text())
+        if not identities or any(saved.get(key) != identities.get(key) for key in
+                                 ("source_identity", "product_identity", "input_identity")):
+            raise ValueError(f"incompatible verification receipt: {receipt}")
+        if saved.get("harness_identity") != runner.harness_identity() or saved.get("image_identity") != identities.get("image"):
+            raise ValueError(f"incompatible verification harness/image: {receipt}")
         result.update(status=saved.get("status"), reused=True, receipt=str(receipt),
                       receipt_sha256=_sha256(receipt), wall_seconds=saved.get("wall_seconds"))
         return result
     if not identities or not identities.get("source_identity") or not identities.get("input_identity"):
         result.update(status="INCOMPLETE", error="missing identity-matched performance/source identities")
         return result
-    case_dir.mkdir(parents=True, exist_ok=True)
+    case_dir.parent.mkdir(parents=True, exist_ok=True)
     command = [
         sys.executable, str(HERE / "verify-selected.py"),
         "--family", family, "--case", case,
         "--repetition" if row.get("route") == "sdk" else "--seed", str(SEED),
-        "--setup", identities.get("setup_identity") or "clone",
+        "--setup", "fresh" if identities.get("setup_identity") == "fresh-output" else identities.get("setup_identity") or "clone",
+        "--performance-rows", identities.get("performance_rows", "-"),
         "--source", identities["source_identity"],
         "--input", identities["input_identity"],
         "--image", args.image, "--host-binary", args.host_binary,
@@ -241,6 +226,7 @@ def main():
     inventory = {"families": {}, "performance_cases": [], "proof_cases": [], "mismatches": []}
     identities_by_case = {}
     selected_families = {}
+    args.listed_families = {}
     families = PERF_FAMILIES + ((PROOF_FAMILY,) if args.family in (None, PROOF_FAMILY) else ())
     if args.checkpoint:
         families = runner.HOST_FAMILIES
@@ -252,6 +238,7 @@ def main():
         if args.case:
             rows = [row for row in rows if row["scenario_id"] == args.case]
         selected_families[family] = (rows, listed)
+        args.listed_families[family] = listed
         inventory["families"][family] = {
             "count": len(rows),
             "source_identity": listed.get("source_identity"),
@@ -292,7 +279,7 @@ def main():
                 ledger.append(result)
                 _write(output / "performance-ledger.json", ledger)
                 print(f"PERF {family} {row['scenario_id']} {result.get('status')} {how} timer={result.get('timer')} elapsed_ns={result.get('elapsed_ns')}", flush=True)
-                if result.get("identities"):
+                if result.get("status") == "PASS" and result.get("identities"):
                     identities_by_case[row["scenario_id"]] = result["identities"]
         _write(output / "performance-ledger.json", ledger)
 
@@ -301,7 +288,7 @@ def main():
         identity_cache = identities_by_case
         if (output / "performance-ledger.json").is_file():
             for item in json.loads((output / "performance-ledger.json").read_text()):
-                if item.get("identities"):
+                if item.get("status") == "PASS" and item.get("identities"):
                     identity_cache[item["case"]] = item["identities"]
         for family in families:
             rows, listed = selected_families[family]

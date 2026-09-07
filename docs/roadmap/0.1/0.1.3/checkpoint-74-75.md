@@ -137,3 +137,20 @@ the two relevant files, without unrelated aliases, symlinks or filler bytes.
 Family cardinality remains 28. Keep the original proof and timing as historical
 repair evidence; never relabel it as the smaller smoke. Fixture/cache identity and
 expected-state generation must use the new case and its exact 4/8 KiB states.
+
+## First real Docker repair results
+
+On image `layerfs-bench-infra:a847ad83ab8cea09`, separate development proofs passed:
+presentation recovery 2.128 s, lease lifecycle 1.954 s, open-writer Commit 2.428 s,
+live-command Commit 2.260 s, and later-admission retry 3.165 s; cleanup passed.
+Final-publication injection reached its exact boundary (one fault, five earlier
+transactions), but the verifier tried to Exec while a retained stage intentionally
+excluded mutation. Move that read after the supported Commit retry; still check
+unchanged prior publication before retry and exact current data afterward.
+The corrected retry, two spool faults, and minimal smoke remain to be executed.
+
+Collector fixes are independently checked: proof output must be absent at launch,
+SDK row binding survives receipt reuse, and mismatched source/input/harness/image
+receipts are rejected. The table generator rejects missing/duplicate evidence and
+keeps target misses separate from execution PASS. Final runtime evidence is still
+pending; these development results are not the complete checkpoint.
