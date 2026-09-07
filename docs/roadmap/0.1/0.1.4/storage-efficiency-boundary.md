@@ -11,10 +11,16 @@ Related: [v0.1.4 scope](README.md), [supporting evidence](evidence.md),
 
 ## Objective
 
-Make retaining filesystem states at agent tool-call boundaries economical while
-preserving most of LayerFS's demonstrated checkpoint performance, correctness,
-and historical readability. Storage efficiency and operation cost must be
-assessed together. No universal advantage over Git is claimed.
+Improve storage efficiency in the shared filesystem capture/construction and
+SQLite publication pipeline used by namespace initialization and Workspace
+Commit. Preserve most of LayerFS's demonstrated operation performance,
+correctness, and historical readability. Storage efficiency and operation cost
+must be assessed together. No universal advantage over Git is claimed.
+
+A Workspace per agent tool call is an expected application workflow, not the
+core storage abstraction or a required checkpoint cadence. Initialization and
+Commit must benefit through the shared product path; avoid a separate
+agent-specific encoder or storage pipeline.
 
 The broader multi-agent/multi-Branch scaling campaign remains v0.1.5. Required
 correctness of existing shared-object and Branch behavior is not deferred.
@@ -44,16 +50,18 @@ or become an unacknowledged external durable object store.
 
 ## First-design execution boundary: synchronous and blocking
 
-The owner prefers a fast synchronous pipeline for the first design. Storage
-encoding selected for a checkpoint must finish before Commit acknowledges it;
-no background encoder, packer, or later compaction pass may be required to
-achieve that checkpoint's reported storage efficiency.
+The owner prefers a fast synchronous shared pipeline for namespace
+initialization and Workspace Commit: capture or construct the filesystem state,
+admit new objects and required metadata, and publish into SQLite. Selected
+encoding must finish before the corresponding public operation returns success.
+No background encoder, packer, or later compaction pass may be required to
+achieve that operation's reported storage efficiency.
 
 Include the work wherever it occurs in the declared foreground lifecycle. Work
 performed during mutation must not disappear from accounting because the final
 Commit call is short. Synchronous completion does not mean holding a SQLite
-write transaction during all preparation, nor does it imply stronger fsync or
-power-loss durability guarantees.
+write transaction during all preparation. Synchronous completion refers to
+operation completion, not a new durability guarantee.
 
 Prefer incremental work on newly admitted content and required metadata. This
 boundary does not require rewriting or globally repacking all retained history
@@ -66,6 +74,33 @@ Measure the primary retained footprint at acknowledgement under this policy.
 Do not substitute a separately compacted footprint for it. Future maintenance
 or reclamation remains a separately scoped decision; it must not be used to
 hide costs or rescue the first design's storage claim.
+
+## Scope exclusion: durability and crash recovery
+
+The owner excludes new durability guarantees, crash-recovery design, and crash
+or power-loss qualification from this storage-efficiency phase. Do not expand
+the research into those workstreams. Existing behavior is not intentionally
+weakened; ordinary correctness, reported failures, object authentication, and
+readability of successfully retained states remain required.
+
+## Read-heavy and write-heavy use
+
+Neither reads nor writes may be assumed rare. Evaluate namespace initialization,
+change capture and Commit, ordinary filesystem reads, and historical reads as
+separate costs. Compression and representation decoding must not be hidden by
+a faster publication phase or by a favorable average workload mix.
+
+Record canonical encoding/decoding, compression/decompression, authentication,
+object lookup, and SQLite I/O distinctly where measurement permits. Determine
+which paths reach stored objects versus already available Workspace data; do
+not assume every read decompresses or every write recompresses an entire file.
+
+Research should consider avoiding re-encoding reused objects, excessive decode
+size for small reads, repeated decoding of shared metadata, and unnecessary
+compression of tiny or incompressible values. These are questions for a shared
+implementation, not selected cache, codec, threshold, or layout policies.
+Any cache benefit must include its memory cost and behavior on misses. Read and
+write amplification and any delta-base reconstruction must remain visible.
 
 ## Research candidates, not implementation commitments
 
@@ -127,16 +162,17 @@ historical absolute MB target is adopted as a v0.1.4 gate.
 - Compare unchanged LayerFS and the candidate under the same eventual operation
   and environment contract. Keep Git's retained-history and workflow comparisons
   separately scoped and explicitly matched where a comparison is claimed.
-- Report foreground checkpoint work, complete tool-call lifecycle, and historical
-  reads separately. Do not hide a severe case regression in an aggregate average.
+- Report namespace initialization, capture/Commit, ordinary reads, and historical
+  reads separately. Complete tool-call lifecycle is an additional application
+  measurement when selected. Do not hide a severe case regression in an average.
 - Report absolute elapsed time as well as ratios. Numerical latency, tail-latency,
   resource, and noise/repetition rules remain to be specified.
 - Count immediate storage and any post-maintenance storage separately. Include
   the CPU, elapsed time, I/O, and peak temporary allocation required to reach the
   claimed compact state, plus any interference with foreground operations.
 - Preserve public filesystem behavior, historical content, isolation, and
-  authentication. Do not weaken acknowledgement or durability semantics to
-  improve results.
+  authentication. Preserve existing acknowledgement behavior; new durability
+  and crash-recovery work is outside this phase.
 - Physical encoding should preserve logical object identities. Any schema,
   canonical representation, or compatibility change needs a separately agreed
   contract and existing-Store handling before implementation.

@@ -23,15 +23,18 @@ checks remain obligations in v0.1.4; only the broader benchmark expansion moves.
 
 ## Goal
 
-Reduce the total disk cost of retaining tool-call filesystem states while
-preserving correctness, historical readability, and the demonstrated localized
-checkpoint behavior. The direction is an outcome, not a selected storage design.
+Reduce storage cost through the shared filesystem capture/construction and
+SQLite publication path used by namespace initialization and Workspace Commit.
+Preserve correctness, ordinary and historical reads, and demonstrated operation
+performance. Workspaces per tool call are an expected agent usage flow. The direction is an outcome, not a selected storage design.
 No speedup, storage ratio, or universal advantage over Git is promised.
 
 ## Research boundary
 
 The [storage-efficiency boundary](storage-efficiency-boundary.md) records the
-SQLite-only durable storage constraint, conditional speed/storage tradeoffs,
+SQLite-only storage constraint, synchronous shared Init/Commit scope,
+read/write cost concerns, exclusion of new durability/crash-recovery work,
+conditional speed/storage tradeoffs,
 and preference for a new benchmark family. The benchmark definition and test
 environment are placeholders for a separate discussion. No optimization
 implementation is selected.
