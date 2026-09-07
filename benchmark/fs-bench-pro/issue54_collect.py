@@ -325,7 +325,8 @@ def main():
                     resolve = argparse.Namespace(
                         family=family, case=row["scenario_id"], seed=SEED, image=args.image,
                         host_binary=args.host_binary, topology="host-store",
-                        setup="clone", source=None, input=None, cpus=2, memory_mib=2048,
+                        setup="fresh" if row.get("setup_policy") == "fresh-output" else "clone",
+                        source=None, input=None, cpus=2, memory_mib=2048,
                         timeout=COMMAND_TIMEOUT, product_timeout=PRODUCT_TIMEOUT,
                         setup_timeout=SETUP_TIMEOUT, source_arm="candidate",
                         performance_rows="-", repetition=None, smoke=False, list=False,
