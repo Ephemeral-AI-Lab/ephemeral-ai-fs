@@ -42,15 +42,17 @@ allowed.
 - [Development guide](development.md)
 - [v0.1.1 released history](0.1.1/README.md)
 - [v0.1.2 completed release plan](0.1.2/README.md)
-- [v0.1.3 draft](0.1.3/README.md)
-- [v0.1.4 draft](0.1.4/README.md)
+- [v0.1.3 completed benchmark checkpoint](0.1.3/checkpoint-evidence/README.md)
+- [v0.1.4 storage-efficiency plan](0.1.4/README.md)
+- [v0.1.5 multi-history draft](0.1.5/README.md)
 
 ## Release sequence
 
 - [0.1.1 released history](0.1.1/README.md)
 - [0.1.2 completed release plan](0.1.2/README.md)
 - [0.1.3 Workspace and single-Branch deduplication plan](0.1.3/README.md)
-- [0.1.4 multi-history operation draft](0.1.4/README.md)
+- [0.1.4 storage-efficiency plan and evidence](0.1.4/README.md)
+- [0.1.5 multi-history operation draft](0.1.5/README.md)
 - [Development guide](development.md)
 - [Benchmark contract](benchmarking.md)
 
@@ -59,8 +61,9 @@ allowed.
 | v0.1.0 | Frozen payload baseline: create, small edit, EDIT16, prepend, and read. |
 | v0.1.1 | Existing-directory initialization and namespace scaling through localized Commit and exact reopen. |
 | v0.1.2 | Adapt `fs-bench-pro`, implement the universal edit engine, complete same-count and count-changing Docker/FUSE performance families, and measure total durable Store footprint. |
-| v0.1.3 | Twelve families covering Workspace workloads, CAS/CDC, bounded single-Branch retained-history storage growth, and reliability; reuse the four-tier benchmark infrastructure. |
-| v0.1.4 | Multi-Layer and multi-Branch Commit history, Fork, Add, Diff, conflict, and query scaling. |
+| v0.1.3 | Completed benchmark checkpoint: 17 active families, 198 performance cases and 226 routine verification cases; target misses and exclusions remain in the report. |
+| v0.1.4 | Storage efficiency for retained tool-call states, preserving checkpoint behavior; optimization design remains to be discussed. |
+| v0.1.5 | Multi-Layer and multi-Branch Commit history, Fork, Add, Diff, conflict, and query scaling. |
 
 Benchmark each admitted operation, but optimize only measured defects or
 material opportunities. A passing operation may close as measured with no code
@@ -68,7 +71,7 @@ change.
 
 ## Append-only benchmark freeze
 
-The registry grows from v0.1.0 through v0.1.4, but every admitted row is frozen
+The registry grows from v0.1.0 through v0.1.5, but every admitted row is frozen
 through 1.0.0. Its scenario ID, fixture generator and digest, public operation
 sequence, timed boundary, acknowledgement semantics, correctness/reopen oracle,
 sample rules, resource envelope, and result schema must not change in place.
@@ -91,7 +94,7 @@ that fails this boundary moves to 0.2.0.
 
 The 0.1.x phase is complete when:
 
-- [ ] The v0.1.0-v0.1.4 registered matrices pass with exact reopen proof.
+- [ ] The v0.1.0-v0.1.5 registered matrices pass with exact reopen proof.
 - [ ] CPU, RSS, FUSE I/O, Store growth, object reuse, transaction maxima, and
   cleanup evidence are retained for every registered lifecycle.
 - [ ] Every admitted scenario remains byte-for-byte and boundary-for-boundary

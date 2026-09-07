@@ -1,0 +1,65 @@
+# Supporting evidence for v0.1.4 storage efficiency
+
+Status: planning evidence index, 2026-09-08. These observations motivate the
+release priority; they do not qualify a v0.1.4 candidate or select an optimization.
+
+## Baseline and experiment custody
+
+The [v0.1.3 checkpoint report](../0.1.3/checkpoint-evidence/report.md) records
+198 performance cases and 226 routine verification cases passing their recorded
+completion gates, with latency-target misses retained and the optional 600-second
+test excluded. PR #76 merged at `9f5a641d2`. This is a benchmark closeout, not a
+claim here that a release tag was published.
+
+[Issue #72](https://github.com/Ephemeral-AI-Lab/layerfs/issues/72) is the supporting
+experiment record. Preserve its original description, versioned amendments,
+failed runs, and results. Do not relabel exploratory results as release evidence.
+The reports below are pinned to documentation commit
+`1c7c9235115d1b4f21bc2eae7af822552b7be3ed`; each report separately records its
+measured product, input, binary, and runtime identities. That documentation
+commit is not a shared measured candidate for all experiments.
+
+## Findings and their planning implications
+
+| Evidence | Recorded observation | Implication |
+| --- | --- | --- |
+| [DeepSeek retained history](https://github.com/Ephemeral-AI-Lab/layerfs/blob/1c7c9235115d1b4f21bc2eae7af822552b7be3ed/docs/roadmap/0.1/0.1.4/deepseek-history/results.md) | All 157 selected states verified; 4,936,693,030 logical bytes; 940,310,528 allocated Store bytes; 80.95% savings against calculated independent payload copies | Sharing and correctness are demonstrated; independent-copy savings do not establish competitive compactness |
+| [Matched Git control](https://github.com/Ephemeral-AI-Lab/layerfs/blob/1c7c9235115d1b4f21bc2eae7af822552b7be3ed/docs/roadmap/0.1/0.1.4/deepseek-history/git-control-results.md) | Same selected root trees: 56,373,248 allocated bytes in delta-packed Git versus 940,310,528 in LayerFS, a 16.68× allocation ratio | Retained storage is a material optimization opportunity |
+| [Object accounting](https://github.com/Ephemeral-AI-Lab/layerfs/blob/1c7c9235115d1b4f21bc2eae7af822552b7be3ed/docs/roadmap/0.1/0.1.4/deepseek-history/results.json) | 799,638,421 canonical object bytes; 140,672,107 bytes of Store allocation above canonical bytes | Distinguish content representation from physical and record overhead |
+| [Small-edit control](https://github.com/Ephemeral-AI-Lab/layerfs/blob/1c7c9235115d1b4f21bc2eae7af822552b7be3ed/docs/roadmap/0.1/0.1.4/deepseek-history/small-edit-results.md) | 18 cases, 360 edits, 378 states verified; host-native in-place edit plus LayerFS Commit medians around 1.5–1.7 ms for tested 2/32 KiB files versus roughly 12–13 ms for Git CLI | Preserve measured foreground behavior; the difference does not isolate CDC or engine cost |
+| [Docker/FUSE control](https://github.com/Ephemeral-AI-Lab/layerfs/blob/1c7c9235115d1b4f21bc2eae7af822552b7be3ed/docs/roadmap/0.1/0.1.4/deepseek-history/docker-edit-results.md) | Primary comparison: 12 histories, 240 edits, 252 states verified; 100 MiB binary, 4 KiB edits: SDK edit plus Commit median 4.893 ms versus Git CLI 2,859.517 ms | Localized checkpoint performance is a control to preserve, not a universal speed claim |
+
+The matched Git control retains the selected file contents, names, executable
+bits, and symlink targets; it does not retain LayerFS's full filesystem metadata.
+Use this control for the selected states rather than equating the original
+190.21 MB Git clone's 15,632 source commits with the selected LayerFS history.
+
+Latency results use synthetic histories and different interfaces. The Docker
+comparison places Git in a constrained container while LayerFS also uses the
+macOS host SDK/Store. It is not an equal-compute, equal-durability, cold-cache,
+or pure-engine comparison. Each case has one history, not independent repeated
+histories. Ordinary Exec and SDK range edits remain separate operation surfaces.
+The Docker campaign stopped during supplemental 100 MiB binary Git packing
+(signal 9); the last ordinary-FUSE diagnostic was not run. The verified primary
+comparison does not make the overall campaign complete or establish an OOM cause.
+
+Raw result files and the [large host-native edit report](https://github.com/Ephemeral-AI-Lab/layerfs/blob/1c7c9235115d1b4f21bc2eae7af822552b7be3ed/docs/roadmap/0.1/0.1.4/deepseek-history/large-edit-results.md)
+are linked by the individual reports. Machine-local Stores and logs remain
+machine-local; their paths are not download links.
+
+## Historical storage research
+
+[Issue #18](https://github.com/Ephemeral-AI-Lab/layerfs/issues/18) preserves an older
+physical-pack experiment: 542,909,962 canonical bytes and a 562,513,789-byte
+conservative object-storage lower bound, compared with a historical primary
+Store median of 662,831,104 bytes. All 422,085 indexed segments were reread and
+matched. Production publication, recovery, migration, and cleanup were not
+implemented and fully counted. This is prior research, not a selected v0.1.4
+design, a transferred footprint prediction, or a current acceptance target.
+
+## Planning consequence
+
+[v0.1.4](README.md) prioritizes storage efficiency while preserving operation
+behavior and retained-state correctness. The broader multi-history campaign
+moves to [v0.1.5](../0.1.5/README.md). Optimization approaches and new evaluation
+contracts remain for a separate discussion.

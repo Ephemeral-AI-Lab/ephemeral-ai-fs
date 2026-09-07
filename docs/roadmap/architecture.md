@@ -199,12 +199,20 @@ schedules, random unaligned positions, explicit same-count and count-changing
 classification, and separate path/inode/byte deltas. Supporting SDK lifecycle
 phases remain measured, but standalone control-plane microbenchmarks are not the
 v0.1.3 goal. Commit-history depth, Add, multi-Layer Diff, conflict handling, and
-Branch fan-out wait for v0.1.4.
+Branch fan-out wait for v0.1.5.
 
-### 0.1.4: multi-Layer and multi-Branch history
+### 0.1.4: storage efficiency
 
-v0.1.4 extends the same public-path contract to bounded history depth and
-Branch fan-out. The [0.1.4 README](0.1/0.1.4/README.md) owns Fork from Layer and
+The [0.1.4 plan](0.1/0.1.4/README.md) prioritizes reducing retained storage cost
+while preserving checkpoint behavior and historical correctness.
+[Supporting evidence](0.1/0.1.4/evidence.md) links issue #72 and the localized-edit
+controls; issue #18 is now current storage planning. This sequencing decision
+selects no optimization architecture or numerical acceptance targets.
+
+### 0.1.5: multi-Layer and multi-Branch history
+
+v0.1.5 extends the same public-path contract to bounded history depth and
+Branch fan-out. The [0.1.5 README](0.1/0.1.5/README.md) owns Fork from Layer and
 Commit, repeated Commit history, Add outcomes, Layer/Branch Diff, paged Query,
 conflict and resolution, head movement, historical reads, reopen, and storage
 reuse.

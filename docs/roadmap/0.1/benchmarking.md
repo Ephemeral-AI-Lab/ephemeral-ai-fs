@@ -15,8 +15,9 @@ pools old rows.
 | v0.1.0 | Frozen 32 MiB payload lifecycle |
 | v0.1.1 | Previous released Developer Preview; namespace admission history |
 | v0.1.2 | SDK edit rebuild completed; five-family release evidence recorded |
-| v0.1.3 | Twelve planned families: eleven performance families and Workspace reliability; single-Branch retained-history dedup included |
-| v0.1.4 | Multi-Layer/multi-Branch extension, sharing, publication and query scaling |
+| v0.1.3 | Completed checkpoint: 17 active families; [recorded coverage, target misses and exclusions](0.1.3/checkpoint-evidence/report.md) remain authoritative |
+| v0.1.4 | Storage-efficiency priority; new evaluation contract and targets remain to be agreed; prior evidence stays unchanged |
+| v0.1.5 | Multi-Layer/multi-Branch extension, sharing, publication and query scaling |
 
 ## Active v0.1.2 edit admission
 
@@ -83,4 +84,4 @@ logical workload content. Five inherited 500 MiB growth rows exceed the result
 cap and require explicitly versioned capped-result replacements; their old
 identities/results are retained, not silently resized or claimed as rerun.
 Bounded single-Branch history now belongs to v0.1.3 dedup qualification;
-multi-Branch and broader history/query scaling remain v0.1.4.
+multi-Branch and broader history/query scaling remain v0.1.5.

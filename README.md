@@ -176,7 +176,8 @@ LayerFS is suitable for evaluation and integration work, but the preview boundar
 - the managed container is not a complete hostile-code security boundary;
 - owner-side range-edit batches must target one Workspace and one regular file;
 - the retained SQLite Store misses the 600 MB primary-control goal; authenticated
-  alternative storage architectures in #18 are far-future and unscheduled;
+  storage efficiency is prioritized for [v0.1.4](docs/roadmap/0.1/0.1.4/README.md)
+  in [#18](https://github.com/Ephemeral-AI-Lab/layerfs/issues/18), with optimization design still to be discussed;
 - the detached CLI context owner does not forward an interactive PTY; and
 - CLI JSON output is a preview text envelope, not a stable machine API.
 
@@ -207,8 +208,9 @@ The [first-principles learning site](https://learn.layerfs.ai/) is educational m
 | **0.1.0 Developer Preview** | One SQLite Store, immutable LayerStack history, Branches, Workspaces, public SDK/CLI, host materialization, container FUSE, monitoring, and benchmark evidence. | **Released** as source under `v0.1.0`. |
 | **0.1.1** | Measure and harden existing-directory initialization through localized Commit, with focused FUSE and Docker proof. | **Released** as source under `v0.1.1`; see the [release record](release-notes/0.1.1/README.md). |
 | **0.1.2** | Three SDK-only 1/10/100/500 MiB edit families, namespace and Store refresh, and universal regular-file editing. | **Released** as source under `v0.1.2`; see the [release record](release-notes/0.1.2/README.md). |
-| **0.1.3** | Complete diverse, tiered filesystem-workload families against one genesis Layer and one Branch, then optimize measured bottlenecks. | **Draft**; see the [release README](docs/roadmap/0.1/0.1.3/README.md). |
-| **0.1.4** | Benchmark multi-Layer and multi-Branch Commit history, Fork, Add, Diff, conflict, and query scaling, then optimize measured bottlenecks. | **Draft**; see the [release README](docs/roadmap/0.1/0.1.4/README.md). |
+| **0.1.3** | Filesystem workloads, retained-history and reliability benchmark checkpoint. | **Checkpoint completed**; see the [report and explicit limitations](docs/roadmap/0.1/0.1.3/checkpoint-evidence/report.md). |
+| **0.1.4** | Reduce retained storage cost while preserving checkpoint behavior and correctness. | **Planned**; [scope and supporting evidence](docs/roadmap/0.1/0.1.4/README.md). Optimization approach remains open. |
+| **0.1.5** | Benchmark multi-Layer and multi-Branch Commit history, Fork, Add, Diff, conflict, and query scaling. | **Draft moved from v0.1.4**; [release README](docs/roadmap/0.1/0.1.5/README.md). |
 | **0.2.0** | Establish a portable projection foundation, including capability-detected reflink/clonefile paths and a future OverlayFS projection. | **Planned**; requires a new compatibility contract. |
 | **Later** | Add platform/runtime expansion and verified Store export, import, and synchronization. | **Research**; no cross-host synchronization is part of 0.1.0. |
 

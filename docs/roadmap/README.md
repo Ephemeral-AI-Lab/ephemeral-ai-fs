@@ -32,8 +32,9 @@ explicit-End architecture.
 - [x] Complete the namespace matrix in v0.1.1.
 - [x] Adapt `fs-bench-pro`, implement universal regular-file editing, and
   complete the same-count, count-changing, and Store-footprint work in v0.1.2.
-- [ ] Complete Workspace, single-Branch dedup history, and reliability coverage in v0.1.3.
-- [ ] Complete multi-Layer/multi-Branch history coverage in v0.1.4.
+- [x] Complete the v0.1.3 benchmark checkpoint; see its [report](0.1/0.1.3/checkpoint-evidence/report.md) for coverage, target misses, and exclusions.
+- [ ] Improve retained storage efficiency in [v0.1.4](0.1/0.1.4/README.md), preserving checkpoint behavior.
+- [ ] Complete multi-Layer/multi-Branch history coverage in v0.1.5.
 - [ ] Carry the append-only registered matrix through 1.0.0.
 
 New projections, platforms, remote topology, or incompatible contracts do not
@@ -124,13 +125,19 @@ families across exact 1/10/100/500 MiB fixtures.
   custody gates on one exact clean candidate.
 - [ ] Keep parent issue #12 open until the later release-finalization step.
 
-## Draft compatibility-preserving 0.1.3 work
+## v0.1.3 benchmark checkpoint
+
+The [merged checkpoint](0.1/0.1.3/checkpoint-evidence/README.md) supersedes
+the planning status below. Its 198 performance and 226 routine verification
+cases passed their recorded gates; target misses and optional exclusions remain
+explicit. The following checklist preserves the earlier scope, not release-tag
+publication status.
 
 The [0.1.3 README](0.1/0.1.3/README.md) owns twelve families: eleven
 performance families and one Workspace reliability family. One canonical
 specification per family follows the [testing rules](0.1/0.1.3/testing-rules.md).
 The topology stays at one Branch, including bounded repeated-Commit storage
-trajectories; multi-Branch and broader history-query scaling stay in v0.1.4.
+trajectories; multi-Branch and broader history-query scaling stay in v0.1.5.
 
 - [ ] Freeze 1/10/100/500 tier units, exact schedules and oracles, bounded
   transient workload sizes, and family-specific result/claim identities.
@@ -145,11 +152,21 @@ trajectories; multi-Branch and broader history-query scaling stay in v0.1.4.
 - [ ] Optimize only measured root causes; complete affected regression and
   release qualification after the candidate is ready.
 - [ ] Leave multi-Branch sharing, Add, multi-Layer Diff, conflicts, and fan-out
-  to v0.1.4; do not imply unsupported crash/power-loss durability.
+  to v0.1.5; do not imply unsupported crash/power-loss durability.
 
-## Draft compatibility-preserving 0.1.4 work
+## Planned 0.1.4 storage-efficiency work
 
-The [0.1.4 README](0.1/0.1.4/README.md) adds multi-Layer, multi-Branch, and
+The [0.1.4 plan](0.1/0.1.4/README.md) prioritizes economical retained tool-call
+states while preserving correctness and measured checkpoint behavior.
+[Issue #72](https://github.com/Ephemeral-AI-Lab/layerfs/issues/72) and the
+[evidence index](0.1/0.1.4/evidence.md) support the priority;
+[issue #18](https://github.com/Ephemeral-AI-Lab/layerfs/issues/18) tracks storage
+planning. Optimization approaches and numerical gates will be discussed later.
+Existing compatibility requirements remain unchanged.
+
+## Draft compatibility-preserving 0.1.5 work
+
+The [0.1.5 README](0.1/0.1.5/README.md) adds multi-Layer, multi-Branch, and
 history-depth evidence without changing the established product architecture.
 
 - [ ] Measure bounded Commit-history depths and Branch fan-out profiles.

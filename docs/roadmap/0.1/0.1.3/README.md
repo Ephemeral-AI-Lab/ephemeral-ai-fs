@@ -1,5 +1,13 @@
 # LayerFS 0.1.3
 
+> **Checkpoint closeout (2026-09-08):** [PR #76](https://github.com/Ephemeral-AI-Lab/layerfs/pull/76)
+> merged the [final report](checkpoint-evidence/report.md): 198 performance cases
+> and 226 routine verification cases passed their recorded gates. Issues #74/#75
+> are closed. Target misses and the optional 600-second exclusion remain explicit.
+> This supersedes the planning-status notes below; it does not assert release-tag
+> publication. Next: [v0.1.4 storage efficiency](../0.1.4/README.md), then
+> [v0.1.5 multi-history benchmarks](../0.1.5/README.md).
+
 > **Benchmark infrastructure workstream (2026-09-05), [#45](https://github.com/Ephemeral-AI-Lab/layerfs/issues/45):** See the
 > [benchmark infrastructure optimization specification](benchmark-infrastructure-optimization-spec.md)
 > for Docker-only product/preparation, no data mounts, three execution modes,
@@ -34,7 +42,7 @@ repeated execution, failure handling and storage growth over time.
 Use one Branch in each measured trajectory. Bounded retained-Commit history
 is included for deduplication
 and essential session correctness; multi-Branch sharing, fan-out, Add/promotion,
-conflicts and broader history-query scaling remain [v0.1.4](../0.1.4/README.md).
+conflicts and broader history-query scaling remain [v0.1.5](../0.1.5/README.md).
 The released crash/power-loss durability limitation remains explicit.
 
 ## Delivery stages and issue structure
