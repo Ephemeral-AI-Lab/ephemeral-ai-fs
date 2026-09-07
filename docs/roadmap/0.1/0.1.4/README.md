@@ -50,6 +50,10 @@ multiple-transaction publication, Git-comparison limits, and boundary checklists
 Prototype parameters are proposals; binary format, compatibility, benchmark and
 environment decisions remain open.
 
+The [SQLite storage-format walkthrough](sqlite-storage-format.md) illustrates
+the proposed database, pack/group/record layouts, shallow deltas, and shared
+read/write flows with SQL examples and diagrams. Its schema is conceptual.
+
 ## Supporting evidence and tracking
 
 - [Issue #18 — v0.1.4 storage-efficiency planning](https://github.com/Ephemeral-AI-Lab/layerfs/issues/18)

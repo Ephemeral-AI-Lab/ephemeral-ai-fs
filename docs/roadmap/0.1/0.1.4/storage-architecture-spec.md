@@ -12,6 +12,9 @@ Context: [release scope](README.md), [evidence index](evidence.md),
 [issue #18](https://github.com/Ephemeral-AI-Lab/layerfs/issues/18), and
 [issue #72](https://github.com/Ephemeral-AI-Lab/layerfs/issues/72).
 
+See the [SQLite storage-format walkthrough](sqlite-storage-format.md) for
+conceptual SQL, binary-layout diagrams, and read/write sequence diagrams.
+
 ## 1. Objective and agreed boundaries
 
 Reduce retained allocation aggressively through one synchronous storage pipeline
