@@ -54,6 +54,10 @@ The [SQLite storage-format walkthrough](sqlite-storage-format.md) illustrates
 the proposed database, pack/group/record layouts, shallow deltas, and shared
 read/write flows with SQL examples and diagrams. Its schema is conceptual.
 
+Use the [design-review prompt](design-review-prompt.md) for an independent
+review of clarity, storage/speed tradeoffs, aggregate multi-project load, future
+cloud compatibility, and minimal final components and operation paths.
+
 ## Supporting evidence and tracking
 
 - [Issue #18 — v0.1.4 storage-efficiency planning](https://github.com/Ephemeral-AI-Lab/layerfs/issues/18)
