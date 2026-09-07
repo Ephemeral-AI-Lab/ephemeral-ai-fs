@@ -44,6 +44,12 @@ class ReportTest(unittest.TestCase):
                 self.assertIn('fixture_bytes', row)
             with (root / 'tables/verification.csv').open() as stream:
                 self.assertEqual(next(csv.DictReader(stream))['status'], 'PASS')
+            sample['records'][0]['resource_status'] = 'fail'
+            performance.write_text(json.dumps(sample) + '\n' + json.dumps({'kind': 'summary', 'status': 'PASS'}) + '\n')
+            self.assertEqual(report.derive(root, registry)['status'], 'INCOMPLETE')
+            sample['records'][0].pop('resource_status')
+            performance.write_text(json.dumps(sample) + '\n' + json.dumps({'kind': 'summary', 'status': 'PASS'}) + '\n')
+            self.assertEqual(report.derive(root, registry)['status'], 'PASS')
             receipt['input_identity'] = 'different input'
             proof.write_text(json.dumps(receipt))
             self.assertEqual(report.derive(root, registry)['status'], 'INCOMPLETE')

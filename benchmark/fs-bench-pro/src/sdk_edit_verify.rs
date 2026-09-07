@@ -352,6 +352,7 @@ pub(crate) fn run(
         || process_after.peak_resident_bytes > 128 * 1024 * 1024
         || process_after.swaps != process_before.swaps
     {
+        eprintln!("SDK edit resource diagnostics: commit={commit:?} candidate={candidate:?} cgroup={cgroup:?} kernel_write_requests={} fuse_payload={fuse_payload} spool_write_bytes={}", fuse.kernel_write_requests, fuse.spool_write_bytes);
         return Err(format!(
             "SDK edit verifier gate: semantic={semantic_valid} canonical={canonical_valid} route={route_valid} resource={resource_valid} cgroup_boundaries=({},{},{}) gap={} finish_requested={} lifetime_rss={}",
             cgroup.t0_boundary_sampled, cgroup.t3_boundary_sampled, cgroup.interior_sampled,

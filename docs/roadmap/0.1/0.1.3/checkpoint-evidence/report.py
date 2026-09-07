@@ -212,7 +212,11 @@ def derive(campaign, registry):
         row['difference_ns'] = elapsed - old['elapsed_ns'] if compatible and elapsed is not None else None
         row['difference_percent'] = 100 * row['difference_ns'] / old['elapsed_ns'] if row['difference_ns'] is not None and old['elapsed_ns'] else None
         resources = sample.get('resources') or {}
-        resource_ok = (sample.get('environment_observation', {}).get('validated') is True
+        route_resource_ok = all(str(record[key]).lower() == 'pass' for record in records
+                                for key in ('resource_status', 'row_resource_status', 'cleanup_status') if key in record)
+        if definition.get('route') == 'sdk':
+            route_resource_ok = route_resource_ok and any(record.get('row_resource_status') == 'pass' for record in records)
+        resource_ok = (route_resource_ok and sample.get('environment_observation', {}).get('validated') is True
                        and resources.get('oom_kill_delta') == 0
                        and resources.get('swap_current_bytes') == 0)
         row['resource_status'] = 'PASS' if resource_ok else 'INCOMPLETE_OR_FAIL'
