@@ -124,3 +124,16 @@ routing/exact reservation consumption, and published-install recovery without a
 second Commit. These local checks do not substitute for the pending Docker proofs.
 The first attempted baseline proof and image build were refused because another
 live history task held the shared measurement lock; neither is a product failure.
+
+## Recovery smoke identity
+
+The repaired original presentation proof passed in 2.128 seconds with its old
+1 MiB fixture. To fulfill the explicitly requested minimal recovery contract,
+replace only that active proof ID with
+`workspace-published-presentation-failure-smoke-v3-proof`: genesis has one 4 KiB
+unchanged witness under sentinels/ and empty work/a/; the operation creates one
+4 KiB work/a/published.dat file. All canonical and reopened checks therefore cover
+the two relevant files, without unrelated aliases, symlinks or filler bytes.
+Family cardinality remains 28. Keep the original proof and timing as historical
+repair evidence; never relabel it as the smaller smoke. Fixture/cache identity and
+expected-state generation must use the new case and its exact 4/8 KiB states.
