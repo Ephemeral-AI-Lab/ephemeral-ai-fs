@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import subprocess
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -12,6 +13,29 @@ import issue54_collect as collect
 
 
 class CheckpointCollectorTest(unittest.TestCase):
+    def test_only_prework_refusal_is_retried_and_archived(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'proof'
+            output.mkdir()
+            data = json.dumps({'status': 'INCOMPLETE', 'error': 'RuntimeError: ' + collect.LOCK_REFUSAL,
+                               'source_identity': None, 'checks': []})
+            (output / 'verification.json').write_text(data)
+            self.assertTrue(collect.retain_lock_refusal(output))
+            self.assertFalse(output.exists())
+            archived = next(Path(directory).glob('proof.lock-refused-*/verification.json'))
+            self.assertEqual(archived.read_text(), data)
+            command = ['runner', '--output', str(output)]
+            with patch.object(collect.fcntl, 'flock'), patch.object(collect.subprocess, 'run', side_effect=[
+                subprocess.CompletedProcess(command, 2, '', collect.LOCK_REFUSAL),
+                subprocess.CompletedProcess(command, 0, 'done', ''),
+            ]) as run:
+                self.assertEqual(collect._run(command).returncode, 0)
+                self.assertEqual(run.call_count, 2)
+            with patch.object(collect.fcntl, 'flock'), patch.object(collect.subprocess, 'run', return_value=
+                    subprocess.CompletedProcess(command, 1, '', 'workload timeout')) as run:
+                self.assertEqual(collect._run(command).returncode, 1)
+                self.assertEqual(run.call_count, 1)
+
     def test_sdk_resume_binding_and_immutable_proof_output(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

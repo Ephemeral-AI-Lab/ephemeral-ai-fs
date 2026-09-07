@@ -79,10 +79,17 @@ def derive(campaign, registry):
         evidence[str(path.relative_to(campaign))] = hashlib.sha256(path.read_bytes()).hexdigest()
         return read(path)
 
+    declaration = load(campaign / 'declaration.json') or {}
+    if [r['scenario_id'] for r in admitted if not r['proof_only']] != declaration.get('performance_order'):
+        errors.append('performance registry does not match the frozen declaration')
+    if [r['scenario_id'] for r in admitted] != declaration.get('verification_order'):
+        errors.append('verification registry does not match the frozen declaration')
     for definition in admitted:
         family, case = definition['family_id'], definition['scenario_id']
         proof_path = campaign / 'verification' / family / case / 'verification.json'
         if not definition['verification_supported']:
+            if case != declaration.get('long_test_exclusion'):
+                errors.append(f'undeclared verification exclusion: {case}')
             proof = {'family': family, 'case': case, 'status': 'EXCLUDED_LONG',
                      'reason': '600-second endurance definition outside routine checkpoint; not executed'}
         else:
@@ -100,6 +107,12 @@ def derive(campaign, registry):
                              checks=receipt.get('checks'))
                 if receipt.get('case') != case or receipt.get('family') != family:
                     errors.append(f'proof identity mismatch: {case}')
+                expected = declaration.get('host', {})
+                if (receipt.get('source_identity') != expected.get('LAYERFS_SOURCE_SEAL')
+                        or receipt.get('product_identity') != expected.get('LAYERFS_PRODUCT_SEAL')
+                        or receipt.get('image_identity') != declaration.get('image')
+                        or receipt.get('harness_identity') != declaration.get('harness_identity')):
+                    errors.append(f'proof differs from frozen source/harness/image: {case}')
                 if receipt.get('status') != 'PASS' or receipt.get('cleanup', {}).get('status') != 'PASS':
                     errors.append(f'proof did not pass: {case}')
         proofs.append(proof)
@@ -109,7 +122,9 @@ def derive(campaign, registry):
         data = load(path)
         row = {'family': family, 'case': case, 'definition': definition,
                'status': 'NOT_RUN', 'verification': proof['status'], 'sample_count': 0,
-               'timer': None, 'elapsed_ns': None}
+               'timer': None, 'elapsed_ns': None,
+               **{key: definition.get(key) for key in ('tier', 'fixture_bytes', 'fixture_files', 'fixture_profile')},
+               'proof_evidence': proof.get('evidence'), 'seed': declaration.get('seed')}
         rows.append(row)
         if data is None:
             continue
@@ -124,6 +139,12 @@ def derive(campaign, registry):
             errors.append(f'performance identity mismatch: {case}')
         if any(proof.get(key) != identity.get(key) for key in ('source_identity', 'product_identity', 'input_identity')) or proof.get('image_identity') != identity.get('image'):
             errors.append(f'performance/proof source mismatch: {case}')
+        expected = declaration.get('host', {})
+        if (identity.get('source_identity') != expected.get('LAYERFS_SOURCE_SEAL')
+                or identity.get('product_identity') != expected.get('LAYERFS_PRODUCT_SEAL')
+                or identity.get('image') != declaration.get('image')
+                or identity.get('harness_identity') != declaration.get('harness_identity')):
+            errors.append(f'performance differs from frozen source/harness/image: {case}')
         timer, elapsed = runner._timer(sample)
         records = sample.get('records', [])
         target = git_report.TARGET.get(case, runner.PRODUCT_TARGET_NS)
@@ -133,11 +154,12 @@ def derive(campaign, registry):
                    workload_receipts=[git_report.kv(r['workload_receipt']) for r in records if r.get('kind') == 'phase' and 'workload_receipt' in r],
                    metric_groups=git_report.metric_groups(records),
                    host_resources=[r for r in records if r.get('kind') == 'host-resources'],
-                   route_metrics=[r for r in records if timer in r or r.get('receipt_kind') == 'performance'],
+                   route_metrics=[r for r in records if timer in r or r.get('receipt_kind') == 'performance' or any(key in r for key in ('process_peak_rss_bytes', 'process_t1_peak_rss_bytes', 'process_lifetime_peak_rss_bytes'))],
                    container_resources=sample.get('resources'), cleanup=sample.get('cleanup'),
                    preparation_wall_ns=sample.get('preparation_wall_ns'), command_wall_ns=sample.get('command_wall_ns'),
                    setup=sample.get('setup'), preparation=sample.get('preparation'),
                    prepared_master_unchanged=sample.get('prepared_master_unchanged'),
+                   additional_target_assessments=sample.get('issue47_assessment'),
                    observations=[r for r in records if r.get('kind') in ('store-observation', 'workspace-spool-observation', 'workspace-physical-spool')],
                    evidence=str(path.relative_to(campaign)), error=sample.get('error'),
                    unavailable_policy='Absent fields are unavailable or inapplicable; no zero is inferred.')
@@ -151,10 +173,29 @@ def derive(campaign, registry):
                                ('commit', 'commit_call_ns'), ('end', 'workspace_end_ns')):
                 if isinstance(record.get(key), int): row[phase + '_ns'] = record[key]
         host_peaks = [r['peak_resident_bytes'] for r in row['host_resources'] if isinstance(r.get('peak_resident_bytes'), int)]
-        host_peaks += [r['process_lifetime_peak_rss_bytes'] for r in row['route_metrics'] if isinstance(r.get('process_lifetime_peak_rss_bytes'), int)]
+        host_peaks += [r[key] for r in row['route_metrics'] for key in ('process_lifetime_peak_rss_bytes', 'process_t1_peak_rss_bytes', 'process_peak_rss_bytes') if isinstance(r.get(key), int)]
         row['host_peak_rss_bytes'] = max(host_peaks) if host_peaks else None
         row['container_peak_bytes'] = (sample.get('resources') or {}).get('sample_container_lifetime_peak_bytes')
+        row['container_cpu_ns'] = (sample.get('resources') or {}).get('command_window_cpu_ns')
+        row['host_cpu_ns'] = None
+        row['host_cpu_scope'] = 'unavailable: no host CPU counter in this route receipt'
+        host = {r.get('phase'): r for r in row['host_resources']}
+        before, after = host.get('before', {}), host.get('after-product', {})
+        if all(k in before and k in after for k in ('user_cpu_ns', 'system_cpu_ns')):
+            row['host_cpu_ns'] = sum(after[k] - before[k] for k in ('user_cpu_ns', 'system_cpu_ns'))
+            row['host_cpu_scope'] = 'host process after-product minus before counters'
+        for record in row['route_metrics']:
+            for prefix, scope in (('initialization_', 'native initialization phase'), ('process_', 'host process cumulative at observation')):
+                keys = [prefix + 'user_cpu_ns', prefix + 'system_cpu_ns']
+                if all(isinstance(record.get(k), int) for k in keys):
+                    row['host_cpu_ns'] = sum(record[k] for k in keys)
+                    row['host_cpu_scope'] = scope
         row['verification_wall_seconds'] = proof.get('wall_seconds')
+        row['cleanup_status'] = (sample.get('cleanup') or {}).get('status')
+        row['cleanup_wall_ns'] = (sample.get('cleanup') or {}).get('wall_ns')
+        row['coverage'] = {'sampled_paths_or_ranges': proof.get('sampled_paths_or_ranges'), 'omissions': proof.get('omissions')}
+        for key in ('source_identity', 'product_identity', 'harness_identity', 'input_identity', 'image'):
+            row[key] = identity.get(key)
         for key in ['apply_ns'] + git_report.GIT:
             values = [r[key] for r in row['workload_receipts'] if isinstance(r.get(key), int)]
             row[key] = sum(values) if values else None
@@ -193,7 +234,9 @@ def derive(campaign, registry):
                             'across_case_max_ns': max(times) if times else None}
     return {'schema': 'layerfs-checkpoint-74-75-v1', 'status': 'PASS' if not errors else 'INCOMPLETE',
             'errors': errors, 'families': families, 'performance': rows, 'verification': proofs,
-            'raw_sha256': evidence, 'identities': sorted(identities),
+            'raw_sha256': evidence, 'identities': sorted(identities), 'declaration': declaration,
+            'generator_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            'qualification_limit': 'Routine fixed-seed checkpoint; no three-seed scaling qualification, percentile distribution or exhaustive history claim',
             'excluded_registry_entries': [r['scenario_id'] for r in registry if r['family_id'] not in runner.HOST_FAMILIES]}
 
 
@@ -204,11 +247,16 @@ def milliseconds(value):
 def write(report, output):
     output.mkdir(parents=True, exist_ok=True)
     (output / 'report.json').write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
-    columns = ['family', 'case', 'sample_count', 'timer', 'elapsed_ns', 'status', 'verification', 'target_ns', 'target_status', 'preparation_wall_ns', 'command_wall_ns', 'create_ns', 'exec_ns', 'sdk_edit_ns', 'commit_ns', 'visibility_ns', 'end_ns', 'host_peak_rss_bytes', 'container_peak_bytes', 'verification_wall_seconds', 'apply_ns', *git_report.GIT, 'previous_elapsed_ns', 'difference_ns', 'difference_percent', 'evidence']
+    columns = ['family', 'case', 'tier', 'fixture_bytes', 'fixture_files', 'fixture_profile', 'seed', 'sample_count', 'timer', 'elapsed_ns', 'status', 'verification', 'target_ns', 'target_status', 'preparation_wall_ns', 'command_wall_ns', 'create_ns', 'exec_ns', 'sdk_edit_ns', 'commit_ns', 'visibility_ns', 'end_ns', 'host_peak_rss_bytes', 'container_peak_bytes', 'host_cpu_ns', 'host_cpu_scope', 'container_cpu_ns', 'verification_wall_seconds', 'apply_ns', *git_report.GIT, 'previous_elapsed_ns', 'difference_ns', 'difference_percent', 'resource_status', 'cleanup_status', 'cleanup_wall_ns', 'source_identity', 'product_identity', 'harness_identity', 'input_identity', 'image', 'proof_evidence', 'evidence']
     with (output / 'performance.csv').open('w', newline='') as stream:
         writer = csv.DictWriter(stream, fieldnames=columns, extrasaction='ignore')
         writer.writeheader()
         writer.writerows(report['performance'])
+    with (output / 'verification.csv').open('w', newline='') as stream:
+        columns = ['family', 'case', 'status', 'wall_seconds', 'source_identity', 'product_identity', 'input_identity', 'image_identity', 'evidence', 'omissions', 'sampled_paths_or_ranges', 'error']
+        writer = csv.DictWriter(stream, fieldnames=columns, extrasaction='ignore')
+        writer.writeheader()
+        writer.writerows({**r, **{k: json.dumps(r.get(k), separators=(',', ':')) for k in ('omissions', 'sampled_paths_or_ranges')}} for r in report['verification'])
     text = ['# v0.1.3 benchmark checkpoint', '', f"Status: **{report['status']}**.", '',
             'One fixed-seed observation per case. Timers retain their family-specific scopes. Setup and verification are separate. Across-case ranges are not latency distributions. See report.json for phases, identities, resources, coverage and evidence hashes.', '',
             '| Family | Performance cases | Performance outcomes | Verification outcomes | Across-case range (ms) |',
@@ -222,6 +270,11 @@ def write(report, output):
                 phases = ' / '.join(milliseconds(row.get(key)) for key in ('exec_ns', 'sdk_edit_ns', 'commit_ns'))
                 memory = ' / '.join('—' if row.get(key) is None else f"{row[key] / 2**20:.2f}" for key in ('host_peak_rss_bytes', 'container_peak_bytes'))
                 text.append(f"| {row['case']} | {row['timer']} | {milliseconds(row['elapsed_ns'])} | {phases} | {memory} | {milliseconds(row.get('previous_elapsed_ns'))} | {row['status']} / {row['verification']} | {row.get('target_status', '—')} |")
+    text += ['', 'Historical subsecond bulk targets are separate from the family threshold:']
+    for row in report['performance']:
+        if row.get('additional_target_assessments'):
+            assessment = row['additional_target_assessments']
+            text.append(f"- {row['case']}: {assessment['status']} against strict <1,000 ms.")
     text += ['', '## Git stages', '', '| Test | Apply | First status | Diff | Add | Cached check | Git commit | Final status | LayerFS Commit |', '|---|---:|---:|---:|---:|---:|---:|---:|---:|']
     for row in report['performance']:
         if row['family'] == 'git_tool_workflow':

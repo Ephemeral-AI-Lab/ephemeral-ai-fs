@@ -11,6 +11,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import uuid
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
@@ -41,14 +42,44 @@ SETUP_TIMEOUT = 600
 SEED = 1
 
 
+LOCK_REFUSAL = "another benchmark owns the measurement lock"
+
+
+def retain_lock_refusal(output, stderr=""):
+    """Retry only a proven pre-work refusal; keep immutable proof failures."""
+    output = Path(output)
+    receipt = output / "verification.json"
+    archive = None
+    if receipt.is_file():
+        saved = json.loads(receipt.read_text())
+        if (saved.get("status") != "INCOMPLETE" or LOCK_REFUSAL not in (saved.get("error") or "")
+                or saved.get("source_identity") is not None or saved.get("checks")):
+            return False
+        archive = output.with_name(output.name + ".lock-refused-" + uuid.uuid4().hex[:8])
+        output.rename(archive)
+    elif output.exists() or LOCK_REFUSAL not in stderr:
+        return False
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with (output.parent / "lock-refusals.jsonl").open("a") as stream:
+        stream.write(json.dumps({"time_ns": time.time_ns(), "output": str(output),
+                                 "reason": LOCK_REFUSAL, "work_started": False,
+                                 "stderr": stderr, "archived_output": str(archive) if archive else None}) + "\n")
+    return True
+
+
 def _run(argv, cwd=None):
-    if "--list" not in argv:
-        # Queue before invoking the existing lock-owning runner. Waiting is
-        # orchestration time, never a product or verification measurement.
-        lock_path = Path(os.environ.get("TMPDIR", "/tmp")) / "layerfs-infra-measurement.lock"
-        with lock_path.open("a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-    return subprocess.run(argv, cwd=cwd or REPO, text=True, capture_output=True)
+    while True:
+        if "--list" not in argv:
+            lock_path = Path(os.environ.get("TMPDIR", "/tmp")) / "layerfs-infra-measurement.lock"
+            with lock_path.open("a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+        result = subprocess.run(argv, cwd=cwd or REPO, text=True, capture_output=True)
+        if result.returncode == 0 or "--output" not in argv:
+            return result
+        output = Path(argv[argv.index("--output") + 1])
+        if not retain_lock_refusal(output, result.stderr):
+            return result
+        print(f"QUEUE pre-work lock refusal retained: {output.name}", flush=True)
 
 
 def _sha256(path: Path):
@@ -163,6 +194,8 @@ def verify_row(args, family, row, output, identities):
         )
         _write(case_dir / "exception.json", result)
         return result
+    if receipt.is_file():
+        retain_lock_refusal(case_dir)
     if receipt.is_file():
         saved = json.loads(receipt.read_text())
         if not identities or any(saved.get(key) != identities.get(key) for key in
