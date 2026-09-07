@@ -2,7 +2,7 @@
 use crate::live_runtime::{LiveRuntime, OperationGate, Scheduler};
 use crate::live_transport::BackingConnection;
 use crate::live_wire::{self as wire, Input};
-use crate::port::{KernelEntry, KernelReferences};
+use crate::port::{DirectoryPage, KernelEntry, KernelReferences};
 use crate::{Attr, FilesystemPort, Kind, NodeId, PortError, PortResult, ROOT};
 use layerfs_workspace_core::backing::{BackingId, BackingRef};
 use layerfs_workspace_core::file_edit::{Piece, SpoolSlice};
@@ -29,6 +29,7 @@ struct Owner {
     read_scope: u64,
     state: Mutex<LiveWorkspace>,
     kernel_refs: Mutex<KernelRefState>,
+    active_prefill: Mutex<Option<(NodeId, Arc<PrefillCompletionState>)>>,
     head: Mutex<Option<[u8; 33]>>,
     backing: BackingConnection,
     local_facts: Option<Arc<dyn Fn(LocalFacts) -> PortResult<()> + Send + Sync>>,
@@ -130,7 +131,7 @@ fn io(_: std::io::Error) -> PortError {
 
 // BTreeMap releases allocation on FORGET; HashMap spare capacity would outlive
 // per-entry reservations. This covers a sparsely occupied map node and permit.
-const KERNEL_REFERENCE_BYTES: usize = 128;
+const KERNEL_REFERENCE_BYTES: usize = 256;
 
 #[derive(Default)]
 struct KernelRefState {
@@ -139,11 +140,193 @@ struct KernelRefState {
 }
 struct KernelRefCount {
     lookups: u64,
+    writable_seen: bool,
+    #[cfg(any(
+        test,
+        all(target_os = "linux", any(feature = "host", feature = "proxy"))
+    ))]
+    prefilled_root: Option<layerfs_content::ObjectId>,
     _charge: crate::live_runtime::LiveReservation,
 }
 struct PreparedKernelRef {
     lookups: u64,
     charge: Option<crate::live_runtime::LiveReservation>,
+}
+
+#[derive(Default)]
+struct PrefillCompletionState {
+    done: AtomicBool,
+    changed: tokio::sync::Notify,
+}
+impl PrefillCompletionState {
+    async fn wait(&self) {
+        loop {
+            let notified = self.changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.done.load(Ordering::Acquire) {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+#[cfg(any(
+    test,
+    all(target_os = "linux", any(feature = "host", feature = "proxy"))
+))]
+struct PrefillCompletion {
+    owner: LiveOwner,
+    node: NodeId,
+    state: Arc<PrefillCompletionState>,
+}
+#[cfg(any(
+    test,
+    all(target_os = "linux", any(feature = "host", feature = "proxy"))
+))]
+impl Drop for PrefillCompletion {
+    fn drop(&mut self) {
+        let mut active = self
+            .owner
+            .0
+            .active_prefill
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if active
+            .as_ref()
+            .is_some_and(|(node, state)| *node == self.node && Arc::ptr_eq(state, &self.state))
+        {
+            active.take();
+        }
+        drop(active);
+        self.state.done.store(true, Ordering::Release);
+        self.state.changed.notify_waiters();
+    }
+}
+
+#[cfg(any(
+    test,
+    all(target_os = "linux", any(feature = "host", feature = "proxy"))
+))]
+struct KernelPrefill {
+    completion: PrefillCompletion,
+    root: layerfs_content::ObjectId,
+    bytes: Vec<u8>,
+    _ordinary: tokio::sync::OwnedRwLockReadGuard<()>,
+}
+#[cfg(any(
+    test,
+    all(target_os = "linux", any(feature = "host", feature = "proxy"))
+))]
+impl KernelPrefill {
+    fn record_success(&self) {
+        let Ok(state) = self.completion.owner.state() else {
+            return;
+        };
+        let Some(node) = state.nodes.get(&self.completion.node) else {
+            return;
+        };
+        if !matches!(&node.data, Data::File(layerfs_workspace_core::FileData::Base { root, len })
+            if root.0 == self.root && *len == self.bytes.len() as u64)
+        {
+            return;
+        }
+        let Ok(mut refs) = self.completion.owner.0.kernel_refs.lock() else {
+            return;
+        };
+        if let Some(row) = refs.entries.get_mut(&self.completion.node) {
+            if !row.writable_seen {
+                row.prefilled_root = Some(self.root);
+            }
+        }
+    }
+}
+
+impl LiveOwner {
+    // Call only after obtaining this inode's existing mutation ordering guard.
+    // The marker belongs to Owner, so FORGET cannot discard an in-flight store.
+    async fn exclude_prefill(&self, node: NodeId) -> PortResult<()> {
+        let active = {
+            let state = self.state()?;
+            state.attr(node).map_err(core)?;
+            let mut refs = self.0.kernel_refs.lock().map_err(|_| PortError::Io)?;
+            if let Some(row) = refs.entries.get_mut(&node) {
+                row.writable_seen = true;
+            }
+            self.0
+                .active_prefill
+                .lock()
+                .map_err(|_| PortError::Io)?
+                .as_ref()
+                .filter(|(active_node, _)| *active_node == node)
+                .map(|(_, done)| done.clone())
+        };
+        if let Some(active) = active {
+            active.wait().await;
+        }
+        Ok(())
+    }
+
+    #[cfg(any(
+        test,
+        all(target_os = "linux", any(feature = "host", feature = "proxy"))
+    ))]
+    fn begin_kernel_prefill(&self, node: NodeId) -> Option<KernelPrefill> {
+        // Optional prefill neither queues ahead of SDK invalidation nor allocates
+        // per-read ordering state. Existing mutation orders are only try-locked.
+        let ordinary = self.0.gate.try_ordinary()?;
+        let state = self.state().ok()?;
+        let refs = self.0.kernel_refs.lock().ok()?;
+        if refs.detached
+            || self.0.failed.load(Ordering::Acquire)
+            || self.0.closing.load(Ordering::Acquire)
+        {
+            return None;
+        }
+        let row = refs.entries.get(&node)?;
+        let Data::File(layerfs_workspace_core::FileData::Base { root, len }) =
+            &state.nodes.get(&node)?.data
+        else {
+            return None;
+        };
+        if *len == 0
+            || *len > wire::IMMUTABLE_PREFETCH_FILE_BYTES as u64
+            || row.writable_seen
+            || row.prefilled_root == Some(root.0)
+        {
+            return None;
+        }
+        let ordering = self.0.ordering.lock().ok()?;
+        let _order = match ordering.get(&node) {
+            Some(order) => Some(order.clone().try_lock_owned().ok()?),
+            None => None,
+        };
+        let bytes =
+            self.0
+                .scheduler
+                .immutable_reads()
+                .get(self.0.read_scope, root.0, 0, *len as usize)?;
+        if bytes.len() as u64 != *len {
+            return None;
+        }
+        let mut active = self.0.active_prefill.lock().ok()?;
+        if active.is_some() {
+            return None;
+        }
+        let done = Arc::new(PrefillCompletionState::default());
+        *active = Some((node, done.clone()));
+        Some(KernelPrefill {
+            completion: PrefillCompletion {
+                owner: self.clone(),
+                node,
+                state: done,
+            },
+            root: root.0,
+            bytes,
+            _ordinary: ordinary,
+        })
+    }
 }
 
 impl LiveOwner {
@@ -198,6 +381,12 @@ impl LiveOwner {
                     node,
                     KernelRefCount {
                         lookups: prepared.lookups,
+                        writable_seen: false,
+                        #[cfg(any(
+                            test,
+                            all(target_os = "linux", any(feature = "host", feature = "proxy"))
+                        ))]
+                        prefilled_root: None,
                         _charge: charge,
                     },
                 );
@@ -351,6 +540,7 @@ impl LiveOwner {
             kernel_root: Default::default(),
             state: Mutex::new(LiveWorkspace::new(node, policy, root)),
             kernel_refs: Default::default(),
+            active_prefill: Default::default(),
             head: Mutex::new(head),
             backing,
             local_facts,
@@ -388,7 +578,7 @@ impl LiveOwner {
         node: NodeId,
         after: u64,
         kernel: bool,
-    ) -> PortResult<(Vec<(u64, Attr, Vec<u8>)>, KernelReferences)> {
+    ) -> PortResult<(DirectoryPage, KernelReferences)> {
         let _namespace = self.0.namespace.lock().await;
         let generation = {
             let state = self.state()?;
@@ -644,6 +834,7 @@ impl LiveOwner {
             return Err(PortError::Invalid);
         }
         let _order = self.ordered(node).await?;
+        self.exclude_prefill(node).await?;
         let mut window = self.0.append.lock().await;
         if window
             .as_ref()
@@ -1069,6 +1260,51 @@ impl FilesystemPort for LiveOwner {
     fn supports_kernel_lifetime(&self) -> bool {
         true
     }
+    fn validate_kernel_open(&self, node: NodeId) -> PortResult<()> {
+        if self.0.failed.load(Ordering::Acquire) || self.0.closing.load(Ordering::Acquire) {
+            return Err(PortError::Io);
+        }
+        match self.state()?.attr(node).map_err(core)?.kind {
+            Kind::File => Ok(()),
+            _ => Err(PortError::Invalid),
+        }
+    }
+    fn prepare_kernel_open(&self, node: NodeId, writable: bool) -> crate::PortFuture<'_, ()> {
+        Box::pin(async move {
+            if writable {
+                let _order = self.ordered(node).await?;
+                self.exclude_prefill(node).await?;
+                return self.validate_kernel_open(node);
+            }
+            self.validate_kernel_open(node)?;
+            #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
+            if let Some(notifier) = self.0.notifier.get().cloned() {
+                if let Some(prefill) = self.begin_kernel_prefill(node) {
+                    // The dedicated worker owns the gate, bytes and completion.
+                    // Canceling this waiter cannot permit mutation during STORE.
+                    let (sent, done) = tokio::sync::oneshot::channel();
+                    if self.0.scheduler.try_prefill(Box::new(move || {
+                        if notifier
+                            .store(fuser::INodeNo(node.0), 0, &prefill.bytes)
+                            .is_ok()
+                        {
+                            prefill
+                                .completion
+                                .owner
+                                .0
+                                .reads
+                                .note_kernel_prefill(prefill.bytes.len());
+                            prefill.record_success();
+                        }
+                        let _ = sent.send(());
+                    })) {
+                        let _ = done.await;
+                    }
+                }
+            }
+            self.validate_kernel_open(node)
+        })
+    }
     fn kernel_entry_async<'a>(
         &'a self,
         parent: NodeId,
@@ -1086,6 +1322,7 @@ impl FilesystemPort for LiveOwner {
                 _ => None,
             };
             let prepared = self.prepare_kernel_ref(&state, &mut refs, existing, 1)?;
+            let writable = matches!(&operation, KernelEntry::Create { .. });
             let attr = match operation {
                 KernelEntry::Lookup => state.attr(existing.unwrap()),
                 KernelEntry::Create { mode } => state.create_file(name, mode, None),
@@ -1095,6 +1332,12 @@ impl FilesystemPort for LiveOwner {
             }
             .map_err(core)?;
             Self::install_kernel_ref(&mut state, &mut refs, attr.node, prepared);
+            if writable {
+                refs.entries
+                    .get_mut(&attr.node)
+                    .expect("retained create")
+                    .writable_seen = true;
+            }
             if attr.kind == Kind::File {
                 self.note_cached_open(attr.node);
             }
@@ -1478,6 +1721,7 @@ impl FilesystemPort for LiveOwner {
     fn truncate_async<'a>(&'a self, node: NodeId, size: u64) -> crate::PortFuture<'a, ()> {
         Box::pin(async move {
             let _order = self.ordered(node).await?;
+            self.exclude_prefill(node).await?;
             let prepared = self.state()?.prepare_truncate(node, size).map_err(core)?;
             if let Some(prepared) = prepared {
                 let mut check = vec![wire::CHECK, 0];
@@ -1692,7 +1936,7 @@ impl FilesystemPort for LiveOwner {
         &'a self,
         node: NodeId,
         after: u64,
-    ) -> crate::PortFuture<'a, (Vec<(u64, Attr, Vec<u8>)>, KernelReferences)> {
+    ) -> crate::PortFuture<'a, (DirectoryPage, KernelReferences)> {
         Box::pin(self.directory_page_retained(node, after, true))
     }
 }
@@ -2848,5 +3092,157 @@ mod immutable_acquisition_tests {
             Some(PortError::Io)
         );
         owner.kernel_forget(file, 2).unwrap(); // Late notification after drained detach is harmless.
+    }
+
+    fn prefill_owner(runtime: &LiveRuntime) -> (LiveOwner, NodeId, ObjectId) {
+        let owner = kernel_owner(runtime);
+        let file = owner.create_file(ROOT, b"prefill", 0o600).unwrap().node;
+        let root = identity(b"prefill file");
+        owner.state().unwrap().nodes.get_mut(&file).unwrap().data = Data::File(FileData::Base {
+            root: FileStateRoot(root),
+            len: 3,
+        });
+        let (_, references) = runtime
+            .block_on(owner.kernel_lookup_async(ROOT, b"prefill"))
+            .unwrap();
+        references.submitted();
+        owner
+            .0
+            .scheduler
+            .immutable_reads()
+            .insert(owner.0.read_scope, root, 0, b"old".to_vec());
+        (owner, file, root)
+    }
+
+    #[test]
+    fn writable_open_write_and_truncate_wait_for_prefill_even_after_forget() {
+        let runtime = LiveRuntime::new().unwrap();
+        for operation in 0..3 {
+            let (owner, file, _) = prefill_owner(&runtime);
+            assert!(owner.0.ordering.lock().unwrap().is_empty());
+            let prefill = owner.begin_kernel_prefill(file).unwrap();
+            assert!(owner.0.ordering.lock().unwrap().is_empty());
+            owner.kernel_forget(file, 1).unwrap();
+            let (_, references) = runtime
+                .block_on(owner.kernel_lookup_async(ROOT, b"prefill"))
+                .unwrap();
+            references.submitted();
+            let waiting = owner.clone();
+            let task = runtime.scheduler().handle.spawn(async move {
+                match operation {
+                    0 => waiting.prepare_kernel_open(file, true).await,
+                    1 => waiting.truncate_async(file, 3).await,
+                    _ => waiting.write_owned(file, 0, b"x").await.map(|_| ()),
+                }
+            });
+            runtime.block_on(async {
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while !owner.0.kernel_refs.lock().unwrap().entries[&file].writable_seen {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .unwrap();
+            });
+            assert!(!task.is_finished());
+            drop(prefill);
+            let result = runtime.block_on(task).unwrap();
+            if operation == 2 {
+                assert_eq!(result, Err(PortError::Io));
+            } else {
+                result.unwrap();
+            }
+            assert!(owner.0.active_prefill.lock().unwrap().is_none());
+            assert!(owner.begin_kernel_prefill(file).is_none());
+        }
+    }
+
+    #[test]
+    fn canceled_prefill_waiter_keeps_blocking_job_guards_and_revalidates_root() {
+        let runtime = LiveRuntime::new().unwrap();
+        let (owner, file, root) = prefill_owner(&runtime);
+        let (started, entered) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let released = Arc::new(Mutex::new(released));
+        let (done, finished) = runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let prefill = owner.begin_kernel_prefill(file).unwrap();
+                    let done = prefill.completion.state.clone();
+                    let started = started.clone();
+                    let released = released.clone();
+                    let (finished, waiting) = tokio::sync::oneshot::channel::<()>();
+                    if owner.0.scheduler.try_prefill(Box::new(move || {
+                        let _prefill = prefill;
+                        let _finished = finished;
+                        started.send(()).unwrap();
+                        released
+                            .lock()
+                            .unwrap()
+                            .recv_timeout(Duration::from_secs(5))
+                            .unwrap();
+                        panic!("exercise completion unwinding");
+                    })) {
+                        break (done, waiting);
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap()
+        });
+        entered.recv_timeout(Duration::from_secs(5)).unwrap();
+        let waiter = runtime.scheduler().handle.spawn(async move {
+            let _ = finished.await;
+        });
+        waiter.abort();
+        let _ = runtime.block_on(waiter);
+        // Required work in other workspaces uses neither the optional worker
+        // nor its rendezvous channel and must progress while it is blocked.
+        runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(1), async {
+                owner.0.scheduler.kernel(|| Ok(())).await.unwrap();
+                owner.0.scheduler.physical(|| Ok(())).await.unwrap();
+            })
+            .await
+            .unwrap();
+        });
+        assert!(owner.0.gate.try_ordinary().is_some()); // Multiple reads remain allowed.
+        assert!(runtime
+            .block_on(async {
+                tokio::time::timeout(Duration::from_millis(10), owner.0.gate.cache_flush()).await
+            })
+            .is_err());
+        assert!(!done.done.load(Ordering::Acquire));
+        release.send(()).unwrap();
+        runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(5), done.wait())
+                .await
+                .unwrap();
+        });
+        assert!(owner.0.active_prefill.lock().unwrap().is_none());
+        let prefill = owner.begin_kernel_prefill(file).unwrap();
+        owner.state().unwrap().nodes.get_mut(&file).unwrap().data = Data::File(FileData::Base {
+            root: FileStateRoot(identity(b"replacement root")),
+            len: 3,
+        });
+        prefill.record_success();
+        assert_eq!(
+            owner.0.kernel_refs.lock().unwrap().entries[&file].prefilled_root,
+            None
+        );
+        drop(prefill);
+        owner.state().unwrap().nodes.get_mut(&file).unwrap().data = Data::File(FileData::Base {
+            root: FileStateRoot(root),
+            len: 3,
+        });
+        let prefill = owner.begin_kernel_prefill(file).unwrap();
+        prefill.record_success();
+        drop(prefill);
+        assert_eq!(
+            owner.0.kernel_refs.lock().unwrap().entries[&file].prefilled_root,
+            Some(root)
+        );
+        assert!(owner.begin_kernel_prefill(file).is_none());
     }
 }

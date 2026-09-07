@@ -28,6 +28,11 @@ pub struct Scheduler {
     backing: Arc<Semaphore>,
     live: Arc<Semaphore>,
     kernel: Arc<Semaphore>,
+    #[cfg(any(
+        test,
+        all(target_os = "linux", any(feature = "host", feature = "proxy"))
+    ))]
+    prefill: std::sync::mpsc::SyncSender<Box<dyn FnOnce() + Send>>,
     control_requests: Arc<Semaphore>,
     control_transfer: Arc<Semaphore>,
     lifecycle_requests: Arc<Semaphore>,
@@ -57,6 +62,24 @@ impl LiveRuntime {
             .enable_io()
             .enable_time()
             .build()?;
+        #[cfg(any(
+            test,
+            all(target_os = "linux", any(feature = "host", feature = "proxy"))
+        ))]
+        let prefill = {
+            let (sender, receiver) = std::sync::mpsc::sync_channel::<Box<dyn FnOnce() + Send>>(0);
+            // Optional work has its own bounded worker: STORE may wait for a
+            // folio READ that needs the ordinary backing/kernel workers.
+            let _ = std::thread::Builder::new()
+                .name("layerfs-prefill".into())
+                .stack_size(256 * 1024)
+                .spawn(move || {
+                    for work in receiver {
+                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
+                    }
+                });
+            sender
+        };
         let scheduler = Scheduler {
             handle: runtime.handle().clone(),
             immutable_reads: Default::default(),
@@ -65,6 +88,11 @@ impl LiveRuntime {
             backing: Arc::new(Semaphore::new(2)),
             live: Arc::new(Semaphore::new(128 * 1024 * 1024)),
             kernel: Arc::new(Semaphore::new(1)),
+            #[cfg(any(
+                test,
+                all(target_os = "linux", any(feature = "host", feature = "proxy"))
+            ))]
+            prefill,
             control_requests: Arc::new(Semaphore::new(32)),
             control_transfer: Arc::new(Semaphore::new(4 * 1024 * 1024)),
             lifecycle_requests: Arc::new(Semaphore::new(2)),
@@ -192,6 +220,16 @@ impl Scheduler {
         })
     }
 
+    #[cfg(any(
+        test,
+        all(target_os = "linux", any(feature = "host", feature = "proxy"))
+    ))]
+    pub(crate) fn try_prefill(&self, work: Box<dyn FnOnce() + Send>) -> bool {
+        // A rendezvous channel has no queue; busy/unavailable workers simply
+        // drop the optional job and its gates/completion on this caller.
+        self.prefill.try_send(work).is_ok()
+    }
+
     /// A kernel invalidation can wait for FUSE writeback. Keep only one such
     /// job active, leaving the second blocking worker for backing/other progress.
     pub async fn kernel<T: Send + 'static>(
@@ -253,6 +291,14 @@ pub struct OperationCut {
 }
 
 impl OperationGate {
+    #[cfg(any(
+        test,
+        all(target_os = "linux", any(feature = "host", feature = "proxy"))
+    ))]
+    pub(crate) fn try_ordinary(&self) -> Option<OwnedRwLockReadGuard<()>> {
+        self.ordinary.clone().try_read_owned().ok()
+    }
+
     /// Retain through the kernel reply, including any immutable/backing wait.
     pub async fn enter(&self, writeback: bool) -> OwnedRwLockReadGuard<()> {
         if writeback {

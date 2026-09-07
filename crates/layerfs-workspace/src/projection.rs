@@ -315,6 +315,8 @@ pub(crate) fn record_read_metrics(worker: &WorkspaceWorker) -> WorkspaceResult<(
     receipt.directory_nonzero_offset_requests = transport.directory_nonzero_offset_requests;
     receipt.max_readahead_bytes = transport.max_readahead_bytes;
     receipt.init_capabilities = transport.init_capabilities;
+    receipt.kernel_prefill_stores = transport.kernel_prefill_stores;
+    receipt.kernel_prefill_bytes = transport.kernel_prefill_bytes;
     receipt.kernel_read_requests = transport.kernel_read_requests;
     receipt.kernel_read_bytes = transport.kernel_read_bytes;
     receipt.kernel_read_le_4k = transport.kernel_read_le_4k;

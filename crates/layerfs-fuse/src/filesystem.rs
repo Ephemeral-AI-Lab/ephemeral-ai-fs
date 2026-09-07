@@ -692,10 +692,6 @@ impl Filesystem for LayerFs {
     fn open(&self, _request: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
         self.port
             .note_kernel_operation(crate::KernelOperation::Open);
-        if self.stateless_open {
-            reply.error(fuser::Errno::ENOSYS);
-            return;
-        }
         let _callback = match self
             .port
             .admit_callback(crate::KernelOperation::Open, 0, false)
@@ -706,6 +702,33 @@ impl Filesystem for LayerFs {
                 return;
             }
         };
+
+        if self.stateless_open {
+            let this = self.clone();
+            self.dispatch(async move {
+                let _callback = _callback;
+                let writable = matches!(flags.0 & O_ACCMODE, O_WRONLY | O_RDWR);
+                let result = async {
+                    let node = this.node(ino)?;
+                    this.port
+                        .prepare_kernel_open(node, writable)
+                        .await
+                        .map_err(errno)
+                }
+                .await;
+                match result {
+                    Ok(()) => {
+                        let mut opened = FopenFlags::FOPEN_KEEP_CACHE;
+                        if !writable {
+                            opened |= FopenFlags::FOPEN_NOFLUSH;
+                        }
+                        reply.opened(FileHandle(0), opened);
+                    }
+                    Err(error) => reply.error(error),
+                }
+            });
+            return;
+        }
 
         let this = self.clone();
         self.dispatch(async move {

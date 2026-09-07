@@ -34,11 +34,13 @@ pub fn directory_lookup<S: ObjectRead>(
     DirectoryLookupCache::default().lookup(store, root, name, counters)
 }
 
+type CachedLeaf = (DirectoryStateRoot, Vec<(CanonicalName, InodeId)>, bool);
+
 /// One validated canonical leaf (at most an 8 KiB encoded page), shared by
 /// successive lookups. Immutable root identity keeps overlays and roots distinct.
 #[derive(Default)]
 pub struct DirectoryLookupCache {
-    leaf: Option<(DirectoryStateRoot, Vec<(CanonicalName, InodeId)>, bool)>,
+    leaf: Option<CachedLeaf>,
 }
 
 impl DirectoryLookupCache {

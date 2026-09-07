@@ -110,10 +110,21 @@ pub enum KernelEntry {
     Link { node: NodeId },
 }
 
+#[cfg(feature = "live")]
+pub type DirectoryPage = Vec<(u64, Attr, Vec<u8>)>;
+
 pub trait FilesystemPort: Send + Sync {
     #[cfg(feature = "live")]
     fn supports_kernel_lifetime(&self) -> bool {
         false
+    }
+    #[cfg(feature = "live")]
+    fn validate_kernel_open(&self, _node: NodeId) -> PortResult<()> {
+        Err(PortError::Invalid)
+    }
+    #[cfg(feature = "live")]
+    fn prepare_kernel_open(&self, node: NodeId, _writable: bool) -> PortFuture<'_, ()> {
+        Box::pin(async move { self.validate_kernel_open(node) })
     }
     #[cfg(feature = "live")]
     fn kernel_entry_async<'a>(
@@ -137,7 +148,7 @@ pub trait FilesystemPort: Send + Sync {
         &'a self,
         _node: NodeId,
         _after: u64,
-    ) -> PortFuture<'a, (Vec<(u64, Attr, Vec<u8>)>, KernelReferences)> {
+    ) -> PortFuture<'a, (DirectoryPage, KernelReferences)> {
         Box::pin(async { Err(PortError::Invalid) })
     }
     #[cfg(feature = "live")]

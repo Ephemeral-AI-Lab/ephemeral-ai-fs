@@ -210,6 +210,8 @@ pub struct WorkspaceReadReceipt {
     pub snapshot_cache_bytes: u64,
     pub max_readahead_bytes: u64,
     pub init_capabilities: u64,
+    pub kernel_prefill_stores: u64,
+    pub kernel_prefill_bytes: u64,
     pub kernel_read_requests: u64,
     pub kernel_read_bytes: u64,
     pub kernel_read_le_4k: u64,

@@ -52,4 +52,4 @@ pub mod live_owner;
 pub use port::PortFuture;
 
 #[cfg(feature = "live")]
-pub use port::{KernelEntry, KernelReferences};
+pub use port::{DirectoryPage, KernelEntry, KernelReferences};

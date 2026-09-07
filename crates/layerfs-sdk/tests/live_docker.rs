@@ -137,6 +137,65 @@ fn managed_proof(
         }),
         "daemon execution receipt",
     )?;
+    let (_, primed) = execute(
+        &client,
+        lifecycle.id,
+        [
+            "/bin/sh",
+            "-c",
+            r#"
+set -eu
+ printf managed > meta-payload
+ test "$(stat -c '%s:%h' meta-payload)" = 7:1
+ ln meta-payload meta-alias
+ test "$(stat -c '%s:%h' meta-payload)" = 7:2
+ test "$(stat -c '%s:%h' meta-alias)" = 7:2
+ test "$(stat -c %i meta-payload)" = "$(stat -c %i meta-alias)"
+"#,
+        ],
+    )?;
+    require(
+        primed.receipt.is_some_and(|r| r.exit_code == Some(0)),
+        "prime mounted metadata and hardlink attrs",
+    )?;
+    client.edit_workspace_file_range(layerfs_sdk::WorkspaceFileRangeEdit {
+        workspace_id: lifecycle.id,
+        path: "meta-payload".into(),
+        start: 7,
+        delete_len: 0,
+        replacement: layerfs_sdk::WorkspaceFileReplacement::Inline(b"-sdk".to_vec()),
+    })?;
+    let (_, checked) = execute(
+        &client,
+        lifecycle.id,
+        [
+            "/bin/sh",
+            "-c",
+            r#"
+set -eu
+ test "$(stat -c '%s:%h' meta-payload)" = 11:2
+ test "$(stat -c '%s:%h' meta-alias)" = 11:2
+ test "$(stat -c %i meta-payload)" = "$(stat -c %i meta-alias)"
+ test "$(cat meta-payload)" = managed-sdk; test "$(cat meta-alias)" = managed-sdk
+ mv meta-payload meta-moved; test ! -e meta-payload
+ printf fresh > meta-payload
+ test "$(stat -c %s meta-payload)" = 5; test "$(cat meta-payload)" = fresh
+ test "$(stat -c '%s:%h' meta-moved)" = 11:2; test "$(stat -c '%s:%h' meta-alias)" = 11:2
+ test "$(stat -c %i meta-payload)" != "$(stat -c %i meta-alias)"
+ exec 3<meta-alias; rm meta-alias
+ test ! -e meta-alias; test "$(stat -c '%s:%h' meta-moved)" = 11:1
+ test "$(cat <&3)" = managed-sdk; exec 3<&-
+ rm meta-payload meta-moved
+ test "$(cat payload)" = managed
+"#,
+        ],
+    )?;
+    require(
+        checked.receipt.is_some_and(|r| r.exit_code == Some(0)),
+        "immediate SDK/FUSE metadata, meta-alias, rename and retained-fd coherence",
+    )?;
+    eprintln!("live-metadata stage=sdk-resize-alias-rename-recreate-open-unlink-PASS");
+
     require(
         matches!(
             client.commit_workspace_session(lifecycle.id)?,
@@ -149,6 +208,74 @@ fn managed_proof(
         container_clean(name, &lifecycle_root, "no-lifecycle-process")?,
         "lifecycle cleanup",
     )?;
+
+    // A fresh owner makes committed payload eligible for immutable cache prefill.
+    let committed = store.pin_branch(lifecycle_branch)?.root;
+    let cold = client.create_workspace_session(container_request(
+        lifecycle_branch,
+        &running.id,
+        &lifecycle_root,
+    ))?;
+    let (_, cold_read) = execute(
+        &client,
+        cold.id,
+        [
+            "python3",
+            "-c",
+            r#"
+import time
+with open('payload', 'rb') as source:
+    time.sleep(0.02)  # Let best-effort post-OPEN prefill run before this read.
+    assert source.read() == b'managed'
+"#,
+        ],
+    )?;
+    require(
+        cold_read.receipt.is_some_and(|r| r.exit_code == Some(0)),
+        "cold committed read-only open and read",
+    )?;
+    client.edit_workspace_file_range(layerfs_sdk::WorkspaceFileRangeEdit {
+        workspace_id: cold.id,
+        path: "payload".into(),
+        start: 7,
+        delete_len: 0,
+        replacement: layerfs_sdk::WorkspaceFileReplacement::Inline(b"-sdk".to_vec()),
+    })?;
+    let (_, mapped) = execute(
+        &client,
+        cold.id,
+        [
+            "python3",
+            "-c",
+            r#"
+import mmap, os
+with open('payload', 'r+b') as source:
+    assert os.fstat(source.fileno()).st_size == 11
+    assert source.read() == b'managed-sdk'
+    with mmap.mmap(source.fileno(), 0) as view:
+        assert view[:] == b'managed-sdk'
+        view[0:1] = b'M'
+        view.flush()
+        assert view[:] == b'Managed-sdk'
+    source.seek(0)
+    assert source.read() == b'Managed-sdk'
+"#,
+        ],
+    )?;
+    require(
+        mapped.receipt.is_some_and(|r| r.exit_code == Some(0)),
+        "cold prefill eligibility followed by SDK resize and writable mmap",
+    )?;
+    client.end_workspace_session(cold.id, EndWorkspaceMode::Discard)?;
+    require(
+        store.pin_branch(lifecycle_branch)?.root == committed,
+        "cold proof leaves publication unchanged",
+    )?;
+    require(
+        container_clean(name, &lifecycle_root, "no-cold-process")?,
+        "cold proof cleanup",
+    )?;
+    eprintln!("live-prefill stage=cold-ro-sdk-resize-rw-mmap-discard-PASS");
 
     let failure_branch = client.fork_branch(
         EntityName::new("disconnect")?,

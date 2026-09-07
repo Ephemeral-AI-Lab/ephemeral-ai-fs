@@ -273,6 +273,8 @@ impl AtomicFuseWriteMetrics {
 pub struct FuseReadMetrics {
     pub max_readahead_bytes: u64,
     pub init_capabilities: u64,
+    pub kernel_prefill_stores: u64,
+    pub kernel_prefill_bytes: u64,
     pub kernel_read_requests: u64,
     pub kernel_read_bytes: u64,
     pub kernel_read_le_4k: u64,
@@ -361,7 +363,7 @@ impl FuseReadMetrics {
         .fold(0_u64, u64::saturating_add)
     }
 
-    const FIELD_COUNT: usize = 55;
+    const FIELD_COUNT: usize = 57;
 
     pub(crate) fn merge(&mut self, other: Self) {
         self.max_readahead_bytes = self.max_readahead_bytes.max(other.max_readahead_bytes);
@@ -393,6 +395,8 @@ impl FuseReadMetrics {
         [
             self.max_readahead_bytes,
             self.init_capabilities,
+            self.kernel_prefill_stores,
+            self.kernel_prefill_bytes,
             self.kernel_read_requests,
             self.kernel_read_bytes,
             self.kernel_read_le_4k,
@@ -453,6 +457,8 @@ impl FuseReadMetrics {
         [
             &mut self.max_readahead_bytes,
             &mut self.init_capabilities,
+            &mut self.kernel_prefill_stores,
+            &mut self.kernel_prefill_bytes,
             &mut self.kernel_read_requests,
             &mut self.kernel_read_bytes,
             &mut self.kernel_read_le_4k,
@@ -522,6 +528,8 @@ impl FuseReadMetrics {
 pub(crate) struct AtomicFuseReadMetrics {
     max_readahead_bytes: AtomicU64,
     init_capabilities: AtomicU64,
+    kernel_prefill_stores: AtomicU64,
+    kernel_prefill_bytes: AtomicU64,
     kernel_read_requests: AtomicU64,
     kernel_read_bytes: AtomicU64,
     kernel_read_le_4k: AtomicU64,
@@ -578,6 +586,16 @@ pub(crate) struct AtomicFuseReadMetrics {
 }
 
 impl AtomicFuseReadMetrics {
+    #[cfg(any(
+        test,
+        all(target_os = "linux", any(feature = "host", feature = "proxy"))
+    ))]
+    pub(crate) fn note_kernel_prefill(&self, bytes: usize) {
+        self.kernel_prefill_stores.fetch_add(1, Ordering::Relaxed);
+        self.kernel_prefill_bytes
+            .fetch_add(bytes as u64, Ordering::Relaxed);
+    }
+
     pub(crate) fn note_kernel_operation(&self, operation: crate::KernelOperation) {
         let counter = match operation {
             crate::KernelOperation::Lookup => &self.callback_lookup,
@@ -718,6 +736,8 @@ impl AtomicFuseReadMetrics {
         for (target, source) in metrics.fields_mut().into_iter().zip([
             &self.max_readahead_bytes,
             &self.init_capabilities,
+            &self.kernel_prefill_stores,
+            &self.kernel_prefill_bytes,
             &self.kernel_read_requests,
             &self.kernel_read_bytes,
             &self.kernel_read_le_4k,
@@ -817,9 +837,12 @@ mod tests {
                 metrics.note_kernel_operation(operation);
             }
         }
+        metrics.note_kernel_prefill(4096);
         metrics.note_readdir_page(0, 13);
         metrics.note_readdir_page(13, 7);
         let taken = metrics.take();
+        assert_eq!(taken.kernel_prefill_stores, 1);
+        assert_eq!(taken.kernel_prefill_bytes, 4096);
         assert_eq!(taken.kernel_callback_count(), 325);
         assert_eq!(taken.directory_entries_returned, 20);
         assert_eq!(taken.directory_nonzero_offset_requests, 1);
