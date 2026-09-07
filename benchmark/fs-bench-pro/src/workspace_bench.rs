@@ -775,7 +775,7 @@ pub(crate) fn fixture_info(case: &Case, seed: u8, branch: Option<BranchId>) -> A
     if case.kind == "git-tool" {
         plan = workload_source::sdk_edit_common::sha256_hex(
             format!(
-                "{plan}{}{}",
+                "git-input-root-metadata-v2\n{plan}{}{}",
                 include_str!("../workload/ordinary_workloads.rs"),
                 std::env::var("LAYERFS_V013_IMAGE").unwrap_or_default()
             )
@@ -858,6 +858,15 @@ fn prepare(root: &Path, case: &Case, seed: u8) -> AnyResult<()> {
                 input.to_string_lossy().into_owned(),
                 seed.to_string(),
             ],
+        )?;
+        // Copying .git back changes the existing host directory's mtime.
+        // Restore the declared fixture root before canonical import.
+        common::set_metadata(
+            &input,
+            entries
+                .iter()
+                .find(|entry| entry.path == ".")
+                .ok_or("Git fixture root missing")?,
         )?;
         entries = workload_source::ordinary_workloads::prepared_git_entries(&input, case, seed)?;
     }
@@ -1289,7 +1298,9 @@ fn run_case(
 ) -> AnyResult<()> {
     let fast = mode == "fast-verify";
     let verification = mode == "verify" || fast;
+    // Git always needs its semantic and precommit/reopen custody proof.
     let sampled = verification
+        && case.kind != "git-tool"
         && (case.family == "tiny_file_churn"
             || workload_source::ordinary_workloads::mixed_v4(case)
             || workload_source::dedup_workloads::history_unrelated_mixed_v2(case));
