@@ -40,8 +40,8 @@ The [storage-efficiency boundary](storage-efficiency-boundary.md) records the
 SQLite-only storage constraint, synchronous shared Init/Commit scope,
 read/write cost concerns, exclusion of new durability/crash-recovery work,
 conditional speed/storage tradeoffs,
-and preference for a new benchmark family. The benchmark definition and test
-full-family evaluation details remain open. The separately agreed development
+and preference for a new benchmark family. Full-family benchmark and evaluation
+details remain open. The separately agreed development
 smokes and topology are linked below; no implementation or execution begins here.
 
 ## Proposed architecture
@@ -70,6 +70,11 @@ The [review disposition](review-disposition.md) records each original finding,
 its correction, the subsequent linear-work/batching audit and remaining
 policy/measurement limitations. Design confidence
 does not qualify storage ratios or speed.
+
+The [implementation plan](implementation-plan.md) lists required source reading,
+the proposed final module tree, change/deletion ownership and staged rollout. Its
+only executable verification is the three agreed development smokes; this planning
+change runs nothing and does not authorize migration or full release qualification.
 
 Use the [design-review prompt](design-review-prompt.md) for an independent
 review of clarity, storage/speed tradeoffs, aggregate multi-project load, future
