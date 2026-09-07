@@ -186,3 +186,37 @@ The shared campaign cannot silently change inventory/source on resume. Report
 comparisons retain historical scope and verification limits, including exclusion
 of malformed old compact Git baselines. This is a checkpoint, not a product-speedup
 claim from less verification work.
+
+### SDK routine proof coverage v2: match the declared cold SDK setup
+
+The first complete checkpoint campaign has 198 passing performance observations,
+216 passing routine proofs, and ten failed length-changing SDK resource proofs.
+The retained diagnostic `sdk-resource-diagnostic-r2` reproduces the 100 MiB
+insertion failure: incremental cgroup memory 64,868,352 bytes exceeds 32 MiB;
+container lifetime peak 100,147,200 bytes, zero swap/OOM, zero forbidden FUSE or
+spool writes, and semantic/canonical/route checks pass. A pre-edit FUSE `stat`
+causes LOOKUP to mark the inode potentially cached (required by stateless-open
+semantics); a length-changing edit then refreshes the shifted suffix. The
+performance worker never performs that pre-edit lookup. The proof was applying
+cold SDK resource limits to an extra cache-coherence scenario.
+
+Before requalification, declare coverage schema
+`fs-bench-pro-sdk-edit-verification-v1-checkpoint-cold-v2` for the routine SDK
+verifier. Remove its pre-edit FUSE `stat` and associated FUSE inode-number equality
+assertion. Keep canonical inode identity/initial fixture size, exact qualified
+roots/counts, independent changed-boundary bytes and unchanged adjacent witnesses,
+post-commit FUSE size/content, payload retention, Store/Client reconnect,
+publication/cleanup, one SDK edit and Commit, and ALL existing resource limits.
+The one read-only FUSE execution occurs after resource sampling. Report that
+pre-edit FUSE inode-number stability is omitted; this is not a warm-cache or mmap
+resource qualification. Existing gated live SDK/mmap coherence tests retain their
+separate coverage and must stay passing. No product or performance path changes.
+
+Requalify all 56 cases routed through this changed SDK verifier once; preserve
+all earlier proof receipts (including ten failures) and every original performance
+sample. Bind replacements through an explicit manifest carrying old/new source
+seals, the unchanged product/image/harness seals and identical registered recipe,
+seed and prepared fixture. Input seals include source, so recompute the recipe
+hash for the replacement source and record both instead of pretending equality.
+Non-SDK proof and all performance execution paths are unchanged and retain their
+source-bound results. This is a verifier-only repair of the shared campaign.
