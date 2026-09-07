@@ -706,7 +706,13 @@ impl Filesystem for LayerFs {
             {
                 Ok((handle, node)) => {
                     this.port.note_cached_open(node);
-                    reply.opened(FileHandle(handle), FopenFlags::FOPEN_KEEP_CACHE)
+                    // Read-only close has no write error to deliver; RELEASE still
+                    // drops its pin and writable descriptors retain FLUSH.
+                    let mut opened = FopenFlags::FOPEN_KEEP_CACHE;
+                    if flags.0 & O_ACCMODE == 0 {
+                        opened |= FopenFlags::FOPEN_NOFLUSH;
+                    }
+                    reply.opened(FileHandle(handle), opened)
                 }
                 Err(error) => reply.error(error),
             }

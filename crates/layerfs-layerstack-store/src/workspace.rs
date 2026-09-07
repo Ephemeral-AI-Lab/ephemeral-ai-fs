@@ -13,7 +13,7 @@ use crate::{
 };
 use layerfs_content::ObjectId;
 use rusqlite::{OptionalExtension, TransactionBehavior};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -31,11 +31,13 @@ pub struct SnapshotReader {
 }
 
 const SNAPSHOT_CACHE_BYTES: usize = 8 * 1024 * 1024;
-const SNAPSHOT_CACHE_OBJECT_BYTES: usize = 1024;
+const SNAPSHOT_CACHE_PAYLOAD_BYTES: usize = 1024;
+const SNAPSHOT_CACHE_ENTRY_BYTES: usize = 96;
 
 #[derive(Default)]
 struct SnapshotCache {
     rows: HashMap<ObjectId, Vec<u8>>,
+    order: VecDeque<ObjectId>,
     bytes: usize,
 }
 
@@ -794,18 +796,30 @@ impl SnapshotReader {
             .lock()
             .map_err(|_| StoreError::Integrity("snapshot object cache"))?;
         for object in objects {
-            if object.bytes.len() > SNAPSHOT_CACHE_OBJECT_BYTES
-                || cache.rows.contains_key(&object.id)
+            let charge = object
+                .bytes
+                .len()
+                .saturating_add(SNAPSHOT_CACHE_ENTRY_BYTES);
+            if charge > SNAPSHOT_CACHE_BYTES || cache.rows.contains_key(&object.id) {
+                continue;
+            }
+            // Keep demanded structural objects regardless of size; large content chunks
+            // must not displace the metadata needed to locate them.
+            if object.bytes.len() > SNAPSHOT_CACHE_PAYLOAD_BYTES
+                && layerfs_content::decode_bytes_object(&object.bytes).is_ok_and(|value| {
+                    value.starts_with(layerfs_content::file::extent_codec::CHUNK_MAGIC)
+                })
             {
                 continue;
             }
-            let charge = object.bytes.len().saturating_add(64);
-            // ponytail: requested immutable objects share one fixed 8 MiB cap;
-            // add eviction only if measured reads need it.
-            if cache.bytes.saturating_add(charge) > SNAPSHOT_CACHE_BYTES {
-                continue;
+            // ponytail: FIFO bounds immutable demand caching; use LRU if churn warrants it.
+            while cache.bytes.saturating_add(charge) > SNAPSHOT_CACHE_BYTES {
+                let oldest = cache.order.pop_front().expect("snapshot cache order");
+                let bytes = cache.rows.remove(&oldest).expect("snapshot cache entry");
+                cache.bytes -= bytes.len() + SNAPSHOT_CACHE_ENTRY_BYTES;
             }
             cache.bytes += charge;
+            cache.order.push_back(object.id);
             cache.rows.insert(object.id, object.bytes.clone());
         }
         Ok(())
@@ -1055,6 +1069,87 @@ mod tests {
             assert_eq!(
                 crate::objects::read_batch_counters(),
                 crate::objects::ReadBatchCounters::default()
+            );
+        }
+
+        assert!(reader.read_authenticated_objects(&[corrupt_id]).is_err());
+        assert!(reader.cached_object(corrupt_id).unwrap().is_none());
+
+        let structural = layerfs_content::tree::inode::codec::encode_inode_table_node(
+            &layerfs_content::tree::inode::codec::InodeTableNodeV1::Leaf(
+                (0..64)
+                    .map(|n| (layerfs_content::tree::inode::InodeId([n; 32]), first_id))
+                    .collect(),
+            ),
+        )
+        .unwrap();
+        assert!(structural.len() > SNAPSHOT_CACHE_PAYLOAD_BYTES);
+        let structural_id = ObjectId::for_bytes(&structural);
+        store
+            .db
+            .writer()
+            .unwrap()
+            .execute(
+                crate::statements::objects::INSERT,
+                rusqlite::params![structural_id.as_bytes().as_slice(), structural],
+            )
+            .unwrap();
+        assert_eq!(reader.read_object(structural_id).unwrap(), structural);
+        reader.reset_read_metrics().unwrap();
+        assert_eq!(
+            reader.read_authenticated_objects(&[structural_id]).unwrap()[0].bytes,
+            structural
+        );
+        assert_eq!(
+            reader
+                .read_metrics_snapshot()
+                .unwrap()
+                .snapshot_database_calls,
+            0
+        );
+        assert_eq!(
+            reader.clone().cached_object(structural_id).unwrap(),
+            Some(structural)
+        );
+        assert!(store
+            .snapshot_reader(first_id)
+            .cached_object(structural_id)
+            .unwrap()
+            .is_none());
+
+        let payload =
+            layerfs_content::file::extent_codec::encode_chunk_object(&vec![0; 8192]).unwrap();
+        let payload_id = ObjectId::for_bytes(&payload);
+        reader
+            .cache_object(&CanonicalObject {
+                id: payload_id,
+                bytes: payload,
+            })
+            .unwrap();
+        assert!(reader.cached_object(payload_id).unwrap().is_none());
+        let mut last_id = first_id;
+        for index in 0_u64..1100 {
+            let mut value = vec![0; 8192];
+            value[..8].copy_from_slice(&index.to_be_bytes());
+            let bytes = layerfs_content::encode_bytes_object(&value).unwrap();
+            last_id = ObjectId::for_bytes(&bytes);
+            reader
+                .cache_object(&CanonicalObject { id: last_id, bytes })
+                .unwrap();
+        }
+        assert!(reader.cached_object(structural_id).unwrap().is_none());
+        assert!(reader.cached_object(last_id).unwrap().is_some());
+        {
+            let cache = reader.cache.lock().unwrap();
+            assert!(cache.bytes <= SNAPSHOT_CACHE_BYTES);
+            assert_eq!(cache.order.len(), cache.rows.len());
+            assert_eq!(
+                cache.bytes,
+                cache
+                    .rows
+                    .values()
+                    .map(|bytes| bytes.len() + SNAPSHOT_CACHE_ENTRY_BYTES)
+                    .sum::<usize>()
             );
         }
 

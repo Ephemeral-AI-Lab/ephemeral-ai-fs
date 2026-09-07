@@ -1,16 +1,18 @@
 //! Host-only physical backing and immutable input for a remote live owner.
-use crate::cow_tree::{acquire_inode, WorkspaceSnapshot};
+use crate::cow_tree::{acquire_inode, acquire_inodes, WorkspaceSnapshot};
 use crate::file_io::{spool_segment, HostSpool};
 use crate::ResourcePolicy;
 use layerfs_content::file::rope::{read_range, FileStateRoot};
-use layerfs_content::tree::directory::{directory_lookup, DirectoryStateRoot, NamespaceCounters};
+use layerfs_content::tree::directory::{
+    DirectoryLookupCache, DirectoryStateRoot, NamespaceCounters,
+};
 use layerfs_content::tree::inode::InodeTableRoot;
-use layerfs_content::CanonicalName;
+use layerfs_content::{CanonicalName, ObjectId};
 use layerfs_fuse::live_wire::{self as wire, Input};
 use layerfs_layerstack_store::{CoreReader, Result, StoreError};
 use layerfs_workspace_core::backing::{BackingId, BackingRef};
 use layerfs_workspace_core::{Node, NodeId};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
 
@@ -26,12 +28,27 @@ pub(crate) struct BackingOwner {
     pub(crate) facts: HashMap<NodeId, Node>,
     pub(crate) dirty: BTreeSet<NodeId>,
     pub(crate) generation: u64,
+    directory_lookup: DirectoryLookupCache,
+    request_profile: [u64; 16],
+    lookup_profile: [u64; 2],
+    exported_contents: HashSet<ObjectId>,
     facts_complete: bool,
     fact_reservations: Vec<layerfs_fuse::live_runtime::LiveReservation>,
     incoming_reservations: Vec<layerfs_fuse::live_runtime::LiveReservation>,
     incoming_charge: usize,
     partial_fact: Option<PartialFact>,
     incoming: Option<(u64, HashMap<NodeId, Node>, BTreeSet<NodeId>)>,
+}
+
+impl Drop for BackingOwner {
+    fn drop(&mut self) {
+        if std::env::var_os("LAYERFS_BACKING_PROFILE").is_some() {
+            println!(
+                "{{\"kind\":\"backing-profile\",\"counts_by_opcode\":{:?},\"lookup_negative\":{},\"lookup_positive\":{}}}",
+                self.request_profile, self.lookup_profile[0], self.lookup_profile[1]
+            );
+        }
+    }
 }
 
 struct PartialFact {
@@ -59,6 +76,10 @@ impl BackingOwner {
             facts: HashMap::new(),
             dirty: BTreeSet::new(),
             generation: 0,
+            directory_lookup: DirectoryLookupCache::default(),
+            request_profile: [0; 16],
+            lookup_profile: [0; 2],
+            exported_contents: HashSet::new(),
             facts_complete: true,
             incoming: None,
             fact_reservations: Vec::new(),
@@ -120,7 +141,70 @@ impl BackingOwner {
         Ok(())
     }
 
+    fn acquired_out(
+        &mut self,
+        acquired: layerfs_workspace_core::namespace::AcquiredInode,
+        content_budget: &mut usize,
+    ) -> Result<Vec<u8>> {
+        let node = Node {
+            revision: 0,
+            canonical: Some(acquired.inode),
+            paths: BTreeSet::new(),
+            mode: acquired.mode,
+            links: acquired.links,
+            pins: 0,
+            mtime_seconds: acquired.mtime_seconds,
+            mtime_nanoseconds: acquired.mtime_nanoseconds,
+            data: acquired.data,
+        };
+        let mut out = Vec::new();
+        wire::bytes_out(&mut out, &wire::node_out(NodeId(1), &node)?)?;
+        let mut content = Vec::new();
+        if let layerfs_workspace_core::Data::File(layerfs_workspace_core::FileData::Base {
+            root,
+            len,
+        }) = &node.data
+        {
+            if *len <= wire::IMMUTABLE_PREFETCH_FILE_BYTES as u64
+                && *len <= *content_budget as u64
+                && !self.exported_contents.contains(&root.0)
+            {
+                // Optional acquisition never substitutes for a demanded read error.
+                match read_range(
+                    &CoreReader(&self.snapshot.reader),
+                    *root,
+                    0..*len,
+                    &mut content,
+                ) {
+                    Ok(counters) => {
+                        self.snapshot.reader.note_rope_read(counters)?;
+                        if content.len() as u64 == *len {
+                            *content_budget -= content.len();
+                            // Hints only suppress optional exports. Eviction or a lost
+                            // response always falls back to a normal demanded READ_BASE.
+                            if self.exported_contents.len() == 8192 {
+                                self.exported_contents.clear();
+                            }
+                            self.exported_contents.insert(root.0);
+                        } else {
+                            content.clear();
+                        }
+                    }
+                    Err(_) => content.clear(),
+                }
+            }
+        }
+        wire::bytes_out(&mut out, &content)?;
+        Ok(out)
+    }
+
     pub(crate) fn request(&mut self, bytes: &[u8]) -> Result<Vec<u8>> {
+        if let Some(count) = bytes
+            .first()
+            .and_then(|opcode| self.request_profile.get_mut(*opcode as usize))
+        {
+            *count += 1;
+        }
         let mut input = Input(bytes);
         let mut out = Vec::new();
         match input.byte()? {
@@ -149,8 +233,14 @@ impl BackingOwner {
                 }
                 let core = CoreReader(&self.snapshot.reader);
                 let namespace = layerfs_content::filesystem::namespace(&core, namespace)?;
-                let inode =
-                    directory_lookup(&core, directory, &name, &mut NamespaceCounters::default())?;
+                let inode = self.directory_lookup.lookup(
+                    &core,
+                    directory,
+                    &name,
+                    &mut NamespaceCounters::default(),
+                )?;
+                let mut content_budget = wire::IMMUTABLE_PREFETCH_PAGE_BYTES;
+                self.lookup_profile[usize::from(inode.is_some())] += 1;
                 out.push(u8::from(inode.is_some()));
                 if let Some(inode) = inode {
                     let acquired = acquire_inode(
@@ -158,19 +248,40 @@ impl BackingOwner {
                         InodeTableRoot(namespace.inode_table_root),
                         inode,
                     )?;
-                    let node = Node {
-                        revision: 0,
-                        canonical: Some(inode),
-                        paths: BTreeSet::new(),
-                        mode: acquired.mode,
-                        links: acquired.links,
-                        pins: 0,
-                        mtime_seconds: acquired.mtime_seconds,
-                        mtime_nanoseconds: acquired.mtime_nanoseconds,
-                        data: acquired.data,
-                    };
-                    out.extend(wire::node_out(NodeId(1), &node)?);
+                    out.extend(self.acquired_out(acquired, &mut content_budget)?);
                 }
+                let mut siblings = Vec::new();
+                // Reuse the entire already validated leaf, including earlier names.
+                // Only a fully exported root leaf establishes directory completeness.
+                let entries = self
+                    .directory_lookup
+                    .leaf_entries(directory)
+                    .iter()
+                    .filter(|(candidate, _)| candidate != &name)
+                    .take(127)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let ids = entries.iter().map(|(_, inode)| *inode).collect::<Vec<_>>();
+                if let Ok(acquired) = acquire_inodes(
+                    &self.snapshot.reader,
+                    InodeTableRoot(namespace.inode_table_root),
+                    &ids,
+                ) {
+                    for ((name, _), acquired) in entries.into_iter().zip(acquired) {
+                        if let Ok(node) = self.acquired_out(acquired, &mut content_budget) {
+                            siblings.push((name, node));
+                        }
+                    }
+                }
+                let complete = self.directory_lookup.leaf_complete(directory)
+                    && siblings.len() + usize::from(inode.is_some())
+                        == self.directory_lookup.leaf_entries(directory).len();
+                out.extend_from_slice(&(siblings.len() as u32).to_be_bytes());
+                for (name, node) in siblings {
+                    wire::bytes_out(&mut out, name.as_bytes())?;
+                    out.extend(node);
+                }
+                out.push(u8::from(complete));
             }
             wire::DIRECTORY_PAGE => {
                 let namespace = input.object()?;
@@ -202,30 +313,15 @@ impl BackingOwner {
                     .iter()
                     .map(|(_, inode)| *inode)
                     .collect::<Vec<_>>();
-                let acquired = crate::cow_tree::acquire_inodes(
+                let acquired = acquire_inodes(
                     &self.snapshot.reader,
                     InodeTableRoot(namespace.inode_table_root),
                     &ids,
                 )?;
+                let mut content_budget = wire::IMMUTABLE_PREFETCH_PAGE_BYTES;
                 for ((name, _), acquired) in page.entries.into_iter().zip(acquired) {
                     wire::bytes_out(&mut out, name.as_bytes())?;
-                    wire::bytes_out(
-                        &mut out,
-                        &wire::node_out(
-                            NodeId(1),
-                            &Node {
-                                revision: 0,
-                                canonical: Some(acquired.inode),
-                                paths: BTreeSet::new(),
-                                mode: acquired.mode,
-                                links: acquired.links,
-                                pins: 0,
-                                mtime_seconds: acquired.mtime_seconds,
-                                mtime_nanoseconds: acquired.mtime_nanoseconds,
-                                data: acquired.data,
-                            },
-                        )?,
-                    )?;
+                    out.extend(self.acquired_out(acquired, &mut content_budget)?);
                 }
             }
             wire::RESERVE => {
@@ -328,7 +424,7 @@ impl BackingOwner {
                 if len > 1024 * 1024 {
                     return Err(StoreError::InvalidInput("immutable read"));
                 }
-                read_range(
+                let counters = read_range(
                     &CoreReader(&self.snapshot.reader),
                     root,
                     offset
@@ -337,6 +433,7 @@ impl BackingOwner {
                             .ok_or(StoreError::InvalidInput("immutable range"))?,
                     &mut out,
                 )?;
+                self.snapshot.reader.note_rope_read(counters)?;
             }
             wire::CHECK => {
                 let started = std::time::Instant::now();
@@ -499,6 +596,126 @@ mod tests {
     use layerfs_layerstack_store::{
         EntityName, LayerStackInitialization, LayerStackStore, LocalForkSource,
     };
+
+    #[test]
+    fn cold_grouped_reads_preserve_alias_mutations_and_peer_isolation() {
+        use layerfs_fuse::FilesystemPort;
+        let directory = std::env::temp_dir().join(format!(
+            "layerfs-live-cold-cache-{}",
+            crate::WorkspaceId::new()
+        ));
+        let fixture = directory.join("fixture");
+        std::fs::create_dir_all(&fixture).unwrap();
+        std::fs::write(fixture.join("a"), b"original").unwrap();
+        std::fs::hard_link(fixture.join("a"), fixture.join("b")).unwrap();
+        std::fs::write(fixture.join("c"), b"untouched").unwrap();
+        std::fs::write(fixture.join("d"), b"replace-me").unwrap();
+        let store = LayerStackStore::create(directory.join("store.sqlite")).unwrap();
+        let layer = store
+            .initialize_layerstack(
+                EntityName::new("project").unwrap(),
+                LayerStackInitialization::Directory(fixture),
+            )
+            .unwrap()
+            .genesis_layer_id;
+        let first_branch = store
+            .fork_branch(
+                EntityName::new("first").unwrap(),
+                LocalForkSource::Layer { layer_id: layer },
+            )
+            .unwrap();
+        let peer_branch = store
+            .fork_branch(
+                EntityName::new("peer").unwrap(),
+                LocalForkSource::Layer { layer_id: layer },
+            )
+            .unwrap();
+        let first_workspace =
+            crate::Workspace::open(store.clone(), first_branch, directory.join("first-spool"))
+                .unwrap();
+        let peer_workspace =
+            crate::Workspace::open(store.clone(), peer_branch, directory.join("peer-spool"))
+                .unwrap();
+        let original_root = store.pin_branch(first_branch).unwrap().root;
+        // Both start_local calls use LiveRuntime::shared(): one cache/scheduler,
+        // distinct owners, capabilities, mutable state and spool backing.
+        let first_remote = RemoteWorkspace::start_local(&first_workspace).unwrap();
+        let peer_remote = RemoteWorkspace::start_local(&peer_workspace).unwrap();
+        let first = first_remote.server.local_owner().unwrap();
+        let peer = peer_remote.server.local_owner().unwrap();
+        first_remote.server.take_write_metrics().unwrap();
+        let a = first.lookup(crate::ROOT, b"a").unwrap().node;
+        assert_eq!(first.read(a, 0, 100).unwrap(), b"original");
+        assert!(
+            first_remote
+                .server
+                .take_write_metrics()
+                .unwrap()
+                .live_backing_calls
+                > 0
+        );
+        let c = first.lookup(crate::ROOT, b"c").unwrap().node;
+        assert_eq!(first.read(c, 0, 100).unwrap(), b"untouched");
+        assert_eq!(
+            first.lookup(crate::ROOT, b"absent"),
+            Err(layerfs_fuse::PortError::NotFound)
+        );
+        assert_eq!(
+            first_remote
+                .server
+                .take_write_metrics()
+                .unwrap()
+                .live_backing_calls,
+            0
+        );
+
+        first.write(a, 0, b"modified").unwrap();
+        first_remote.server.take_write_metrics().unwrap();
+        let b = first.lookup(crate::ROOT, b"b").unwrap().node;
+        assert_eq!(
+            a, b,
+            "prefetched alias must retain the already edited live inode"
+        );
+        assert_eq!(
+            first_remote
+                .server
+                .take_write_metrics()
+                .unwrap()
+                .live_backing_calls,
+            0
+        );
+        assert_eq!(first.read(b, 0, 100).unwrap(), b"modified");
+        // d was prefetched but not installed: remove/recreate must beat cached facts.
+        first.unlink(crate::ROOT, b"d", false).unwrap();
+        assert!(first.lookup(crate::ROOT, b"d").is_err());
+        let replacement = first.create_file(crate::ROOT, b"d", 0o600).unwrap().node;
+        first.write(replacement, 0, b"new").unwrap();
+        assert_eq!(first.lookup(crate::ROOT, b"d").unwrap().node, replacement);
+        assert_eq!(first.read(replacement, 0, 100).unwrap(), b"new");
+
+        peer_remote.server.take_write_metrics().unwrap();
+        let peer_a = peer.lookup(crate::ROOT, b"a").unwrap().node;
+        assert_eq!(peer.read(peer_a, 0, 100).unwrap(), b"original");
+        assert!(
+            peer_remote
+                .server
+                .take_write_metrics()
+                .unwrap()
+                .live_backing_calls
+                > 0,
+            "a distinct capability must authenticate its own cold acquisition"
+        );
+        assert_eq!(peer.lookup(crate::ROOT, b"b").unwrap().node, peer_a);
+        let peer_d = peer.lookup(crate::ROOT, b"d").unwrap().node;
+        assert_eq!(peer.read(peer_d, 0, 100).unwrap(), b"replace-me");
+        assert_eq!(store.pin_branch(first_branch).unwrap().root, original_root);
+        assert_eq!(store.pin_branch(peer_branch).unwrap().root, original_root);
+        first_remote.server.control("shutdown").unwrap();
+        peer_remote.server.control("shutdown").unwrap();
+        drop((first, peer, first_remote, peer_remote));
+        drop((first_workspace, peer_workspace, store));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn live_owner_builds_and_checkpoints_through_real_host_backing() {

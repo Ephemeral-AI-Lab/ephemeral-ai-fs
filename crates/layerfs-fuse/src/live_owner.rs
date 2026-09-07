@@ -25,6 +25,7 @@ pub struct LocalFacts {
 
 struct Owner {
     scheduler: Scheduler,
+    read_scope: u64,
     state: Mutex<LiveWorkspace>,
     head: Mutex<Option<[u8; 33]>>,
     backing: BackingConnection,
@@ -50,6 +51,14 @@ struct Owner {
     kernel_root: Mutex<Option<Arc<std::fs::File>>>,
     cut: Mutex<Option<crate::live_runtime::OperationCut>>,
     install: Mutex<Option<PendingCheckpoint>>,
+}
+
+impl Drop for Owner {
+    fn drop(&mut self) {
+        self.scheduler
+            .immutable_reads()
+            .remove_scope(self.read_scope);
+    }
 }
 
 type PendingCheckpoint = (
@@ -160,6 +169,7 @@ impl LiveOwner {
             return Err(PortError::Io);
         }
         Ok(Self(Arc::new(Owner {
+            read_scope: scheduler.immutable_reads().new_scope(),
             scheduler,
             writes: Default::default(),
             reads: Default::default(),
@@ -211,33 +221,157 @@ impl LiveOwner {
         match lookup {
             NameLookup::Ready(name) => Ok(name),
             NameLookup::Acquire(input) => {
+                let cache = self.0.scheduler.immutable_reads();
+                if let Some(encoded) = cache.get_name(
+                    self.0.read_scope,
+                    root,
+                    input.directory.0,
+                    input.name.as_bytes(),
+                ) {
+                    let acquired = Self::immutable_node(&encoded)?;
+                    return self
+                        .state()?
+                        .complete_name(input, Some(acquired))
+                        .map_err(core);
+                }
+                if let Some(page) = cache.get_page(self.0.read_scope, root, input.directory.0, &[])
+                {
+                    let mut page = Input(&page);
+                    let more = page.byte().map_err(io)? != 0;
+                    let count = page.u32().map_err(io)?;
+                    let mut last = Vec::new();
+                    let mut found = None;
+                    for _ in 0..count {
+                        let name = page.bytes().map_err(io)?;
+                        let encoded = page.bytes().map_err(io)?;
+                        page.bytes().map_err(io)?; // cached pages contain no payloads
+                        if name == input.name.as_bytes() {
+                            found = Some(Self::immutable_node(encoded)?);
+                        }
+                        last = name.to_vec();
+                    }
+                    page.done().map_err(io)?;
+                    if found.is_some() || !more || input.name.as_bytes() <= last.as_slice() {
+                        return self.state()?.complete_name(input, found).map_err(core);
+                    }
+                }
+                let directory = input.directory;
                 let mut request = vec![wire::LOOKUP];
                 request.extend_from_slice(root.as_bytes());
-                request.extend_from_slice(input.directory.0.as_bytes());
+                request.extend_from_slice(directory.0.as_bytes());
                 wire::bytes_out(&mut request, input.name.as_bytes()).map_err(io)?;
                 let response = self.0.backing.call(&request).await?;
                 let mut received = Input(&response);
+                let mut prefetched = Vec::new();
+                let mut complete_entries = std::collections::BTreeMap::new();
                 let acquired = match received.byte().map_err(io)? {
-                    0 => {
-                        received.done().map_err(io)?;
-                        None
-                    }
+                    0 => None,
                     1 => {
-                        let (_, node) = wire::node_in(received.0, |_, _, _| Err(wire::invalid()))
-                            .map_err(io)?;
-                        Some(AcquiredInode {
-                            inode: node.canonical.ok_or(PortError::Io)?,
-                            mode: node.mode,
-                            links: node.links,
-                            mtime_seconds: node.mtime_seconds,
-                            mtime_nanoseconds: node.mtime_nanoseconds,
-                            data: node.data,
-                        })
+                        let (encoded, acquired) =
+                            self.immutable_reply(&mut received, &mut prefetched)?;
+                        complete_entries.insert(input.name.as_bytes().to_vec(), encoded);
+                        Some(acquired)
                     }
                     _ => return Err(PortError::Io),
                 };
-                self.state()?.complete_name(input, acquired).map_err(core)
+                let count = received.u32().map_err(io)?;
+                if count > 127 {
+                    return Err(PortError::Io);
+                }
+                let mut previous = Vec::new();
+                let mut siblings = Vec::with_capacity(count as usize);
+                for _ in 0..count {
+                    let name = received.bytes().map_err(io)?.to_vec();
+                    layerfs_content::CanonicalName::from_bytes(&name).map_err(|_| PortError::Io)?;
+                    if name <= previous || name == input.name.as_bytes() {
+                        return Err(PortError::Io);
+                    }
+                    previous = name.clone();
+                    let (encoded, _) = self.immutable_reply(&mut received, &mut prefetched)?;
+                    complete_entries.insert(name.clone(), encoded.clone());
+                    siblings.push((name, encoded));
+                }
+                let complete = match received.byte().map_err(io)? {
+                    0 => false,
+                    1 => true,
+                    _ => return Err(PortError::Io),
+                };
+                received.done().map_err(io)?;
+                // complete_name revalidates root and parent revision before changing live state.
+                let resolved = self.state()?.complete_name(input, acquired).map_err(core)?;
+                self.cache_prefetched(prefetched);
+                if complete {
+                    let mut page = vec![0];
+                    page.extend_from_slice(&(complete_entries.len() as u32).to_be_bytes());
+                    for (name, encoded) in complete_entries {
+                        wire::bytes_out(&mut page, &name).map_err(io)?;
+                        wire::bytes_out(&mut page, &encoded).map_err(io)?;
+                        wire::bytes_out(&mut page, &[]).map_err(io)?;
+                    }
+                    cache.insert_page(self.0.read_scope, root, directory.0, &[], page);
+                }
+                for (name, encoded) in siblings {
+                    cache.insert_name(self.0.read_scope, root, directory.0, &name, encoded);
+                }
+                Ok(resolved)
             }
+        }
+    }
+
+    fn immutable_node(encoded: &[u8]) -> PortResult<AcquiredInode> {
+        let (_, node) = wire::node_in(encoded, |_, _, _| Err(wire::invalid())).map_err(io)?;
+        if !node.paths.is_empty() || node.pins != 0 || node.revision != 0 {
+            return Err(PortError::Io);
+        }
+        match &node.data {
+            Data::File(layerfs_workspace_core::FileData::Edited { .. }) => {
+                return Err(PortError::Io)
+            }
+            Data::Directory(directory)
+                if directory.base.is_none() || !directory.changes.is_empty() =>
+            {
+                return Err(PortError::Io)
+            }
+            _ => {}
+        }
+        Ok(AcquiredInode {
+            inode: node.canonical.ok_or(PortError::Io)?,
+            mode: node.mode,
+            links: node.links,
+            mtime_seconds: node.mtime_seconds,
+            mtime_nanoseconds: node.mtime_nanoseconds,
+            data: node.data,
+        })
+    }
+
+    fn immutable_reply(
+        &self,
+        input: &mut Input<'_>,
+        prefetched: &mut Vec<(layerfs_content::ObjectId, Vec<u8>)>,
+    ) -> PortResult<(Vec<u8>, AcquiredInode)> {
+        let encoded = input.bytes().map_err(io)?.to_vec();
+        let acquired = Self::immutable_node(&encoded)?;
+        let bytes = input.bytes().map_err(io)?;
+        if !bytes.is_empty() {
+            let Data::File(layerfs_workspace_core::FileData::Base { root, len }) = &acquired.data
+            else {
+                return Err(PortError::Io);
+            };
+            if bytes.len() > wire::IMMUTABLE_PREFETCH_FILE_BYTES || bytes.len() as u64 != *len {
+                return Err(PortError::Io);
+            }
+            prefetched.push((root.0, bytes.to_vec()));
+        }
+        Ok((encoded, acquired))
+    }
+
+    fn cache_prefetched(&self, prefetched: Vec<(layerfs_content::ObjectId, Vec<u8>)>) {
+        for (root, bytes) in prefetched {
+            self.0.reads.note_read_ahead_miss(0, bytes.len() as u64, 0);
+            self.0
+                .scheduler
+                .immutable_reads()
+                .insert(self.0.read_scope, root, 0, bytes);
         }
     }
 
@@ -464,6 +598,16 @@ impl LiveOwner {
                     continue;
                 }
                 Piece::Base { root, offset, len } => {
+                    if let Some(bytes) = self.0.scheduler.immutable_reads().get(
+                        self.0.read_scope,
+                        root.0,
+                        offset,
+                        len as usize,
+                    ) {
+                        self.0.reads.note_read_ahead_hit(bytes.len() as u64);
+                        out.extend(bytes);
+                        continue;
+                    }
                     request = vec![wire::READ_BASE];
                     request.extend_from_slice(root.0.as_bytes());
                     wire::u64_out(&mut request, offset);
@@ -529,6 +673,17 @@ impl LiveOwner {
             if bytes.len() as u64 != length {
                 return Err(PortError::Io);
             }
+            if let Piece::Base { root, offset, .. } = piece {
+                self.0
+                    .reads
+                    .note_read_ahead_miss(length, bytes.len() as u64, length);
+                self.0.scheduler.immutable_reads().insert(
+                    self.0.read_scope,
+                    root.0,
+                    offset,
+                    bytes.clone(),
+                );
+            }
             out.extend_from_slice(&bytes);
         }
         Ok(out)
@@ -552,11 +707,18 @@ impl LiveOwner {
         if let Some(base) = base {
             let mut after = Vec::new();
             loop {
-                let mut request = vec![wire::DIRECTORY_PAGE];
-                request.extend_from_slice(root.as_bytes());
-                request.extend_from_slice(base.0.as_bytes());
-                wire::bytes_out(&mut request, &after).map_err(io)?;
-                let response = self.0.backing.call(&request).await?;
+                let cursor = after.clone();
+                let cache = self.0.scheduler.immutable_reads();
+                let response =
+                    if let Some(page) = cache.get_page(self.0.read_scope, root, base.0, &cursor) {
+                        page
+                    } else {
+                        let mut request = vec![wire::DIRECTORY_PAGE];
+                        request.extend_from_slice(root.as_bytes());
+                        request.extend_from_slice(base.0.as_bytes());
+                        wire::bytes_out(&mut request, &cursor).map_err(io)?;
+                        self.0.backing.call(&request).await?
+                    };
                 let mut input = Input(&response);
                 let more = match input.byte().map_err(io)? {
                     0 => false,
@@ -567,45 +729,46 @@ impl LiveOwner {
                 if count > 128 || (more && count == 0) {
                     return Err(PortError::Io);
                 }
-                let mut state = self.state()?;
-                if state.base_root != root
-                    || state.nodes.get(&node).map(|node| node.revision) != Some(revision)
-                {
-                    return Err(PortError::Io);
-                }
+                // Cache immutable metadata/completeness only; payloads have their
+                // own entries in the same budget, avoiding duplicate content charge.
+                let mut encoded_page = vec![u8::from(more)];
+                encoded_page.extend_from_slice(&(count as u32).to_be_bytes());
+                let mut prefetched = Vec::new();
+                let mut page = Vec::with_capacity(count);
                 for _ in 0..count {
                     let name = input.bytes().map_err(io)?.to_vec();
                     if name <= after {
                         return Err(PortError::Io);
                     }
                     after = name.clone();
-                    let (_, acquired) =
-                        wire::node_in(input.bytes().map_err(io)?, |_, _, _| Err(wire::invalid()))
-                            .map_err(io)?;
+                    let (encoded, acquired) = self.immutable_reply(&mut input, &mut prefetched)?;
+                    wire::bytes_out(&mut encoded_page, &name).map_err(io)?;
+                    wire::bytes_out(&mut encoded_page, &encoded).map_err(io)?;
+                    wire::bytes_out(&mut encoded_page, &[]).map_err(io)?;
+                    page.push((name, acquired));
+                }
+                input.done().map_err(io)?;
+                let mut state = self.state()?;
+                if state.base_root != root
+                    || state.nodes.get(&node).map(|node| node.revision) != Some(revision)
+                {
+                    return Err(PortError::Io);
+                }
+                for (name, acquired) in page {
                     if changes.contains_key(&name) {
                         continue;
                     }
                     let path = state.child_path(node, &name).map_err(core)?;
-                    let child = state
-                        .install_immutable_node(
-                            AcquiredInode {
-                                inode: acquired.canonical.ok_or(PortError::Io)?,
-                                mode: acquired.mode,
-                                links: acquired.links,
-                                mtime_seconds: acquired.mtime_seconds,
-                                mtime_nanoseconds: acquired.mtime_nanoseconds,
-                                data: acquired.data,
-                            },
-                            path,
-                        )
-                        .map_err(core)?;
+                    let child = state.install_immutable_node(acquired, path).map_err(core)?;
                     state.remember_directory_parent(child, node).map_err(core)?;
                     state
                         .remember_name(node, &name, Some(child))
                         .map_err(core)?;
                     entries.insert(name, child);
                 }
-                input.done().map_err(io)?;
+                drop(state);
+                self.cache_prefetched(prefetched);
+                cache.insert_page(self.0.read_scope, root, base.0, &cursor, encoded_page);
                 if entries.len() > 16384 {
                     return Err(PortError::NoSpace);
                 }
@@ -2043,4 +2206,185 @@ impl Drop for LiveControl {
 
 fn ns(started: Instant) -> u64 {
     started.elapsed().as_nanos().min(u64::MAX as u128) as u64
+}
+
+#[cfg(test)]
+mod immutable_acquisition_tests {
+    use super::*;
+    use layerfs_content::{
+        file::rope::FileStateRoot, tree::directory::DirectoryStateRoot, tree::inode::InodeId,
+        ObjectId,
+    };
+    use layerfs_workspace_core::{DirectoryData, FileData, Node};
+    use std::time::Duration;
+
+    fn identity(label: &[u8]) -> ObjectId {
+        ObjectId::for_bytes(label)
+    }
+
+    fn node(data: Data, directory: bool) -> Node {
+        Node {
+            revision: 0,
+            canonical: Some(InodeId([if directory { 1 } else { 2 }; 32])),
+            paths: Default::default(),
+            mode: if directory { 0o755 } else { 0o644 },
+            links: if directory { 2 } else { 1 },
+            pins: 0,
+            mtime_seconds: 0,
+            mtime_nanoseconds: 0,
+            data,
+        }
+    }
+
+    fn seed() -> Vec<u8> {
+        let mut root = node(
+            Data::Directory(DirectoryData {
+                base: Some(DirectoryStateRoot(identity(b"directory"))),
+                changes: Default::default(),
+            }),
+            true,
+        );
+        root.paths.insert(String::new());
+        let policy = ResourcePolicy::default();
+        let mut out = identity(b"old namespace").as_bytes().to_vec();
+        wire::bytes_out(&mut out, &[]).unwrap();
+        wire::u64_out(&mut out, policy.max_spool_bytes);
+        wire::u64_out(&mut out, policy.max_final_delta_memory_bytes);
+        out.extend(wire::node_out(ROOT, &root).unwrap());
+        out
+    }
+
+    fn fact(content: &[u8], declared_len: u64) -> Vec<u8> {
+        let file = node(
+            Data::File(FileData::Base {
+                root: FileStateRoot(identity(b"file root")),
+                len: declared_len,
+            }),
+            false,
+        );
+        let mut out = Vec::new();
+        wire::bytes_out(&mut out, &wire::node_out(NodeId(2), &file).unwrap()).unwrap();
+        wire::bytes_out(&mut out, content).unwrap();
+        out
+    }
+
+    fn lookup_reply(content: &[u8], declared_len: u64) -> Vec<u8> {
+        let mut out = vec![1];
+        out.extend(fact(content, declared_len));
+        out.extend_from_slice(&1u32.to_be_bytes());
+        wire::bytes_out(&mut out, b"sibling").unwrap();
+        out.extend(fact(b"old", 3));
+        out.push(0);
+        out
+    }
+
+    #[test]
+    fn delayed_lookup_cannot_install_after_root_or_parent_revision_changes() {
+        let runtime = LiveRuntime::new().unwrap();
+        for change_root in [true, false] {
+            let (entered, pending) = std::sync::mpsc::channel();
+            let (release, released) = std::sync::mpsc::channel();
+            let released = Mutex::new(released);
+            let handler = Arc::new(move |request: &[u8]| match request.first() {
+                Some(&wire::SEED) => Ok(seed()),
+                Some(&wire::LOOKUP) => {
+                    entered.send(()).unwrap();
+                    released
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(Duration::from_secs(5))
+                        .unwrap();
+                    Ok(lookup_reply(b"old", 3))
+                }
+                _ => Err(PortError::Io),
+            });
+            let owner = runtime
+                .block_on(LiveOwner::local(
+                    handler,
+                    Arc::new(|_| Ok(())),
+                    runtime.scheduler(),
+                ))
+                .unwrap();
+            let acquiring = owner.clone();
+            let task = runtime
+                .scheduler()
+                .handle
+                .spawn(async move { acquiring.lookup_async(ROOT, b"file").await });
+            pending.recv_timeout(Duration::from_secs(5)).unwrap();
+            // Exercise the install race directly: a completed checkpoint changes
+            // base_root; an SDK namespace/metadata edit changes the parent revision.
+            let nodes_after_change = {
+                let mut state = owner.state().unwrap();
+                if change_root {
+                    state.base_root = identity(b"new namespace");
+                } else {
+                    state.chmod(ROOT, 0o700).unwrap();
+                }
+                state.nodes.clone()
+            };
+            release.send(()).unwrap();
+            assert_eq!(runtime.block_on(task).unwrap(), Err(PortError::Io));
+            assert_eq!(owner.state().unwrap().nodes, nodes_after_change);
+            assert!(
+                owner
+                    .0
+                    .scheduler
+                    .immutable_reads()
+                    .get_name(
+                        owner.0.read_scope,
+                        identity(b"old namespace"),
+                        identity(b"directory"),
+                        b"sibling",
+                    )
+                    .is_none(),
+                "stale acquisition must not install sibling metadata"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_grouped_replies_do_not_install_live_nodes() {
+        let runtime = LiveRuntime::new().unwrap();
+        let mut truncated = lookup_reply(b"old", 3);
+        truncated.pop();
+        let oversized = vec![b'x'; wire::IMMUTABLE_PREFETCH_FILE_BYTES + 1];
+        let mut invalid_count = vec![0];
+        invalid_count.extend_from_slice(&128u32.to_be_bytes());
+        for reply in [
+            lookup_reply(b"no", 3),
+            lookup_reply(&oversized, oversized.len() as u64),
+            truncated,
+            invalid_count,
+        ] {
+            let handler = Arc::new(move |request: &[u8]| match request.first() {
+                Some(&wire::SEED) => Ok(seed()),
+                Some(&wire::LOOKUP) => Ok(reply.clone()),
+                _ => Err(PortError::Io),
+            });
+            let owner = runtime
+                .block_on(LiveOwner::local(
+                    handler,
+                    Arc::new(|_| Ok(())),
+                    runtime.scheduler(),
+                ))
+                .unwrap();
+            let before = owner.state().unwrap().nodes.clone();
+            assert_eq!(
+                runtime.block_on(owner.lookup_async(ROOT, b"file")),
+                Err(PortError::Io)
+            );
+            assert_eq!(owner.state().unwrap().nodes, before);
+            assert!(owner
+                .0
+                .scheduler
+                .immutable_reads()
+                .get_name(
+                    owner.0.read_scope,
+                    identity(b"old namespace"),
+                    identity(b"directory"),
+                    b"sibling",
+                )
+                .is_none());
+        }
+    }
 }

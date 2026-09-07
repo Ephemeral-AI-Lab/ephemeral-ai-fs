@@ -22,6 +22,7 @@ pub struct LiveRuntime {
 #[derive(Clone)]
 pub struct Scheduler {
     pub(crate) handle: Handle,
+    immutable_reads: Arc<crate::immutable_read_cache::ImmutableReadCache>,
     requests: Arc<Semaphore>,
     transfer: Arc<Semaphore>,
     backing: Arc<Semaphore>,
@@ -58,6 +59,7 @@ impl LiveRuntime {
             .build()?;
         let scheduler = Scheduler {
             handle: runtime.handle().clone(),
+            immutable_reads: Default::default(),
             requests: Arc::new(Semaphore::new(REQUESTS)),
             transfer: Arc::new(Semaphore::new(TRANSFER_BYTES)),
             backing: Arc::new(Semaphore::new(2)),
@@ -81,6 +83,10 @@ impl LiveRuntime {
 }
 
 impl Scheduler {
+    pub(crate) fn immutable_reads(&self) -> &crate::immutable_read_cache::ImmutableReadCache {
+        &self.immutable_reads
+    }
+
     /// Poll ready local work on ingress; only pending work enters the existing
     /// runtime. The owned future retains its admission and reply until completion.
     pub fn submit(&self, future: impl Future<Output = ()> + Send + 'static) {
