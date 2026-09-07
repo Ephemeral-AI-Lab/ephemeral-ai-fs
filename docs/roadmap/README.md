@@ -125,34 +125,25 @@ families across exact 1/10/100/500 MiB fixtures.
   custody gates on one exact clean candidate.
 - [ ] Keep parent issue #12 open until the later release-finalization step.
 
-## v0.1.3 benchmark checkpoint
+## Completed compatibility-preserving 0.1.3 checkpoint
 
-The [merged checkpoint](0.1/0.1.3/checkpoint-evidence/README.md) supersedes
-the planning status below. Its 198 performance and 226 routine verification
-cases passed their recorded gates; target misses and optional exclusions remain
-explicit. The following checklist preserves the earlier scope, not release-tag
-publication status.
+The [v0.1.3 closure record](0.1/0.1.3/README.md) documents 17 admitted families,
+**198 performance PASS and 226 routine verification PASS**, with one optional
+600-second proof excluded. [PR #76](https://github.com/Ephemeral-AI-Lab/layerfs/pull/76)
+merged implementation and full per-test evidence at `9f5a641d2` after green
+exact-head CI and executed live Docker checks.
 
-The [0.1.3 README](0.1/0.1.3/README.md) owns twelve families: eleven
-performance families and one Workspace reliability family. One canonical
-specification per family follows the [testing rules](0.1/0.1.3/testing-rules.md).
-The topology stays at one Branch, including bounded repeated-Commit storage
-trajectories; multi-Branch and broader history-query scaling stay in v0.1.5.
-
-- [ ] Freeze 1/10/100/500 tier units, exact schedules and oracles, bounded
-  transient workload sizes, and family-specific result/claim identities.
-- [ ] Cover whole-Workspace reads and mutations, bulk churn, Git, agent episodes,
-  four CAS/CDC/storage-reuse families, and targeted reliability/endurance proofs.
-- [ ] Reuse the existing binary, runners, custody, compatible prepared inputs,
-  independent samples and report pipeline; iterate one selected case at a time.
-- [ ] Separate short development runs, complete performance, verification and
-  explicitly selected extended qualification; optimize preparation wall too.
-- [ ] Preserve inherited evidence and explicitly version the five cap-driven
-  500 MiB growth replacements instead of silently changing frozen scenarios.
-- [ ] Optimize only measured root causes; complete affected regression and
-  release qualification after the candidate is ready.
-- [ ] Leave multi-Branch sharing, Add, multi-Layer Diff, conflicts, and fan-out
-  to v0.1.5; do not imply unsupported crash/power-loss durability.
+- [x] Freeze the active runner inventory, recipes, public routes and timers.
+- [x] Complete Workspace/tool, CAS/CDC, bounded single-Branch history, inherited
+  SDK/namespace/Store controls and routine reliability coverage.
+- [x] Simplify shared preparation, verification and resumable collection while
+  preserving independent samples and meaningful correctness/resource checks.
+- [x] Publish [every-test performance and verification tables](0.1/0.1.3/checkpoint-evidence/report.md)
+  with explicit sampled coverage, source-bound requalification and raw failures.
+- [x] Close the checkpoint with unmet latency targets and optional extended
+  coverage explicitly recorded; no release tag or broader durability claim is implied.
+- [x] Leave multi-Branch sharing, Add, multi-Layer Diff, conflicts and fan-out to
+  v0.1.5. Further FUSE/Git optimization remains follow-up work.
 
 ## Planned 0.1.4 storage-efficiency work
 
