@@ -1,7 +1,8 @@
 # Storage architecture v3 implementation progress
 
-Status: **milestone 0, source custody/preparation; implementation incomplete**.
-Updated 2026-09-08. No product build, smoke, test or storage observation yet.
+Status: **milestone 0 complete; milestone 1 in progress; implementation incomplete**.
+Updated 2026-09-08. Unchanged-product baseline built; all three smokes and their
+independent mounted historical verification passed. No v3 product switch yet.
 This ledger is the single disposition of this implementation task, not a copy
 of the historical release matrix.
 
@@ -116,8 +117,8 @@ not exercise it.
 | 0: source/PR/doc identity and isolation | DONE-PREP | Custody above |
 | 0: release/new-Store/legacy decision | DONE-PREP | Owner reply approving narrow exception |
 | 0: fixture/budget/comparison decision | DONE-PREP | Owner approved draft before observations |
-| 0: three entrypoints, protected input/oracle custody | PENDING | Existing runner/runtime and pinned helpers traced |
-| 0: unchanged baseline all three smokes | NOT-RUN | Await approved smoke contract and matching harness/build |
+| 0: three entrypoints, protected input/oracle custody | DONE-PREP + EXERCISED | storage_smoke host/workload/shared runner; exact Git inputs and synthetic manifests |
+| 0: unchanged baseline all three smokes | PASS | implementation-baseline.json; full FUSE historical oracles and owned cleanup |
 | 1: reusable canonical/finalized ownership, selected ID/location transfer | PENDING | objects.rs + all Init/Workspace callers |
 | 1: page seen insert/membership/order/duplicate semantics | PENDING | objects.rs spill owner; streaming scalar callers included |
 | 1: page offset flush/location lookup, pending visibility and failed-owner handling | PENDING | Existing spool and pending/absolute union |
@@ -168,3 +169,32 @@ implementation/deletion; final matching builds; final three-smoke correctness;
 material joint storage/speed evidence; complete coverage/identity reporting;
 final docs/source/receipts agreement; committed/pushed implementation PR.
 Compatibility policy alone is now resolved and must not be requested again.
+
+## Milestone 0 baseline receipt
+
+[Compact baseline values and raw-evidence links](implementation-baseline.json)
+record all six separately reported histories. All 33 historical mappings verified
+(5 DeepSeek +24 edit mappings +4 small-file mappings), including initial states
+and no-change aliases. These are mappings, not 33 created Commits.
+
+Host binary SHA-256: `ce6a81a629d7d1adafaea74933acc502edb21e4ca650a396172f3574f26a0746`.
+Runtime image: `sha256:134cab8527a2cb686565bdab0aa749d4617ab7d85ef8aab14c0a10be60609c89`.
+Product seal: `3c797bc6dbfd9b03b919c270b609cad839000b68d67e34f3b00d24717e07f39a`.
+Combined source seal: `3564c1a834fc76f2157c2308c9bdaf6a0f05439a6098638b8af75be232138117`.
+Built at docs commit `96e796431964f7a00af7fd1d7cc647029f2c5eaa` plus the
+subsequently committed smoke harness. Product crates remain byte-identical to
+selected origin/main. The dedicated smoke image build skips the Dockerfile
+workload self-check; its unused runtime-check stage was not built. No unit,
+fuzz, race, crash or historical family suite ran.
+
+One mistyped image tag (`3564c1a834fc76f21` instead of `3564c1a834fc76f2`) failed
+image lookup before runtime/Store creation; the corrected command was used. No
+product sample was discarded. Original build log is under the external runs
+folder, builds/baseline-image-1.log. All other initial smoke attempts passed.
+
+Source reading advanced through current host main.rs in full; schema.rs,
+workspace.rs, staging.rs, branch.rs, query.rs, records.rs, statements.rs and v5.sql;
+objects.rs production owners through admission and layerstack.rs production Init
+paths through NativeImport. The exact additional construction/runtime source list
+remains mandatory before touching those owners. Systematic-debugging skill read;
+task-specific smoke-only verification overrides generic extra-test advice.

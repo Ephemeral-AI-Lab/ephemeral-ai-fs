@@ -149,7 +149,7 @@ def source_build_args():
             product.update(part)
     return {"LAYERFS_SOURCE_COMMIT": git("rev-parse", "HEAD"),
             "LAYERFS_SOURCE_TREE": git("rev-parse", "HEAD^{tree}"),
-            "LAYERFS_SOURCE_DIRTY": "true", "LAYERFS_SOURCE_SEAL": source.hexdigest(),
+            "LAYERFS_SOURCE_DIRTY": "true" if git("status", "--porcelain") else "false", "LAYERFS_SOURCE_SEAL": source.hexdigest(),
             "LAYERFS_PRODUCT_SEAL": product.hexdigest(),
             "WORKLOAD_SOURCE_SHA256": hashlib.sha256((BENCH / "workload/main.rs").read_bytes()).hexdigest()}
 
@@ -605,7 +605,10 @@ def _timer(row):
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
-    if argv in (["--build-image"], ["--build-host"]):
+    if "--storage-smoke" in argv:
+        import storage_smoke
+        return storage_smoke.main(argv)
+    if argv in (["--build-image"], ["--build-host"], ["--build-storage-smoke-image"]):
         lock_path = Path(os.environ.get("TMPDIR", "/tmp")) / "layerfs-infra-measurement.lock"
         with lock_path.open("a") as lock:
             try:
@@ -622,6 +625,9 @@ def main(argv=None):
                 print(binary)
                 return 0
             tag = "layerfs-bench-infra:" + values["LAYERFS_SOURCE_SEAL"][:16]
+            if argv == ["--build-storage-smoke-image"]:
+                # The owner limits executable verification to three mounted smokes.
+                values["LAYERFS_BUILD_SELF_CHECK"] = "0"
             try:
                 result = runtime.build_image(REPO, tag, values, deadline=runtime.Deadline.after(900), jobs=2)
             except runtime.CommandFailure as error:

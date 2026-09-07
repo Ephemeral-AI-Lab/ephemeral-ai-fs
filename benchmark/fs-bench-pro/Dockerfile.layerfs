@@ -80,10 +80,11 @@ COPY --from=build /fs-benchmark-workload /usr/local/bin/fs-benchmark-workload
 COPY --from=build /layerfs-daemon /usr/local/bin/layerfs-daemon
 COPY --from=build /layerfs-fuse /usr/local/bin/layerfs-fuse
 COPY benchmark/fs-bench-pro/shared/daemon-entrypoint.sh /usr/local/bin/layerfs-daemon-entrypoint
+ARG LAYERFS_BUILD_SELF_CHECK=1
 RUN chmod 0555 /usr/local/bin/fs-benchmark-workload \
                   /usr/local/bin/layerfs-daemon \
                   /usr/local/bin/layerfs-fuse /usr/local/bin/layerfs-daemon-entrypoint \
- && /usr/local/bin/fs-benchmark-workload self-check \
+ && if [ "$LAYERFS_BUILD_SELF_CHECK" = 1 ]; then /usr/local/bin/fs-benchmark-workload self-check; else test "$LAYERFS_BUILD_SELF_CHECK" = 0; fi \
  && test -x /usr/local/bin/layerfs-daemon
 
 ARG LAYERFS_SOURCE_COMMIT
