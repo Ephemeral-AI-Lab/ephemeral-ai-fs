@@ -203,6 +203,6 @@ fn build_capture(receiver: Receiver<CaptureMessage>) -> Result<CapturedContent> 
     Ok(CapturedContent {
         root,
         counters,
-        objects: objects.into_resumable(),
+        objects: objects.into_resumable()?,
     })
 }

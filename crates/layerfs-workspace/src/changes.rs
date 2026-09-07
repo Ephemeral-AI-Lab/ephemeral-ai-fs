@@ -2491,7 +2491,7 @@ mod tests {
                     len: files[0].1.len() as u64,
                     root,
                     counters,
-                    objects: objects.into_resumable(),
+                    objects: objects.into_resumable().unwrap(),
                 }));
         };
         let before = workspace.store.store_counts().unwrap();

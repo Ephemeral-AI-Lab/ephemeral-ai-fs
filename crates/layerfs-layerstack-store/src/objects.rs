@@ -1,3 +1,9 @@
+mod spill;
+#[cfg(test)]
+use spill::SeenStorage;
+pub use spill::SpillableObjectSet;
+use spill::{temporary_file, IdOrder, SpillObjects, TempPath};
+
 use crate::{Result, StoreError};
 use layerfs_content::filesystem::{self, ContentChange, ReconcileConflict};
 use layerfs_content::object::access::{ObjectRead, ObjectStore};
@@ -1019,46 +1025,6 @@ enum DeferredObjects {
     Spill(SpillObjects),
 }
 
-struct SpillObjects {
-    writer: Option<std::fs::File>,
-    reader: Mutex<std::fs::File>,
-    path: PathBuf,
-    pending: Vec<u8>,
-    pending_index: BTreeMap<ObjectId, (usize, usize)>,
-    end: u64,
-    index: Option<BTreeMap<ObjectId, (u64, u64)>>,
-    index_bytes: usize,
-    disk_index: Option<Box<SpillDiskIndex>>,
-    index_limit: usize,
-    buffer_bytes: usize,
-    order_memory_bytes: usize,
-}
-
-struct SpillDiskIndex {
-    // Drop the connection before its owned temporary path.
-    connection: Mutex<Connection>,
-    _path: TempPath,
-}
-
-impl Drop for SpillObjects {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
-enum IdOrder {
-    Memory(Vec<ObjectId>),
-    Spill { file: std::fs::File, path: TempPath },
-}
-
-struct TempPath(PathBuf);
-
-impl Drop for TempPath {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
-
 #[cfg(test)]
 impl AppendOnlyInitializationWriter {
     pub(crate) fn new(pending_limit: usize) -> Result<Self> {
@@ -1635,61 +1601,6 @@ impl Iterator for CompactInodePairStream {
     }
 }
 
-impl IdOrder {
-    fn empty() -> Self {
-        Self::Memory(Vec::new())
-    }
-
-    fn push_bounded(&mut self, id: ObjectId, limit: usize) -> Result<()> {
-        if matches!(self, Self::Memory(ids) if (ids.len() + 1) * 32 > limit) {
-            let Self::Memory(ids) = std::mem::replace(self, Self::Memory(Vec::new())) else {
-                unreachable!()
-            };
-            let (mut file, path) = temporary_file("candidate-order")?;
-            for id in ids {
-                file.write_all(id.as_bytes())?;
-            }
-            *self = Self::Spill {
-                file,
-                path: TempPath(path),
-            };
-        }
-        match self {
-            Self::Memory(ids) => ids.push(id),
-            Self::Spill { file, .. } => file.write_all(id.as_bytes())?,
-        }
-        Ok(())
-    }
-
-    fn visit(&self, mut visitor: impl FnMut(ObjectId) -> Result<()>) -> Result<()> {
-        match self {
-            Self::Memory(ids) => {
-                for id in ids {
-                    visitor(*id)?;
-                }
-            }
-            Self::Spill { path, .. } => {
-                let mut file = std::fs::File::open(&path.0)?;
-                let mut bytes = [0; 32];
-                loop {
-                    match file.read_exact(&mut bytes) {
-                        Ok(()) => visitor(ObjectId::from_bytes(&bytes)?)?,
-                        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
-                        Err(error) => return Err(error.into()),
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-pub struct SpillableObjectSet {
-    storage: SeenStorage,
-    count: usize,
-    memory_limit: usize,
-}
-
 pub(crate) struct CandidatePlan {
     missing: SpillableObjectSet,
     missing_order: IdOrder,
@@ -1921,108 +1832,6 @@ pub(crate) struct FinishedOutputAdmission {
     pub diagnostics: InitializationAdmissionDiagnostics,
 }
 
-// Preserve inline spill ownership; Connection/Mutex layout varies by platform.
-#[allow(clippy::large_enum_variant)]
-enum SeenStorage {
-    Memory(BTreeSet<ObjectId>),
-    Spill {
-        connection: Mutex<Connection>,
-        _path: TempPath,
-    },
-}
-
-impl SpillableObjectSet {
-    pub fn empty() -> Result<Self> {
-        Self::bounded(CANDIDATE_INDEX_BYTES)
-    }
-    fn bounded(memory_limit: usize) -> Result<Self> {
-        Ok(Self {
-            storage: SeenStorage::Memory(BTreeSet::new()),
-            count: 0,
-            memory_limit,
-        })
-    }
-
-    pub fn contains(&self, id: ObjectId) -> Result<bool> {
-        match &self.storage {
-            SeenStorage::Memory(ids) => Ok(ids.contains(&id)),
-            SeenStorage::Spill { connection, .. } => {
-                let connection = connection
-                    .lock()
-                    .map_err(|_| StoreError::Integrity("candidate seen index"))?;
-                let found = connection
-                    .prepare_cached("SELECT 1 FROM seen WHERE id=?1")?
-                    .exists([id.as_bytes().as_slice()])?;
-                Ok(found)
-            }
-        }
-    }
-
-    fn spill(&mut self) -> Result<()> {
-        let SeenStorage::Memory(known) = &self.storage else {
-            return Ok(());
-        };
-        let (mut connection, path) = scratch_index(
-            "candidate-seen",
-            "CREATE TABLE seen (id BLOB PRIMARY KEY CHECK(length(id)=32)) WITHOUT ROWID;",
-        )?;
-        let mut ids = known.iter();
-        loop {
-            let transaction = connection.transaction()?;
-            let mut count = 0;
-            {
-                let mut insert = transaction.prepare_cached("INSERT INTO seen VALUES (?1)")?;
-                for id in ids.by_ref().take(ADMISSION_BATCH_COUNT) {
-                    insert.execute([id.as_bytes().as_slice()])?;
-                    count += 1;
-                }
-            }
-            transaction.commit()?;
-            if count < ADMISSION_BATCH_COUNT {
-                break;
-            }
-        }
-        // Publish only after the derived index is complete; errors retain the old set.
-        self.storage = SeenStorage::Spill {
-            connection: Mutex::new(connection),
-            _path: path,
-        };
-        Ok(())
-    }
-
-    fn insert(&mut self, id: ObjectId) -> Result<bool> {
-        // Reserve the existing 4 MiB SQLite cache during the memory-to-index transfer.
-        if matches!(&self.storage, SeenStorage::Memory(_) if (self.count + 1) * 48 > self.memory_limit.saturating_sub(4 * 1024 * 1024))
-            && !self.contains(id)?
-        {
-            self.spill()?;
-        }
-        let inserted = match &mut self.storage {
-            SeenStorage::Memory(ids) => ids.insert(id),
-            SeenStorage::Spill { connection, .. } => {
-                connection
-                    .get_mut()
-                    .map_err(|_| StoreError::Integrity("candidate seen index"))?
-                    .prepare_cached("INSERT OR IGNORE INTO seen VALUES (?1)")?
-                    .execute([id.as_bytes().as_slice()])?
-                    != 0
-            }
-        };
-        self.count += usize::from(inserted);
-        Ok(inserted)
-    }
-
-    pub fn insert_page(&mut self, ids: &[ObjectId]) -> Result<Vec<ObjectId>> {
-        let mut inserted = Vec::new();
-        for &id in ids {
-            if self.insert(id)? {
-                inserted.push(id);
-            }
-        }
-        Ok(inserted)
-    }
-}
-
 impl DeferredObjectStore {
     pub fn new() -> Result<Self> {
         Self::with_reference_index(true)
@@ -2049,7 +1858,7 @@ impl DeferredObjectStore {
             spill_count: 0,
             memory_limit: CANDIDATE_MEMORY_BYTES,
             index_limit: CANDIDATE_INDEX_BYTES,
-            spill_buffer_bytes: CANDIDATE_SPILL_BUFFER_BYTES,
+            spill_buffer_bytes: CANDIDATE_SPILL_BUFFER_BYTES - 2 * spill::ID_BUFFER_BYTES,
             order_memory_bytes: CANDIDATE_MEMORY_BYTES,
         })
     }
@@ -2091,24 +1900,40 @@ impl DeferredObjectStore {
     fn order_missing(&self, missing: &SpillableObjectSet) -> Result<IdOrder> {
         let mut output = IdOrder::empty();
         let mut count = 0_usize;
-        let mut push = |id| {
-            if missing.contains(id)? {
-                output.push_bounded(id, self.index_limit)?;
-                count += 1;
+        let mut page = Vec::with_capacity(OBJECT_PAGE_COUNT);
+        let mut consume = |page: &[ObjectId]| -> Result<()> {
+            let known = missing.membership(page)?;
+            for &id in page {
+                if known.contains(&id) {
+                    output.push_bounded(id, self.index_limit)?;
+                    count += 1;
+                }
+            }
+            Ok(())
+        };
+        let mut push = |id| -> Result<()> {
+            page.push(id);
+            if page.len() == OBJECT_PAGE_COUNT {
+                consume(&page)?;
+                page.clear();
             }
             Ok(())
         };
         match &self.storage {
             DeferredObjects::Memory { order, .. } => {
-                for id in order {
-                    push(*id)?;
+                for &id in order {
+                    push(id)?;
                 }
             }
             DeferredObjects::Spill(spill) => spill.visit_ids(&mut push)?,
         }
+        if !page.is_empty() {
+            consume(&page)?;
+        }
         if count != missing.count {
             return Err(StoreError::Integrity("candidate publication order"));
         }
+        output.seal()?;
         Ok(output)
     }
 
@@ -2153,12 +1978,13 @@ impl DeferredObjectStore {
         mut self,
         mut visitor: impl FnMut(Vec<AuthenticatedCanonicalObject>) -> Result<()>,
     ) -> Result<u64> {
+        self.reachable.seal()?;
         // Admission publishes only after every selected object is durable; its
         // delivery order need not be the graph traversal's child-first order.
         if matches!(self.storage, DeferredObjects::Spill(_)) {
             let mut selected = SpillableObjectSet::bounded(self.index_limit)?;
             self.reachable
-                .visit(|id| selected.insert_page(&[id]).map(|_| ()))?;
+                .visit_pages(|ids| selected.insert_page(ids).map(|_| ()))?;
             self.reachable = self.order_missing(&selected)?;
         }
         let mut memory_owned_bytes = 0_u64;
@@ -2221,11 +2047,7 @@ impl DeferredObjectStore {
     ) -> Result<()> {
         let mut batch = Vec::with_capacity(OBJECT_PAGE_COUNT);
         let mut bytes = 0_usize;
-        self.reachable.visit(|id| {
-            let object = CanonicalObject {
-                id,
-                bytes: self.get(id)?.ok_or(StoreError::MissingObject(id))?,
-            };
+        let mut push = |object: CanonicalObject| -> Result<()> {
             if !batch.is_empty()
                 && (batch.len() == OBJECT_PAGE_COUNT
                     || bytes + object.bytes.len() > OBJECT_PAGE_BYTES)
@@ -2237,7 +2059,25 @@ impl DeferredObjectStore {
             bytes += object.bytes.len();
             batch.push(object);
             Ok(())
-        })?;
+        };
+        match &self.storage {
+            DeferredObjects::Memory { rows, .. } => self.reachable.visit(|id| {
+                push(
+                    rows.get(&id)
+                        .ok_or(StoreError::MissingObject(id))?
+                        .as_ref()
+                        .clone(),
+                )
+            })?,
+            DeferredObjects::Spill(spill) => {
+                spill.visit_ordered(&self.reachable, &mut |id, bytes| {
+                    push(CanonicalObject {
+                        id,
+                        bytes: std::mem::take(bytes),
+                    })
+                })?
+            }
+        }
         if !batch.is_empty() {
             visitor(&batch, true)?;
         }
@@ -2248,19 +2088,26 @@ impl DeferredObjectStore {
         &self,
         mut visitor: impl FnMut(&[(ObjectId, u64)]) -> Result<()>,
     ) -> Result<()> {
-        let mut batch = Vec::with_capacity(OBJECT_PAGE_COUNT);
-        self.reachable.visit(|id| {
-            batch.push((id, self.encoded_length(id)?));
-            if batch.len() == OBJECT_PAGE_COUNT {
-                visitor(&batch)?;
-                batch.clear();
-            }
-            Ok(())
-        })?;
-        if !batch.is_empty() {
-            visitor(&batch)?;
-        }
-        Ok(())
+        self.reachable.visit_pages(|ids| {
+            let lengths = match &self.storage {
+                DeferredObjects::Memory { rows, .. } => ids
+                    .iter()
+                    .map(|id| rows.get(id).map(|object| object.bytes.len() as u64))
+                    .collect::<Vec<_>>(),
+                DeferredObjects::Spill(spill) => spill
+                    .locations(ids)?
+                    .into_iter()
+                    .map(|location| location.map(|(_, length)| length))
+                    .collect(),
+            };
+            let page = ids
+                .iter()
+                .copied()
+                .zip(lengths)
+                .map(|(id, length)| Ok((id, length.ok_or(StoreError::MissingObject(id))?)))
+                .collect::<Result<Vec<_>>>()?;
+            visitor(&page)
+        })
     }
 
     fn reachable_from(mut self, root: ObjectId) -> Result<Self> {
@@ -2313,6 +2160,7 @@ impl DeferredObjectStore {
             stack.push((id, true));
             stack.extend(inserted.into_iter().rev().map(|child| (child, false)));
         }
+        order.seal()?;
         self.reachable = order;
         self.count = count;
         self.encoded_bytes = encoded_bytes;
@@ -2440,6 +2288,7 @@ impl DeferredObjectStore {
             index_limit: self.index_limit,
             buffer_bytes: self.spill_buffer_bytes,
             order_memory_bytes: self.order_memory_bytes,
+            failed: false,
         };
         for id in order {
             spill.put(
@@ -2457,302 +2306,11 @@ impl DeferredObjectStore {
     }
 
     fn all_reachable(mut self) -> Result<Self> {
+        self.reachable.seal()?;
         if let DeferredObjects::Spill(spill) = &mut self.storage {
             spill.seal()?;
         }
         Ok(self)
-    }
-}
-
-impl SpillObjects {
-    fn spill_index(&mut self) -> Result<()> {
-        self.index = None;
-        self.index_bytes = 0;
-        self.flush()?;
-        let mut reader = self
-            .reader
-            .lock()
-            .map_err(|_| StoreError::Integrity("candidate spool lock"))?;
-        self.disk_index = Some(Box::new(SpillDiskIndex::from_spill(&mut reader, self.end)?));
-        Ok(())
-    }
-
-    fn seal(&mut self) -> Result<()> {
-        self.flush()?;
-        self.writer = None;
-        #[cfg(unix)]
-        std::fs::remove_file(&self.path)?;
-        Ok(())
-    }
-
-    fn flush(&mut self) -> Result<()> {
-        if self.pending.is_empty() {
-            return Ok(());
-        }
-        self.writer
-            .as_mut()
-            .ok_or(StoreError::Integrity("sealed candidate spool"))?
-            .write_all(&self.pending)?;
-        self.pending.clear();
-        self.pending_index.clear();
-        Ok(())
-    }
-
-    fn put(&mut self, id: ObjectId, canonical: &[u8]) -> Result<()> {
-        let row_len = canonical
-            .len()
-            .checked_add(40)
-            .ok_or(StoreError::Integrity("candidate object length"))?;
-        if !self.pending.is_empty()
-            && self.pending.len().saturating_add(row_len) > self.buffer_bytes
-        {
-            self.flush()?;
-        }
-        let start = self.end;
-        let pending_offset = self.pending.len() + 40;
-        self.pending.extend_from_slice(id.as_bytes());
-        self.pending
-            .extend_from_slice(&(canonical.len() as u64).to_le_bytes());
-        self.pending.extend_from_slice(canonical);
-        self.pending_index
-            .insert(id, (pending_offset, canonical.len()));
-        self.end = self
-            .end
-            .checked_add(row_len as u64)
-            .ok_or(StoreError::Integrity("candidate object length"))?;
-        let index_limit = self.index_limit;
-        if let Some(index) = &mut self.index {
-            if self.index_bytes.saturating_add(64) > index_limit {
-                self.spill_index()?;
-            } else {
-                index.insert(id, (start + 40, canonical.len() as u64));
-                self.index_bytes += 64;
-            }
-        } else {
-            self.disk_index
-                .as_ref()
-                .ok_or(StoreError::Integrity("candidate spill index unavailable"))?
-                .insert(id, start + 40, canonical.len() as u64)?;
-        }
-        if self.pending.len() >= self.buffer_bytes {
-            self.flush()?;
-        }
-        Ok(())
-    }
-
-    fn visit_ids(&self, visitor: &mut dyn FnMut(ObjectId) -> Result<()>) -> Result<()> {
-        if let Some(index) = &self.index {
-            if index.len() <= self.order_memory_bytes / std::mem::size_of::<(u64, ObjectId)>() {
-                let mut order = index
-                    .iter()
-                    .map(|(id, (offset, _))| (*offset, *id))
-                    .collect::<Vec<_>>();
-                order.sort_unstable_by_key(|(offset, _)| *offset);
-                for (_, id) in order {
-                    visitor(id)?;
-                }
-                return Ok(());
-            }
-        }
-        let mut file = self
-            .reader
-            .lock()
-            .map_err(|_| StoreError::Integrity("candidate spool lock"))?;
-        file.seek(SeekFrom::Start(0))?;
-        let mut file = BufReader::with_capacity(self.buffer_bytes, &mut *file);
-        loop {
-            let mut object_id = [0; 32];
-            match file.read_exact(&mut object_id) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
-                Err(error) => return Err(error.into()),
-            }
-            let mut length = [0; 8];
-            file.read_exact(&mut length)?;
-            visitor(ObjectId::from_bytes(&object_id)?)?;
-            file.seek_relative(
-                i64::try_from(u64::from_le_bytes(length))
-                    .map_err(|_| StoreError::Integrity("candidate object length"))?,
-            )?;
-        }
-    }
-
-    fn visit_ordered(
-        &self,
-        order: &IdOrder,
-        visitor: &mut dyn FnMut(ObjectId, &mut Vec<u8>) -> Result<()>,
-    ) -> Result<()> {
-        let mut file = self
-            .reader
-            .lock()
-            .map_err(|_| StoreError::Integrity("candidate spool lock"))?;
-        file.seek(SeekFrom::Start(0))?;
-        let mut file = BufReader::with_capacity(self.buffer_bytes, &mut *file);
-        let mut position = 0_u64;
-        let mut canonical = Vec::new();
-        order.visit(|expected| {
-            let (offset, length) = self
-                .location(expected)?
-                .ok_or(StoreError::MissingObject(expected))?;
-            let length = usize::try_from(length)
-                .map_err(|_| StoreError::Integrity("candidate object length"))?;
-            if length > OBJECT_PAGE_BYTES {
-                return Err(StoreError::InvalidInput("candidate object page"));
-            }
-            let distance = i64::try_from(i128::from(offset) - i128::from(position))
-                .map_err(|_| StoreError::Integrity("candidate object offset"))?;
-            // Retain buffered sequential read-ahead, while still supporting
-            // arbitrary graph orders for borrowed visitors.
-            file.seek_relative(distance)?;
-            canonical.resize(length, 0);
-            file.read_exact(&mut canonical)?;
-            position = offset
-                .checked_add(length as u64)
-                .ok_or(StoreError::Integrity("candidate object length"))?;
-            visitor(expected, &mut canonical)
-        })
-    }
-
-    fn location(&self, id: ObjectId) -> Result<Option<(u64, u64)>> {
-        if let Some(index) = &self.index {
-            return Ok(index.get(&id).copied());
-        }
-        self.disk_index
-            .as_ref()
-            .ok_or(StoreError::Integrity("candidate spill index unavailable"))?
-            .location(id)
-    }
-
-    fn get(&self, id: ObjectId) -> Result<Option<Vec<u8>>> {
-        if let Some((offset, length)) = self.pending_index.get(&id) {
-            return Ok(Some(self.pending[*offset..*offset + *length].to_vec()));
-        }
-        let Some((offset, length)) = self.location(id)? else {
-            return Ok(None);
-        };
-        let mut file = self
-            .reader
-            .lock()
-            .map_err(|_| StoreError::Integrity("candidate spool lock"))?;
-        file.seek(SeekFrom::Start(offset))?;
-        let mut bytes = vec![
-            0;
-            usize::try_from(length)
-                .map_err(|_| StoreError::Integrity("candidate object length"))?
-        ];
-        file.read_exact(&mut bytes)?;
-        Ok(Some(bytes))
-    }
-
-    fn encoded_length(&self, id: ObjectId) -> Result<u64> {
-        self.location(id)?
-            .map(|(_, length)| length)
-            .ok_or(StoreError::MissingObject(id))
-    }
-}
-
-fn scratch_index(label: &str, schema: &str) -> Result<(Connection, TempPath)> {
-    let (temporary, path) = temporary_file(label)?;
-    let path = TempPath(path);
-    drop(temporary);
-    let connection = Connection::open(&path.0)?;
-    // Derived private scratch, with the same bounded cache and no Store policy changes.
-    connection.execute_batch(
-        "PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;
-        PRAGMA temp_store=FILE; PRAGMA cache_size=-4096; PRAGMA cache_spill=ON;
-        PRAGMA mmap_size=0; PRAGMA locking_mode=EXCLUSIVE;",
-    )?;
-    connection.execute_batch(schema)?;
-    Ok((connection, path))
-}
-
-impl SpillDiskIndex {
-    fn from_spill(file: &mut std::fs::File, end: u64) -> Result<Self> {
-        let (mut connection, path) = scratch_index(
-            "candidate-index",
-            "CREATE TABLE offsets (id BLOB PRIMARY KEY CHECK(length(id)=32),
-                offset INTEGER NOT NULL CHECK(offset>=0),
-                length INTEGER NOT NULL CHECK(length>=0)) WITHOUT ROWID;",
-        )?;
-        file.seek(SeekFrom::Start(0))?;
-        let mut offset = 0_u64;
-        while offset < end {
-            let transaction = connection.transaction()?;
-            {
-                let mut insert =
-                    transaction.prepare_cached("INSERT INTO offsets VALUES (?1,?2,?3)")?;
-                for _ in 0..INITIALIZATION_ADMISSION_BATCH_COUNT {
-                    if offset == end {
-                        break;
-                    }
-                    let mut id = [0; 32];
-                    let mut length = [0; 8];
-                    file.read_exact(&mut id)?;
-                    file.read_exact(&mut length)?;
-                    let length = u64::from_le_bytes(length);
-                    let payload = offset
-                        .checked_add(40)
-                        .ok_or(StoreError::Integrity("candidate index offset"))?;
-                    offset = payload
-                        .checked_add(length)
-                        .filter(|offset| *offset <= end)
-                        .ok_or(StoreError::Integrity("candidate index frame bounds"))?;
-                    insert.execute(rusqlite::params![
-                        id.as_slice(),
-                        i64::try_from(payload)
-                            .map_err(|_| StoreError::Integrity("candidate index offset"))?,
-                        i64::try_from(length)
-                            .map_err(|_| StoreError::Integrity("candidate object length"))?
-                    ])?;
-                    file.seek(SeekFrom::Start(offset))?;
-                }
-            }
-            transaction.commit()?;
-        }
-        Ok(Self {
-            connection: Mutex::new(connection),
-            _path: path,
-        })
-    }
-
-    fn insert(&self, id: ObjectId, offset: u64, length: u64) -> Result<()> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| StoreError::Integrity("candidate index lock"))?;
-        connection
-            .prepare_cached("INSERT INTO offsets VALUES (?1,?2,?3)")?
-            .execute(rusqlite::params![
-                id.as_bytes().as_slice(),
-                i64::try_from(offset)
-                    .map_err(|_| StoreError::Integrity("candidate index offset"))?,
-                i64::try_from(length)
-                    .map_err(|_| StoreError::Integrity("candidate object length"))?
-            ])?;
-        Ok(())
-    }
-
-    fn location(&self, id: ObjectId) -> Result<Option<(u64, u64)>> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| StoreError::Integrity("candidate index lock"))?;
-        let location: Option<(i64, i64)> = connection
-            .prepare_cached("SELECT offset,length FROM offsets WHERE id=?1")?
-            .query_row([id.as_bytes().as_slice()], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
-            .optional()?;
-        location
-            .map(|(offset, length)| {
-                Ok((
-                    u64::try_from(offset)
-                        .map_err(|_| StoreError::Integrity("candidate index offset"))?,
-                    u64::try_from(length)
-                        .map_err(|_| StoreError::Integrity("candidate object length"))?,
-                ))
-            })
-            .transpose()
     }
 }
 
@@ -2806,8 +2364,10 @@ impl<'a> ObjectBuffer<'a> {
     }
 
     #[doc(hidden)]
-    pub fn into_resumable(self) -> DeferredObjectStore {
-        self.objects
+    pub fn into_resumable(mut self) -> Result<DeferredObjectStore> {
+        // The canonical spool remains resumable; the ID reader sees only a sealed order.
+        self.objects.reachable.seal()?;
+        Ok(self.objects)
     }
 
     #[doc(hidden)]
@@ -2837,7 +2397,9 @@ impl<'a> ObjectBuffer<'a> {
         }
         self.objects.memory_limit = CANDIDATE_SPILL_BUFFER_BYTES / partitions;
         self.objects.index_limit = CANDIDATE_INDEX_BYTES / partitions;
-        self.objects.spill_buffer_bytes = CANDIDATE_SPILL_BUFFER_BYTES / partitions;
+        self.objects.spill_buffer_bytes = (CANDIDATE_SPILL_BUFFER_BYTES - spill::ID_BUFFER_BYTES)
+            / partitions
+            - spill::ID_BUFFER_BYTES;
         self.objects.order_memory_bytes = CANDIDATE_MEMORY_BYTES / partitions;
         if matches!(&self.objects.storage, DeferredObjects::Memory { bytes, .. } if *bytes > self.objects.memory_limit)
         {
@@ -2856,9 +2418,11 @@ impl<'a> ObjectBuffer<'a> {
         if matches!(&self.objects.reachable, IdOrder::Memory(ids) if ids.len().saturating_mul(32) > self.objects.index_limit)
         {
             let mut order = IdOrder::empty();
+            self.objects.reachable.seal()?;
             self.objects
                 .reachable
                 .visit(|id| order.push_bounded(id, self.objects.index_limit))?;
+            order.seal()?;
             self.objects.reachable = order;
         }
         if self.objects.reference_bytes > self.objects.index_limit {
@@ -2960,9 +2524,14 @@ impl<'a> ObjectBuffer<'a> {
     }
 
     pub fn merge_prevalidated(&mut self, objects: DeferredObjectStore) -> Result<()> {
-        objects.visit_authenticated_order(&objects.reachable, &mut |object| {
-            self.objects.put_authenticated(object.clone())
-        })
+        objects
+            .consume_prevalidated_pages(|page| {
+                for object in page {
+                    self.objects.put_authenticated(object)?;
+                }
+                Ok(())
+            })
+            .map(|_| ())
     }
 }
 
@@ -3046,31 +2615,6 @@ pub(crate) fn combine_candidates(
         })?;
     }
     combined.reachable_from(root_id)
-}
-
-fn temporary_file(label: &str) -> Result<(std::fs::File, PathBuf)> {
-    static SERIAL: AtomicU64 = AtomicU64::new(0);
-    let directory = std::env::temp_dir();
-    for _ in 0..32 {
-        let path = directory.join(format!(
-            "layerfs-{label}-{}-{}",
-            std::process::id(),
-            SERIAL.fetch_add(1, Ordering::Relaxed)
-        ));
-        let mut options = std::fs::OpenOptions::new();
-        options.create_new(true).read(true).write(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        match options.open(&path) {
-            Ok(file) => return Ok((file, path)),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Err(StoreError::Integrity("candidate temporary file"))
 }
 
 fn elapsed_ns(started: Instant) -> u64 {
@@ -3364,10 +2908,13 @@ impl<'a> CheckedOutputAdmission<'a> {
     ) -> Result<()> {
         let mut duplicates = Vec::new();
         let mut duplicate_bytes = 0;
+        let ids = page.iter().map(|object| object.id).collect::<Vec<_>>();
+        let mut newly_seen = seen.insert_page(&ids)?.into_iter().collect::<BTreeSet<_>>();
         for object in page {
+            let first = newly_seen.remove(&object.id);
             if let Some(&index) = self.pending.get(&object.id) {
                 self.admit_duplicate(index, &object.bytes)?;
-            } else if seen.insert(object.id)? {
+            } else if first {
                 self.push_pending(object)?;
             } else {
                 if !duplicates.is_empty()
@@ -4692,6 +4239,7 @@ mod tests {
         .unwrap();
         buffer
             .into_resumable()
+            .unwrap()
             .all_reachable()
             .unwrap()
             .consume_prevalidated_pages(|page| {
@@ -5576,7 +5124,8 @@ mod tests {
             source: None,
             objects,
         }
-        .into_resumable();
+        .into_resumable()
+        .unwrap();
         let mut resumed = ObjectBuffer {
             source: None,
             objects,

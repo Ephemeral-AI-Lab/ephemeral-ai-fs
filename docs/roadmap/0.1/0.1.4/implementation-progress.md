@@ -198,3 +198,48 @@ objects.rs production owners through admission and layerstack.rs production Init
 paths through NativeImport. The exact additional construction/runtime source list
 remains mandatory before touching those owners. Systematic-debugging skill read;
 task-specific smoke-only verification overrides generic extra-test advice.
+
+## Milestone 1 — implemented and source reviewed
+
+Moved actual derived spill/seen/location/ID-order owners to objects/spill.rs,
+retaining the construction facade. Page SQL respects effective parameter and
+statement limits; seen RETURNING results restore first input occurrence order.
+Streaming admission callers now consume page flags, including a pending-duplicate
+flag before a possible later drain. OFF-journal mutation failures invalidate the
+owner. Offset transfer drains the known absolute/pending union without payload
+header replay and includes the threshold-triggering record. Pending locations
+remain readable until successful data/index flush. Selected location/member and
+borrowed batch visitors resolve pages and preserve order/duplicates.
+
+IdOrder uses 64-KiB buffers, explicit fallible seals and truncated-tail rejection.
+The private doc-hidden into_resumable handoff is now fallible, propagated through
+capture; no public SDK signature changed. Producer spill-buffer allocations reserve
+ID-buffer space within the existing aggregate I/O allowance. Owned selected output
+moves through merge_prevalidated; no canonical producer Vec clone is needed there.
+All-Init direct sink/occupancy selection remains milestone 2, not completed by this.
+
+Executed: m1-small-1 and m1-deepseek-1 performance plus full historical mounted
+verification/cleanup PASS at source seal
+335a06d6912fc62e926fbfd33da696493aca3e7d61d8401bf5243d30f6a2c415.
+The final borrowed-batch scalar-lookup correction (not used by those smoke flows)
+then built at source seal
+ccc17643cac2fe1ffa315a97e32a1f1a5555dab9daa071a1ea2ad5735dbf278e;
+m1-edits-1 performance and all 24 initial/retained/no-change mappings passed
+historical FUSE verification and cleanup. All evidence lives under the previously
+recorded external runs root. These are intermediate source-specific observations,
+not the required final integrated candidate comparisons.
+
+The subsequent fallible ID seal propagation is a source-reviewed error-handling
+completion; its matching build and next affected smoke remain pending. No oversized
+ID/seen-index population was injected: disk-seen thresholds, truncated ID failures
+and OFF-journal failure schedules are not exercised by these smokes. Their code
+and callers were reviewed; no unit or extra fault suite was run. Single-sample
+operation times show no actionable regression: 8-MiB SDK steps remain roughly
+6–8 ms and ordinary complete replacements roughly 76–86 ms. Retained allocation
+is intentionally still raw-schema storage at this milestone; no material-storage
+improvement is claimed.
+
+Draft implementation PR: https://github.com/Ephemeral-AI-Lab/layerfs/pull/81.
+It remains unmerged and explicitly incomplete. All eight review obligations that
+require packed admission, hints, grouped reads, gate replacement or reconciliation
+remain open; only the milestone-1 spill/page portions are implemented.
