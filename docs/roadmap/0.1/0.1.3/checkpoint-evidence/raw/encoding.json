@@ -23,6 +23,12 @@
     "published_path": "attempts/initial/verification-ledger.json.gz",
     "published_sha256": "b902bf817141d15c4b6715fb06152960bdab169de98e5eea5319e38f19886108"
   },
+  "attempts/sdk-v2-first.json": {
+    "original_bytes": 57880,
+    "original_sha256": "8e31e6eb9f6371bbe1bd78982aac4c4c7c4bc247806173605cada394622bc581",
+    "published_path": "attempts/sdk-v2-first.json",
+    "published_sha256": "8e31e6eb9f6371bbe1bd78982aac4c4c7c4bc247806173605cada394622bc581"
+  },
   "declaration.json": {
     "original_bytes": 19550,
     "original_sha256": "c906bcb79a7855bdf440545cdc303a60655c3377c20f049a50e9794079b6e90b",
@@ -460,6 +466,18 @@
     "original_sha256": "a2a5ac6b9002f1489e855c4d3dd1fe3a0b78c7fd8459124f723d0e6a512bfc07",
     "published_path": "development/sdk-cold-v2-build.log",
     "published_sha256": "a2a5ac6b9002f1489e855c4d3dd1fe3a0b78c7fd8459124f723d0e6a512bfc07"
+  },
+  "development/sdk-cold-v2-final-build.log": {
+    "original_bytes": 83,
+    "original_sha256": "a2a5ac6b9002f1489e855c4d3dd1fe3a0b78c7fd8459124f723d0e6a512bfc07",
+    "published_path": "development/sdk-cold-v2-final-build.log",
+    "published_sha256": "a2a5ac6b9002f1489e855c4d3dd1fe3a0b78c7fd8459124f723d0e6a512bfc07"
+  },
+  "development/sdk-cold-v2-final-requalification.log": {
+    "original_bytes": 3617,
+    "original_sha256": "dbe81f23367f3f84caea85c41e2f246666512006cc5efdc28df087765e757e1b",
+    "published_path": "development/sdk-cold-v2-final-requalification.log",
+    "published_sha256": "dbe81f23367f3f84caea85c41e2f246666512006cc5efdc28df087765e757e1b"
   },
   "development/sdk-cold-v2-requalification.log": {
     "original_bytes": 3623,
@@ -1715,6 +1733,348 @@
     "published_path": "registry.jsonl",
     "published_sha256": "9c47a0f7ee5911da8bf192d29ff6866d5ba97ef0efe1c5ff68a2f7ffb2cd2579"
   },
+  "requalification-sdk-v2-final/verification-ledger.json": {
+    "original_bytes": 39099,
+    "original_sha256": "6c6abef305a9dafb64ca2d8a8ccf1c04edd507912511aaf56c5431b14b5cf964",
+    "published_path": "requalification-sdk-v2-final/verification-ledger.json",
+    "published_sha256": "6c6abef305a9dafb64ca2d8a8ccf1c04edd507912511aaf56c5431b14b5cf964"
+  },
+  "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-decrease-on-100mib-ops-1/verification.json": {
+    "original_bytes": 12504,
+    "original_sha256": "ca947b7c4ecc724ef79aed019d92ba46daaaa7fcd483bed602dbc3f71d6cb098",
+    "published_path": "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-decrease-on-100mib-ops-1/verification.json",
+    "published_sha256": "ca947b7c4ecc724ef79aed019d92ba46daaaa7fcd483bed602dbc3f71d6cb098"
+  },
+  "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-decrease-on-10mib-ops-1/verification.json": {
+    "original_bytes": 12481,
+    "original_sha256": "11e6e9b85826d0033161bc993624dca112b51754878be344d48ff8423b6805da",
+    "published_path": "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-decrease-on-10mib-ops-1/verification.json",
+    "published_sha256": "11e6e9b85826d0033161bc993624dca112b51754878be344d48ff8423b6805da"
+  },
+  "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-decrease-on-1mib-ops-1/verification.json": {
+    "original_bytes": 12461,
+    "original_sha256": "22fa2b440c2f913e58efb03cd3e9f0befacc9628d5bb49aa97e5eb54b694b743",
+    "published_path": "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-decrease-on-1mib-ops-1/verification.json",
+    "published_sha256": "22fa2b440c2f913e58efb03cd3e9f0befacc9628d5bb49aa97e5eb54b694b743"
+  },
+  "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-decrease-on-500mib-ops-1/verification.json": {
+    "original_bytes": 12516,
+    "original_sha256": "a93d107801c744d5c424e5090353df16575f2cc9e186c1deebcb5e374a4c8a9c",
+    "published_path": "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-decrease-on-500mib-ops-1/verification.json",
+    "published_sha256": "a93d107801c744d5c424e5090353df16575f2cc9e186c1deebcb5e374a4c8a9c"
+  },
+  "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-increase-on-100mib-ops-1/verification.json": {
+    "original_bytes": 12506,
+    "original_sha256": "7d0be557fb0ab252ae767c99534867d20fe55f197e6008c81a8cc0404bc4f33b",
+    "published_path": "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-increase-on-100mib-ops-1/verification.json",
+    "published_sha256": "7d0be557fb0ab252ae767c99534867d20fe55f197e6008c81a8cc0404bc4f33b"
+  },
+  "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-increase-on-10mib-ops-1/verification.json": {
+    "original_bytes": 12483,
+    "original_sha256": "9224aba92c6b1bf6c7e91aee5fcc558505354305038a0e89698adc957909b54e",
+    "published_path": "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-increase-on-10mib-ops-1/verification.json",
+    "published_sha256": "9224aba92c6b1bf6c7e91aee5fcc558505354305038a0e89698adc957909b54e"
+  },
+  "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-increase-on-1mib-ops-1/verification.json": {
+    "original_bytes": 12463,
+    "original_sha256": "5f39c09acc10b9377e58203376764d3d8bbb5abef5733b1264d6f824f2466fbd",
+    "published_path": "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-increase-on-1mib-ops-1/verification.json",
+    "published_sha256": "5f39c09acc10b9377e58203376764d3d8bbb5abef5733b1264d6f824f2466fbd"
+  },
+  "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-increase-on-500mib-ops-1/verification.json": {
+    "original_bytes": 12525,
+    "original_sha256": "28a7ef2c9d31a6bcce25b91d4f6b6eddd0f4a1af382a83885b51fce312821830",
+    "published_path": "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-increase-on-500mib-ops-1/verification.json",
+    "published_sha256": "28a7ef2c9d31a6bcce25b91d4f6b6eddd0f4a1af382a83885b51fce312821830"
+  },
+  "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-preserve-on-100mib-ops-1/verification.json": {
+    "original_bytes": 12506,
+    "original_sha256": "1ad0d1e99bc5b52a28e86748fcc74a7374b8342472e5a42ce1a3fc72726eb0db",
+    "published_path": "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-preserve-on-100mib-ops-1/verification.json",
+    "published_sha256": "1ad0d1e99bc5b52a28e86748fcc74a7374b8342472e5a42ce1a3fc72726eb0db"
+  },
+  "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-preserve-on-10mib-ops-1/verification.json": {
+    "original_bytes": 12483,
+    "original_sha256": "51d5fa1c3b0978fb426ee7e41f9d423d9317e5e4886b5f8346d3aa5fb94e2880",
+    "published_path": "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-preserve-on-10mib-ops-1/verification.json",
+    "published_sha256": "51d5fa1c3b0978fb426ee7e41f9d423d9317e5e4886b5f8346d3aa5fb94e2880"
+  },
+  "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-preserve-on-1mib-ops-1/verification.json": {
+    "original_bytes": 12459,
+    "original_sha256": "3d0df25f59d3569d2891a02c8b506252c5eef1fac85ea63936d49897af1d872d",
+    "published_path": "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-preserve-on-1mib-ops-1/verification.json",
+    "published_sha256": "3d0df25f59d3569d2891a02c8b506252c5eef1fac85ea63936d49897af1d872d"
+  },
+  "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-preserve-on-500mib-ops-1/verification.json": {
+    "original_bytes": 12524,
+    "original_sha256": "22acb4d83ed5ec657bdbae8360cf77bdee05e1c37266a82edb68f7520a4310cc",
+    "published_path": "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-preserve-on-500mib-ops-1/verification.json",
+    "published_sha256": "22acb4d83ed5ec657bdbae8360cf77bdee05e1c37266a82edb68f7520a4310cc"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_changing/append-tail-4k-on-100mib-ops-1/verification.json": {
+    "original_bytes": 12383,
+    "original_sha256": "3ad6a691f7821c298193aebd82824c6e7e8d4e23b179399f52663fa2f0f46a3b",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_changing/append-tail-4k-on-100mib-ops-1/verification.json",
+    "published_sha256": "3ad6a691f7821c298193aebd82824c6e7e8d4e23b179399f52663fa2f0f46a3b"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_changing/append-tail-4k-on-10mib-ops-1/verification.json": {
+    "original_bytes": 12361,
+    "original_sha256": "ba5bd3a63b23ea65599bef32c0f1864268495d12fb5a874919679eb1da431e07",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_changing/append-tail-4k-on-10mib-ops-1/verification.json",
+    "published_sha256": "ba5bd3a63b23ea65599bef32c0f1864268495d12fb5a874919679eb1da431e07"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_changing/append-tail-4k-on-1mib-ops-1/verification.json": {
+    "original_bytes": 12328,
+    "original_sha256": "ccba998947d5a0e228631e08035045eea051b5b68ee33347c92b294713fc6827",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_changing/append-tail-4k-on-1mib-ops-1/verification.json",
+    "published_sha256": "ccba998947d5a0e228631e08035045eea051b5b68ee33347c92b294713fc6827"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_changing/append-tail-4k-on-500mib-result-capped-v2-ops-1/verification.json": {
+    "original_bytes": 12469,
+    "original_sha256": "b00b6139af899a95e0adbb56aab7f69de5db7e600f0af2f1a9d00802f8bb3314",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_changing/append-tail-4k-on-500mib-result-capped-v2-ops-1/verification.json",
+    "published_sha256": "b00b6139af899a95e0adbb56aab7f69de5db7e600f0af2f1a9d00802f8bb3314"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_changing/delete-middle-4k-on-100mib-ops-1/verification.json": {
+    "original_bytes": 12382,
+    "original_sha256": "1e95ca202977c3ebd566bf93566045c829d0a74d70515c99f0b076079af9d332",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_changing/delete-middle-4k-on-100mib-ops-1/verification.json",
+    "published_sha256": "1e95ca202977c3ebd566bf93566045c829d0a74d70515c99f0b076079af9d332"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_changing/delete-middle-4k-on-10mib-ops-1/verification.json": {
+    "original_bytes": 12353,
+    "original_sha256": "fa65af9e48502fdcfec7cfc66791cc8a26c46f3506f9556f482fba9f52fe4215",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_changing/delete-middle-4k-on-10mib-ops-1/verification.json",
+    "published_sha256": "fa65af9e48502fdcfec7cfc66791cc8a26c46f3506f9556f482fba9f52fe4215"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_changing/delete-middle-4k-on-1mib-ops-1/verification.json": {
+    "original_bytes": 12327,
+    "original_sha256": "18f21e26fddd8950d82b5a8e1532d9975d5b66aa0cf24c1dd64e119ebf25dd1e",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_changing/delete-middle-4k-on-1mib-ops-1/verification.json",
+    "published_sha256": "18f21e26fddd8950d82b5a8e1532d9975d5b66aa0cf24c1dd64e119ebf25dd1e"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_changing/delete-middle-4k-on-500mib-ops-1/verification.json": {
+    "original_bytes": 12396,
+    "original_sha256": "f0a03cacdbb2e2e28bbdcbd5edf5c832277b87d807977f041090e46c1aa5c61c",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_changing/delete-middle-4k-on-500mib-ops-1/verification.json",
+    "published_sha256": "f0a03cacdbb2e2e28bbdcbd5edf5c832277b87d807977f041090e46c1aa5c61c"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_changing/insert-middle-4k-on-100mib-ops-1/verification.json": {
+    "original_bytes": 12395,
+    "original_sha256": "7f543233cb676678fe6dc180d9aef24d44c6f51feacbae3f8ffb133e5a29cdaa",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_changing/insert-middle-4k-on-100mib-ops-1/verification.json",
+    "published_sha256": "7f543233cb676678fe6dc180d9aef24d44c6f51feacbae3f8ffb133e5a29cdaa"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_changing/insert-middle-4k-on-10mib-ops-1/verification.json": {
+    "original_bytes": 12370,
+    "original_sha256": "4ff53ef21675f778ceeef882028760f4d62748e62f7372f3e1d6408571bb7f25",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_changing/insert-middle-4k-on-10mib-ops-1/verification.json",
+    "published_sha256": "4ff53ef21675f778ceeef882028760f4d62748e62f7372f3e1d6408571bb7f25"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_changing/insert-middle-4k-on-1mib-ops-1/verification.json": {
+    "original_bytes": 12345,
+    "original_sha256": "ce4633add3b0840a95e59de4d223262922923bfbf7c1fb9722fbc0174a5b0fdc",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_changing/insert-middle-4k-on-1mib-ops-1/verification.json",
+    "published_sha256": "ce4633add3b0840a95e59de4d223262922923bfbf7c1fb9722fbc0174a5b0fdc"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_changing/insert-middle-4k-on-500mib-result-capped-v2-ops-1/verification.json": {
+    "original_bytes": 12473,
+    "original_sha256": "2e35ffd6cb2eb58542f9805aa9d0ccbda8bd2634fca017078faf04365545325f",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_changing/insert-middle-4k-on-500mib-result-capped-v2-ops-1/verification.json",
+    "published_sha256": "2e35ffd6cb2eb58542f9805aa9d0ccbda8bd2634fca017078faf04365545325f"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_changing/prepend-head-4k-on-100mib-ops-1/verification.json": {
+    "original_bytes": 12368,
+    "original_sha256": "e8b542cc344506a97f707d5a4e82a34b00887c8bdd9d9acaf1885891fcaef1e5",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_changing/prepend-head-4k-on-100mib-ops-1/verification.json",
+    "published_sha256": "e8b542cc344506a97f707d5a4e82a34b00887c8bdd9d9acaf1885891fcaef1e5"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_changing/prepend-head-4k-on-10mib-ops-1/verification.json": {
+    "original_bytes": 12349,
+    "original_sha256": "7a04ae6c52879fec81f45b7ec578681e7e5742596cc62ac111107704b691527d",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_changing/prepend-head-4k-on-10mib-ops-1/verification.json",
+    "published_sha256": "7a04ae6c52879fec81f45b7ec578681e7e5742596cc62ac111107704b691527d"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_changing/prepend-head-4k-on-1mib-ops-1/verification.json": {
+    "original_bytes": 12327,
+    "original_sha256": "a2d95fb4da9019d6fe4294be98a0166101a9ac7f771ab4f5a71d8d4b3f1f7b50",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_changing/prepend-head-4k-on-1mib-ops-1/verification.json",
+    "published_sha256": "a2d95fb4da9019d6fe4294be98a0166101a9ac7f771ab4f5a71d8d4b3f1f7b50"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_changing/prepend-head-4k-on-500mib-result-capped-v2-ops-1/verification.json": {
+    "original_bytes": 12453,
+    "original_sha256": "02d2b4e8d8c37b74dbf5cbb019819d7aa637b4f5fdb0d3eba9c8e7842421f0ed",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_changing/prepend-head-4k-on-500mib-result-capped-v2-ops-1/verification.json",
+    "published_sha256": "02d2b4e8d8c37b74dbf5cbb019819d7aa637b4f5fdb0d3eba9c8e7842421f0ed"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_changing/replace-grow-middle-2k-to-4k-on-100mib-ops-1/verification.json": {
+    "original_bytes": 12440,
+    "original_sha256": "e339116a25005292dec1365bc332ef57224e0d84b3e9215d0cf9b6f5d0d0d585",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_changing/replace-grow-middle-2k-to-4k-on-100mib-ops-1/verification.json",
+    "published_sha256": "e339116a25005292dec1365bc332ef57224e0d84b3e9215d0cf9b6f5d0d0d585"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_changing/replace-grow-middle-2k-to-4k-on-10mib-ops-1/verification.json": {
+    "original_bytes": 12411,
+    "original_sha256": "11dd97c09515a57a69f1aa9bc44666d627b3bd41fab987a393b225949c5bbf47",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_changing/replace-grow-middle-2k-to-4k-on-10mib-ops-1/verification.json",
+    "published_sha256": "11dd97c09515a57a69f1aa9bc44666d627b3bd41fab987a393b225949c5bbf47"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_changing/replace-grow-middle-2k-to-4k-on-1mib-ops-1/verification.json": {
+    "original_bytes": 12387,
+    "original_sha256": "6a0901b6c46715c963cfb06f8fcf2717198718da408331d1e3a3bdee803002ff",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_changing/replace-grow-middle-2k-to-4k-on-1mib-ops-1/verification.json",
+    "published_sha256": "6a0901b6c46715c963cfb06f8fcf2717198718da408331d1e3a3bdee803002ff"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_changing/replace-grow-middle-2k-to-4k-on-500mib-result-capped-v2-ops-1/verification.json": {
+    "original_bytes": 12516,
+    "original_sha256": "3714a768e896a5661afbe62d06bb9605171f177fa926281980b5f51547e47bb4",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_changing/replace-grow-middle-2k-to-4k-on-500mib-result-capped-v2-ops-1/verification.json",
+    "published_sha256": "3714a768e896a5661afbe62d06bb9605171f177fa926281980b5f51547e47bb4"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_changing/replace-shrink-middle-4k-to-2k-on-100mib-ops-1/verification.json": {
+    "original_bytes": 12444,
+    "original_sha256": "2e0c27b3e9a9315428e6e2177fc3a667ae30b42768b3d580d13de6776d935f19",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_changing/replace-shrink-middle-4k-to-2k-on-100mib-ops-1/verification.json",
+    "published_sha256": "2e0c27b3e9a9315428e6e2177fc3a667ae30b42768b3d580d13de6776d935f19"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_changing/replace-shrink-middle-4k-to-2k-on-10mib-ops-1/verification.json": {
+    "original_bytes": 12419,
+    "original_sha256": "0bf2d8900290e82e0f9257e6b3e2656ae7b378cb394886d91449c271f115b96a",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_changing/replace-shrink-middle-4k-to-2k-on-10mib-ops-1/verification.json",
+    "published_sha256": "0bf2d8900290e82e0f9257e6b3e2656ae7b378cb394886d91449c271f115b96a"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_changing/replace-shrink-middle-4k-to-2k-on-1mib-ops-1/verification.json": {
+    "original_bytes": 12394,
+    "original_sha256": "d2a170ff983c1779d122145a5d5019ffe6606f5b3181d77271377cd88e4d51c9",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_changing/replace-shrink-middle-4k-to-2k-on-1mib-ops-1/verification.json",
+    "published_sha256": "d2a170ff983c1779d122145a5d5019ffe6606f5b3181d77271377cd88e4d51c9"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_changing/replace-shrink-middle-4k-to-2k-on-500mib-ops-1/verification.json": {
+    "original_bytes": 12463,
+    "original_sha256": "fef92c2c0a6d0bc62e8cd09c65b35d5446fc4d599d4a50fa6cccbb6d97a6161f",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_changing/replace-shrink-middle-4k-to-2k-on-500mib-ops-1/verification.json",
+    "published_sha256": "fef92c2c0a6d0bc62e8cd09c65b35d5446fc4d599d4a50fa6cccbb6d97a6161f"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_changing/truncate-tail-4k-on-100mib-ops-1/verification.json": {
+    "original_bytes": 12383,
+    "original_sha256": "8ca2504ff563721550019a2e14f48c8c98d511460479762f7d00878b2a81f82a",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_changing/truncate-tail-4k-on-100mib-ops-1/verification.json",
+    "published_sha256": "8ca2504ff563721550019a2e14f48c8c98d511460479762f7d00878b2a81f82a"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_changing/truncate-tail-4k-on-10mib-ops-1/verification.json": {
+    "original_bytes": 12358,
+    "original_sha256": "e611fcad5d6d1b19941d0b205a8fd019a90c186538dc987e67c3e5df2436061b",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_changing/truncate-tail-4k-on-10mib-ops-1/verification.json",
+    "published_sha256": "e611fcad5d6d1b19941d0b205a8fd019a90c186538dc987e67c3e5df2436061b"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_changing/truncate-tail-4k-on-1mib-ops-1/verification.json": {
+    "original_bytes": 12325,
+    "original_sha256": "b2972d028e13ff72b036f7cef69c11687fbf794c3b48ae005c70a72243a5648b",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_changing/truncate-tail-4k-on-1mib-ops-1/verification.json",
+    "published_sha256": "b2972d028e13ff72b036f7cef69c11687fbf794c3b48ae005c70a72243a5648b"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_changing/truncate-tail-4k-on-500mib-ops-1/verification.json": {
+    "original_bytes": 12394,
+    "original_sha256": "93a8dead3f5d12d624e2bb9750af938af8b2694732f9ed8d4630433bfd9cf80d",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_changing/truncate-tail-4k-on-500mib-ops-1/verification.json",
+    "published_sha256": "93a8dead3f5d12d624e2bb9750af938af8b2694732f9ed8d4630433bfd9cf80d"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_changing/zero-extend-tail-4k-on-100mib-ops-1/verification.json": {
+    "original_bytes": 12395,
+    "original_sha256": "1812b6721267e8dcbb62bcc666e092906ebcd72d3e2a97ba874df2a3b93a20f8",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_changing/zero-extend-tail-4k-on-100mib-ops-1/verification.json",
+    "published_sha256": "1812b6721267e8dcbb62bcc666e092906ebcd72d3e2a97ba874df2a3b93a20f8"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_changing/zero-extend-tail-4k-on-10mib-ops-1/verification.json": {
+    "original_bytes": 12369,
+    "original_sha256": "5f1d32a3bf9bb41d0bc9bf2b3e62e1249c9d6e5094e8980947f637dc4a983682",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_changing/zero-extend-tail-4k-on-10mib-ops-1/verification.json",
+    "published_sha256": "5f1d32a3bf9bb41d0bc9bf2b3e62e1249c9d6e5094e8980947f637dc4a983682"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_changing/zero-extend-tail-4k-on-1mib-ops-1/verification.json": {
+    "original_bytes": 12343,
+    "original_sha256": "0ae84ad07d5ef0e85d277dc1d429676bc2ccc4949a888ab5d2bd46403be30181",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_changing/zero-extend-tail-4k-on-1mib-ops-1/verification.json",
+    "published_sha256": "0ae84ad07d5ef0e85d277dc1d429676bc2ccc4949a888ab5d2bd46403be30181"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_changing/zero-extend-tail-4k-on-500mib-result-capped-v2-ops-1/verification.json": {
+    "original_bytes": 12480,
+    "original_sha256": "3fb5bb251976a0f683f37951dc17b3ad295f0a94d265def31982bf3ffb54cd62",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_changing/zero-extend-tail-4k-on-500mib-result-capped-v2-ops-1/verification.json",
+    "published_sha256": "3fb5bb251976a0f683f37951dc17b3ad295f0a94d265def31982bf3ffb54cd62"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-head-4k-on-100mib-ops-1/verification.json": {
+    "original_bytes": 12394,
+    "original_sha256": "84d96a84b11c413df71133a6a0a54b043b02eb37c191a67df97d469d0ad12dbb",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-head-4k-on-100mib-ops-1/verification.json",
+    "published_sha256": "84d96a84b11c413df71133a6a0a54b043b02eb37c191a67df97d469d0ad12dbb"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-head-4k-on-10mib-ops-1/verification.json": {
+    "original_bytes": 12365,
+    "original_sha256": "6d4e7372535b302423a2aed6f655c7e049caeec20ae9b79f1f474a06ee7ca87b",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-head-4k-on-10mib-ops-1/verification.json",
+    "published_sha256": "6d4e7372535b302423a2aed6f655c7e049caeec20ae9b79f1f474a06ee7ca87b"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-head-4k-on-1mib-ops-1/verification.json": {
+    "original_bytes": 12338,
+    "original_sha256": "f2318b05661aa3d7d578ebe127fc00635b6c20e8e3e9100682a27e1476241ff7",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-head-4k-on-1mib-ops-1/verification.json",
+    "published_sha256": "f2318b05661aa3d7d578ebe127fc00635b6c20e8e3e9100682a27e1476241ff7"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-head-4k-on-500mib-ops-1/verification.json": {
+    "original_bytes": 12404,
+    "original_sha256": "2e37beeab6565099d88bad93f7fb4ca0ab32a03a029aef84390f4f39d32f0aa0",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-head-4k-on-500mib-ops-1/verification.json",
+    "published_sha256": "2e37beeab6565099d88bad93f7fb4ca0ab32a03a029aef84390f4f39d32f0aa0"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-middle-4k-on-100mib-ops-1/verification.json": {
+    "original_bytes": 12414,
+    "original_sha256": "4bea387451724ff614c1448007d769ad5f7db14bdf528272ef5e91e8bf069223",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-middle-4k-on-100mib-ops-1/verification.json",
+    "published_sha256": "4bea387451724ff614c1448007d769ad5f7db14bdf528272ef5e91e8bf069223"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-middle-4k-on-10mib-ops-1/verification.json": {
+    "original_bytes": 12383,
+    "original_sha256": "11af9be5baade550cca1b749e014b6f0acb00d81e7a85993bdd6ca8b690c81dc",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-middle-4k-on-10mib-ops-1/verification.json",
+    "published_sha256": "11af9be5baade550cca1b749e014b6f0acb00d81e7a85993bdd6ca8b690c81dc"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-middle-4k-on-1mib-ops-1/verification.json": {
+    "original_bytes": 12358,
+    "original_sha256": "cf391955ed066914d268fe715d81f0f9306a4d8136169f060267511433030ea5",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-middle-4k-on-1mib-ops-1/verification.json",
+    "published_sha256": "cf391955ed066914d268fe715d81f0f9306a4d8136169f060267511433030ea5"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-middle-4k-on-500mib-ops-1/verification.json": {
+    "original_bytes": 12426,
+    "original_sha256": "139f9227e2d87516741ff5ae61037db30a30ef3bb4663b17486c0c23ec17c014",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-middle-4k-on-500mib-ops-1/verification.json",
+    "published_sha256": "139f9227e2d87516741ff5ae61037db30a30ef3bb4663b17486c0c23ec17c014"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-tail-4k-on-100mib-ops-1/verification.json": {
+    "original_bytes": 12399,
+    "original_sha256": "cb0564f1e6f87cac3af1a7a737c9328cb926c04d2ba96e65ff72c222f72e1dde",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-tail-4k-on-100mib-ops-1/verification.json",
+    "published_sha256": "cb0564f1e6f87cac3af1a7a737c9328cb926c04d2ba96e65ff72c222f72e1dde"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-tail-4k-on-10mib-ops-1/verification.json": {
+    "original_bytes": 12379,
+    "original_sha256": "b1472e3ec6e7ff1a598f06f9506131bd484f497976eaa392d1aff61132cabbcc",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-tail-4k-on-10mib-ops-1/verification.json",
+    "published_sha256": "b1472e3ec6e7ff1a598f06f9506131bd484f497976eaa392d1aff61132cabbcc"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-tail-4k-on-1mib-ops-1/verification.json": {
+    "original_bytes": 12350,
+    "original_sha256": "55f1cce9487f99831209c67b5a50ccc598603a104f3b352c70144b9d7f1d0b36",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-tail-4k-on-1mib-ops-1/verification.json",
+    "published_sha256": "55f1cce9487f99831209c67b5a50ccc598603a104f3b352c70144b9d7f1d0b36"
+  },
+  "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-tail-4k-on-500mib-ops-1/verification.json": {
+    "original_bytes": 12413,
+    "original_sha256": "11ff008a76376189d4930b772ac5fa4b345c5cb0f93ba8500fa94c537abcef51",
+    "published_path": "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-tail-4k-on-500mib-ops-1/verification.json",
+    "published_sha256": "11ff008a76376189d4930b772ac5fa4b345c5cb0f93ba8500fa94c537abcef51"
+  },
   "requalification-sdk-v2/verification-ledger.json": {
     "original_bytes": 38769,
     "original_sha256": "ad3e610788f0bbf3201b6290396a792e499f85848b3cc11e22238284a77d074f",
@@ -2064,10 +2424,10 @@
     "published_sha256": "3234aea2bf2e4962052989fad2f0cbcc2f3021a9c7ed50746e18e8f3cb47f4d5"
   },
   "sdk-requalification.json": {
-    "original_bytes": 57880,
-    "original_sha256": "8e31e6eb9f6371bbe1bd78982aac4c4c7c4bc247806173605cada394622bc581",
+    "original_bytes": 58459,
+    "original_sha256": "1b2b87529f21f7547ecbdf7413aaec5d5a220ccc026c4f5d7394ac7cad307e2a",
     "published_path": "sdk-requalification.json",
-    "published_sha256": "8e31e6eb9f6371bbe1bd78982aac4c4c7c4bc247806173605cada394622bc581"
+    "published_sha256": "1b2b87529f21f7547ecbdf7413aaec5d5a220ccc026c4f5d7394ac7cad307e2a"
   },
   "selections.json": {
     "original_bytes": 26344,

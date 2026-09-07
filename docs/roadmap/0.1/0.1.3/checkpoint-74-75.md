@@ -220,3 +220,10 @@ seed and prepared fixture. Input seals include source, so recompute the recipe
 hash for the replacement source and record both instead of pretending equality.
 Non-SDK proof and all performance execution paths are unchanged and retain their
 source-bound results. This is a verifier-only repair of the shared campaign.
+
+The first cold-v2 requalification passed all 56 SDK cases. Required CI then
+reported a `format_in_format_args` lint in receipt serialization, after all
+assertions and resource observations. Replace the nested `format!` with
+`format_args!` (same receipt text), retain that first passing proof set and
+manifest, and requalify all 56 proofs on the final source. Performance samples
+and every product/resource/verification assertion remain unchanged.

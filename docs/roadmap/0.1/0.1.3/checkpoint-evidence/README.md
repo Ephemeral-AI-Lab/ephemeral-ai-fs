@@ -57,13 +57,16 @@ publication/reopen, cleanup and all resource limits remain checked. Pre-edit FUS
 inode-number stability is explicitly omitted; this is not a warm-cache/mmap
 resource claim.
 
-All 56 SDK proofs were requalified once on this versioned verifier. Their
+All 56 SDK proofs passed on the versioned verifier and were requalified again
+on the final source after a Clippy-only receipt-formatting correction. The first
+56 passing receipts and their manifest remain archived. Their final
 [manifest](raw/sdk-requalification.json) binds old/new source seals, the unchanged
 product/image/harness, identical registered recipes and prepared fixtures, and
 both input hashes (the recipe hash includes source). The report checks those
 bindings and rejects missing receipts, failed nested resource results, mismatched
 fixtures or products. The original 56 receipts, including the ten failures, remain
-under `raw/verification/`; replacements are under `raw/requalification-sdk-v2/`.
+under `raw/verification/`; final replacements are under `raw/requalification-sdk-v2-final/`; the first
+passing replacements remain under `raw/requalification-sdk-v2/`.
 All other proofs and every performance observation retain their original source
 identity. The only changed execution source for this requalification is
 `benchmark/fs-bench-pro/src/sdk_edit_verify.rs`; no product, performance, Linux

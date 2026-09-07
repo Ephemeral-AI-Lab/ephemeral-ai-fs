@@ -2,9 +2,9 @@
   "cases": {
     "append-tail-4k-on-100mib-ops-1": {
       "family": "edit_length_changing",
-      "new_input_identity": "a1b49b831ad725ee97c57953c23b81081907ee07ce4bfa437b5cf40720080a81",
+      "new_input_identity": "461cbb9bea53e216e50a85e77470a7dd33c45b2c6aad4dad1cc3f7f7af82c9bd",
       "old_input_identity": "ac35df7a47988cd852ec84e58ac8cba77eb3dfb00b25f3f998aa7881626f19f6",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_changing/append-tail-4k-on-100mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_changing/append-tail-4k-on-100mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_changing",
         "fixture_bytes": 104857600,
@@ -26,9 +26,9 @@
     },
     "append-tail-4k-on-10mib-ops-1": {
       "family": "edit_length_changing",
-      "new_input_identity": "f2b747e068a30d620c4f57b81cd3696bea188eb8cbf7d770b95eeed85c8a6b44",
+      "new_input_identity": "80b292c457b216d9bc905cdc61e5f38188bf6bf13d63e0fa60963a0c22a04d2f",
       "old_input_identity": "dd9f86fb6231223c90a068b7d53876500f703c62ea676ca5985adcc289fab63c",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_changing/append-tail-4k-on-10mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_changing/append-tail-4k-on-10mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_changing",
         "fixture_bytes": 10485760,
@@ -50,9 +50,9 @@
     },
     "append-tail-4k-on-1mib-ops-1": {
       "family": "edit_length_changing",
-      "new_input_identity": "e31e50cfcf25b237fbd9cae4bc32efbee36a7d208f856f29438257b5464daf7b",
+      "new_input_identity": "e2c2998b1f5cb9b30798e9f26da4a9d30802a42a4410290783887b804f5d6bdd",
       "old_input_identity": "45f6bf16541407a28335187a5eeb0b28b8989431e685af188707c24bd835c9d1",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_changing/append-tail-4k-on-1mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_changing/append-tail-4k-on-1mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_changing",
         "fixture_bytes": 1048576,
@@ -74,9 +74,9 @@
     },
     "append-tail-4k-on-500mib-result-capped-v2-ops-1": {
       "family": "edit_length_changing",
-      "new_input_identity": "75174a9b4eb2edda6d17062f9ac7da4df5fb1322694eb61716fdb513fcd3373f",
+      "new_input_identity": "492c3dee76be44bba20c3dc18e021da9b3e15877bcaa0edd7c50ab4a54f89c88",
       "old_input_identity": "4b42b438e27ebb2b1d1ae0e3617875d5c2da887365d68f5a2fbb6771e279cca5",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_changing/append-tail-4k-on-500mib-result-capped-v2-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_changing/append-tail-4k-on-500mib-result-capped-v2-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_changing",
         "fixture_bytes": 524283904,
@@ -98,9 +98,9 @@
     },
     "delete-middle-4k-on-100mib-ops-1": {
       "family": "edit_length_changing",
-      "new_input_identity": "132c8801e7315eb24a5d87371edce93bd2fb52dad65d042491819780911a23dc",
+      "new_input_identity": "f5cfcebd60abf6c2a302e90b72767bbf3f7b40c4b0bac7cc67938218496a28a9",
       "old_input_identity": "3b871c390bd723e132b8bc19c9fc5c4eadd3eb5f6e43381425b8bbff793af5fc",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_changing/delete-middle-4k-on-100mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_changing/delete-middle-4k-on-100mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_changing",
         "fixture_bytes": 104857600,
@@ -122,9 +122,9 @@
     },
     "delete-middle-4k-on-10mib-ops-1": {
       "family": "edit_length_changing",
-      "new_input_identity": "b915ac34f5d6a253334f33aff820b8931e59416af6d7410f7a4b5e4212d3fb1b",
+      "new_input_identity": "d5e37b24f40a65110e4d1233eca7e5e1dba23f2fdbd7474c8fe464fc3b6f2e87",
       "old_input_identity": "0cff3353c3178628baa446bcae2557dda44f92ab20e47dda8ef1c1962b2246f5",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_changing/delete-middle-4k-on-10mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_changing/delete-middle-4k-on-10mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_changing",
         "fixture_bytes": 10485760,
@@ -146,9 +146,9 @@
     },
     "delete-middle-4k-on-1mib-ops-1": {
       "family": "edit_length_changing",
-      "new_input_identity": "f5b7090cdd07ff0a1547dee98f7a07355aa4cc312ca1157cfba71868dbac091f",
+      "new_input_identity": "0724d26626f8f4ad2373f5282c3f81a29bca2150369bfa2e8f770df97bbf0970",
       "old_input_identity": "15f977b2d6296d336e9df2555ca8cf5d19894eb6da27cc35705e6e8c48e8ecf8",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_changing/delete-middle-4k-on-1mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_changing/delete-middle-4k-on-1mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_changing",
         "fixture_bytes": 1048576,
@@ -170,9 +170,9 @@
     },
     "delete-middle-4k-on-500mib-ops-1": {
       "family": "edit_length_changing",
-      "new_input_identity": "18b6a7e36d28c23f0ef12f91eb9d20fd08202fda701ae5cd22f615206942ba97",
+      "new_input_identity": "fa14f5b0c6beb6032042f27a27f1527990edf6aafb155f97394314fc59fbf722",
       "old_input_identity": "4ee4cf1f9ad6ce284b384aebdfa654ddef6597da780085ee67c1e0078d71a616",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_changing/delete-middle-4k-on-500mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_changing/delete-middle-4k-on-500mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_changing",
         "fixture_bytes": 524288000,
@@ -194,9 +194,9 @@
     },
     "insert-middle-4k-on-100mib-ops-1": {
       "family": "edit_length_changing",
-      "new_input_identity": "36734a27910af6e9567bc4d1ade177edff64692efa4d074bc8735941d7d648e7",
+      "new_input_identity": "b34a8ee1c82f91739d07befedf4b51540860e32c8769f2a72fb3c0f7d411c10d",
       "old_input_identity": "6ee56dca16a966fc5ce3e327b0d001a73a67b4345a371192a5a5c3bcdb6ab094",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_changing/insert-middle-4k-on-100mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_changing/insert-middle-4k-on-100mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_changing",
         "fixture_bytes": 104857600,
@@ -218,9 +218,9 @@
     },
     "insert-middle-4k-on-10mib-ops-1": {
       "family": "edit_length_changing",
-      "new_input_identity": "52c3f3ae06dcb81f8f2bd46be5051ac3c1df40cf6fc75d7c3e8784b0202cf989",
+      "new_input_identity": "d6b4edcccd5e429a93bb597cf64f0738ed03ed03756ff19490d37362d7629da0",
       "old_input_identity": "782e97aca5ea013cb36668fc78b0081e92a678cf2d64bc4484ae71a08dc7bfaf",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_changing/insert-middle-4k-on-10mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_changing/insert-middle-4k-on-10mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_changing",
         "fixture_bytes": 10485760,
@@ -242,9 +242,9 @@
     },
     "insert-middle-4k-on-1mib-ops-1": {
       "family": "edit_length_changing",
-      "new_input_identity": "73dfd0a389320841a898708255952b3be6b858af31aef495c544353ddbadd397",
+      "new_input_identity": "ea8cb7fe25801e1b469bebe4ac35858ef3646d88091303ab186aec0199903c68",
       "old_input_identity": "40a97811081acee8c9fb46940434dba02e74ef77cbd373ca0c66e2e6663c2153",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_changing/insert-middle-4k-on-1mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_changing/insert-middle-4k-on-1mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_changing",
         "fixture_bytes": 1048576,
@@ -266,9 +266,9 @@
     },
     "insert-middle-4k-on-500mib-result-capped-v2-ops-1": {
       "family": "edit_length_changing",
-      "new_input_identity": "9beee4b93cc10020e99d36adc206da3f4cb73e15ff9ae5b6772043f9a6f97940",
+      "new_input_identity": "c4c2c590b07622f725a3d072e6d54f23eac53a1174e84900b59d7dc3c2567a20",
       "old_input_identity": "665b578f7e137f2223741e41a5d0b6e9519ffa73e10ecdd1b2354f884531f8d4",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_changing/insert-middle-4k-on-500mib-result-capped-v2-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_changing/insert-middle-4k-on-500mib-result-capped-v2-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_changing",
         "fixture_bytes": 524283904,
@@ -290,9 +290,9 @@
     },
     "overwrite-fixed-64k-chunk-count-decrease-on-100mib-ops-1": {
       "family": "edit_canonical_chunk_count",
-      "new_input_identity": "3cc2744429828379027f6c4556d38ed7e9e06c6f4c24073c27b43d0dd17066f3",
+      "new_input_identity": "3c702c7741bda4dc9f34ee68009d7e84b6502b76e36706ab0aa1e11753e87d44",
       "old_input_identity": "bb2b882042f084f44e9c2685b319b8d6f83f9677878d7bb0bb1426689aa9a207",
-      "receipt": "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-decrease-on-100mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-decrease-on-100mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_canonical_chunk_count",
         "fixture_bytes": 104857600,
@@ -314,9 +314,9 @@
     },
     "overwrite-fixed-64k-chunk-count-decrease-on-10mib-ops-1": {
       "family": "edit_canonical_chunk_count",
-      "new_input_identity": "d6ef9dfc97dd17d3e1b0ea43a040388b99fe167722c4c139d8519ea17eabc920",
+      "new_input_identity": "437f510fb587a325606ec244db354fe02f69852a95933d159edf42fb2f5e3c6a",
       "old_input_identity": "74982078192e6e0fb5675d99234651c8629b51090b6c3995a237bacf1e03183f",
-      "receipt": "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-decrease-on-10mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-decrease-on-10mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_canonical_chunk_count",
         "fixture_bytes": 10485760,
@@ -338,9 +338,9 @@
     },
     "overwrite-fixed-64k-chunk-count-decrease-on-1mib-ops-1": {
       "family": "edit_canonical_chunk_count",
-      "new_input_identity": "85bde566cc849ea30be480340610eb48fb37883dd2843e00a60ba2da8dacf04b",
+      "new_input_identity": "4e734185f7f48bcb48a48121a20326739b8c559a1be54f75a8a0fe5b172e9b78",
       "old_input_identity": "9ec942a1ca16f0fca61c7d3c04ee443d38701155851c3fccd5d5678bb6d9d4ea",
-      "receipt": "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-decrease-on-1mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-decrease-on-1mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_canonical_chunk_count",
         "fixture_bytes": 1048576,
@@ -362,9 +362,9 @@
     },
     "overwrite-fixed-64k-chunk-count-decrease-on-500mib-ops-1": {
       "family": "edit_canonical_chunk_count",
-      "new_input_identity": "8a3cc3a08ba075d20143eff204a26ff1d2daeed3926bfa8f2098a8eba599b348",
+      "new_input_identity": "696eef1e6351ba7b112f4bb6c42cb2c986e9438fe4288b00691e06d3435bdcf7",
       "old_input_identity": "dcbd1bdc0ef1513454a0ecb092c2c9cdf4267d99c68a269507557ee1b3b81a92",
-      "receipt": "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-decrease-on-500mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-decrease-on-500mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_canonical_chunk_count",
         "fixture_bytes": 524288000,
@@ -386,9 +386,9 @@
     },
     "overwrite-fixed-64k-chunk-count-increase-on-100mib-ops-1": {
       "family": "edit_canonical_chunk_count",
-      "new_input_identity": "973d7430f6b2150466ac505a8650608dca8554b9fa0789e4f50e7692aaecdbcd",
+      "new_input_identity": "9757e86b5959d81feff51253396ca8b1df66509cc2ce2926e873c75e7b7ca7e9",
       "old_input_identity": "20a6b8e82fda0d7a61866b2864e012c7565d1ef75eca27abdf41216a99c3cba6",
-      "receipt": "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-increase-on-100mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-increase-on-100mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_canonical_chunk_count",
         "fixture_bytes": 104857600,
@@ -410,9 +410,9 @@
     },
     "overwrite-fixed-64k-chunk-count-increase-on-10mib-ops-1": {
       "family": "edit_canonical_chunk_count",
-      "new_input_identity": "1b3ff677dd2139f918c077aa3047086352e697aa781294da7fb3d107022eb7eb",
+      "new_input_identity": "1fdd33b75362d295dc617869144edc27a5185fc88534d663c8c4234d745c3493",
       "old_input_identity": "dd632fc24d90329c7f0b6675291e0d1f690425911407a3b31e0262e21cbd6fc9",
-      "receipt": "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-increase-on-10mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-increase-on-10mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_canonical_chunk_count",
         "fixture_bytes": 10485760,
@@ -434,9 +434,9 @@
     },
     "overwrite-fixed-64k-chunk-count-increase-on-1mib-ops-1": {
       "family": "edit_canonical_chunk_count",
-      "new_input_identity": "cb06a05445dfdb6774661ba376c495a511519cd1380ae1a1a092456bce1258d1",
+      "new_input_identity": "80d9677cab9aba43eb2db048e06712a91e30bd62b9266b5a6c98c1752a4a08b7",
       "old_input_identity": "7ab4ad2627533ae8ffcb3100445c832ac0dde6894e26d2ca2bd8d52eb4a7a7b0",
-      "receipt": "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-increase-on-1mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-increase-on-1mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_canonical_chunk_count",
         "fixture_bytes": 1048576,
@@ -458,9 +458,9 @@
     },
     "overwrite-fixed-64k-chunk-count-increase-on-500mib-ops-1": {
       "family": "edit_canonical_chunk_count",
-      "new_input_identity": "26fb6c8281aa648cce4094d73e173bf982cda69f7211c47c1805334c58541544",
+      "new_input_identity": "828e666f4abd1e298792e28dfb166ad0dadabc3724ed3a0e663e2e6ce3faf2e8",
       "old_input_identity": "9649b1032f265690e33813d55e5eafc15ea6b4581009e529e6be6c28059c9b96",
-      "receipt": "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-increase-on-500mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-increase-on-500mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_canonical_chunk_count",
         "fixture_bytes": 524288000,
@@ -482,9 +482,9 @@
     },
     "overwrite-fixed-64k-chunk-count-preserve-on-100mib-ops-1": {
       "family": "edit_canonical_chunk_count",
-      "new_input_identity": "03b4ab332c79187de7e3ffab0867f9fe6102f9dae07d183f03a30e90ee0160bd",
+      "new_input_identity": "0b88569fee45f57f59953b023b707d2536435c67ce44178f9199f9ce3278820d",
       "old_input_identity": "d1b51d7ec5964f576ed6133d21400d64b621f3c987f219c68c6ac8736caa89bd",
-      "receipt": "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-preserve-on-100mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-preserve-on-100mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_canonical_chunk_count",
         "fixture_bytes": 104857600,
@@ -506,9 +506,9 @@
     },
     "overwrite-fixed-64k-chunk-count-preserve-on-10mib-ops-1": {
       "family": "edit_canonical_chunk_count",
-      "new_input_identity": "b617535af2d5323f6e34ce1cac1e1fe1b5c8f7f9ab70bbbeda196861b3c73a9f",
+      "new_input_identity": "7f608bac0efa1389ceb0aa7d73f2a65d9a6ab029c0103003243fdb2fa6f37289",
       "old_input_identity": "b5f8f834672c6eeba8c1d8033ceb1b0be0522f7f27ced9f64030e8a656bc9b9c",
-      "receipt": "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-preserve-on-10mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-preserve-on-10mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_canonical_chunk_count",
         "fixture_bytes": 10485760,
@@ -530,9 +530,9 @@
     },
     "overwrite-fixed-64k-chunk-count-preserve-on-1mib-ops-1": {
       "family": "edit_canonical_chunk_count",
-      "new_input_identity": "035a2283b6caccf6513cd03a284710e178f444e7fe0466cb193e9d10f56991d4",
+      "new_input_identity": "a4a85a3fc55fac2b2b7181d9be8b672bdba9650e880ffc5f8d6e4b34f33af240",
       "old_input_identity": "112c89a3fcde11f4eec89a60e08a9154eec4320883aafa99b8a0c00e0a9d44b1",
-      "receipt": "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-preserve-on-1mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-preserve-on-1mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_canonical_chunk_count",
         "fixture_bytes": 1048576,
@@ -554,9 +554,9 @@
     },
     "overwrite-fixed-64k-chunk-count-preserve-on-500mib-ops-1": {
       "family": "edit_canonical_chunk_count",
-      "new_input_identity": "10c529083af5866b3f4d31a8bfa91ed9f20d578f5a30641a52d8638c56fce17f",
+      "new_input_identity": "085e9a5641cb4a759d3fbd251a41836f909da583687980e37f2d1afbf8a4f54c",
       "old_input_identity": "ccd3d26a5c38296ed5eb71cb8b4831fbabc03114e4764d2639c37b6ce99cd626",
-      "receipt": "requalification-sdk-v2-final/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-preserve-on-500mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_canonical_chunk_count/overwrite-fixed-64k-chunk-count-preserve-on-500mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_canonical_chunk_count",
         "fixture_bytes": 524288000,
@@ -578,9 +578,9 @@
     },
     "overwrite-head-4k-on-100mib-ops-1": {
       "family": "edit_length_preserving",
-      "new_input_identity": "97c87a0a1cb2d9a8ea86fe319e378459ca25f2804506e11f56a02e0642a6c830",
+      "new_input_identity": "bce0f273e2f5e342edf06a8a130fca9d8c742995c03b674a1a3146277017d00a",
       "old_input_identity": "3b94a56882a9ef13e8e9da420578c52755e7ae9d7493fd38124a64fa49a6e8ba",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-head-4k-on-100mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_preserving/overwrite-head-4k-on-100mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_preserving",
         "fixture_bytes": 104857600,
@@ -602,9 +602,9 @@
     },
     "overwrite-head-4k-on-10mib-ops-1": {
       "family": "edit_length_preserving",
-      "new_input_identity": "8f853979c1d3066a67a97d69334f0d031ff368fb7a06d2222a3702cfdc389935",
+      "new_input_identity": "bc848e8d4e93f024a91db968e9f949dcdfa164297e540a4d2ff819f8fd5fa5a9",
       "old_input_identity": "11994c5a59dfb4cace2fa2e0edbe5daa6fa0c403174bcf4abe5fe849589a5acf",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-head-4k-on-10mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_preserving/overwrite-head-4k-on-10mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_preserving",
         "fixture_bytes": 10485760,
@@ -626,9 +626,9 @@
     },
     "overwrite-head-4k-on-1mib-ops-1": {
       "family": "edit_length_preserving",
-      "new_input_identity": "deb067e79a31a7b9fe0174f304594495182244c46562cc17cc72239c6aa91133",
+      "new_input_identity": "6641db8bd5a9169c67d71c1b2c7653440b3ac534236b1da2dad070957507a970",
       "old_input_identity": "3d66ab30ea881a2cb0d9ffe54a45549ec8365f2302c662ebbc6f9c5d03c4a1f2",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-head-4k-on-1mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_preserving/overwrite-head-4k-on-1mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_preserving",
         "fixture_bytes": 1048576,
@@ -650,9 +650,9 @@
     },
     "overwrite-head-4k-on-500mib-ops-1": {
       "family": "edit_length_preserving",
-      "new_input_identity": "a6766986485491e202a90b29e5fc303a3a7a1016acd2a69739927a7fe8257fa0",
+      "new_input_identity": "7b08eaa92bd59ac690857d4696b5d7387188fa31c71484404d86e4139c038680",
       "old_input_identity": "23806ddc4e37456509e7eaaa661e9c12030360d48e7c0f836d5b23d69e31a80e",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-head-4k-on-500mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_preserving/overwrite-head-4k-on-500mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_preserving",
         "fixture_bytes": 524288000,
@@ -674,9 +674,9 @@
     },
     "overwrite-middle-4k-on-100mib-ops-1": {
       "family": "edit_length_preserving",
-      "new_input_identity": "fcc53909811add4a1572060058bacdaca23cee9e2f2a493f3c66a80c8bc55fbc",
+      "new_input_identity": "4e1f5c04c113bca432b245d6851ab1b0aa690851c61b8f05efa94a4ea4ae5709",
       "old_input_identity": "be0922d61f3470e1d193ff0e2d2b2633adae7d3958337413824c8a48da7bbb67",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-middle-4k-on-100mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_preserving/overwrite-middle-4k-on-100mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_preserving",
         "fixture_bytes": 104857600,
@@ -698,9 +698,9 @@
     },
     "overwrite-middle-4k-on-10mib-ops-1": {
       "family": "edit_length_preserving",
-      "new_input_identity": "9a41fc80085349ac5491b914ff75ee66cecf3977837ed6d7796d03da9b83b376",
+      "new_input_identity": "f759e46e35d514a9fb291bbf1afad00bdab0618d007fbc7ba9eb50629ec72d8a",
       "old_input_identity": "814de5a18950bf5b71a1770f863760a014a5893ee36ec185e0755d9844d3523d",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-middle-4k-on-10mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_preserving/overwrite-middle-4k-on-10mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_preserving",
         "fixture_bytes": 10485760,
@@ -722,9 +722,9 @@
     },
     "overwrite-middle-4k-on-1mib-ops-1": {
       "family": "edit_length_preserving",
-      "new_input_identity": "18007a4299bf532abec20d24fa85750a547802788fb2fde381fb8739df60b3a8",
+      "new_input_identity": "59796077ce737e127ccfa3ea1473c6df4a41b08c3e072af06c59e2d417946123",
       "old_input_identity": "de371cc8f53f329c5214fb295ff4f5ca96b2f1179fc59f9454948e73cdedd662",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-middle-4k-on-1mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_preserving/overwrite-middle-4k-on-1mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_preserving",
         "fixture_bytes": 1048576,
@@ -746,9 +746,9 @@
     },
     "overwrite-middle-4k-on-500mib-ops-1": {
       "family": "edit_length_preserving",
-      "new_input_identity": "bc53bc26b7cd9913ae04efb40f227b7ae9b46fdf7e5c74d8fcd0f4733af8a25a",
+      "new_input_identity": "3f8ad511bf43098cd446645ae7c5a81e44e1a3129b0e76916a16c7130fb8bd78",
       "old_input_identity": "b627cd87ad5bd31728c3bdc2d8290cbd8676d15e74aba7df55082367742db3b8",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-middle-4k-on-500mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_preserving/overwrite-middle-4k-on-500mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_preserving",
         "fixture_bytes": 524288000,
@@ -770,9 +770,9 @@
     },
     "overwrite-tail-4k-on-100mib-ops-1": {
       "family": "edit_length_preserving",
-      "new_input_identity": "bc264bee73d923e75cdc4a462a5f4fcdb156fe64f60c312ac2fd46078d034123",
+      "new_input_identity": "e812e0628099feb1a16667a25603b08f7198e8558219e99e9aea6c6e6d2eacc5",
       "old_input_identity": "f0e66dcc194c4c8940d96b7054a37cf9a05d2dcb8871bbd4083bb423219ac99e",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-tail-4k-on-100mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_preserving/overwrite-tail-4k-on-100mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_preserving",
         "fixture_bytes": 104857600,
@@ -794,9 +794,9 @@
     },
     "overwrite-tail-4k-on-10mib-ops-1": {
       "family": "edit_length_preserving",
-      "new_input_identity": "342c916697a79be854b874147a5ee0bd5f18e5481b03a415fc92e051bb3fb7d8",
+      "new_input_identity": "bc73d181a4be27aeb5d159f10294f7fad34df581f9cee95699078d2800fbb00c",
       "old_input_identity": "08ddc0d9aa95dd3ac86b86b292229978d288cccf4c2ee90e6652e1d6892bbe75",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-tail-4k-on-10mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_preserving/overwrite-tail-4k-on-10mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_preserving",
         "fixture_bytes": 10485760,
@@ -818,9 +818,9 @@
     },
     "overwrite-tail-4k-on-1mib-ops-1": {
       "family": "edit_length_preserving",
-      "new_input_identity": "08d5dea7be9abe124012cad1a6e86b51abd31029a82a16a00a459492955cf9d6",
+      "new_input_identity": "839754f9b9c4cbc28c02a8dce49b8e65a0a87b76fa4a30a63e7f539bd4c179de",
       "old_input_identity": "c4a8a22e198828dc1b0359ab6321323c3e88e5abb5929c500e22e6a5963a076f",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-tail-4k-on-1mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_preserving/overwrite-tail-4k-on-1mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_preserving",
         "fixture_bytes": 1048576,
@@ -842,9 +842,9 @@
     },
     "overwrite-tail-4k-on-500mib-ops-1": {
       "family": "edit_length_preserving",
-      "new_input_identity": "120f456ce6f28cd120fb64d72e0a4bb65e2ac9a8b783a954dcdddc429d9decd2",
+      "new_input_identity": "2aed81b56e87ff541981a9b20674cd1c962997b307497c73579c25b2bb67480b",
       "old_input_identity": "d8217ada4735254db0afe86101919c289f1c499b3a449e93881877026560be65",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_preserving/overwrite-tail-4k-on-500mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_preserving/overwrite-tail-4k-on-500mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_preserving",
         "fixture_bytes": 524288000,
@@ -866,9 +866,9 @@
     },
     "prepend-head-4k-on-100mib-ops-1": {
       "family": "edit_length_changing",
-      "new_input_identity": "7adc71f82dc5c468039c4d518a90973def0d773620abd54600c82424ddba621a",
+      "new_input_identity": "ff08db94c80fff2b02a123fcfe59a6becc5ad9d42cbe4fd06abd2e51230ee799",
       "old_input_identity": "d1077f3fc23f19d4751599b93891845a455163b5f2f52250876e1c08e23485fb",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_changing/prepend-head-4k-on-100mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_changing/prepend-head-4k-on-100mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_changing",
         "fixture_bytes": 104857600,
@@ -890,9 +890,9 @@
     },
     "prepend-head-4k-on-10mib-ops-1": {
       "family": "edit_length_changing",
-      "new_input_identity": "4941b9f2fed3a03a5e3a6701454da8495c4c70347d8ec8d68f5f969abf8d7588",
+      "new_input_identity": "c8038313497a415cd6f7763d2f3e86419bb05d8745a2b17882c605aaef8d1699",
       "old_input_identity": "a4eb01a6a0c2509d34a6ca37019a5f1eeae2100b2699d28368dd29b6e6080340",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_changing/prepend-head-4k-on-10mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_changing/prepend-head-4k-on-10mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_changing",
         "fixture_bytes": 10485760,
@@ -914,9 +914,9 @@
     },
     "prepend-head-4k-on-1mib-ops-1": {
       "family": "edit_length_changing",
-      "new_input_identity": "ff02b956785a7a20fbd5bdf73797dba3ba815e779ffd60cd6e9486b71fd464b9",
+      "new_input_identity": "e728514e45cb44b47e933d627065c2779a98edb3901fb0d008ea5873ecdbd3d9",
       "old_input_identity": "6f39752ace7f4db0423fc51ed0ed04cc94d17b89b9ee51ea07c99a465bc5e69c",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_changing/prepend-head-4k-on-1mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_changing/prepend-head-4k-on-1mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_changing",
         "fixture_bytes": 1048576,
@@ -938,9 +938,9 @@
     },
     "prepend-head-4k-on-500mib-result-capped-v2-ops-1": {
       "family": "edit_length_changing",
-      "new_input_identity": "a0edadd48617565046044442ac6f907a3b52c37ace06ce767af369c6efefc89a",
+      "new_input_identity": "29a981aa0f3129102750ad6dd397a9caccb3e48fc93c988fa50f407fb84f7332",
       "old_input_identity": "79326adb9a62e86c8800840c78e10dd62a5c357f381b2c5e5e1a39164f518a15",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_changing/prepend-head-4k-on-500mib-result-capped-v2-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_changing/prepend-head-4k-on-500mib-result-capped-v2-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_changing",
         "fixture_bytes": 524283904,
@@ -962,9 +962,9 @@
     },
     "replace-grow-middle-2k-to-4k-on-100mib-ops-1": {
       "family": "edit_length_changing",
-      "new_input_identity": "f596a1a17a7d066b6da0584a0646a043200be52e52b3fa0e5b9fff7553628082",
+      "new_input_identity": "8be7c16ed2ea94f4c12c5321a4a0dd2805ee40b51f3f45b28fc3e75409b94f47",
       "old_input_identity": "aef86bcf405894b0fd79fc682f662dd0427face469aacc05fd153cc44493a12c",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_changing/replace-grow-middle-2k-to-4k-on-100mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_changing/replace-grow-middle-2k-to-4k-on-100mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_changing",
         "fixture_bytes": 104857600,
@@ -986,9 +986,9 @@
     },
     "replace-grow-middle-2k-to-4k-on-10mib-ops-1": {
       "family": "edit_length_changing",
-      "new_input_identity": "714efe8651136a2ac83c6410403f2411bcb6872e8cd7738b2b41c3cb581b0d1e",
+      "new_input_identity": "c898c55b128ff19c828a8a4f4de66b752624dbd01aaa3cdb5cbfbcee55156ff8",
       "old_input_identity": "94c28c5614afb1a91e217077b6a9cbbab792879d2388c847d0c9cb63bf917f59",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_changing/replace-grow-middle-2k-to-4k-on-10mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_changing/replace-grow-middle-2k-to-4k-on-10mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_changing",
         "fixture_bytes": 10485760,
@@ -1010,9 +1010,9 @@
     },
     "replace-grow-middle-2k-to-4k-on-1mib-ops-1": {
       "family": "edit_length_changing",
-      "new_input_identity": "7bfe90f4fdbc229b7ea573ae98f60303b7dbb804a6d92efb5f0a47aaeba34907",
+      "new_input_identity": "f5ea1d54d9c7e6f00a62bf4c9dcdfc3b3d0e51f6c0bff4afa81e32dcfbc7fae8",
       "old_input_identity": "c018f7ebb23a32d67249d5c9f98a48546738c8acf485bbc96fc6503ae7ebd9b0",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_changing/replace-grow-middle-2k-to-4k-on-1mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_changing/replace-grow-middle-2k-to-4k-on-1mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_changing",
         "fixture_bytes": 1048576,
@@ -1034,9 +1034,9 @@
     },
     "replace-grow-middle-2k-to-4k-on-500mib-result-capped-v2-ops-1": {
       "family": "edit_length_changing",
-      "new_input_identity": "c05d71504625c22b140fbee3bff428d0577547763ef29d195a1f0f32b1652930",
+      "new_input_identity": "abfcfbe312e81c33ede9c17fab505047654c1361da7695987e8668a9ae7df268",
       "old_input_identity": "883fd800790235fc4ecaf131f104aa1a5c1f159848fd32c1e9acbb238fb91ca0",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_changing/replace-grow-middle-2k-to-4k-on-500mib-result-capped-v2-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_changing/replace-grow-middle-2k-to-4k-on-500mib-result-capped-v2-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_changing",
         "fixture_bytes": 524285952,
@@ -1058,9 +1058,9 @@
     },
     "replace-shrink-middle-4k-to-2k-on-100mib-ops-1": {
       "family": "edit_length_changing",
-      "new_input_identity": "ade6e4af431ed25701628f0058d49afbd5dbe55198575c76453be096216869ec",
+      "new_input_identity": "376b674b3ad5dfda80ee0c97059e49341ca90d3bb209b329bae966ca5bcaeb5f",
       "old_input_identity": "487029a9e8e63780211b8bfb562eb2fb4063abd6ee5cb8f3cd900abef9b8faff",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_changing/replace-shrink-middle-4k-to-2k-on-100mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_changing/replace-shrink-middle-4k-to-2k-on-100mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_changing",
         "fixture_bytes": 104857600,
@@ -1082,9 +1082,9 @@
     },
     "replace-shrink-middle-4k-to-2k-on-10mib-ops-1": {
       "family": "edit_length_changing",
-      "new_input_identity": "ef78a1bc08341318031b37bbe97f4df681fe953af5e73f62aaade9ff5fd8a94f",
+      "new_input_identity": "347d26b3c581aaf4fe7e4d2810608ba7f63c5f5f3ec8651c8ef2499f12c8f9e2",
       "old_input_identity": "61fdc3365a7c5486e7138083a51ac58c5d04439058b15bd05777bf548b9b849f",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_changing/replace-shrink-middle-4k-to-2k-on-10mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_changing/replace-shrink-middle-4k-to-2k-on-10mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_changing",
         "fixture_bytes": 10485760,
@@ -1106,9 +1106,9 @@
     },
     "replace-shrink-middle-4k-to-2k-on-1mib-ops-1": {
       "family": "edit_length_changing",
-      "new_input_identity": "d74a134382c22cc4def218b2f53e5dc22e4cfb1cc3d1f4119bb895912187b471",
+      "new_input_identity": "8306eac962b844095f9fbc60961f7d3c70a85264f30242a9152d85c5c5c4c438",
       "old_input_identity": "64008898c4c359086b4d300717928749db277e12e7129e1fa73abf65f9a5dbe8",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_changing/replace-shrink-middle-4k-to-2k-on-1mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_changing/replace-shrink-middle-4k-to-2k-on-1mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_changing",
         "fixture_bytes": 1048576,
@@ -1130,9 +1130,9 @@
     },
     "replace-shrink-middle-4k-to-2k-on-500mib-ops-1": {
       "family": "edit_length_changing",
-      "new_input_identity": "b9f4e0fa3be104abfc78285469d8a729b5e411617387230b2d0322b29c811327",
+      "new_input_identity": "b0de68705a15dbec30b69d55832ac895c9add815dfd1a747ba491ab99adf6cbc",
       "old_input_identity": "124efd4c2d0dab7fd06586ed661a95a720697862dceaf6f83f72c881067108a1",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_changing/replace-shrink-middle-4k-to-2k-on-500mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_changing/replace-shrink-middle-4k-to-2k-on-500mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_changing",
         "fixture_bytes": 524288000,
@@ -1154,9 +1154,9 @@
     },
     "truncate-tail-4k-on-100mib-ops-1": {
       "family": "edit_length_changing",
-      "new_input_identity": "1773695f16274759616b8ae141300530ce292fd8c67965d993b983d6d56c9195",
+      "new_input_identity": "c06af260239a3aa3e5973e10c0e09b74c5bfa85d669df19d737e142164f3428d",
       "old_input_identity": "e6966e4785bb6893afce2d259b84a9aabbdaa0d0d2a554d2c5b3fc0d5aed0380",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_changing/truncate-tail-4k-on-100mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_changing/truncate-tail-4k-on-100mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_changing",
         "fixture_bytes": 104857600,
@@ -1178,9 +1178,9 @@
     },
     "truncate-tail-4k-on-10mib-ops-1": {
       "family": "edit_length_changing",
-      "new_input_identity": "f47488f5c12e270557fe67ae308c933a53c58a40e0d1dda8abd0a98e16ad7568",
+      "new_input_identity": "cbda3c356766343c9da57322d6eada30cc8a02c8ab7b153aa9e9324b797e3142",
       "old_input_identity": "f60e866982af2d845fbb691abfce98d7bf4a125bd331fd04e74f2a7d44860f86",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_changing/truncate-tail-4k-on-10mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_changing/truncate-tail-4k-on-10mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_changing",
         "fixture_bytes": 10485760,
@@ -1202,9 +1202,9 @@
     },
     "truncate-tail-4k-on-1mib-ops-1": {
       "family": "edit_length_changing",
-      "new_input_identity": "a20840358edf9a0eda7d2e08eaad1d02e3d6ad6d24dd1d0bde8336a1a606e653",
+      "new_input_identity": "45340aa4dd88032a3de40202e6f6dfd5ddbdc99502ffee4cee222c3136663cea",
       "old_input_identity": "3a380ebb14c2170da0d75f90e897d6861c611f12ffba7e70847cb3b31430e9da",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_changing/truncate-tail-4k-on-1mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_changing/truncate-tail-4k-on-1mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_changing",
         "fixture_bytes": 1048576,
@@ -1226,9 +1226,9 @@
     },
     "truncate-tail-4k-on-500mib-ops-1": {
       "family": "edit_length_changing",
-      "new_input_identity": "d5c42df619e8d0765ea88334aa9f3ed84a99c4c845700e49acf16f19c64805ed",
+      "new_input_identity": "7b8d2ac905ca1ecf5897fb82e42dad52344c45523d764856d32949b0c010a141",
       "old_input_identity": "ac070e2c76f8b4628894c68da12fec81fec3267784fec80f5cceec2a3e29a5ce",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_changing/truncate-tail-4k-on-500mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_changing/truncate-tail-4k-on-500mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_changing",
         "fixture_bytes": 524288000,
@@ -1250,9 +1250,9 @@
     },
     "zero-extend-tail-4k-on-100mib-ops-1": {
       "family": "edit_length_changing",
-      "new_input_identity": "4f0ef9a649ac4dde92aa4555cc5ce840e8f7b2edcd7f300abb35ecb30e994f69",
+      "new_input_identity": "f34454a40ea888a839a68bde9145aa54b809238cdcf2f38953ddb952b99549fa",
       "old_input_identity": "a4e546d41210ef01922e3eb8a2a3537d8a6118d47c992661269c61be322dd01d",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_changing/zero-extend-tail-4k-on-100mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_changing/zero-extend-tail-4k-on-100mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_changing",
         "fixture_bytes": 104857600,
@@ -1274,9 +1274,9 @@
     },
     "zero-extend-tail-4k-on-10mib-ops-1": {
       "family": "edit_length_changing",
-      "new_input_identity": "c029c993ece1f11f4f9c9670770141296dff5da91393adccdadfc693c249bf80",
+      "new_input_identity": "16d5fd14ebdb186e4b126b8a989db9b03b82c062cbf56b0c9089f0b06a93d6df",
       "old_input_identity": "13c8f0a0227c1c3958901ec55cba5d15973d237569e7ec6926ce92924066bc1d",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_changing/zero-extend-tail-4k-on-10mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_changing/zero-extend-tail-4k-on-10mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_changing",
         "fixture_bytes": 10485760,
@@ -1298,9 +1298,9 @@
     },
     "zero-extend-tail-4k-on-1mib-ops-1": {
       "family": "edit_length_changing",
-      "new_input_identity": "1909c575ee2e4fa2245667a64ac3cccde329812f5660df725ee8eb0a9cfe26da",
+      "new_input_identity": "f66d9bf53312236f5b7285eedb96902306515c86e60a4ecfdbe17236ced9e305",
       "old_input_identity": "e53db361b5024cdabd7e09be0040cadef0b0711b0cbe9398a4fb458ed523262f",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_changing/zero-extend-tail-4k-on-1mib-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_changing/zero-extend-tail-4k-on-1mib-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_changing",
         "fixture_bytes": 1048576,
@@ -1322,9 +1322,9 @@
     },
     "zero-extend-tail-4k-on-500mib-result-capped-v2-ops-1": {
       "family": "edit_length_changing",
-      "new_input_identity": "d5ec987f089ee2ee6bbe2c752df97014b0a6c76f1c140cc47649cbcec4a43ce4",
+      "new_input_identity": "7eaea8984fb9ac0b672e70de42605ab836410c11caf7357d20cdfca10a1d7dfa",
       "old_input_identity": "2a2aec5045da0cb543eb634fd13e73c9e8a03d5c7d7a545518e57a2445c6d255",
-      "receipt": "requalification-sdk-v2-final/verification/edit_length_changing/zero-extend-tail-4k-on-500mib-result-capped-v2-ops-1/verification.json",
+      "receipt": "requalification-sdk-v2/verification/edit_length_changing/zero-extend-tail-4k-on-500mib-result-capped-v2-ops-1/verification.json",
       "recipe": {
         "family_id": "edit_length_changing",
         "fixture_bytes": 524283904,
@@ -1353,17 +1353,16 @@
     "benchmark/fs-bench-pro/shared/test_checkpoint_collector.py",
     "benchmark/fs-bench-pro/src/sdk_edit_verify.rs"
   ],
-  "final_requalification_reason": "Clippy-only format_args serialization correction after all proof assertions/resource observations. Requalify final source; preserve first 56 passes.",
   "harness_identity": "91ef300dcb8b8bd17be59dbf2e54b90d36aee62d492cc493dda3f0cfb3ab92cb",
-  "implementation_commit": "7ebb220f40b6f76009dea9d40697776c423ff403",
+  "implementation_commit": "7c2794f17c9401d10b3950af02fb290ce603064d",
   "new_host": {
     "LAYERFS_PRODUCT_SEAL": "3c797bc6dbfd9b03b919c270b609cad839000b68d67e34f3b00d24717e07f39a",
-    "LAYERFS_SOURCE_COMMIT": "7ebb220f40b6f76009dea9d40697776c423ff403",
+    "LAYERFS_SOURCE_COMMIT": "f3c37312e65c2e1aeb6504b4b8ffddac61c1af43",
     "LAYERFS_SOURCE_DIRTY": "true",
-    "LAYERFS_SOURCE_SEAL": "7a2e978b0f9b817600ff15a5e63e920d21494a43361ec103bb7a0e66cfe4e256",
-    "LAYERFS_SOURCE_TREE": "c3ab65ea76d1fd6df09a2d6db210d07227fb815d",
+    "LAYERFS_SOURCE_SEAL": "cadb79984ccf5c9de266a92c08aab1408b6d4d0c45fe3ae87bf07a2c85ca7b7a",
+    "LAYERFS_SOURCE_TREE": "c1034cb10b63ddb39c2614a017dfc3a0f001a069",
     "WORKLOAD_SOURCE_SHA256": "2ec809798656deef9ac05903c9e3bd77921f6ef9c6c87f24060812a81b93bf76",
-    "binary_sha256": "6ae5b77f2c923c23b8cf534de0b75a59253b9e8b74003f3c1fcd6547957233eb",
+    "binary_sha256": "9ed7b198378ffa81946801c5d070b67ab37835026dc6bae72078667914a530f2",
     "platform": "macOS-26.4.1-arm64-arm-64bit-Mach-O",
     "rust_toolchain": "1.85.1",
     "schema_sha256": "6b714357e5961b3933907747a82b0681abb0652e213a6190ec2927f3213638ae"
@@ -1380,7 +1379,6 @@
     "rust_toolchain": "1.85.1",
     "schema_sha256": "6b714357e5961b3933907747a82b0681abb0652e213a6190ec2927f3213638ae"
   },
-  "prior_requalification": "attempts/sdk-v2-first.json",
   "reason": "Remove pre-edit FUSE lookup; same cold resource scope as performance, all limits and independent post-edit checks retained. Original receipts preserved.",
   "schema": "checkpoint-sdk-requalification-v2"
 }
