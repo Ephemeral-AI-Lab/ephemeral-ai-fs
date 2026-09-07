@@ -58,6 +58,14 @@ Use the [design-review prompt](design-review-prompt.md) for an independent
 review of clarity, storage/speed tradeoffs, aggregate multi-project load, future
 cloud compatibility, and minimal final components and operation paths.
 
+## Development smoke plan
+
+The [storage smoke-test plan](storage-smoke-test-plan.md) defines the three-test
+direction: DeepSeek five-checkpoint replay, frequent edits/Commit, and small-file
+Init/readback. It confirms the existing host-SQLite plus managed Docker daemon
+and real-FUSE environment. Remaining fixtures, execution budgets, and entrypoints
+are explicit prerequisites; the full benchmark family remains a separate discussion.
+
 ## Supporting evidence and tracking
 
 - [Issue #18 — v0.1.4 storage-efficiency planning](https://github.com/Ephemeral-AI-Lab/layerfs/issues/18)
