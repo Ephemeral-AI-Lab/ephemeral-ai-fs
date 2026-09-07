@@ -2,7 +2,8 @@
 
 > **Status (2026-09-08):** Planned storage-efficiency phase following the
 > completed v0.1.3 benchmark checkpoint. Optimization design, numerical targets,
-> implementation scope, and new benchmark admission will be discussed separately.
+> implementation scope, and new benchmark admission remain open. The proposed
+> architecture is recorded below; no implementation has started.
 >
 > **Compatibility:** Existing compatibility and acknowledgement requirements
 > remain in force. This roadmap decision authorizes no Store-format or public
@@ -38,6 +39,16 @@ conditional speed/storage tradeoffs,
 and preference for a new benchmark family. The benchmark definition and test
 environment are placeholders for a separate discussion. No optimization
 implementation is selected.
+
+## Proposed architecture
+
+The [storage architecture specification](storage-architecture-spec.md) records
+the proposed shared Init/Commit design: exact CAS/COW reuse, current CDC,
+shallow delta records, bounded compression groups, and immutable SQLite pack
+BLOBs. Small and large files use one pipeline. It includes read/write costs,
+multiple-transaction publication, Git-comparison limits, and boundary checklists.
+Prototype parameters are proposals; binary format, compatibility, benchmark and
+environment decisions remain open.
 
 ## Supporting evidence and tracking
 

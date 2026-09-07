@@ -9,6 +9,10 @@ Related: [v0.1.4 scope](README.md), [supporting evidence](evidence.md),
 [issue #18](https://github.com/Ephemeral-AI-Lab/layerfs/issues/18), and
 [issue #72](https://github.com/Ephemeral-AI-Lab/layerfs/issues/72).
 
+The [proposed architecture](storage-architecture-spec.md) develops this boundary
+into a shared packed-object design. It does not freeze the benchmark/environment
+placeholders or override compatibility requirements.
+
 ## Objective
 
 Improve storage efficiency in the shared filesystem capture/construction and

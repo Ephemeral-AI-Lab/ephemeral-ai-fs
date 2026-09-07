@@ -57,6 +57,36 @@ matched. Production publication, recovery, migration, and cleanup were not
 implemented and fully counted. This is prior research, not a selected v0.1.4
 design, a transferred footprint prediction, or a current acceptance target.
 
+## Follow-up source-size analysis
+
+Read-only Git tree analysis reproduced the earlier small-file count using the
+same 157 checkpoints and pinned tip
+`b0a7d2ce3b4c19d7452e364b2d7acbfa87e707ed`. It used `git ls-tree -r -l -z`
+for each selected SHA, deduplicated regular-file content by Git blob ID, and
+validated every checkpoint's file count and total blob bytes against the frozen
+manifest. Symlinks are excluded from the regular-file distribution; installed
+dependencies and `.git` are not part of this population.
+
+- Unique regular contents: 75,922; 891,893,067 logical bytes.
+- Below 8 KiB: 48,976 contents (64.51%); 141,595,086 bytes (15.88%).
+- 8–64 KiB: 33.49% of contents and 56.99% of unique payload bytes.
+- Final snapshot: 9,404 regular paths; 7,118 below 8 KiB (75.69%), accounting
+  for 29.20% of regular-file bytes.
+- Adjacent selected-checkpoint modifications include 2,479 crossings from below
+  8 KiB to at least 8 KiB and 1,834 in the reverse direction. These are sampled
+  checkpoint transitions, not every intervening Git edit or agent tool call.
+
+Manifest SHA-256:
+`03f21acfb415907f521217e7a972ed512265c8d0c2da0f8034e2ff3014334271`.
+This analysis establishes source size/count distributions, not compressibility,
+SQLite allocation, object access frequencies, or row-versus-pack performance.
+
+Machine-local artifacts (not downloadable):
+`/Users/yifanxu/Ephemeral-AI-Lab/deepseek-history-data/size-analysis/`
+contains `analyze.py`, `results.json`, and `report.md`. The independent earlier
+“Measure deepseek-harness directory” task counted an installed working directory
+with dependencies; its 76,011 files must not be substituted for this population.
+
 ## Planning consequence
 
 [v0.1.4](README.md) prioritizes storage efficiency while preserving operation
