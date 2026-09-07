@@ -91,5 +91,32 @@ with dependencies; its 76,011 files must not be substituted for this population.
 
 [v0.1.4](README.md) prioritizes storage efficiency while preserving operation
 behavior and retained-state correctness. The broader multi-history campaign
-moves to [v0.1.5](../0.1.5/README.md). Optimization approaches and new evaluation
+moves to [v0.1.5](../0.1.5/README.md). Acceptance of the proposed architecture and definition of new evaluation
 contracts remain for a separate discussion.
+
+## Architecture review disposition — no new measurements
+
+The [architecture v3](storage-architecture-spec.md) and [format](sqlite-storage-format.md)
+respond to the independent review of PR #77; [finding closure](review-disposition.md)
+is a document/source assessment against product revision
+`28177560c8f049c02192e18c263cdc5543c1ab52`, not a new measured candidate.
+The historical table, report links, candidate identities, limitations and source
+analysis above are unchanged. [PR #80's development-smoke plan](storage-efficiency-boundary.md#development-smokes-and-qualification)
+subsequently records the first five frozen checkpoints, edit and small-file cases,
+and host SQLite/SDK plus managed Docker daemon/real FUSE topology. Full-family
+qualification remains open; no new runs or samples are produced by this revision.
+
+An arithmetic implication of the existing numbers is that 799,638,421 canonical
+object bytes alone are about 14.19 times matched delta-packed Git's 56,373,248
+allocated bytes. Even eliminating every noncanonical byte would not close that
+gap. This is an intentionally impossible placement-only lower bound, not an
+estimate of the new design. Packing alone is insufficient for the stated Git
+objective; compression and similarity must make an incremental contribution.
+
+The matched Git control allowed deeper delta search, but supplies no resulting
+chain-depth distribution proving depth-one anchors sufficient or insufficient.
+Bounded online hints, partial synchronous groups, full anchors and the remaining
+canonical graph/index cost can leave a material gap. No confidence label for the
+revised prose changes those empirical uncertainties. A future compact footprint
+must be achieved before the corresponding operation succeeds, with all required
+work and allocation counted.
