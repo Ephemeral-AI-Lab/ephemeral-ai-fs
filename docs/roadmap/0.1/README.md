@@ -42,14 +42,14 @@ allowed.
 - [Development guide](development.md)
 - [v0.1.1 released history](0.1.1/README.md)
 - [v0.1.2 completed release plan](0.1.2/README.md)
-- [v0.1.3 draft](0.1.3/README.md)
+- [v0.1.3 completed checkpoint](0.1.3/README.md)
 - [v0.1.4 draft](0.1.4/README.md)
 
 ## Release sequence
 
 - [0.1.1 released history](0.1.1/README.md)
 - [0.1.2 completed release plan](0.1.2/README.md)
-- [0.1.3 Workspace and single-Branch deduplication plan](0.1.3/README.md)
+- [0.1.3 completed Workspace and single-Branch checkpoint](0.1.3/README.md)
 - [0.1.4 multi-history operation draft](0.1.4/README.md)
 - [Development guide](development.md)
 - [Benchmark contract](benchmarking.md)
@@ -59,7 +59,7 @@ allowed.
 | v0.1.0 | Frozen payload baseline: create, small edit, EDIT16, prepend, and read. |
 | v0.1.1 | Existing-directory initialization and namespace scaling through localized Commit and exact reopen. |
 | v0.1.2 | Adapt `fs-bench-pro`, implement the universal edit engine, complete same-count and count-changing Docker/FUSE performance families, and measure total durable Store footprint. |
-| v0.1.3 | Twelve families covering Workspace workloads, CAS/CDC, bounded single-Branch retained-history storage growth, and reliability; reuse the four-tier benchmark infrastructure. |
+| v0.1.3 | **Closed:** 17 admitted families, 198 performance and 226 routine verification passes; one optional 600-second proof excluded. [Results and limitations](0.1.3/README.md). |
 | v0.1.4 | Multi-Layer and multi-Branch Commit history, Fork, Add, Diff, conflict, and query scaling. |
 
 Benchmark each admitted operation, but optimize only measured defects or

@@ -26,7 +26,7 @@ bottleneck while preserving the scenario meanings frozen in v0.1.0-v0.1.3.
 
 - [0.1.x roadmap](../README.md)
 - [Append-only benchmark contract](../benchmarking.md)
-- [v0.1.3 Workspace and single-Branch deduplication plan](../0.1.3/README.md)
+- [v0.1.3 completed Workspace and single-Branch checkpoint](../0.1.3/README.md)
 - [Public operation families](../../../../crates/layerfs-monitor/src/operation.rs)
 - [Public SDK client](../../../../crates/layerfs-sdk/src/client.rs)
 - [LayerStack Store lifecycle](../../../../crates/layerfs-layerstack-store/src/layerstack.rs)
