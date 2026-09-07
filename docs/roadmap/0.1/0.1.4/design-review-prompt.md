@@ -48,6 +48,8 @@ Read these documents in full:
 - `docs/roadmap/0.1/0.1.4/sqlite-storage-format.md`
 - `docs/roadmap/0.1/0.1.4/evidence.md`
 - `docs/roadmap/0.1/0.1.4/review-disposition.md`
+- PR #80's pinned development-smoke plan linked by the boundary document; preserve
+  its first-five-checkpoint scope and host SQLite/SDK + managed Docker/real FUSE topology.
 
 Read relevant compatibility and architecture context:
 
@@ -113,10 +115,11 @@ review into benchmark implementation. Existing benchmark rules still apply.
 The revised architecture/format specify proposed wire fields, bounds, codec,
 hint provenance, admission races and selection approximation. Review those concrete
 rules rather than treating them as unspecified; they are not measured conclusions.
-The compatibility transition remains an explicit owner policy decision. The new
-benchmark family/population, environment, numerical gates, test-verification plans
-and all execution are deferred until specification discussion; do not fill them
-or classify their intentional deferral as an architecture defect. Identify only
+The compatibility transition remains an explicit owner policy decision. PR #80
+already records three development smokes and the confirmed topology; do not repeat
+blanket environment/test-plan deferral. Its remaining prerequisites and the separate
+full-family/numerical qualification definitions are open. Do not expand or execute
+them during this review or classify those intentional open details as design defects. Identify only
 remaining architectural contradictions or owner-required decisions. A large code
 change is acceptable; a silent incompatible format or public-semantic change is not.
 
@@ -205,6 +208,21 @@ multiplied by its total service time per operation. Label assumptions. Tool-call
 rate is not SQL transaction rate: each call may cause multiple admission batches,
 reads, staging and publication transactions. A large Init or formatter call can
 produce far more work than a small edit at the same QPS.
+
+Require <=2 membership visits per distinct admission candidate and no shrinking-set
+retry. Audit scalar-but-linear costs separately: parameter/byte-bounded multirow
+pack/locator INSERTs, scratch-page insertion/membership, buffered sealed ID-order
+I/O, grouped target/base read waves and incremental pack counters. State N, B, G,
+M, touched nodes and H separately; SQLite/B-tree access is indexed/logarithmic,
+required canonical sorting may remain, and Init has unavoidable linear source work.
+No finite cap or low QPS excuses a quadratic admission mechanism. No whole-history
+scan or old-tree restart per emitted chunk is allowed for physical hints. Include
+the nonempty-Store Init parent-copy path, SpillDiskIndex flush/location callers,
+shared invalidation-view versus per-conflict manifest rebuilding, and FIFO broadcast
+fanout in the closure matrix. Preserve exact resolution fingerprints and disclose
+remaining overlapping-scope work rather than claiming every Commit path linear.
+Targeted FIFO notification must identify the next waiter, not blindly notify_one
+on a shared ticket condition variable.
 
 Examine writer lock duration, shared reader/writer connection locking, compression
 outside locks, bounded queueing, fairness, peak memory across active operations,
@@ -316,7 +334,8 @@ Then provide:
 8. **Finding closure and next decisions.** Map every original finding to resolved,
    remaining decision, or deferred measurement. Identify only necessary remaining
    architecture/policy decisions; leave family/population, environment, numerical
-   gates and test-verification plans for the separate discussion. Assess design
+   gates for the separate full-family discussion; acknowledge PR #80's smoke plan
+   and remaining prerequisites without implementing or running it. Assess design
    clarity, consistency, bounded mechanisms, minimalism and cloud seams separately
    from empirical storage/speed confidence. Do not manufacture very-high empirical
    confidence from improved prose.

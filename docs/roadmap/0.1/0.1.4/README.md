@@ -1,10 +1,10 @@
 # LayerFS 0.1.4 — Storage efficiency
 
 > **Status (2026-09-08):** Planned storage-efficiency phase following the
-> completed v0.1.3 benchmark checkpoint. Architecture v2 now specifies physical
+> completed v0.1.3 benchmark checkpoint. Architecture v3 now specifies physical
 > framing, shared ownership, admission races and read/write bounds. Compatibility/release policy requires an owner
-> decision. Evaluation and implementation remain deferred; no implementation
-> has started.
+> decision. Development smokes have a separate agreed plan; full qualification
+> remains open. This revision starts no product implementation or execution.
 >
 > **Compatibility:** Existing compatibility and acknowledgement requirements
 > remain in force. This roadmap decision authorizes no Store-format or public
@@ -41,8 +41,8 @@ SQLite-only storage constraint, synchronous shared Init/Commit scope,
 read/write cost concerns, exclusion of new durability/crash-recovery work,
 conditional speed/storage tradeoffs,
 and preference for a new benchmark family. The benchmark definition and test
-environment are placeholders for a separate discussion. No optimization
-implementation is selected.
+full-family evaluation details remain open. The separately agreed development
+smokes and topology are linked below; no implementation or execution begins here.
 
 ## Proposed architecture
 
@@ -54,15 +54,21 @@ multiple-transaction publication, Git-comparison limits, and boundary checklists
 Exact proposed wire framing and engineering bounds are specified; they are not
 measured settings. The [compatibility transition](storage-architecture-spec.md#compatibility-transition)
 proposes a new versioned Store with no conversion on open and leaves the release/legacy
-policy to the owner. Benchmark, environment and verification planning remain deferred.
+policy to the owner. Full qualification remains open; the development-smoke plan
+owns its confirmed scope/topology and remaining execution prerequisites.
 
 The [SQLite storage-format walkthrough](sqlite-storage-format.md) illustrates
 the proposed database, pack/group/record layouts, shallow deltas, and shared
 read/write flows with SQL examples and diagrams. Its proposed schema and wire
 format are precise but not an executable migration.
 
+The [development-smoke scope and topology](storage-efficiency-boundary.md#development-smokes-and-qualification)
+link PR #80's first-five-checkpoint replay, edit and small-file cases. This is
+separate from the still-open full benchmark family and numerical gates.
+
 The [review disposition](review-disposition.md) records each original finding,
-its correction and remaining policy/measurement limitations. Design confidence
+its correction, the subsequent linear-work/batching audit and remaining
+policy/measurement limitations. Design confidence
 does not qualify storage ratios or speed.
 
 Use the [design-review prompt](design-review-prompt.md) for an independent
@@ -102,8 +108,8 @@ does not import historical footprint targets as new gates.
 ## Follow-up planning
 
 - [ ] Agree the optimization proposal and compatibility scope.
-- [ ] Discuss the new benchmark family, population, environment, numerical gates
-      and verification plans after the specification is corrected and reviewed.
+- [ ] Complete PR #80's remaining development-smoke prerequisites in that workstream;
+      discuss the separate full benchmark family and numerical qualification gates.
 - [ ] Implement and validate only the agreed scope.
 - [ ] Publish candidate-specific storage and operation results, limitations, and
   required regression evidence before release closure.

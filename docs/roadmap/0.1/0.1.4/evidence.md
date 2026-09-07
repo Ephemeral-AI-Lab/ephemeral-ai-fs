@@ -96,13 +96,15 @@ contracts remain for a separate discussion.
 
 ## Architecture review disposition — no new measurements
 
-The [architecture v2](storage-architecture-spec.md) and [format](sqlite-storage-format.md)
+The [architecture v3](storage-architecture-spec.md) and [format](sqlite-storage-format.md)
 respond to the independent review of PR #77; [finding closure](review-disposition.md)
 is a document/source assessment against product revision
 `28177560c8f049c02192e18c263cdc5543c1ab52`, not a new measured candidate.
 The historical table, report links, candidate identities, limitations and source
-analysis above are unchanged. Benchmark/environment/verification planning and
-execution are deferred for the subsequent owner discussion.
+analysis above are unchanged. [PR #80's development-smoke plan](storage-efficiency-boundary.md#development-smokes-and-qualification)
+subsequently records the first five frozen checkpoints, edit and small-file cases,
+and host SQLite/SDK plus managed Docker daemon/real FUSE topology. Full-family
+qualification remains open; no new runs or samples are produced by this revision.
 
 An arithmetic implication of the existing numbers is that 799,638,421 canonical
 object bytes alone are about 14.19 times matched delta-packed Git's 56,373,248

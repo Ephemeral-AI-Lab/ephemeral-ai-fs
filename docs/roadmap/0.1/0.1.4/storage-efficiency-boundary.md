@@ -2,10 +2,11 @@
 
 Status: owner-directed planning boundary, 2026-09-08. This records storage scope
 and tradeoff guidance. It is not a benchmark contract, selected implementation,
-or permission to collect qualification samples. Benchmark and test-environment
-sections are deliberately placeholders for a separate owner discussion after
-specification correction. Test-verification plans and execution are also deferred;
-this documentation task does not design or run tests or benchmarks.
+or permission to collect qualification samples. The full benchmark family and
+qualification gates remain open. The owner subsequently confirmed the three
+[development smokes and their topology](#development-smokes-and-qualification)
+in PR #80. This supersedes blanket smoke/environment-planning deferral; this
+documentation revision still implements/runs no product code, tests or benchmarks.
 
 Related: [v0.1.4 scope](README.md), [supporting evidence](evidence.md),
 [issue #18](https://github.com/Ephemeral-AI-Lab/layerfs/issues/18), and
@@ -190,6 +191,44 @@ historical absolute MB target is adopted as a v0.1.4 gate.
 - Preserve historical evidence and failed outcomes. Existing exploratory reports
   do not qualify a future candidate and must not be relabeled as new samples.
 
+## Development smokes and qualification
+
+Planning has advanced beyond the original blanket deferral. The owner confirmed
+[PR #80](https://github.com/Ephemeral-AI-Lab/layerfs/pull/80)'s
+[development smoke plan at d9ec9c6714ca31adb7a337d2ac0f40976513908c](https://github.com/Ephemeral-AI-Lab/layerfs/blob/d9ec9c6714ca31adb7a337d2ac0f40976513908c/docs/roadmap/0.1/0.1.4/storage-smoke-test-plan.md).
+That separate plan owns the three-smoke scope and its remaining prerequisites:
+
+- The **first FIVE entries** of #72's frozen DeepSeek checkpoint manifest, not
+  the first five source Git commits or a new selected population. Preserve ordinary
+  whole-file import through Exec/FUSE and repeated Commit from an empty history.
+- Frequent edits/Commit, with SDK range edits and ordinary Exec/FUSE writes reported
+  separately.
+- Small-file Init and mounted readback.
+
+Confirmed smoke topology: **macOS-host SQLite/SDK/coordinator and physical spool +
+managed Docker daemon/live core + real FUSE**, following existing benchmark rules.
+The pinned plan specifies details; no host-materialization or container-Store
+substitute is authorized. Its synthetic fixture choices, entrypoints, execution
+budgets and other listed prerequisites remain to be completed in that workstream.
+
+These development smokes are not the full new benchmark family or numerical
+qualification contract. The placeholders below concern that full family and its
+remaining evaluation details; they do not reopen the confirmed smoke population
+prefix or topology. This specification PR links the plan without copying/changing
+it, implementing its entrypoints, running smokes or collecting candidate samples.
+
+## Complexity and batching boundary
+
+Admission/recheck must have linear candidate visits and byte processing, excluding
+explicit indexed-access and required canonical-ordering costs. No shrinking-set
+retry, per-appended-record whole-batch rescan, or history-wide localized-edit scan
+is acceptable even behind a finite cap or low individual QPS. Use bounded multirow
+Store SQL, page-oriented scratch membership/insertion, buffered ID-order I/O, and
+coalesced requested groups/bases. The [complexity contract](storage-architecture-spec.md#complexity-and-batching-contract)
+defines N, bytes B, groups G, Store/scratch index sizes, touched nodes and history H.
+SQLite/B-tree access is indexed/logarithmic, not constant-time. Queueing and actual
+throughput remain unmeasured and separate from algorithmic work bounds.
+
 ## New benchmark family — placeholder
 
 **Owner preference: create a new benchmark family for this research.** Existing
@@ -212,14 +251,16 @@ No earlier proposed family list, tier sequence, repeat count, or latency result
 is adopted here as the new family's specification. Freeze the new contract
 before benchmark implementation or qualification sampling.
 
-## Test environment — placeholder
+## Full-family environment details — placeholder
 
-The environment will be discussed separately. This document specifies no new
-topology, hardware profile, container limits, timeout, or preparation policy.
-Existing repository rules remain in force until explicitly amended; leaving
-this section open does not authorize a conflicting environment.
+The development-smoke topology is confirmed above and is not TBD. Remaining
+full-family environment/evaluation details will be discussed separately. This
+boundary does not replace PR #80's smoke resource/preparation rules. Existing
+repository instructions remain in force; open full-family details authorize no
+conflicting run.
 
-- Host/container ownership and hardware/runtime identities: **TBD**.
+- Full-family hardware/runtime identities and remaining environment scope: **TBD**;
+  smoke host/container ownership is confirmed above.
 - Resources, timeouts, measurement coordination, and background activity: **TBD**.
 - Input preparation, transfer, build reuse, cache policy, and sample isolation: **TBD**.
 - Resource sampling, Store/temporary allocation measurement, and cleanup: **TBD**.
@@ -237,7 +278,8 @@ exception or in 0.2; any required legacy support must be agreed explicitly. The
 current contract is not amended by this recommendation. No in-place or automatic
 migration is authorized.
 
-Only after those documents are discussed should the owner define the new family,
-population, environment, numerical acceptance criteria and verification plans.
-Keep all of those placeholders open here. No product tests, benchmark campaign or
-candidate collection belongs to this documentation revision.
+The full new family, remaining population/environment details and numerical
+qualification criteria stay open for owner discussion. PR #80 already owns the
+confirmed development-smoke direction/topology and its remaining fixture/execution
+prerequisites. Do not treat it as absent, fill unrelated full-family placeholders,
+or run any product tests, smokes or candidate collection in this docs revision.

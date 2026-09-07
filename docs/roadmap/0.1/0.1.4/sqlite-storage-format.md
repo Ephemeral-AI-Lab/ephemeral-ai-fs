@@ -1,19 +1,21 @@
-# SQLite packed-object storage: proposed format v2
+# SQLite packed-object storage: proposed format v3
 
-**Status: concrete proposed design, 2026-09-08.** Design revision v2 proposes
+**Status: concrete proposed design, 2026-09-08.** Design revision v3 retains the
+proposed
 pack wire version **1** and SQLite schema **6** as the next reserved design
 number; neither is allocated for release until owner approval. This is not the
 current format, migration code, an implementation approval, or measured
 qualification. Every numerical choice below is a proposed engineering bound or
-policy, not a measured conclusion. The new benchmark family, environment, and
-acceptance gates remain separate TBDs; population, test-verification plans and
-execution are also deferred until the specification discussion.
+policy, not a measured conclusion. The full benchmark family and numerical
+qualification gates remain open. [PR #80's development-smoke scope/topology](storage-efficiency-boundary.md#development-smokes-and-qualification)
+is already documented; this revision implements/runs neither smokes nor product code.
 
 The [research boundary](storage-efficiency-boundary.md) controls scope. The
 [compatibility transition](storage-architecture-spec.md#compatibility-transition)
 is authoritative for existing Stores, reader/schema version handling, and the
 replacement boundary. This document specifies the proposed bytes and locators;
-it does not implement or independently authorize a migration.
+it does not implement or independently authorize a migration. Revision v3 changes
+admission/hint/batching policy, not the proposed wire version 1 field layout.
 
 ## 1. One database, two layers of identity
 
@@ -44,7 +46,7 @@ Replacing its old `bytes` column requires the agreed schema transition.
 
 ```sql
 CREATE TABLE object_packs (
-    pack_id INTEGER PRIMARY KEY,
+    pack_id INTEGER PRIMARY KEY CHECK (pack_id > 0),
     data BLOB NOT NULL
 ) STRICT;
 
@@ -63,6 +65,11 @@ open `data`; the locator index needs no rowid. The current schema's root foreign
 keys reference `objects(object_id)` in
 [`sql/schema/v5.sql`](../../../../crates/layerfs-layerstack-store/sql/schema/v5.sql).
 The exact schema verifier must change through the agreed version transition.
+Under the batch permit, one indexed MAX query allocates checked positive local
+pack IDs for a bounded multirow INSERT; locators use bounded multirow INSERTs too.
+Two parameters per pack and five per locator are limited by effective SQLite
+parameter, statement-byte and resident-memory bounds. See the [SQL/batching contract](storage-architecture-spec.md#authoritative-bulk-sql);
+one transaction does not justify a statement execution per object.
 See [SQLite's BLOB API](https://sqlite.org/c3ref/blob_open.html).
 
 ```sql
@@ -280,16 +287,25 @@ sequenceDiagram
     end
 ```
 
-For one cold object in one pack, the locator is one SQL query and incremental
-BLOB access performs **three range reads**: header at offset 0 for 16 bytes,
+For one ordinary cold object using one encoded-group range fetch, the locator
+is one SQL query and incremental BLOB access performs **three range reads**: header at offset 0 for 16 bytes,
 selected entry at `16 + 16 * group_number` for 16 bytes, then its encoded group.
+Oversized RAW singleton streaming uses additional bounded range calls, all counted;
+three is not a universal count for that path.
 BLOB length comes from the open BLOB handle. These local SQLite operations are
 not three network round trips. No explicit read transaction commit or whole-pack
 `SELECT data` is required. A singleton pack's only group can naturally contain
 nearly all its bytes; this is the declared oversized-object cost, not a hidden
 whole-pack fallback for ordinary partial reads.
 
-Batch/coalesce known requests sharing groups and reuse existing bounded caches.
+Plan requested slots once and drain forward through bounded internal extraction
+batches. Parse/decode each distinct target group once per internal batch/wave.
+Collect distinct full-base IDs for a second grouped wave; a group used
+in both waves may be decoded twice, not once per object. Preserve requested result
+slots/order independently of SQL order and reserve pending-program/association
+memory as specified by the [batching contract](storage-architecture-spec.md#groupread-batching-and-single-pass-byte-work).
+Groups repeated across later drains or dependent tree levels count again; no
+claim of one decode across the entire public request or one query for unknown traversal.
 Keep all Blob handles, statements, and connection guards inside extraction;
 release them before decompression, canonical hashing, base requests, or delta
 application. This matters because current `StoreDb.reader()` and `writer()` share
@@ -317,7 +333,12 @@ flowchart LR
 
 The [architecture admission protocol](storage-architecture-spec.md#admission-protocol)
 is the sole algorithm for prepared-batch ownership, duplicate/base rechecks,
-transaction boundaries, and publication closure. Init streams bounded batches;
+transaction boundaries, and publication closure. There is one initial membership
+probe and at most one final recheck per candidate, with the batch permit retained
+through late-duplicate validation. The connection and BLOB handles are released
+before decode/hash/base use, so ordinary reads retain access while writers wait.
+No shrinking-set retry or re-encoding on races remains. New representation encoding
+and source construction stay outside the permit. Init streams bounded batches;
 Commit retains staging, no-change and head-check semantics. No transaction per
 record or per pack is implied. Required encoding completes before the operation
 returns. Earlier admitted/unselected records after failures or races remain in
