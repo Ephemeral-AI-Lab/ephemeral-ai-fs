@@ -34,14 +34,32 @@ pub fn directory_lookup<S: ObjectRead>(
     DirectoryLookupCache::default().lookup(store, root, name, counters)
 }
 
+type CachedLeaf = (DirectoryStateRoot, Vec<(CanonicalName, InodeId)>, bool);
+
 /// One validated canonical leaf (at most an 8 KiB encoded page), shared by
 /// successive lookups. Immutable root identity keeps overlays and roots distinct.
 #[derive(Default)]
 pub struct DirectoryLookupCache {
-    leaf: Option<(DirectoryStateRoot, Vec<(CanonicalName, InodeId)>)>,
+    leaf: Option<CachedLeaf>,
 }
 
 impl DirectoryLookupCache {
+    /// Sorted entries from the validated leaf retained for this immutable root.
+    /// Completeness must be checked separately with `leaf_complete`.
+    pub fn leaf_entries(&self, root: DirectoryStateRoot) -> &[(CanonicalName, InodeId)] {
+        self.leaf
+            .as_ref()
+            .filter(|(cached_root, _, _)| *cached_root == root)
+            .map_or(&[], |(_, entries, _)| entries.as_slice())
+    }
+
+    /// Whether the validated retained leaf is the whole immutable directory.
+    pub fn leaf_complete(&self, root: DirectoryStateRoot) -> bool {
+        self.leaf
+            .as_ref()
+            .is_some_and(|(cached_root, _, complete)| *cached_root == root && *complete)
+    }
+
     pub fn lookup<S: ObjectRead>(
         &mut self,
         store: &S,
@@ -49,10 +67,11 @@ impl DirectoryLookupCache {
         name: &CanonicalName,
         counters: &mut NamespaceCounters,
     ) -> CoreResult<Option<InodeId>> {
-        if let Some((cached_root, entries)) = &self.leaf {
+        if let Some((cached_root, entries, complete)) = &self.leaf {
             if *cached_root == root
-                && entries.first().is_some_and(|(first, _)| first <= name)
-                && entries.last().is_some_and(|(last, _)| name <= last)
+                && (*complete
+                    || (entries.first().is_some_and(|(first, _)| first <= name)
+                        && entries.last().is_some_and(|(last, _)| name <= last)))
             {
                 return Ok(entries
                     .binary_search_by(|(candidate, _)| candidate.cmp(name))
@@ -70,7 +89,7 @@ impl DirectoryLookupCache {
                         .binary_search_by(|(candidate, _)| candidate.cmp(name))
                         .ok()
                         .map(|index| entries[index].1);
-                    self.leaf = Some((root, entries));
+                    self.leaf = Some((root, entries, state.tree_level == 0));
                     return Ok(found);
                 }
                 DirectoryNodeV1::Branch { children, .. } => {
@@ -621,5 +640,88 @@ impl<S: ObjectRead> Iterator for DirectoryEntryCursor<'_, S> {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tree::directory::directory_insert;
+    use std::collections::BTreeMap;
+
+    #[derive(Default)]
+    struct MemoryStore(BTreeMap<ObjectId, Vec<u8>>);
+    impl ObjectStore for MemoryStore {
+        fn get(&self, id: ObjectId) -> CoreResult<Vec<u8>> {
+            self.0.get(&id).cloned().ok_or(CoreError::MissingObject)
+        }
+        fn put(&mut self, bytes: &[u8]) -> CoreResult<ObjectId> {
+            let id = ObjectId::for_bytes(bytes);
+            self.0.insert(id, bytes.to_vec());
+            Ok(id)
+        }
+    }
+
+    #[test]
+    fn lookup_leaf_entries_are_sorted_and_root_scoped() {
+        let mut store = MemoryStore::default();
+        let empty = empty_directory(&mut store).unwrap();
+        let mut root = empty;
+        for (index, name) in ["z", "a", "m"].into_iter().enumerate() {
+            root = directory_insert(
+                &mut store,
+                root,
+                CanonicalName::new(name).unwrap(),
+                InodeId::allocate([1; 32], index as u64),
+            )
+            .unwrap()
+            .0;
+        }
+        let mut cache = DirectoryLookupCache::default();
+        assert!(cache.leaf_entries(root).is_empty());
+        assert!(!cache.leaf_complete(root));
+        assert!(cache
+            .lookup(
+                &store,
+                root,
+                &CanonicalName::new("m").unwrap(),
+                &mut NamespaceCounters::default()
+            )
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            cache
+                .leaf_entries(root)
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "m", "z"]
+        );
+        assert!(cache.leaf_complete(root));
+        assert!(!cache.leaf_complete(empty));
+        // A complete leaf answers out-of-range absence without further backing reads.
+        let unavailable = MemoryStore::default();
+        assert!(cache
+            .lookup(
+                &unavailable,
+                root,
+                &CanonicalName::new("zz").unwrap(),
+                &mut NamespaceCounters::default()
+            )
+            .unwrap()
+            .is_none());
+        assert!(cache.leaf_entries(empty).is_empty());
+        assert!(cache
+            .lookup(
+                &store,
+                empty,
+                &CanonicalName::new("m").unwrap(),
+                &mut NamespaceCounters::default()
+            )
+            .unwrap()
+            .is_none());
+        assert!(cache.leaf_entries(root).is_empty());
+        assert!(!cache.leaf_complete(root));
+        assert!(cache.leaf_complete(empty));
     }
 }

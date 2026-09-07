@@ -14,6 +14,8 @@ pub const MAX_NODE_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_FACT_MEMORY: usize = 96 * 1024 * 1024;
 
 pub const MAX_FRAME: usize = 1024 * 1024 + 64 * 1024;
+pub const IMMUTABLE_PREFETCH_FILE_BYTES: usize = 8 * 1024;
+pub const IMMUTABLE_PREFETCH_PAGE_BYTES: usize = 512 * 1024;
 pub const SEED: u8 = 1;
 pub const LOOKUP: u8 = 2;
 pub const RESERVE: u8 = 3;

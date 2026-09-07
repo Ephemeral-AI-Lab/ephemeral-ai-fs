@@ -30,12 +30,19 @@ impl Filesystem for LayerFs {
                 let _ = config.set_max_readahead(limit);
                 limit
             });
-        let wanted = InitFlags::FUSE_ASYNC_READ
+        self.stateless_open = self.port.supports_kernel_lifetime()
+            && config
+                .capabilities()
+                .contains(InitFlags::FUSE_NO_OPEN_SUPPORT);
+        let mut wanted = InitFlags::FUSE_ASYNC_READ
             | InitFlags::FUSE_BIG_WRITES
             | InitFlags::FUSE_PARALLEL_DIROPS
             | InitFlags::FUSE_DO_READDIRPLUS
             | InitFlags::FUSE_READDIRPLUS_AUTO
             | InitFlags::FUSE_MAX_PAGES;
+        if self.stateless_open {
+            wanted |= InitFlags::FUSE_NO_OPEN_SUPPORT;
+        }
         let capabilities = config.capabilities() & wanted;
         let _ = config.add_capabilities(capabilities);
         #[cfg(target_os = "linux")]
@@ -50,6 +57,20 @@ impl Filesystem for LayerFs {
             .set_time_granularity(Duration::from_nanos(1))
             .map(|_| ())
             .map_err(|_| std::io::Error::other("time granularity"))
+    }
+
+    fn destroy(&mut self) {
+        if self.stateless_open {
+            let _ = self.port.kernel_detach();
+        }
+    }
+
+    fn forget(&self, _request: &Request, ino: INodeNo, nlookup: u64) {
+        if self.stateless_open {
+            if let Ok(node) = self.node(ino) {
+                let _ = self.port.kernel_forget(node, nlookup);
+            }
+        }
     }
 
     fn lookup(&self, _request: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
@@ -83,17 +104,15 @@ impl Filesystem for LayerFs {
 
             let result = async {
                 let parent = this.node(parent)?;
-                {
-                    this.port
-                        .lookup_async(parent, name.as_bytes())
-                        .await
-                        .map_err(errno)
-                        .and_then(|attr| this.attr(attr))
-                }
+                this.entry_async(parent, name.as_bytes(), crate::KernelEntry::Lookup)
+                    .await
             }
             .await;
             match result {
-                Ok(attr) => reply.entry(&TTL, &attr, Generation(0)),
+                Ok((attr, references)) => {
+                    reply.entry(&TTL, &attr, Generation(0));
+                    references.submitted();
+                }
                 Err(error) => reply.error(error),
             }
         });
@@ -319,18 +338,21 @@ impl Filesystem for LayerFs {
             }
             let result = async {
                 let parent = this.node(parent)?;
-                {
-                    let attr = this
-                        .port
-                        .create_file_async(parent, name.as_bytes(), mode & !umask)
-                        .await
-                        .map_err(errno)?;
-                    this.attr(attr)
-                }
+                this.entry_async(
+                    parent,
+                    name.as_bytes(),
+                    crate::KernelEntry::Create {
+                        mode: mode & !umask,
+                    },
+                )
+                .await
             }
             .await;
             match result {
-                Ok(attr) => reply.entry(&TTL, &attr, Generation(0)),
+                Ok((attr, references)) => {
+                    reply.entry(&TTL, &attr, Generation(0));
+                    references.submitted();
+                }
                 Err(error) => reply.error(error),
             }
         });
@@ -375,18 +397,21 @@ impl Filesystem for LayerFs {
 
             let result = async {
                 let parent = this.node(parent)?;
-                {
-                    let attr = this
-                        .port
-                        .mkdir_async(parent, name.as_bytes(), mode & !umask)
-                        .await
-                        .map_err(errno)?;
-                    this.attr(attr)
-                }
+                this.entry_async(
+                    parent,
+                    name.as_bytes(),
+                    crate::KernelEntry::Mkdir {
+                        mode: mode & !umask,
+                    },
+                )
+                .await
             }
             .await;
             match result {
-                Ok(attr) => reply.entry(&TTL, &attr, Generation(0)),
+                Ok((attr, references)) => {
+                    reply.entry(&TTL, &attr, Generation(0));
+                    references.submitted();
+                }
                 Err(error) => reply.error(error),
             }
         });
@@ -521,22 +546,21 @@ impl Filesystem for LayerFs {
 
             let result = async {
                 let parent = this.node(parent)?;
-                {
-                    let attr = this
-                        .port
-                        .symlink_async(
-                            parent,
-                            name.as_bytes(),
-                            target.as_os_str().as_bytes().to_vec(),
-                        )
-                        .await
-                        .map_err(errno)?;
-                    this.attr(attr)
-                }
+                this.entry_async(
+                    parent,
+                    name.as_bytes(),
+                    crate::KernelEntry::Symlink {
+                        target: target.as_os_str().as_bytes().to_vec(),
+                    },
+                )
+                .await
             }
             .await;
             match result {
-                Ok(attr) => reply.entry(&TTL, &attr, Generation(0)),
+                Ok((attr, references)) => {
+                    reply.entry(&TTL, &attr, Generation(0));
+                    references.submitted();
+                }
                 Err(error) => reply.error(error),
             }
         });
@@ -645,20 +669,21 @@ impl Filesystem for LayerFs {
             };
 
             let result = async {
+                let parent = this.node(new_parent)?;
                 let node = this.node(ino)?;
-                {
-                    let parent = this.node(new_parent)?;
-                    let attr = this
-                        .port
-                        .link_async(node, parent, new_name.as_bytes())
-                        .await
-                        .map_err(errno)?;
-                    this.attr(attr)
-                }
+                this.entry_async(
+                    parent,
+                    new_name.as_bytes(),
+                    crate::KernelEntry::Link { node },
+                )
+                .await
             }
             .await;
             match result {
-                Ok(attr) => reply.entry(&TTL, &attr, Generation(0)),
+                Ok((attr, references)) => {
+                    reply.entry(&TTL, &attr, Generation(0));
+                    references.submitted();
+                }
                 Err(error) => reply.error(error),
             }
         });
@@ -677,6 +702,33 @@ impl Filesystem for LayerFs {
                 return;
             }
         };
+
+        if self.stateless_open {
+            let this = self.clone();
+            self.dispatch(async move {
+                let _callback = _callback;
+                let writable = matches!(flags.0 & O_ACCMODE, O_WRONLY | O_RDWR);
+                let result = async {
+                    let node = this.node(ino)?;
+                    this.port
+                        .prepare_kernel_open(node, writable)
+                        .await
+                        .map_err(errno)
+                }
+                .await;
+                match result {
+                    Ok(()) => {
+                        let mut opened = FopenFlags::FOPEN_KEEP_CACHE;
+                        if !writable {
+                            opened |= FopenFlags::FOPEN_NOFLUSH;
+                        }
+                        reply.opened(FileHandle(0), opened);
+                    }
+                    Err(error) => reply.error(error),
+                }
+            });
+            return;
+        }
 
         let this = self.clone();
         self.dispatch(async move {
@@ -706,7 +758,13 @@ impl Filesystem for LayerFs {
             {
                 Ok((handle, node)) => {
                     this.port.note_cached_open(node);
-                    reply.opened(FileHandle(handle), FopenFlags::FOPEN_KEEP_CACHE)
+                    // Read-only close has no write error to deliver; RELEASE still
+                    // drops its pin and writable descriptors retain FLUSH.
+                    let mut opened = FopenFlags::FOPEN_KEEP_CACHE;
+                    if flags.0 & O_ACCMODE == 0 {
+                        opened |= FopenFlags::FOPEN_NOFLUSH;
+                    }
+                    reply.opened(FileHandle(handle), opened)
                 }
                 Err(error) => reply.error(error),
             }
@@ -716,7 +774,7 @@ impl Filesystem for LayerFs {
     fn read(
         &self,
         _request: &Request,
-        _ino: INodeNo,
+        ino: INodeNo,
         handle: FileHandle,
         offset: u64,
         size: u32,
@@ -737,7 +795,7 @@ impl Filesystem for LayerFs {
                     return;
                 }
             };
-        match self.handle(handle) {
+        match self.file_node(ino, handle) {
             Ok(node) => self.port.submit_read(
                 node,
                 offset,
@@ -756,7 +814,7 @@ impl Filesystem for LayerFs {
     fn write(
         &self,
         _request: &Request,
-        _ino: INodeNo,
+        ino: INodeNo,
         handle: FileHandle,
         offset: u64,
         data: &[u8],
@@ -778,7 +836,7 @@ impl Filesystem for LayerFs {
                 return;
             }
         };
-        match self.handle(handle) {
+        match self.file_node(ino, handle) {
             Ok(node) => self.port.submit_write(
                 node,
                 offset,
@@ -846,6 +904,11 @@ impl Filesystem for LayerFs {
     ) {
         self.port
             .note_kernel_operation(crate::KernelOperation::Release);
+        // CREATE can release before the kernel has seen its first ENOSYS OPEN.
+        if self.stateless_open {
+            reply.ok();
+            return;
+        }
         let _callback = match self
             .port
             .admit_callback(crate::KernelOperation::Release, 0, false)
@@ -884,7 +947,7 @@ impl Filesystem for LayerFs {
     fn fsync(
         &self,
         _request: &Request,
-        _ino: INodeNo,
+        ino: INodeNo,
         handle: FileHandle,
         _datasync: bool,
         reply: ReplyEmpty,
@@ -919,7 +982,7 @@ impl Filesystem for LayerFs {
 
             empty_reply(
                 async {
-                    let node = this.handle(handle)?;
+                    let node = this.file_node(ino, handle)?;
                     this.port.fsync_async(Some(node)).await.map_err(errno)
                 }
                 .await,
@@ -1078,17 +1141,24 @@ impl Filesystem for LayerFs {
 
             let result = async {
                 let node = this.handle(handle)?;
-                {
+                if this.stateless_open {
+                    this.port
+                        .kernel_directory_page_async(node, offset)
+                        .await
+                        .map_err(errno)
+                } else {
                     this.port
                         .directory_page_async(node, offset)
                         .await
                         .map_err(errno)
+                        .map(|entries| (entries, crate::KernelReferences::default()))
                 }
             }
             .await;
             match result {
-                Ok(entries) => {
+                Ok((entries, mut references)) => {
                     let mut returned_entries = 0;
+                    let mut retained_entries = 0;
                     for (cookie, attr, name) in entries {
                         let attr = match this.attr(attr) {
                             Ok(attr) => attr,
@@ -1108,9 +1178,19 @@ impl Filesystem for LayerFs {
                             break;
                         }
                         returned_entries += 1;
+                        if name != b"." && name != b".." {
+                            retained_entries += 1;
+                        }
+                    }
+                    if this.stateless_open {
+                        if let Err(error) = references.release_unemitted(retained_entries) {
+                            reply.error(errno(error));
+                            return;
+                        }
                     }
                     this.port.note_readdir_page(offset, returned_entries);
                     reply.ok();
+                    references.submitted();
                 }
                 Err(error) => reply.error(error),
             }
@@ -1315,14 +1395,25 @@ impl Filesystem for LayerFs {
 
             let result = async {
                 let parent = this.node(parent)?;
-                {
+                if this.stateless_open {
+                    let (attr, references) = this
+                        .entry_async(
+                            parent,
+                            name.as_bytes(),
+                            crate::KernelEntry::Create {
+                                mode: mode & !umask,
+                            },
+                        )
+                        .await?;
+                    Ok((attr, 0, references))
+                } else {
                     let attr = this
                         .port
                         .create_file_open_async(parent, name.as_bytes(), mode & !umask)
                         .await
                         .map_err(errno)?;
                     let handle = this.handles.insert(attr.node, true);
-                    Ok((this.attr(attr)?, handle))
+                    Ok((this.attr(attr)?, handle, crate::KernelReferences::default()))
                 }
             }
             .await;
@@ -1330,13 +1421,16 @@ impl Filesystem for LayerFs {
                 // Created files bypass the kernel page cache so large sequential writes stay
                 // memory-bounded. These handles are coherent but not mmapable; a later open uses
                 // FOPEN_KEEP_CACHE and supports mmap after the create handle closes.
-                Ok((attr, handle)) => reply.created(
-                    &TTL,
-                    &attr,
-                    Generation(0),
-                    FileHandle(handle),
-                    FopenFlags::FOPEN_DIRECT_IO,
-                ),
+                Ok((attr, handle, references)) => {
+                    reply.created(
+                        &TTL,
+                        &attr,
+                        Generation(0),
+                        FileHandle(handle),
+                        FopenFlags::FOPEN_DIRECT_IO,
+                    );
+                    references.submitted();
+                }
                 Err(error) => reply.error(error),
             }
         });

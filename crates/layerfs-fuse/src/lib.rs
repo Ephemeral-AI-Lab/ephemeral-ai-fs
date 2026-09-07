@@ -37,6 +37,9 @@ pub use port::{ReadReply, WriteReply};
 pub mod live_runtime;
 
 #[cfg(feature = "live")]
+mod immutable_read_cache;
+
+#[cfg(feature = "live")]
 pub mod live_wire;
 
 #[cfg(feature = "live")]
@@ -47,3 +50,6 @@ pub mod live_owner;
 
 #[cfg(feature = "live")]
 pub use port::PortFuture;
+
+#[cfg(feature = "live")]
+pub use port::{DirectoryPage, KernelEntry, KernelReferences};

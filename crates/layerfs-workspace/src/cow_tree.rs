@@ -441,17 +441,27 @@ pub(crate) fn acquire_inodes(
         );
         Ok(())
     })?;
+    // This batch owns at most 128 typed values; immutable metadata roots and
+    // inode kind identify the validation result without any retained cache.
+    let mut metadata = BTreeMap::new();
     ids.iter()
         .zip(record_ids)
         .map(|(inode, record_id)| {
             let record = *records
                 .get(&record_id)
                 .ok_or(StorageError::Integrity("Workspace inode record"))?;
+            let portable = match metadata.entry((record.metadata_root, record.kind as u8)) {
+                std::collections::btree_map::Entry::Occupied(entry) => *entry.get(),
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    *entry.insert(portable_metadata(&core, record.metadata_root, record.kind)?)
+                }
+            };
             acquire_inode_record(
                 reader,
                 *inode,
                 record,
                 file_lengths.get(&record.content_root).copied(),
+                Some(portable),
             )
         })
         .collect()
@@ -466,7 +476,7 @@ pub(crate) fn acquire_inode(
     let record_id = inode_table_lookup(&core, inodes, inode, &mut InodeTableCounters::default())?
         .ok_or(StorageError::Integrity("Workspace inode"))?;
     let record = core.with_authenticated_canonical(record_id, decode_inode_record)?;
-    acquire_inode_record(reader, inode, record, None)
+    acquire_inode_record(reader, inode, record, None, None)
 }
 
 fn acquire_inode_record(
@@ -474,10 +484,14 @@ fn acquire_inode_record(
     inode: InodeId,
     record: layerfs_content::tree::inode::InodeRecordV1,
     file_len: Option<u64>,
+    portable: Option<PortableMetadataV1>,
 ) -> Result<layerfs_workspace_core::namespace::AcquiredInode> {
     record.validate(false)?;
     let reader = CoreReader(reader);
-    let portable = portable_metadata(&reader, record.metadata_root, record.kind)?;
+    let portable = match portable {
+        Some(portable) => portable,
+        None => portable_metadata(&reader, record.metadata_root, record.kind)?,
+    };
     let data = match record.kind {
         InodeKind::RegularFile => {
             let len = match file_len {
@@ -543,7 +557,9 @@ pub(crate) fn portable_metadata<S: ObjectRead>(
         Ok(bytes)
     };
     let mode = value(b"mode", 4)?;
-    let mtime = value(b"mtime", 12)?;
+    let mtime: [u8; 12] = value(b"mtime", 12)?
+        .try_into()
+        .map_err(|_| StorageError::Integrity("mtime"))?;
     let metadata = PortableMetadataV1 {
         permission_mode: u32::from_be_bytes(
             mode.try_into()
@@ -748,6 +764,95 @@ mod tests {
             .unwrap();
         let workspace = Workspace::open(store, id, root.join("spool")).unwrap();
         (root, workspace)
+    }
+
+    #[test]
+    fn portable_metadata_rejects_short_canonical_mtime() {
+        use layerfs_content::file::rope::build_bytes;
+        use layerfs_content::tree::metadata::{build_metadata_tree, MetadataEntryV1};
+        let mut objects = layerfs_layerstack_store::ObjectBuffer::empty().unwrap();
+        let mode = build_bytes(&mut objects, &0o600_u32.to_be_bytes())
+            .unwrap()
+            .0;
+        for len in [0, 7, 8, 11] {
+            let mtime = build_bytes(&mut objects, &vec![0; len]).unwrap().0;
+            let metadata = build_metadata_tree(
+                &mut objects,
+                &[
+                    MetadataEntryV1 {
+                        key: MetadataKey::new("portable".to_owned(), b"mode".to_vec()).unwrap(),
+                        value_file_root: mode.0,
+                    },
+                    MetadataEntryV1 {
+                        key: MetadataKey::new("portable".to_owned(), b"mtime".to_vec()).unwrap(),
+                        value_file_root: mtime.0,
+                    },
+                ],
+            )
+            .unwrap();
+            assert!(matches!(
+                portable_metadata(&objects, metadata, InodeKind::RegularFile),
+                Err(StorageError::Integrity("mtime"))
+            ));
+        }
+    }
+
+    #[test]
+    fn batch_inode_acquisition_reuses_typed_portable_metadata() {
+        let (root, mut workspace) = fixture("batch-metadata");
+        let mut nodes = Vec::new();
+        for name in [b"a", b"b", b"c", b"d"] {
+            nodes.push(workspace.create_file(ROOT, name, 0o600).unwrap().node);
+        }
+        workspace.commit().unwrap();
+        let ids = nodes
+            .iter()
+            .map(|id| workspace.live.nodes[id].canonical.unwrap())
+            .collect::<Vec<_>>();
+        let reader = &workspace.reader;
+        let core = CoreReader(reader);
+        let record_ids = inode_table_lookup_many(
+            &core,
+            workspace.base_inodes,
+            &ids,
+            &mut InodeTableCounters::default(),
+        )
+        .unwrap();
+        let mut metadata_roots = BTreeSet::new();
+        for record_id in record_ids {
+            let record = core
+                .with_authenticated_canonical(record_id.unwrap(), decode_inode_record)
+                .unwrap();
+            metadata_roots.insert(record.metadata_root);
+        }
+        assert_eq!(metadata_roots.len(), 1);
+        reader.reset_read_metrics().unwrap();
+        portable_metadata(
+            &core,
+            *metadata_roots.first().unwrap(),
+            InodeKind::RegularFile,
+        )
+        .unwrap();
+        let portable_calls = reader.take_read_metrics().unwrap().local_calls;
+        let singles = ids
+            .iter()
+            .map(|id| acquire_inode(reader, workspace.base_inodes, *id).unwrap())
+            .collect::<Vec<_>>();
+        let single_calls = reader.take_read_metrics().unwrap().local_calls;
+        let batch = acquire_inodes(reader, workspace.base_inodes, &ids).unwrap();
+        let batch_calls = reader.take_read_metrics().unwrap().local_calls;
+        for (actual, expected) in batch.iter().zip(singles) {
+            assert_eq!(actual.inode, expected.inode);
+            assert_eq!(actual.mode, expected.mode);
+            assert_eq!(actual.links, expected.links);
+            assert_eq!(actual.mtime_seconds, expected.mtime_seconds);
+            assert_eq!(actual.mtime_nanoseconds, expected.mtime_nanoseconds);
+            assert_eq!(actual.data, expected.data);
+        }
+        assert!(portable_calls > 0);
+        assert!(single_calls >= batch_calls + portable_calls * (ids.len() as u64 - 1));
+        drop(workspace);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

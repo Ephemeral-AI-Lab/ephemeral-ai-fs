@@ -17,6 +17,7 @@ pub struct LayerFs {
     pub(crate) handles: std::sync::Arc<Handles>,
     pub(crate) uid: u32,
     pub(crate) gid: u32,
+    pub(crate) stateless_open: bool,
 }
 
 impl LayerFs {
@@ -34,6 +35,7 @@ impl LayerFs {
             handles: std::sync::Arc::new(Handles::default()),
             uid,
             gid,
+            stateless_open: false,
         }
     }
 
@@ -78,6 +80,49 @@ impl LayerFs {
             .await
             .map_err(errno)?;
         Ok(self.handles.insert(node, writable))
+    }
+
+    pub(crate) fn file_node(
+        &self,
+        ino: INodeNo,
+        handle: FileHandle,
+    ) -> Result<NodeId, fuser::Errno> {
+        if self.stateless_open {
+            self.node(ino)
+        } else {
+            self.handle(handle)
+        }
+    }
+
+    pub(crate) async fn entry_async(
+        &self,
+        parent: NodeId,
+        name: &[u8],
+        operation: crate::KernelEntry,
+    ) -> Result<(FileAttr, crate::KernelReferences), fuser::Errno> {
+        let (attr, references) = if self.stateless_open {
+            self.port
+                .kernel_entry_async(parent, name, operation)
+                .await
+                .map_err(errno)?
+        } else {
+            let attr = match operation {
+                crate::KernelEntry::Lookup => self.port.lookup_async(parent, name).await,
+                crate::KernelEntry::Create { mode } => {
+                    self.port.create_file_async(parent, name, mode).await
+                }
+                crate::KernelEntry::Mkdir { mode } => {
+                    self.port.mkdir_async(parent, name, mode).await
+                }
+                crate::KernelEntry::Symlink { target } => {
+                    self.port.symlink_async(parent, name, target).await
+                }
+                crate::KernelEntry::Link { node } => self.port.link_async(node, parent, name).await,
+            }
+            .map_err(errno)?;
+            (attr, crate::KernelReferences::default())
+        };
+        Ok((self.attr(attr)?, references))
     }
 
     pub(crate) fn handle(&self, handle: FileHandle) -> std::result::Result<NodeId, fuser::Errno> {

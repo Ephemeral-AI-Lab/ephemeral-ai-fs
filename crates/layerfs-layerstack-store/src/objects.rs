@@ -3080,13 +3080,8 @@ fn elapsed_ns(started: Instant) -> u64 {
 impl crate::schema::StoreDb {
     pub fn read_object_row(&self, id: ObjectId) -> Result<Vec<u8>> {
         let connection = self.reader()?;
-        let mut statement = connection.prepare_cached(crate::statements::objects::GET)?;
-        let bytes = statement
-            .query_row([id.as_bytes().as_slice()], |row| row.get::<_, Vec<u8>>(0))
-            .optional()?
-            .ok_or(StoreError::Integrity("visible object missing"))?;
-        layerfs_content::authenticate_identity(&bytes, id)?;
-        Ok(bytes)
+        read_object_row_from_connection(&connection, id)?
+            .ok_or(StoreError::Integrity("visible object missing"))
     }
 
     pub fn read_object_rows(&self, ids: &[ObjectId]) -> Result<Vec<CanonicalObject>> {
@@ -3214,6 +3209,20 @@ impl crate::schema::StoreDb {
     }
 }
 
+fn read_object_row_from_connection(
+    connection: &Connection,
+    id: ObjectId,
+) -> Result<Option<Vec<u8>>> {
+    let mut statement = connection.prepare_cached(crate::statements::objects::GET)?;
+    let bytes = statement
+        .query_row([id.as_bytes().as_slice()], |row| row.get::<_, Vec<u8>>(0))
+        .optional()?;
+    if let Some(bytes) = &bytes {
+        layerfs_content::authenticate_identity(bytes, id)?;
+    }
+    Ok(bytes)
+}
+
 fn read_object_rows_from_connection(
     connection: &Connection,
     ids: &[ObjectId],
@@ -3223,6 +3232,12 @@ fn read_object_rows_from_connection(
     }
     if ids.is_empty() {
         return Ok(Vec::new());
+    }
+    if let [id] = ids {
+        let bytes = read_object_row_from_connection(connection, *id)?
+            .ok_or(StoreError::Integrity("visible object cardinality"))?;
+        note_read_batch_hash();
+        return Ok(vec![CanonicalObject { id: *id, bytes }]);
     }
     let mut values = ids
         .iter()
@@ -5615,9 +5630,33 @@ mod tests {
                 cloned_bytes: first.len() as u64,
             }
         );
-        assert!(db
-            .read_object_rows(&[ObjectId::for_bytes(b"missing")])
-            .is_err());
+        reset_read_batch_counters();
+        crate::schema::reset_sql_trace();
+        assert!(db.read_object_rows(&[]).unwrap().is_empty());
+        assert!(crate::schema::sql_trace().is_empty());
+        let singleton = db.read_object_rows(&[first_id]).unwrap();
+        assert_eq!(
+            singleton,
+            vec![CanonicalObject {
+                id: first_id,
+                bytes: first.clone()
+            }]
+        );
+        assert_eq!(
+            read_batch_counters(),
+            ReadBatchCounters {
+                unique_hashes: 1,
+                cloned_bytes: 0
+            }
+        );
+        let trace = crate::schema::sql_trace();
+        assert_eq!(trace.len(), 1);
+        assert!(trace[0].contains("WHERE object_id ="));
+        assert!(!trace[0].contains(" IN "));
+        assert!(matches!(
+            db.read_object_rows(&[ObjectId::for_bytes(b"missing")]),
+            Err(StoreError::Integrity("visible object cardinality"))
+        ));
         assert!(db.read_object_rows(&[corrupt_id]).is_err());
 
         struct Claimed(Vec<CanonicalObject>);
