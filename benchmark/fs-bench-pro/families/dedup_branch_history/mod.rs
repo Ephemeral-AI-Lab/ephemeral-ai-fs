@@ -103,11 +103,18 @@ pub(crate) fn expected(case: &Case, seed: u8, step: usize) -> Result<Vec<Entry>>
             let EntryKind::File(old) = &entry.kind else {
                 return Err("edit file type".into());
             };
-            entry.kind = EntryKind::File(old.splice(
-                change.start,
-                change.delete_len,
-                Content::Literal(change.replacement),
-            )?);
+            // History edits touch at most a 48 KiB file. Keep the independent
+            // oracle flat: nested Slice/Concat recipes repeatedly validate the
+            // same ancestry and grow exponentially under hot-set/A-B rewrites.
+            let mut bytes = Vec::with_capacity(old.len() as usize);
+            old.write_to(&mut bytes)?;
+            let start = change.start as usize;
+            let end = start.checked_add(change.delete_len as usize).ok_or("history edit overflow")?;
+            if end > bytes.len() {
+                return Err("history edit bounds".into());
+            }
+            bytes.splice(start..end, change.replacement);
+            entry.kind = EntryKind::File(Content::Literal(bytes));
         }
     }
     Ok(entries)
@@ -275,6 +282,30 @@ pub(crate) fn apply(
 
 #[cfg(test)]
 mod checkpoint_tests {
+    #[test]
+    fn flat_history_oracle_matches_small_recipe_and_handles_deep_rewrites() {
+        use super::*;
+        for case in cases().into_iter().filter(|case| case.tier == 500 && matches!(case.kind, "distributed" | "hotset" | "recurring")) {
+            let genesis = fixture(&case, 1).unwrap();
+            let mut recursive = genesis.clone();
+            for step in 0..8 {
+                let edit = d::history_edit(&case, 1, step, &genesis).unwrap();
+                let target = recursive.iter_mut().find(|entry| entry.path == edit.path).unwrap();
+                let EntryKind::File(content) = &target.kind else { panic!("file") };
+                target.kind = EntryKind::File(content.splice(edit.start, edit.delete_len, Content::Literal(edit.replacement)).unwrap());
+            }
+            let flat = expected(&case, 1, 8).unwrap();
+            for (old, new) in recursive.iter().zip(&flat) {
+                if let (EntryKind::File(a), EntryKind::File(b)) = (&old.kind, &new.kind) {
+                    assert_eq!(a.digest().unwrap(), b.digest().unwrap());
+                }
+            }
+            let deep = expected(&case, 1, 500).unwrap();
+            assert_eq!(workspace_common::validate_entries(&deep).unwrap(), d::MIB);
+            assert!(deep.iter().all(|entry| !matches!(&entry.kind, EntryKind::File(Content::Concat(_)))));
+        }
+    }
+
     #[test]
     fn history_samples_cover_cycles_and_final_states() {
         for case in super::cases() {

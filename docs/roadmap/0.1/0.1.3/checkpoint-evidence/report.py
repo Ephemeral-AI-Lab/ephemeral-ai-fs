@@ -130,7 +130,7 @@ def derive(campaign, registry):
         row.update(status=sample.get('status'), sample_count=1, timer=timer, elapsed_ns=elapsed,
                    target_ns=target, target_status=('PASS' if elapsed <= target else 'TARGET_MISS') if elapsed is not None else 'UNAVAILABLE',
                    identities=identity, phases=[r for r in records if r.get('kind') == 'phase'],
-                   workload_receipts=[r for r in records if r.get('kind') == 'workload-receipt'],
+                   workload_receipts=[git_report.kv(r['workload_receipt']) for r in records if r.get('kind') == 'phase' and 'workload_receipt' in r],
                    metric_groups=git_report.metric_groups(records),
                    host_resources=[r for r in records if r.get('kind') == 'host-resources'],
                    route_metrics=[r for r in records if timer in r or r.get('receipt_kind') == 'performance'],
@@ -155,6 +155,9 @@ def derive(campaign, registry):
         row['host_peak_rss_bytes'] = max(host_peaks) if host_peaks else None
         row['container_peak_bytes'] = (sample.get('resources') or {}).get('sample_container_lifetime_peak_bytes')
         row['verification_wall_seconds'] = proof.get('wall_seconds')
+        for key in ['apply_ns'] + git_report.GIT:
+            values = [r[key] for r in row['workload_receipts'] if isinstance(r.get(key), int)]
+            row[key] = sum(values) if values else None
         row['resource_scope'] = 'Host process high-water and container lifetime peak, not incremental per-operation memory'
         old = previous.get(case)
         compatible = old and old['timer'] == timer and all(
@@ -201,7 +204,7 @@ def milliseconds(value):
 def write(report, output):
     output.mkdir(parents=True, exist_ok=True)
     (output / 'report.json').write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
-    columns = ['family', 'case', 'sample_count', 'timer', 'elapsed_ns', 'status', 'verification', 'target_ns', 'target_status', 'preparation_wall_ns', 'command_wall_ns', 'create_ns', 'exec_ns', 'sdk_edit_ns', 'commit_ns', 'visibility_ns', 'end_ns', 'host_peak_rss_bytes', 'container_peak_bytes', 'verification_wall_seconds', 'previous_elapsed_ns', 'difference_ns', 'difference_percent', 'evidence']
+    columns = ['family', 'case', 'sample_count', 'timer', 'elapsed_ns', 'status', 'verification', 'target_ns', 'target_status', 'preparation_wall_ns', 'command_wall_ns', 'create_ns', 'exec_ns', 'sdk_edit_ns', 'commit_ns', 'visibility_ns', 'end_ns', 'host_peak_rss_bytes', 'container_peak_bytes', 'verification_wall_seconds', 'apply_ns', *git_report.GIT, 'previous_elapsed_ns', 'difference_ns', 'difference_percent', 'evidence']
     with (output / 'performance.csv').open('w', newline='') as stream:
         writer = csv.DictWriter(stream, fieldnames=columns, extrasaction='ignore')
         writer.writeheader()
@@ -219,6 +222,12 @@ def write(report, output):
                 phases = ' / '.join(milliseconds(row.get(key)) for key in ('exec_ns', 'sdk_edit_ns', 'commit_ns'))
                 memory = ' / '.join('—' if row.get(key) is None else f"{row[key] / 2**20:.2f}" for key in ('host_peak_rss_bytes', 'container_peak_bytes'))
                 text.append(f"| {row['case']} | {row['timer']} | {milliseconds(row['elapsed_ns'])} | {phases} | {memory} | {milliseconds(row.get('previous_elapsed_ns'))} | {row['status']} / {row['verification']} | {row.get('target_status', '—')} |")
+    text += ['', '## Git stages', '', '| Test | Apply | First status | Diff | Add | Cached check | Git commit | Final status | LayerFS Commit |', '|---|---:|---:|---:|---:|---:|---:|---:|---:|']
+    for row in report['performance']:
+        if row['family'] == 'git_tool_workflow':
+            values = [milliseconds(row.get(key)) for key in ['apply_ns'] + git_report.GIT + ['commit_ns']]
+            text.append('| ' + row['case'] + ' | ' + ' | '.join(values) + ' |')
+    text += ['', 'All Git stage values are milliseconds. Git commit and LayerFS Commit are separate operations.']
     text += ['', '## Verification', '', '| Test | Result | Wall (s) |', '|---|---|---:|']
     text += [f"| {r['case']} | {r['status']} | {r.get('wall_seconds', '—')} |" for r in report['verification']]
     if report['errors']:

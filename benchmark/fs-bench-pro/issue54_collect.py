@@ -254,7 +254,18 @@ def main():
                 inventory["proof_cases"].append(row["scenario_id"])
             else:
                 inventory["performance_cases"].append(row["scenario_id"])
-    _write(output / "selections.json", inventory)
+    if args.checkpoint and not args.family and not args.case:
+        if len(inventory["performance_cases"]) != 198 or len(inventory["proof_cases"]) != 29:
+            raise ValueError("checkpoint registry differs from the frozen 198 performance / 29 proof contract")
+    selection_path = output / "selections.json"
+    if selection_path.exists() and json.loads(selection_path.read_text()) != inventory:
+        raise ValueError("campaign inventory/source changed; preserve this campaign and select a new output")
+    _write(selection_path, inventory)
+    registry_path = output / "registry.jsonl"
+    registry_text = "".join(json.dumps(row, sort_keys=True) + "\n" for rows, _ in selected_families.values() for row in rows)
+    if registry_path.exists() and registry_path.read_text() != registry_text:
+        raise ValueError("frozen registry changed")
+    registry_path.write_text(registry_text)
     print(json.dumps({
         "phase": "inventory",
         "performance_cases": len(inventory["performance_cases"]),

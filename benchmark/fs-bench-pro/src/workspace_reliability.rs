@@ -614,21 +614,17 @@ pub(crate) fn run(
                 verify_fault(fault)?;
                 let state_after = client.verification_workspace_state(session.id)?;
                 record("write-rollback-accounting", (&state_before, &state_after));
-                if (
-                    state_before.spool_bytes,
-                    state_before.spool_peak_bytes,
-                    state_before.mutation_generation,
-                ) != (
-                    state_after.spool_bytes,
-                    state_after.spool_peak_bytes,
-                    state_after.mutation_generation,
-                ) {
-                    return Err(
-                        "failed write changed spool accounting or mutation generation".into(),
-                    );
+                if state_before.spool_segment_bytes != state_after.spool_segment_bytes
+                    || state_after.physical_spool_observation_errors != 0
+                {
+                    return Err("failed append changed acknowledged backing bytes".into());
                 }
-                live(&client, session.id, &case, "done", 0)?;
+                // An ambiguous append poisons the live owner instead of
+                // pretending acknowledged cached bytes were persisted. The
+                // published snapshot must remain intact and explicit Discard
+                // must cleanly release the failed owner; final reopen verifies it.
                 unchanged(&store, branch, &before, before_commits)?;
+                workspace_verify::verify_root(&old.reader, old.root, &family::fixture()?)?;
                 client.end_workspace_session(session.id, EndWorkspaceMode::Discard)?;
                 live_session = None;
                 final_state = "initial";

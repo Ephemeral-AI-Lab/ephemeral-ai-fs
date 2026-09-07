@@ -916,7 +916,12 @@ impl Workspaces {
         {
             return Err(WorkspaceError::InvalidPlacement);
         }
-        crate::projection::pause(&worker)?;
+        // Discard must remain usable after a backing write failure. FREEZE
+        // flushes pending bytes and rejects a failed owner; shutdown below
+        // closes admission and releases those bytes without publishing them.
+        if mode == EndWorkspaceMode::Clean {
+            crate::projection::pause(&worker)?;
+        }
         let _quiesced = match worker.quiesce() {
             Ok(quiesced) => quiesced,
             Err(error) => {

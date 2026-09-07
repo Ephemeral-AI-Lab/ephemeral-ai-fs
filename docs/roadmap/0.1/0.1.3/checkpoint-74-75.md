@@ -154,3 +154,35 @@ SDK row binding survives receipt reuse, and mismatched source/input/harness/imag
 receipts are rejected. The table generator rejects missing/duplicate evidence and
 keeps target misses separate from execution PASS. Final runtime evidence is still
 pending; these development results are not the complete checkpoint.
+
+## Final repair findings before collection
+
+All 27 routine reliability definitions passed in development (the 600-second
+case remains excluded). Explicit Discard needed a product fix: a failed backing
+owner rejects flush/FREEZE, so Discard now closes it without flushing or publishing
+pending bytes. The spool proofs retain exact errno, unchanged published contents,
+acknowledged backing-byte accounting, clean discard and fresh reopen.
+
+The five history proofs now pass below 15 seconds: distributed500 9.137 s,
+hotset500 9.121 s, metadata500 6.989 s, recurring100 3.664 s and recurring500
+6.798 s. Sampling alone exposed another verifier defect: nested Slice/Concat
+recipes recursively revalidated shared ancestry under repeated edits. Flat byte
+oracles for the bounded small edited files preserve exact bytes and avoid that
+exponential work. A shallow old/new parity check and deep-history regression pass.
+
+The required live Docker suite exposed a genuine SDK/mmap race: a queued dirty
+folio could replay old bytes over an SDK edit after the live view was installed.
+During kernel-cache reconciliation, keep the installed SDK ranges in an owner-local
+bounded view; merge those ranges into delayed folio writes, preserve unrelated
+bytes, and prevent stale tails from regrowing a truncated file. Ordinary namespace
+and size mutations stay excluded while folio callbacks drain. Release this view
+before acknowledging the SDK operation. No cross-workspace lock or I/O-held mutex
+is added. The unchanged failing Docker assertion passed three predeclared targeted
+repetitions. Deterministic stale-folio, truncation-tail and gate-release tests pass.
+The complete final live suite and final campaign remain required.
+
+Collection freezes exact registry membership and source identity before executing.
+The shared campaign cannot silently change inventory/source on resume. Report
+comparisons retain historical scope and verification limits, including exclusion
+of malformed old compact Git baselines. This is a checkpoint, not a product-speedup
+claim from less verification work.
