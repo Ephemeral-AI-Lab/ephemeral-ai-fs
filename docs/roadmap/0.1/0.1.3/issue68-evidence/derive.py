@@ -9,11 +9,13 @@ Missing repetitions, parsing errors and identity mismatches never become passing
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import statistics
 
 ROOT = None
+OUTPUT = None
 RAW = {}
 
 
@@ -48,8 +50,8 @@ def metric_groups(records, baseline=False):
             values = {key: int(value) for key, value in re.findall(r'(\w+): (?:Some\()?(-?\d+)(?:\))?(?=,|$)', contents)}
             if name == 'WorkspaceReadReceipt':
                 unavailable = [k for k, v in values.items() if v == 0 and
-                    (k.startswith(('read_ahead_', 'host_response_', 'client_response_', 'client_decode_', 'client_socket_', 'host_encode_', 'host_socket_')) or
-                     k == 'host_dispatch_ns' or (baseline and k in ('read_plan_builds', 'rope_nodes_read', 'payload_ids', 'payload_batches', 'max_payload_batch', 'payload_bytes_read')))]
+                    (((baseline and k.startswith('read_ahead_')) or k.startswith(('host_response_', 'client_response_', 'client_decode_', 'client_socket_', 'host_encode_', 'host_socket_'))) or
+                     k in ('host_dispatch_ns', 'read_ahead_unused_bytes') or (baseline and k in ('read_plan_builds', 'rope_nodes_read', 'payload_ids', 'payload_batches', 'max_payload_batch', 'payload_bytes_read')))]
                 for key in unavailable:
                     values[key] = None
             else:
@@ -86,7 +88,7 @@ def summarize_sample(path, sample, index):
             'preparation': sample.get('preparation'), 'setup': sample.get('setup'),
             'preparation_wall_ns': sample.get('preparation_wall_ns'), 'cleanup': sample.get('cleanup'),
             'prepared_master_unchanged': sample.get('prepared_master_unchanged'),
-            'other_observations': [r for r in records if r.get('kind') in ('published-root', 'store-observation', 'workspace-physical-spool', 'workspace-spool-observation', 'host-rss-samples', 'runtime-observation-window')],
+            'other_observations': [r for r in records if r.get('kind') in ('published-root', 'store-observation', 'workspace-physical-spool', 'workspace-spool-observation', 'host-rss-samples', 'runtime-observation-window', 'backing-profile')],
             'cache_state': 'Independent mutable workspace; runner prepared-fixture identity is recorded. Cold execution-cache policy must be corroborated by the cohort declaration and runner, not inferred from timing.',
             'proof_status': 'NOT_ESTABLISHED_BY_PERFORMANCE_COLLECTION'}
 
@@ -105,6 +107,7 @@ def summarize_native(path):
         'identities': identities, 'raw': str(path.relative_to(ROOT)),
         'raw_sha256': RAW[str(path.relative_to(ROOT))]['sha256'],
         'native_workload_ns': workload['workload_ns'], 'workload_receipts': [workload],
+        'admission_eligible': raw.get('admission_eligible'),
         'native_resources': {
             'workload_cpu_ns': (after['usage_usec'] - before['usage_usec']) * 1000
                 if 'usage_usec' in before and 'usage_usec' in after else None,
@@ -195,7 +198,7 @@ def cohort_statistics(rows, declaration_valid):
             eligible = collected and matching and declaration_valid
             median = statistics.median(values) if complete else None
             maximum = max(values) if complete else None
-            status = ('ELIGIBLE' if eligible else 'INCOMPLETE_OR_IDENTITY_OR_DECLARATION_FAILURE')
+            status = ('MATCHED_COMPLETE' if eligible else 'INCOMPLETE_OR_IDENTITY_OR_DECLARATION_FAILURE')
             result.append({
                 'case': case, 'arm': arm, 'count': len(selected), 'runs': [row['run'] for row in selected],
                 'observations_ns': values, 'median_ns': median, 'maximum_ns': maximum,
@@ -224,6 +227,22 @@ def ms(value):
     return 'unavailable' if value is None else f'{value / 1_000_000:.3f}'
 
 
+def observed(value):
+    return 'unavailable' if value is None else value
+
+
+def proof_summary(proof):
+    receipt = proof['receipt']
+    wall = receipt.get('wall_seconds')
+    if wall is None and receipt.get('command_wall_ns') is not None:
+        wall = receipt['command_wall_ns'] / 1_000_000_000
+    relative = os.path.relpath(ROOT / proof['raw'], OUTPUT)
+    return [receipt.get('case', 'unavailable'), receipt.get('status', 'unavailable'),
+            'unavailable' if wall is None else f'{wall:.6f}',
+            receipt.get('source_identity', 'unavailable'),
+            f"[{proof['raw']}]({relative})"]
+
+
 def render(report):
     rows = report['rows']
     lines = ['# Fixed Git-100 / Git-500 cohort', '',
@@ -232,7 +251,10 @@ def render(report):
         'with three repetitions per case and arm. Missing or invalid observations are not replaced.', '',
         '**Scopes differ:** LayerFS is Create + required cold hydration + apply + six Git commands + '
         'LayerFS Commit + visibility + End. Native is apply + six Git commands only. '
-        'Native is not a complete LayerFS lifecycle and receives no lifecycle target classification.', '',
+        'Native is not a complete LayerFS lifecycle and receives no lifecycle target classification. '
+        'Native raw admission_eligible remains false: these medians are matched scoped controls, '
+        'not native product acceptance. MATCHED_COMPLETE describes cohort completion and identity matching, '
+        'not release admission.', '',
         '## Observations', '', table(
             ['Run', 'Arm', 'Create', 'Exec', 'LayerFS Commit', 'Visibility', 'End', 'Total', 'Main gate'],
             [[row['run'], row['arm'], *[ms(next((phase['elapsed_ns'] for phase in row.get('phases', [])
@@ -260,6 +282,23 @@ def render(report):
                 ('snapshot_database_calls', 'snapshot_database_rows', 'snapshot_database_bytes',
                  'snapshot_cache_hits', 'snapshot_cache_bytes', 'local_read_auth_ns')]]
                for row in rows if row['arm'] == 'LayerFS']), '',
+        '## FUSE callbacks and kernel reads', '',
+        'These are observed kernel/FUSE counters, not inferred from Git syscall totals. '
+        'Fields absent from older baseline receipts are unavailable, not zero.', '',
+        table(['Run', 'Lookup', 'Getattr', 'Open', 'Read', 'Read bytes', 'Flush', 'Release'],
+              [[row['run'], *[observed(group(row, 'WorkspaceReadReceipt').get(key)) for key in
+                ('callback_lookup', 'callback_getattr', 'callback_open', 'kernel_read_requests',
+                 'kernel_read_bytes', 'callback_flush', 'callback_release')]]
+               for row in rows if row['arm'] == 'LayerFS']), '',
+        '## Kernel prefill and immutable acquisition', '',
+        'Prefill stores/bytes describe kernel page-cache delivery. Immutable fetches/cache hits '
+        'and fetched bytes use the wired read_ahead fields; baseline unwired values remain unavailable. '
+        'These counters have distinct scopes and must not be summed as unique payload traffic.', '',
+        table(['Run', 'Prefill stores', 'Prefill bytes', 'Immutable fetches', 'Immutable cache hits', 'Fetched bytes'],
+              [[row['run'], *[observed(group(row, 'WorkspaceReadReceipt').get(key)) for key in
+                ('kernel_prefill_stores', 'kernel_prefill_bytes', 'read_ahead_fetches',
+                 'read_ahead_hits', 'read_ahead_fetched_bytes')]]
+               for row in rows if row['arm'] == 'LayerFS']), '',
         '## Resource scopes', '',
         'Host CPU deltas bracket before → after-product and include in-loop observations. '
         'LayerFS container CPU is the runner command window. Native CPU brackets its workload; '
@@ -282,8 +321,16 @@ def render(report):
         'Performance collection PASS and the historical 15-second classifier are not acceptance against '
         '500,000,000 ns / 1,000,000,000 ns. Performance does not establish Git correctness, issue closure or publication. '
         'Separate proof receipts below are retained without treating their durations as performance observations.', '',
-        '```json', json.dumps({key: report[key] for key in
-            ('declaration', 'missing_runs', 'parse_errors', 'proofs')}, indent=2), '```', '',
+        table(['Case', 'Status', 'Wall seconds', 'Source identity', 'Raw receipt'],
+              [proof_summary(proof) for proof in report['proofs']]), '',
+        'Full proof receipts remain in report.json; their wall times are separate from performance. '
+        'If the table is empty, no separate proof receipt was supplied to this derivation.', '',
+        '```json', json.dumps({
+            'declaration_status': report['declaration'].get('status'),
+            'declaration_raw': report['declaration'].get('raw'),
+            'declaration_error': report['declaration'].get('error'),
+            'missing_runs': report['missing_runs'], 'parse_errors': report['parse_errors'],
+        }, indent=2), '```', '',
         'Legacy zero counters known to be unwired are null/unavailable in derived metric groups; '
         'raw receipts retain their original zeros. All metric groups, lifecycle phases, workload counters, '
         'resource observations, cache policies and identities are retained in [report.json](report.json).', '',
@@ -293,14 +340,16 @@ def render(report):
 
 
 def main():
-    global ROOT
+    global ROOT, OUTPUT
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('evidence_root', type=Path)
     parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--declaration', type=Path)
+    parser.add_argument('--declaration', type=Path,
+                        help='Declaration JSON path relative to EVIDENCE_ROOT, or an absolute path (not relative to the current working directory)')
     parser.add_argument('--proof', action='append', default=[], help='Relative JSON correctness receipt; never enters timing statistics')
     args = parser.parse_args()
     ROOT = args.evidence_root.resolve()
+    OUTPUT = args.output.resolve()
     rows, missing, errors = [], [], []
     for run in BASELINE_RUNS + FINAL_RUNS:
         try:
