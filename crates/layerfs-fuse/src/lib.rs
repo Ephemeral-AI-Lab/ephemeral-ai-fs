@@ -50,3 +50,6 @@ pub mod live_owner;
 
 #[cfg(feature = "live")]
 pub use port::PortFuture;
+
+#[cfg(feature = "live")]
+pub use port::{KernelEntry, KernelReferences};

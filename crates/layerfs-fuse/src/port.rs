@@ -60,7 +60,95 @@ pub struct CallbackGuard {
 pub type PortFuture<'a, T> =
     std::pin::Pin<Box<dyn std::future::Future<Output = PortResult<T>> + Send + 'a>>;
 
+#[cfg(feature = "live")]
+#[derive(Default)]
+pub struct KernelReferences {
+    pub(crate) owner: Option<crate::live_owner::LiveOwner>,
+    pub(crate) nodes: Vec<NodeId>,
+}
+
+#[cfg(feature = "live")]
+impl KernelReferences {
+    /// Count only nondot READDIRPLUS entries actually added to the reply buffer.
+    pub fn release_unemitted(&mut self, emitted: usize) -> PortResult<()> {
+        if emitted > self.nodes.len() {
+            return Err(PortError::Invalid);
+        }
+        while self.nodes.len() > emitted {
+            let node = self.nodes.pop().unwrap();
+            if let Some(owner) = &self.owner {
+                owner.kernel_forget(node, 1)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The reply was attempted; FORGET or drained detach now owns cleanup.
+    pub fn submitted(mut self) {
+        self.nodes.clear();
+        self.owner.take();
+    }
+}
+
+#[cfg(feature = "live")]
+impl Drop for KernelReferences {
+    fn drop(&mut self) {
+        while let Some(node) = self.nodes.pop() {
+            if let Some(owner) = &self.owner {
+                let _ = owner.kernel_forget(node, 1);
+            }
+        }
+    }
+}
+
+#[cfg(feature = "live")]
+pub enum KernelEntry {
+    Lookup,
+    Create { mode: u32 },
+    Mkdir { mode: u32 },
+    Symlink { target: Vec<u8> },
+    Link { node: NodeId },
+}
+
 pub trait FilesystemPort: Send + Sync {
+    #[cfg(feature = "live")]
+    fn supports_kernel_lifetime(&self) -> bool {
+        false
+    }
+    #[cfg(feature = "live")]
+    fn kernel_entry_async<'a>(
+        &'a self,
+        _parent: NodeId,
+        _name: &'a [u8],
+        _operation: KernelEntry,
+    ) -> PortFuture<'a, (Attr, KernelReferences)> {
+        Box::pin(async { Err(PortError::Invalid) })
+    }
+    #[cfg(feature = "live")]
+    fn kernel_lookup_async<'a>(
+        &'a self,
+        parent: NodeId,
+        name: &'a [u8],
+    ) -> PortFuture<'a, (Attr, KernelReferences)> {
+        self.kernel_entry_async(parent, name, KernelEntry::Lookup)
+    }
+    #[cfg(feature = "live")]
+    fn kernel_directory_page_async<'a>(
+        &'a self,
+        _node: NodeId,
+        _after: u64,
+    ) -> PortFuture<'a, (Vec<(u64, Attr, Vec<u8>)>, KernelReferences)> {
+        Box::pin(async { Err(PortError::Invalid) })
+    }
+    #[cfg(feature = "live")]
+    fn kernel_forget(&self, _node: NodeId, _nlookup: u64) -> PortResult<()> {
+        Err(PortError::Invalid)
+    }
+    #[cfg(feature = "live")]
+    fn kernel_detach(&self) -> PortResult<()> {
+        Ok(())
+    }
+
     #[cfg(feature = "live")]
     fn directory_page_async<'a>(
         &'a self,

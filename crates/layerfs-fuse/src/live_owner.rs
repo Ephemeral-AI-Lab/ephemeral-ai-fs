@@ -2,6 +2,7 @@
 use crate::live_runtime::{LiveRuntime, OperationGate, Scheduler};
 use crate::live_transport::BackingConnection;
 use crate::live_wire::{self as wire, Input};
+use crate::port::{KernelEntry, KernelReferences};
 use crate::{Attr, FilesystemPort, Kind, NodeId, PortError, PortResult, ROOT};
 use layerfs_workspace_core::backing::{BackingId, BackingRef};
 use layerfs_workspace_core::file_edit::{Piece, SpoolSlice};
@@ -27,6 +28,7 @@ struct Owner {
     scheduler: Scheduler,
     read_scope: u64,
     state: Mutex<LiveWorkspace>,
+    kernel_refs: Mutex<KernelRefState>,
     head: Mutex<Option<[u8; 33]>>,
     backing: BackingConnection,
     local_facts: Option<Arc<dyn Fn(LocalFacts) -> PortResult<()> + Send + Sync>>,
@@ -126,6 +128,176 @@ fn io(_: std::io::Error) -> PortError {
     PortError::Io
 }
 
+// BTreeMap releases allocation on FORGET; HashMap spare capacity would outlive
+// per-entry reservations. This covers a sparsely occupied map node and permit.
+const KERNEL_REFERENCE_BYTES: usize = 128;
+
+#[derive(Default)]
+struct KernelRefState {
+    detached: bool,
+    entries: std::collections::BTreeMap<NodeId, KernelRefCount>,
+}
+struct KernelRefCount {
+    lookups: u64,
+    _charge: crate::live_runtime::LiveReservation,
+}
+struct PreparedKernelRef {
+    lookups: u64,
+    charge: Option<crate::live_runtime::LiveReservation>,
+}
+
+impl LiveOwner {
+    // state -> kernel_refs is the only lock order. Never await backing under either.
+    // Reserve before a namespace mutation; node=None means a not-yet-created node.
+    fn prepare_kernel_ref(
+        &self,
+        state: &LiveWorkspace,
+        refs: &mut KernelRefState,
+        node: Option<NodeId>,
+        count: u64,
+    ) -> PortResult<PreparedKernelRef> {
+        if refs.detached || count == 0 {
+            return Err(PortError::Io);
+        }
+        if let Some(node) = node {
+            let live = state.nodes.get(&node).ok_or(PortError::NotFound)?;
+            if let Some(existing) = refs.entries.get(&node) {
+                return Ok(PreparedKernelRef {
+                    lookups: existing.lookups.checked_add(count).ok_or(PortError::Io)?,
+                    charge: None,
+                });
+            }
+            live.pins.checked_add(1).ok_or(PortError::Io)?;
+        }
+        Ok(PreparedKernelRef {
+            lookups: count,
+            charge: Some(
+                self.0
+                    .scheduler
+                    .reserve_live(KERNEL_REFERENCE_BYTES)
+                    .map_err(|_| PortError::NoSpace)?,
+            ),
+        })
+    }
+
+    // All checks/allocation happened before mutation. Caller still owns both locks.
+    fn install_kernel_ref(
+        state: &mut LiveWorkspace,
+        refs: &mut KernelRefState,
+        node: NodeId,
+        prepared: PreparedKernelRef,
+    ) {
+        match prepared.charge {
+            Some(charge) => {
+                state
+                    .nodes
+                    .get_mut(&node)
+                    .expect("prepared live inode")
+                    .pins += 1;
+                let previous = refs.entries.insert(
+                    node,
+                    KernelRefCount {
+                        lookups: prepared.lookups,
+                        _charge: charge,
+                    },
+                );
+                debug_assert!(previous.is_none());
+            }
+            None => {
+                refs.entries
+                    .get_mut(&node)
+                    .expect("prepared kernel reference")
+                    .lookups = prepared.lookups
+            }
+        }
+    }
+
+    // Called while the existing directory-page namespace + state locks are held.
+    // No fallible work may follow successful installation until those locks drop.
+    fn retain_kernel_page(
+        &self,
+        state: &mut LiveWorkspace,
+        nodes: Vec<NodeId>,
+    ) -> PortResult<KernelReferences> {
+        let mut counts = std::collections::BTreeMap::<NodeId, u64>::new();
+        for &node in &nodes {
+            *counts.entry(node).or_default() += 1;
+        }
+        let mut refs = self.0.kernel_refs.lock().map_err(|_| PortError::Io)?;
+        if refs.detached {
+            return Err(PortError::Io);
+        }
+        let prepared = counts
+            .into_iter()
+            .map(|(node, count)| {
+                self.prepare_kernel_ref(state, &mut refs, Some(node), count)
+                    .map(|prepared| (node, prepared))
+            })
+            .collect::<PortResult<Vec<_>>>()?;
+        for (node, prepared) in prepared {
+            Self::install_kernel_ref(state, &mut refs, node, prepared);
+        }
+        for &node in &nodes {
+            if state.nodes[&node].attr(node).kind == Kind::File {
+                self.note_cached_open(node);
+            }
+        }
+        Ok(KernelReferences {
+            owner: Some(self.clone()),
+            nodes,
+        })
+    }
+
+    fn forget_kernel_ref(&self, node: NodeId, count: u64) -> PortResult<()> {
+        if count == 0 {
+            return Ok(());
+        }
+        let reclaimed = {
+            let mut state = self.state()?;
+            let mut refs = self.0.kernel_refs.lock().map_err(|_| PortError::Io)?;
+            if refs.detached {
+                return Ok(());
+            }
+            // The kernel seeds its root inode with one implicit lookup; no
+            // positive entry reply (and therefore no extra owner pin) created it.
+            if node == ROOT && count == 1 && !refs.entries.contains_key(&node) {
+                return Ok(());
+            }
+            let existing = refs.entries.get_mut(&node).ok_or(PortError::Io)?;
+            let remaining = existing.lookups.checked_sub(count).ok_or(PortError::Io)?;
+            if remaining != 0 {
+                existing.lookups = remaining;
+                return Ok(());
+            }
+            // Validate before consuming ownership; do not retry a consumed decrement.
+            if state.nodes.get(&node).is_none_or(|node| node.pins == 0) {
+                return Err(PortError::Io);
+            }
+            state.unpin(node).map_err(core)?;
+            refs.entries.remove(&node);
+            !state.nodes.contains_key(&node)
+        };
+        if reclaimed {
+            self.0
+                .ordering
+                .lock()
+                .map_err(|_| PortError::Io)?
+                .remove(&node);
+            self.0
+                .directories
+                .lock()
+                .map_err(|_| PortError::Io)?
+                .remove(&node);
+            self.0
+                .cached
+                .lock()
+                .map_err(|_| PortError::Io)?
+                .remove(&node);
+        }
+        Ok(())
+    }
+}
+
 impl LiveOwner {
     pub async fn connect(
         endpoint: String,
@@ -178,6 +350,7 @@ impl LiveOwner {
             #[cfg(target_os = "linux")]
             kernel_root: Default::default(),
             state: Mutex::new(LiveWorkspace::new(node, policy, root)),
+            kernel_refs: Default::default(),
             head: Mutex::new(head),
             backing,
             local_facts,
@@ -208,6 +381,91 @@ impl LiveOwner {
             ordering.entry(node).or_default().clone()
         };
         Ok(order.lock_owned().await)
+    }
+
+    async fn directory_page_retained(
+        &self,
+        node: NodeId,
+        after: u64,
+        kernel: bool,
+    ) -> PortResult<(Vec<(u64, Attr, Vec<u8>)>, KernelReferences)> {
+        let _namespace = self.0.namespace.lock().await;
+        let generation = {
+            let state = self.state()?;
+            (
+                state.base_root,
+                state.nodes.get(&node).ok_or(PortError::NotFound)?.revision,
+            )
+        };
+        let refresh = self
+            .0
+            .directories
+            .lock()
+            .map_err(|_| PortError::Io)?
+            .get(&node)
+            .is_none_or(|cursor| cursor.generation != generation);
+        if refresh {
+            let entries = self.entries(node).await?;
+            let mut directories = self.0.directories.lock().map_err(|_| PortError::Io)?;
+            let cursor = directories.entry(node).or_insert_with(|| DirectoryCookies {
+                generation,
+                next: 3,
+                names: Default::default(),
+                ordered: Default::default(),
+            });
+            cursor.names.retain(|name, (cookie, id)| {
+                let keep = entries.get(name) == Some(id);
+                if !keep {
+                    cursor.ordered.remove(cookie);
+                }
+                keep
+            });
+            for (name, id) in entries {
+                if !cursor.names.contains_key(&name) {
+                    let cookie = cursor.next;
+                    cursor.next = cookie.checked_add(1).ok_or(PortError::NoSpace)?;
+                    cursor.names.insert(name.clone(), (cookie, id));
+                    cursor.ordered.insert(cookie, (id, name));
+                }
+            }
+            cursor.generation = generation;
+        }
+        let mut state = self.state()?;
+        let directories = self.0.directories.lock().map_err(|_| PortError::Io)?;
+        let cursor = directories.get(&node).ok_or(PortError::Io)?;
+        let mut page = Vec::new();
+        if after == 0 {
+            page.push((1, state.attr(node).map_err(core)?, b".".to_vec()));
+        }
+        if after < 2 {
+            page.push((
+                2,
+                state
+                    .attr(state.parent_of(node).map_err(core)?)
+                    .map_err(core)?,
+                b"..".to_vec(),
+            ));
+        }
+        for (cookie, (id, name)) in cursor
+            .ordered
+            .range((std::ops::Bound::Excluded(after), std::ops::Bound::Unbounded))
+            .take(128 - page.len())
+        {
+            page.push((*cookie, state.attr(*id).map_err(core)?, name.clone()));
+        }
+        drop(directories);
+        let references = if kernel {
+            let nodes = page
+                .iter()
+                .filter(|(_, _, name)| name != b"." && name != b"..")
+                .map(|(_, attr, _)| attr.node)
+                .collect();
+            self.retain_kernel_page(&mut state, nodes)?
+        } else {
+            KernelReferences::default()
+        };
+        drop(state);
+        Ok((page, references))
     }
 
     async fn name(&self, parent: NodeId, name: &[u8]) -> PortResult<ResolvedName> {
@@ -808,6 +1066,101 @@ impl LiveOwner {
 }
 
 impl FilesystemPort for LiveOwner {
+    fn supports_kernel_lifetime(&self) -> bool {
+        true
+    }
+    fn kernel_entry_async<'a>(
+        &'a self,
+        parent: NodeId,
+        name: &'a [u8],
+        operation: KernelEntry,
+    ) -> crate::PortFuture<'a, (Attr, KernelReferences)> {
+        Box::pin(async move {
+            let _namespace = self.0.namespace.lock().await;
+            let name = self.name(parent, name).await?;
+            let mut state = self.state()?;
+            let mut refs = self.0.kernel_refs.lock().map_err(|_| PortError::Io)?;
+            let existing = match &operation {
+                KernelEntry::Lookup => Some(name.existing().ok_or(PortError::NotFound)?),
+                KernelEntry::Link { node } => Some(*node),
+                _ => None,
+            };
+            let prepared = self.prepare_kernel_ref(&state, &mut refs, existing, 1)?;
+            let attr = match operation {
+                KernelEntry::Lookup => state.attr(existing.unwrap()),
+                KernelEntry::Create { mode } => state.create_file(name, mode, None),
+                KernelEntry::Mkdir { mode } => state.mkdir(name, mode, None),
+                KernelEntry::Symlink { target } => state.symlink(name, target),
+                KernelEntry::Link { node } => state.link(node, name),
+            }
+            .map_err(core)?;
+            Self::install_kernel_ref(&mut state, &mut refs, attr.node, prepared);
+            if attr.kind == Kind::File {
+                self.note_cached_open(attr.node);
+            }
+            drop(refs);
+            drop(state);
+            Ok((
+                attr,
+                KernelReferences {
+                    owner: Some(self.clone()),
+                    nodes: vec![attr.node],
+                },
+            ))
+        })
+    }
+    fn kernel_forget(&self, node: NodeId, nlookup: u64) -> PortResult<()> {
+        let result = self.forget_kernel_ref(node, nlookup);
+        if result.is_err() {
+            self.0.failed.store(true, Ordering::Release);
+        }
+        result
+    }
+    fn kernel_detach(&self) -> PortResult<()> {
+        let result = self.run(async {
+            self.prepare_shutdown().map_err(io)?;
+            // Admission is closed and old cuts were released. This local cut drains
+            // callbacks; never park it in Owner.cut, which shutdown also takes.
+            let _cut = self.0.gate.cache_flush().await.finish().await;
+            let mut state = self.state()?;
+            let mut refs = self.0.kernel_refs.lock().map_err(|_| PortError::Io)?;
+            if refs.detached {
+                return Ok(());
+            }
+            for node in refs.entries.keys() {
+                if state.nodes.get(node).is_none_or(|node| node.pins == 0) {
+                    return Err(PortError::Io);
+                }
+            }
+            refs.detached = true;
+            for (node, _) in std::mem::take(&mut refs.entries) {
+                state.unpin(node).map_err(core)?;
+                if !state.nodes.contains_key(&node) {
+                    self.0
+                        .ordering
+                        .lock()
+                        .map_err(|_| PortError::Io)?
+                        .remove(&node);
+                    self.0
+                        .directories
+                        .lock()
+                        .map_err(|_| PortError::Io)?
+                        .remove(&node);
+                    self.0
+                        .cached
+                        .lock()
+                        .map_err(|_| PortError::Io)?
+                        .remove(&node);
+                }
+            }
+            Ok(())
+        });
+        if result.is_err() {
+            self.0.failed.store(true, Ordering::Release);
+        }
+        result
+    }
+
     fn note_cached_open(&self, node: NodeId) {
         if let Ok(mut cached) = self.0.cached.lock() {
             cached.insert(node);
@@ -1330,72 +1683,17 @@ impl FilesystemPort for LiveOwner {
         after: u64,
     ) -> crate::PortFuture<'a, Vec<(u64, Attr, Vec<u8>)>> {
         Box::pin(async move {
-            let _namespace = self.0.namespace.lock().await;
-            let generation = {
-                let state = self.state()?;
-                (
-                    state.base_root,
-                    state.nodes.get(&node).ok_or(PortError::NotFound)?.revision,
-                )
-            };
-            let refresh = self
-                .0
-                .directories
-                .lock()
-                .map_err(|_| PortError::Io)?
-                .get(&node)
-                .is_none_or(|cursor| cursor.generation != generation);
-            if refresh {
-                let entries = self.entries(node).await?;
-                let mut directories = self.0.directories.lock().map_err(|_| PortError::Io)?;
-                let cursor = directories.entry(node).or_insert_with(|| DirectoryCookies {
-                    generation,
-                    next: 3,
-                    names: Default::default(),
-                    ordered: Default::default(),
-                });
-                cursor.names.retain(|name, (cookie, id)| {
-                    let keep = entries.get(name) == Some(id);
-                    if !keep {
-                        cursor.ordered.remove(cookie);
-                    }
-                    keep
-                });
-                for (name, id) in entries {
-                    if !cursor.names.contains_key(&name) {
-                        let cookie = cursor.next;
-                        cursor.next = cookie.checked_add(1).ok_or(PortError::NoSpace)?;
-                        cursor.names.insert(name.clone(), (cookie, id));
-                        cursor.ordered.insert(cookie, (id, name));
-                    }
-                }
-                cursor.generation = generation;
-            }
-            let state = self.state()?;
-            let directories = self.0.directories.lock().map_err(|_| PortError::Io)?;
-            let cursor = directories.get(&node).ok_or(PortError::Io)?;
-            let mut page = Vec::new();
-            if after == 0 {
-                page.push((1, state.attr(node).map_err(core)?, b".".to_vec()));
-            }
-            if after < 2 {
-                page.push((
-                    2,
-                    state
-                        .attr(state.parent_of(node).map_err(core)?)
-                        .map_err(core)?,
-                    b"..".to_vec(),
-                ));
-            }
-            for (cookie, (id, name)) in cursor
-                .ordered
-                .range((std::ops::Bound::Excluded(after), std::ops::Bound::Unbounded))
-                .take(128 - page.len())
-            {
-                page.push((*cookie, state.attr(*id).map_err(core)?, name.clone()));
-            }
-            Ok(page)
+            self.directory_page_retained(node, after, false)
+                .await
+                .map(|(page, _)| page)
         })
+    }
+    fn kernel_directory_page_async<'a>(
+        &'a self,
+        node: NodeId,
+        after: u64,
+    ) -> crate::PortFuture<'a, (Vec<(u64, Attr, Vec<u8>)>, KernelReferences)> {
+        Box::pin(self.directory_page_retained(node, after, true))
     }
 }
 
@@ -2386,5 +2684,169 @@ mod immutable_acquisition_tests {
                 )
                 .is_none());
         }
+    }
+
+    fn kernel_owner(runtime: &LiveRuntime) -> LiveOwner {
+        let handler = Arc::new(|request: &[u8]| match request {
+            [wire::SEED] => Ok(seed()),
+            _ => Err(PortError::Io),
+        });
+        let owner = runtime
+            .block_on(LiveOwner::local(
+                handler,
+                Arc::new(|_| Ok(())),
+                runtime.scheduler(),
+            ))
+            .unwrap();
+        if let Data::Directory(directory) =
+            &mut owner.state().unwrap().nodes.get_mut(&ROOT).unwrap().data
+        {
+            directory.base = None;
+        }
+        owner
+    }
+
+    #[test]
+    fn kernel_references_preserve_unlinked_contents_until_last_forget() {
+        let runtime = LiveRuntime::new().unwrap();
+        let owner = kernel_owner(&runtime);
+        let (attr, refs) = runtime
+            .block_on(owner.kernel_entry_async(ROOT, b"held", KernelEntry::Create { mode: 0o600 }))
+            .unwrap();
+        refs.submitted();
+        {
+            let mut state = owner.state().unwrap();
+            let edit = state
+                .prepare_splices(
+                    attr.node,
+                    vec![(
+                        0,
+                        0,
+                        Some(Piece::Inline {
+                            bytes: Arc::from(&b"held"[..]),
+                            offset: 0,
+                            len: 4,
+                        }),
+                    )],
+                )
+                .unwrap();
+            state.apply_edit(edit).unwrap();
+        }
+        let (again, refs) = runtime
+            .block_on(owner.kernel_lookup_async(ROOT, b"held"))
+            .unwrap();
+        assert_eq!(again.node, attr.node);
+        refs.submitted();
+        assert_eq!(owner.state().unwrap().nodes[&attr.node].pins, 1);
+        assert_eq!(
+            owner.0.kernel_refs.lock().unwrap().entries[&attr.node].lookups,
+            2
+        );
+        owner.unlink(ROOT, b"held", false).unwrap();
+        assert_eq!(owner.read(attr.node, 0, 4).unwrap(), b"held");
+        owner.kernel_forget(attr.node, 1).unwrap();
+        assert_eq!(owner.read(attr.node, 0, 4).unwrap(), b"held");
+        owner.kernel_forget(attr.node, 1).unwrap();
+        assert_eq!(owner.attr(attr.node), Err(PortError::NotFound));
+        assert!(owner.0.kernel_refs.lock().unwrap().entries.is_empty());
+        owner.kernel_forget(ROOT, 1).unwrap();
+    }
+
+    #[test]
+    fn kernel_reference_keeps_old_base_contents_after_unlink_and_root_change() {
+        let runtime = LiveRuntime::new().unwrap();
+        let handler = Arc::new(|request: &[u8]| match request.first() {
+            Some(&wire::SEED) => Ok(seed()),
+            Some(&wire::LOOKUP) => Ok(lookup_reply(b"old", 3)),
+            _ => Err(PortError::Io),
+        });
+        let owner = runtime
+            .block_on(LiveOwner::local(
+                handler,
+                Arc::new(|_| Ok(())),
+                runtime.scheduler(),
+            ))
+            .unwrap();
+        let (attr, refs) = runtime
+            .block_on(owner.kernel_lookup_async(ROOT, b"file"))
+            .unwrap();
+        refs.submitted();
+        owner.unlink(ROOT, b"file", false).unwrap();
+        owner.state().unwrap().base_root = identity(b"new namespace");
+        assert_eq!(owner.read(attr.node, 0, 3).unwrap(), b"old");
+        owner.kernel_forget(attr.node, 1).unwrap();
+        assert_eq!(owner.attr(attr.node), Err(PortError::NotFound));
+    }
+
+    #[test]
+    fn kernel_page_rollback_overflow_and_detach_balance_pins() {
+        let runtime = LiveRuntime::new().unwrap();
+        let owner = kernel_owner(&runtime);
+        let file = owner.create_file(ROOT, b"a", 0o600).unwrap().node;
+        owner.link(file, ROOT, b"b").unwrap();
+        let (page, mut refs) = runtime
+            .block_on(owner.kernel_directory_page_async(ROOT, 0))
+            .unwrap();
+        assert_eq!(page.len(), 4);
+        assert_eq!(
+            owner.0.kernel_refs.lock().unwrap().entries[&file].lookups,
+            2
+        );
+        assert_eq!(owner.state().unwrap().nodes[&file].pins, 1);
+        refs.release_unemitted(1).unwrap();
+        assert_eq!(
+            owner.0.kernel_refs.lock().unwrap().entries[&file].lookups,
+            1
+        );
+        drop(refs); // An attr conversion error or canceled reply rolls back the emitted prefix too.
+        assert!(owner.0.kernel_refs.lock().unwrap().entries.is_empty());
+        assert_eq!(owner.state().unwrap().nodes[&file].pins, 0);
+        let (_, refs) = runtime
+            .block_on(owner.kernel_directory_page_async(ROOT, 0))
+            .unwrap();
+        refs.submitted();
+        owner
+            .0
+            .kernel_refs
+            .lock()
+            .unwrap()
+            .entries
+            .get_mut(&file)
+            .unwrap()
+            .lookups = u64::MAX;
+        let before = owner.state().unwrap().nodes.clone();
+        let generation = owner.state().unwrap().mutation_generation;
+        assert_eq!(
+            runtime
+                .block_on(owner.kernel_entry_async(ROOT, b"c", KernelEntry::Link { node: file }))
+                .err(),
+            Some(PortError::Io)
+        );
+        assert_eq!(owner.state().unwrap().nodes, before);
+        assert_eq!(owner.state().unwrap().mutation_generation, generation);
+        owner
+            .0
+            .kernel_refs
+            .lock()
+            .unwrap()
+            .entries
+            .get_mut(&file)
+            .unwrap()
+            .lookups = 2;
+        // Shutdown must drop an older Commit cut before draining callbacks itself.
+        *owner.0.cut.lock().unwrap() =
+            Some(runtime.block_on(async { owner.0.gate.cache_flush().await.finish().await }));
+        owner.kernel_detach().unwrap();
+        owner.kernel_detach().unwrap();
+        assert!(owner.0.kernel_refs.lock().unwrap().entries.is_empty());
+        assert_eq!(owner.state().unwrap().nodes[&file].pins, 0);
+        assert_eq!(owner.lookup(ROOT, b"a").unwrap().node, file);
+        assert_eq!(
+            runtime
+                .block_on(owner.kernel_lookup_async(ROOT, b"a"))
+                .err(),
+            Some(PortError::Io)
+        );
+        owner.kernel_forget(file, 2).unwrap(); // Late notification after drained detach is harmless.
     }
 }
