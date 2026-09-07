@@ -370,12 +370,26 @@ impl BackingOwner {
                 // Consume before physical I/O: an uncertain/failed append cannot
                 // be replayed. Earlier acknowledged ranges stay retained.
                 self.append_reservation = None;
+                #[cfg(feature = "test-instrumentation")]
+                if crate::lifecycle::consume_verification_fault(
+                    self.snapshot.branch_id,
+                    crate::lifecycle::VerificationFault::NoSpace,
+                    self.spool.bytes,
+                ) {
+                    return Err(StoreError::InvalidInput("workspace spool limit"));
+                }
+                #[cfg(feature = "test-instrumentation")]
+                let inject_short = crate::lifecycle::consume_verification_fault(
+                    self.snapshot.branch_id,
+                    crate::lifecycle::VerificationFault::ShortAppend,
+                    self.spool.bytes,
+                );
                 self.spool.append(
                     &segment,
                     offset,
                     data,
                     #[cfg(feature = "test-instrumentation")]
-                    false,
+                    inject_short,
                 )?;
                 let remaining = remaining - data.len() as u64;
                 self.append_reservation =
@@ -1106,6 +1120,31 @@ mod tests {
         wire::u64_out(&mut cancel, next_id);
         wire::u64_out(&mut cancel, next_offset + 1);
         owner.request(&cancel).unwrap();
+        #[cfg(feature = "test-instrumentation")]
+        for (fault, expected) in [
+            (
+                crate::VerificationFault::ShortAppend,
+                layerfs_fuse::PortError::Io,
+            ),
+            (
+                crate::VerificationFault::NoSpace,
+                layerfs_fuse::PortError::NoSpace,
+            ),
+        ] {
+            let response = owner.request(&reserve).unwrap();
+            let mut input = Input(&response);
+            let mut append = vec![wire::APPEND];
+            wire::u64_out(&mut append, input.u64().unwrap());
+            wire::u64_out(&mut append, input.u64().unwrap());
+            wire::bytes_out(&mut append, b"bad").unwrap();
+            crate::arm_verification_fault(branch, fault).unwrap();
+            let error = owner.request(&append).unwrap_err();
+            assert_eq!(crate::projection::storage_port_error(error), expected);
+            let receipt = crate::take_verification_fault_receipt().unwrap().unwrap();
+            assert_eq!(receipt.hit_count, 1);
+            assert!(owner.append_reservation.is_none());
+            assert_eq!(owner.request(&read).unwrap(), b"abc");
+        }
         assert!(owner.request(&reserve).is_ok());
         assert_eq!(owner.request(&read).unwrap(), b"abc");
         drop(owner);

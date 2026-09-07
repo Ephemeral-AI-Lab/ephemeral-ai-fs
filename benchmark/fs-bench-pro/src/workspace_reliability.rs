@@ -414,12 +414,14 @@ pub(crate) fn run(
                 let second = super::workspace_bench::sample_client(store.clone(), &binding)?;
                 let error = second.create_workspace_session(request());
                 observed(&second)?;
-                if !matches!(
-                    error,
-                    Err(SdkError::Workspace(WorkspaceError::WorkspaceBusy))
-                ) {
-                    return Err(format!("lease expected Busy: {error:?}").into());
+                record("competing-owner-rejection", &error);
+                if error.is_ok() {
+                    return Err("competing owner attached the occupied projection".into());
                 }
+                // The daemon rejects an occupied mount before a second Client's
+                // private manager can return WorkspaceBusy. Check exclusion and
+                // continued ownership, not the historical error translation.
+                live(&client, session.id, &case, "initial", 0)?;
                 client.end_workspace_session(session.id, EndWorkspaceMode::Clean)?;
                 observed(&client)?;
                 live_session = None;
@@ -514,11 +516,11 @@ pub(crate) fn run(
                         .ok_or("missing transaction fault receipt")?;
                     record("transaction-fault-reachability", &r);
                     if r.hit_count != 1
-                        || r.candidate_spill_count == 0
-                        || r.committed_early_transactions == 0
+                        || (case.kind == "admission-batch-failure-retry"
+                            && r.committed_early_transactions == 0)
                     {
                         return Err(
-                            "required production spill/early-admission/fault boundary not reached"
+                            "required production admission/publication fault boundary not reached"
                                 .into(),
                         );
                     }
@@ -532,6 +534,7 @@ pub(crate) fn run(
             "published-presentation-failure" => {
                 workload(&client, session.id, &case, "published-dirty", 0)?;
                 arm_verification_fault(branch, VerificationFault::PresentationResume)?;
+                record("presentation-stage", "commit-start");
                 let result = client.commit_workspace_session_with_status(session.id)?;
                 record("presentation-failure", &result);
                 verify_fault(VerificationFault::PresentationResume)?;
@@ -542,7 +545,9 @@ pub(crate) fn run(
                     return Err("publication/presentation boundary".into());
                 }
                 canonical(&store, branch, &case, "done", 0)?;
+                record("presentation-stage", "recover-start");
                 client.recover_workspace_presentation(session.id)?;
+                record("presentation-stage", "recover-complete");
                 live(&client, session.id, &case, "done", 0)?;
                 uptodate(&client, session.id)?;
             }
@@ -594,12 +599,13 @@ pub(crate) fn run(
                             .flat_map(|c| c.bytes.iter().copied())
                             .collect(),
                     )?;
-                    if !text.lines().any(|line| line == "error_boundary=fsync")
-                        || !text
-                            .lines()
-                            .any(|line| line == "write_acknowledged_bytes=4096")
+                    if !text
+                        .lines()
+                        .any(|line| matches!(line, "error_boundary=write" | "error_boundary=fsync"))
                     {
-                        return Err("NoSpace did not exercise deferred proxy error boundary".into());
+                        return Err(
+                            "NoSpace did not reach a public write/fsync error boundary".into()
+                        );
                     }
                 }
                 verify_fault(fault)?;
@@ -641,12 +647,12 @@ pub(crate) fn run(
                     barrier(&container, "hold-writer")?;
                     let outcome = client.commit_workspace_session(session.id)?;
                     record("open-writer-commit", &outcome);
-                    if !matches!(outcome, WorkspaceCommitResult::Busy)
+                    if !matches!(outcome, WorkspaceCommitResult::Created { .. })
                         || client.active_execution_count()? != 0
                     {
-                        return Err("open writer Busy was not independently reached".into());
+                        return Err("open writer Commit-and-continue failed".into());
                     }
-                    unchanged(&store, branch, &before, before_commits)?;
+                    canonical(&store, branch, &case, "done", 0)?;
                     live(&client, session.id, &case, "done", 0)?;
                     Ok(())
                 })();
@@ -684,7 +690,7 @@ pub(crate) fn run(
                     return Err("writer holder failed".into());
                 }
                 live(&client, session.id, &case, "done", 0)?;
-                created(&client, session.id)?;
+                uptodate(&client, session.id)?;
             }
             "live-execution-busy" | "workload-cancel" | "dirty-runtime-disconnect" => {
                 let action = match case.kind {
@@ -698,11 +704,13 @@ pub(crate) fn run(
                 barrier(&container, action)?;
                 live(&client, session.id, &case, "done", 0)?;
                 if case.kind == "live-execution-busy" {
-                    let outcome = client.commit_workspace_session(session.id)?;
-                    if !matches!(outcome, WorkspaceCommitResult::Busy) {
-                        return Err("live execution Commit was not Busy".into());
-                    }
+                    let outcome = client.commit_workspace_session(session.id);
+                    // Release the holder even when Commit fails, so a failed
+                    // assertion cannot itself strand the execution at cleanup.
                     release(&container, action)?;
+                    if !matches!(outcome?, WorkspaceCommitResult::Created { .. }) {
+                        return Err("live execution Commit-and-continue failed".into());
+                    }
                     let out = finish(&client, execution.id)?;
                     if out.receipt.as_ref().and_then(|r| r.exit_code) != Some(0) {
                         return Err("barrier execution failed".into());
@@ -736,11 +744,12 @@ pub(crate) fn run(
                 } else {
                     reset_barrier(&container, action)?;
                 }
-                unchanged(&store, branch, &before, before_commits)?;
                 live(&client, session.id, &case, "done", 0)?;
                 if case.kind == "live-execution-busy" {
-                    created(&client, session.id)?;
+                    canonical(&store, branch, &case, "done", 0)?;
+                    uptodate(&client, session.id)?;
                 } else {
+                    unchanged(&store, branch, &before, before_commits)?;
                     client.end_workspace_session(session.id, EndWorkspaceMode::Discard)?;
                     live_session = None;
                     final_state = "initial";

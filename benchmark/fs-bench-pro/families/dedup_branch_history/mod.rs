@@ -20,6 +20,23 @@ pub(crate) fn cases() -> Vec<Case> {
     }
     rows
 }
+/// Routine proof coverage; workload depth and all-parent checks are unchanged.
+pub(crate) fn verification_steps(case: &Case) -> Vec<usize> {
+    let n = case.tier;
+    if n <= 10 {
+        return (0..=n).collect();
+    }
+    let mut steps = match case.kind {
+        "distributed" if n > 200 => vec![0, 1, 199, 200, 201, n / 2, n - 1, n],
+        "hotset" => vec![0, 1, 7, 8, 9, n / 2, n - 1, n],
+        "recurring" => vec![0, 1, 2, 3, n - 1, n],
+        _ => vec![0, 1, 2, n / 2 - 1, n / 2, n - 1, n],
+    };
+    steps.sort_unstable();
+    steps.dedup();
+    steps
+}
+
 pub(crate) fn fixture(case: &Case, seed: u8) -> Result<Vec<Entry>> {
     d::validate(case, FAMILY, seed)?;
     if d::history_unrelated_mixed_v2(case) {
@@ -254,4 +271,25 @@ pub(crate) fn apply(
     verify: bool,
 ) -> Result<super::workspace_common::Receipt> {
     d::apply(case, seed, step, verify)
+}
+
+#[cfg(test)]
+mod checkpoint_tests {
+    #[test]
+    fn history_samples_cover_cycles_and_final_states() {
+        for case in super::cases() {
+            let steps = super::verification_steps(&case);
+            assert_eq!(steps.first(), Some(&0));
+            assert_eq!(steps.last(), Some(&case.tier));
+            assert!(steps.windows(2).all(|pair| pair[0] < pair[1]));
+            if case.tier > 10 {
+                assert!((6..=8).contains(&steps.len()));
+                assert!(steps.contains(&(case.tier - 1)));
+                if case.kind == "hotset" { assert!(steps.contains(&8) && steps.contains(&9)); }
+                if case.kind == "distributed" && case.tier > 200 {
+                    assert!(steps.contains(&199) && steps.contains(&200) && steps.contains(&201));
+                }
+            }
+        }
+    }
 }

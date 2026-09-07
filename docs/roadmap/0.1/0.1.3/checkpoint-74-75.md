@@ -94,3 +94,33 @@ and reconcile inventory totals. Include target misses, historical comparisons on
 when compatible, exact evidence links, optional long-test exclusion and omissions.
 Required CI and relevant real Docker concurrency/coherence tests precede green-PR
 merge and issue closure. This checkpoint is not a release or #70 optimization.
+
+## Initial repair evidence
+
+- The merged #73 image reproduced the presentation proof TIMEOUT. Its retained
+  receipt shows Created + presentation_failed, reached PresentationResume fault,
+  and successful canonical data verification before recovery failed. Recovery
+  unconditionally paused an already-ended remote projection. It now pauses only
+  when a projection handle remains; attach creates the fresh backing owner.
+- The open-writer/live-command proofs expected Busy despite the live owner's
+  supported Commit-and-continue path. They now require Created, committed data,
+  continued execution/readability and an UpToDate subsequent Commit. The holder
+  is released even if Commit fails, preventing assertion-induced cleanup leaks.
+- An occupied daemon mount rejects a competing owner before a second Client's
+  private manager can return the old WorkspaceBusy error. The proof requires
+  rejection, checks that the original owner still works, and retains reacquisition.
+- Current host backing APPEND bypassed file_io's test fault hooks. The hooks now
+  exercise the actual host spool append and preserve native EIO/ENOSPC checks.
+  Write versus fsync error timing follows the actual public path, not the retired
+  deferred-proxy acknowledgement rule.
+- Streaming canonical admission bypassed the old admission fault checkpoint and
+  begins before final candidate publication. Activate the branch-scoped test
+  fault at construction and checkpoint actual checked-page transactions. Require
+  prior admission for the later-batch fault, but do not require an unrelated
+  candidate spill for final-publication rollback.
+
+Focused checks passed: history sample cycle/end selection, actual backing fault
+routing/exact reservation consumption, and published-install recovery without a
+second Commit. These local checks do not substitute for the pending Docker proofs.
+The first attempted baseline proof and image build were refused because another
+live history task held the shared measurement lock; neither is a product failure.

@@ -621,7 +621,8 @@ pub fn take_verification_store_fault_receipt() -> Option<VerificationStoreFaultR
     VERIFICATION_STORE_FAULT.with(|s| s.borrow_mut().take())
 }
 #[cfg(feature = "test-instrumentation")]
-pub(crate) fn verification_candidate(branch: BranchId, spills: u64) {
+#[doc(hidden)]
+pub fn verification_candidate(branch: BranchId, spills: u64) {
     VERIFICATION_STORE_FAULT.with(|s| {
         if let Some(r) = s.borrow_mut().as_mut() {
             if r.branch == branch {

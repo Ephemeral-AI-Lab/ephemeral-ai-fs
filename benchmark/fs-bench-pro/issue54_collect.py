@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Issue #54 remaining-family statistics collection through the existing runner."""
+"""Collect the historical remaining-family scope or the complete #74/#75 checkpoint."""
 from __future__ import annotations
 
 import argparse
@@ -110,8 +110,10 @@ def collect_row(args, family, row, output):
     case_dir.mkdir(parents=True, exist_ok=True)
     command = [
         sys.executable, str(HERE / "shared/runner.py"),
-        "--family", family, "--case", case, "--seed", str(SEED),
-        "--setup", "clone", "--perf-fast", "--collection-mode",
+        "--family", family, "--case", case,
+        "--repetition" if row.get("route") == "sdk" else "--seed", str(SEED),
+        "--setup", "fresh" if row.get("setup_policy") == "fresh-output" else "clone",
+        "--perf-fast", "--collection-mode",
         "--product-timeout", str(PRODUCT_TIMEOUT), "--timeout", str(COMMAND_TIMEOUT),
         "--setup-timeout", str(SETUP_TIMEOUT),
         "--image", args.image, "--host-binary", args.host_binary,
@@ -193,7 +195,8 @@ def verify_row(args, family, row, output, identities):
     case_dir.mkdir(parents=True, exist_ok=True)
     command = [
         sys.executable, str(HERE / "verify-selected.py"),
-        "--family", family, "--case", case, "--seed", str(SEED),
+        "--family", family, "--case", case,
+        "--repetition" if row.get("route") == "sdk" else "--seed", str(SEED),
         "--setup", identities.get("setup_identity") or "clone",
         "--source", identities["source_identity"],
         "--input", identities["input_identity"],
@@ -222,6 +225,8 @@ def parse_args():
     parser.add_argument("--host-binary", default=str(REPO / "target/release/fs-benchmark-pro"))
     parser.add_argument("--output", default=str(REPO / "benchmark-results/host-store/campaigns/issue54"))
     parser.add_argument("--phase", choices=("inventory", "performance", "verification", "all"), default="all")
+    parser.add_argument("--checkpoint", action="store_true",
+                        help="All host-admitted families and routine proofs for #74/#75; one shared campaign")
     parser.add_argument("--family")
     parser.add_argument("--case")
     parser.add_argument("--proofs", choices=("selected", "all"), default="selected",
@@ -235,13 +240,18 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     inventory = {"families": {}, "performance_cases": [], "proof_cases": [], "mismatches": []}
     identities_by_case = {}
+    selected_families = {}
     families = PERF_FAMILIES + ((PROOF_FAMILY,) if args.family in (None, PROOF_FAMILY) else ())
+    if args.checkpoint:
+        families = runner.HOST_FAMILIES
+        args.proofs = "all"
     if args.family:
         families = (args.family,)
     for family in families:
         rows, listed = list_family(args, family)
         if args.case:
             rows = [row for row in rows if row["scenario_id"] == args.case]
+        selected_families[family] = (rows, listed)
         inventory["families"][family] = {
             "count": len(rows),
             "source_identity": listed.get("source_identity"),
@@ -250,7 +260,7 @@ def main():
             "proof_only": [row["scenario_id"] for row in rows if row.get("proof_only")],
         }
         expected = EXPECTED_PROOFS if family == PROOF_FAMILY else EXPECTED_PERF.get(family)
-        if expected is not None and len(rows) != expected:
+        if not args.case and expected is not None and len(rows) != expected:
             inventory["mismatches"].append({"family": family, "expected": expected, "actual": len(rows)})
         for row in rows:
             if row.get("proof_only"):
@@ -272,7 +282,7 @@ def main():
         for family in families:
             if family == PROOF_FAMILY:
                 continue
-            rows, _ = list_family(args, family)
+            rows, _ = selected_families[family]
             if args.case:
                 rows = [row for row in rows if row["scenario_id"] == args.case]
             for row in rows:
@@ -294,7 +304,7 @@ def main():
                 if item.get("identities"):
                     identity_cache[item["case"]] = item["identities"]
         for family in families:
-            rows, listed = list_family(args, family)
+            rows, listed = selected_families[family]
             if args.case:
                 rows = [row for row in rows if row["scenario_id"] == args.case]
             for row in rows:
@@ -354,7 +364,7 @@ def main():
         _write(output / "verification-ledger.json", proofs)
 
     terminal = {
-        "issue": 54,
+        "issue": [74, 75] if args.checkpoint else 54,
         "performance_cases": len(inventory["performance_cases"]),
         "proof_definitions": len(inventory["proof_cases"]),
         "mismatches": inventory["mismatches"],
@@ -371,6 +381,10 @@ def main():
         )
     _write(output / "terminal-assessment.json", terminal)
     print(json.dumps(terminal, sort_keys=True), flush=True)
+    if args.checkpoint:
+        failed_perf = any(item.get("status") != "PASS" for item in ledger)
+        failed_proofs = any(item.get("status") != "PASS" and item.get("exception") != "duration-incompatible" for item in proofs)
+        return int(bool(inventory["mismatches"]) or failed_perf or failed_proofs)
     return 0
 
 
