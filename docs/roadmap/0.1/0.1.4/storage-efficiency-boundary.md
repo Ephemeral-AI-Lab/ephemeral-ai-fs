@@ -42,6 +42,31 @@ files. Required SQLite journals/sidecars, spools, and temporary space must be
 accounted for in their declared scopes; they must not conceal retained storage
 or become an unacknowledged external durable object store.
 
+## First-design execution boundary: synchronous and blocking
+
+The owner prefers a fast synchronous pipeline for the first design. Storage
+encoding selected for a checkpoint must finish before Commit acknowledges it;
+no background encoder, packer, or later compaction pass may be required to
+achieve that checkpoint's reported storage efficiency.
+
+Include the work wherever it occurs in the declared foreground lifecycle. Work
+performed during mutation must not disappear from accounting because the final
+Commit call is short. Synchronous completion does not mean holding a SQLite
+write transaction during all preparation, nor does it imply stronger fsync or
+power-loss durability guarantees.
+
+Prefer incremental work on newly admitted content and required metadata. This
+boundary does not require rewriting or globally repacking all retained history
+on every Commit. Any bounded base search, compression, or pack construction
+selected later must fit the agreed foreground budget. Internal parallel work is
+not prohibited, but required work must complete before acknowledgement and its
+resources must be counted.
+
+Measure the primary retained footprint at acknowledgement under this policy.
+Do not substitute a separately compacted footprint for it. Future maintenance
+or reclamation remains a separately scoped decision; it must not be used to
+hide costs or rescue the first design's storage claim.
+
 ## Research candidates, not implementation commitments
 
 | Area | Question |
