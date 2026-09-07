@@ -472,7 +472,10 @@ The matched historical control reports 940,310,528 allocated LayerFS bytes,
 799,638,421 canonical LayerFS bytes alone are about 14.19 times delta-packed Git;
 even eliminating all noncanonical allocation cannot achieve that objective.
 Compression/delta opportunity is material, but online shallow hints may miss Git's
-bases/chains and force more anchors. See [evidence](evidence.md) for immutable
+bases/chains and force more anchors. The owner's objective is to get sufficiently
+close to matched Git allocation with a worthwhile storage/latency tradeoff; exact
+parity is not required, and its impossibility has not been established. No numerical
+closeness tolerance is assigned here. See [evidence](evidence.md) for immutable
 sources and candidate-specific qualifications; no new ratios are predicted here.
 
 Git retains selected contents, paths, executable bits and symlinks, not all LayerFS
@@ -503,9 +506,15 @@ memory instead of inferring capacity from LLM delay.
 The owner may accept about 50% more elapsed time for genuinely Git-comparable
 allocation, but rejects that slowdown for only 10% less storage. This is no blanket
 allowance for each operation, read latency, Init throughput or resource use. No
-1.25x Git tolerance is adopted. Actual allocation, foreground latency, queue time,
-read behavior and CPU/memory/I/O qualification remain unavailable until separately
-authorized evidence. The existing boundary/correctness checklist follows unchanged
+1.25x Git tolerance is adopted. Manageable read/write overhead is a moderately confident design expectation for
+normal small-edit agent workloads: exact reuse avoids unchanged work, codecs run
+outside Store serialization, and redundant copies/hashes are removed. Group/base
+reads and new-content encoding still add costs that may or may not be offset by
+less I/O or fewer admission phases. Actual allocation, foreground latency, queue
+time, read behavior and CPU/memory/I/O qualification remain **not yet measured**
+until separately authorized evidence. This is not a prediction of unacceptable
+overhead. Aggregate capacity remains uncertain until workload and summed service
+demand are known; no single-agent rate establishes machine capacity. The existing boundary/correctness checklist follows unchanged
 in scope; this revision does not design or run its verification.
 
 ## 12. Boundary and correctness checklists

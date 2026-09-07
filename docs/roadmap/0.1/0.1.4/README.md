@@ -30,7 +30,9 @@ SQLite publication path used by namespace initialization and Workspace Commit.
 Preserve correctness, ordinary and historical reads, and demonstrated operation
 performance. Workspaces per tool call are an expected agent usage flow. The
 proposal targets that outcome without claiming measured qualification.
-No speedup, storage ratio, or universal advantage over Git is promised.
+The storage objective is to get sufficiently close to matched Git allocation
+with a worthwhile storage/latency tradeoff; exact parity is not required or ruled
+out. No speedup, storage ratio, or universal advantage over Git is promised.
 
 ## Research boundary
 

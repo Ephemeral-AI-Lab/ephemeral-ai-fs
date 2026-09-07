@@ -116,11 +116,27 @@ or higher memory allowance is justified merely to make implementation convenient
 | Bounded ownership and cost mechanisms | **High design confidence, not a resource qualification:** encoded/decoded/canonical/count/work/resident limits and lock lifetimes are explicit; adversarial retry and public output sums are disclosed; actual allocator/caller integration remains implementation work |
 | Minimal final architecture | **High design confidence:** one replacement object admission/access path, existing coordination/spools/caches and explicit deletion scope; no second service, encoder family or small-file backend |
 | Cloud evolution seams | **High confidence in absence of the identified format dead ends:** portable IDs/framing, translated manifest and enumerable physical closure; actual cloud topology, authorization and operation costs remain future work |
-| Material storage improvement | **Medium empirical confidence:** historical data supports compression opportunity, but no new-format candidate exists |
-| Git-comparable retained allocation | **Low empirical confidence:** online shallow similarity and index/anchor overhead have not been measured |
-| Acceptable read/write/aggregate-load overhead | **Low empirical confidence:** finite mechanisms are specified, but latency, throughput, queueing and resource consumption are unmeasured |
+| Material storage improvement | **Moderate expectation from historical evidence:** compression opportunity is substantial, but the proposed candidate has not been measured |
+| Getting close to matched Git allocation | **Not yet measured:** the objective is sufficiently close allocation for a worthwhile storage/latency tradeoff, not exact parity; online shallow similarity and index/anchor costs remain unknown |
+| Normal small-edit agent read/write overhead | **Moderately confident design expectation:** exact CAS/COW reuse avoids unchanged work; codec/base work is bounded and outside Store serialization; actual net latency remains unmeasured |
+| Aggregate-load capacity | **Uncertain pending workload and service-demand evidence:** multiple projects/agents add CPU, I/O, memory and serialized work; the individual call-rate expectation is not a Store ceiling |
+| Particular latency, throughput or resource result | **Not yet measured:** no candidate result establishes a numerical regression, capacity or acceptance claim |
+
+“Not yet measured” does not mean overhead is expected to be unacceptable. The
+revised architecture gives high confidence that avoidable serialization is removed
+and codec work has explicit bounds. Manageable overhead is a reasonable expectation
+for normal small-edit agent workloads, without guaranteeing it. On reads, group
+and base decoding add work while compression can reduce physical I/O and the
+replacement removes redundant copies/hashes. On writes, unchanged content is reused
+while new content pays bounded compression and optional delta preparation. Their
+net elapsed cost has not been established. Aggregate capacity depends on the sum
+of service demand across calls and Stores, not LLM delay alone.
+
+Likewise, Git parity has neither been demonstrated nor ruled out. The owner's
+objective is getting sufficiently close with an acceptable storage/latency tradeoff;
+no exact-parity requirement or numerical closeness tolerance is introduced.
 
 The documents now support a much stronger architectural assessment. They do not
-justify a very-high empirical rating, implementation approval, or a promise of
-Git parity. The next conversation is the remaining owner policy and, separately,
+justify a very-high empirical rating, implementation approval, or a promised ratio.
+The next conversation is the remaining owner policy and, separately,
 the deferred evaluation/verification definitions.
