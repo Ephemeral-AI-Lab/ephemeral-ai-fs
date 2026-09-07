@@ -76,6 +76,11 @@ the proposed final module tree, change/deletion ownership and staged rollout. It
 only executable verification is the three agreed development smokes; this planning
 change runs nothing and does not authorize migration or full release qualification.
 
+Use the [implementation handoff prompt](implementation-handoff-prompt.md) to assign
+the implementation with persistent milestone/smoke/fix iteration, a joint storage/
+speed completion contract and explicit evidence limits. Creating the prompt does
+not start that work or approve the pending compatibility policy.
+
 Use the [design-review prompt](design-review-prompt.md) for an independent
 review of clarity, storage/speed tradeoffs, aggregate multi-project load, future
 cloud compatibility, and minimal final components and operation paths.
