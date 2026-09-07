@@ -115,7 +115,9 @@ is closed. The [original planning checklist](planning-history.md) is archival.
 
 ## Next scope
 
-[v0.1.4](../0.1.4/README.md) owns multi-Layer/multi-Branch history, Fork, Add, Diff,
+[v0.1.4](../0.1.4/README.md) prioritizes storage efficiency through the shared
+Init/Commit pipeline. The previously drafted multi-history expansion moves to
+[v0.1.5](../0.1.5/README.md), which owns multi-Layer/multi-Branch history, Fork, Add, Diff,
 conflicts, fan-out and broader history-query scaling. Additional FUSE/Git
 optimization or extended endurance qualification is follow-up work; it does not
 reopen this completed checkpoint or turn unmet stretch targets into passes.

@@ -32,8 +32,9 @@ explicit-End architecture.
 - [x] Complete the namespace matrix in v0.1.1.
 - [x] Adapt `fs-bench-pro`, implement universal regular-file editing, and
   complete the same-count, count-changing, and Store-footprint work in v0.1.2.
-- [x] Complete the v0.1.3 Workspace, single-Branch dedup history and routine reliability checkpoint; retain its explicit extended-coverage exclusions.
-- [ ] Complete multi-Layer/multi-Branch history coverage in v0.1.4.
+- [x] Complete the v0.1.3 benchmark checkpoint; see its [report](0.1/0.1.3/checkpoint-evidence/report.md) for coverage, target misses, and exclusions.
+- [ ] Improve retained storage efficiency in [v0.1.4](0.1/0.1.4/README.md), preserving checkpoint behavior.
+- [ ] Complete multi-Layer/multi-Branch history coverage in v0.1.5.
 - [ ] Carry the append-only registered matrix through 1.0.0.
 
 New projections, platforms, remote topology, or incompatible contracts do not
@@ -142,11 +143,21 @@ exact-head CI and executed live Docker checks.
 - [x] Close the checkpoint with unmet latency targets and optional extended
   coverage explicitly recorded; no release tag or broader durability claim is implied.
 - [x] Leave multi-Branch sharing, Add, multi-Layer Diff, conflicts and fan-out to
-  v0.1.4. Further FUSE/Git optimization remains follow-up work.
+  v0.1.5. Further FUSE/Git optimization remains follow-up work.
 
-## Draft compatibility-preserving 0.1.4 work
+## Planned 0.1.4 storage-efficiency work
 
-The [0.1.4 README](0.1/0.1.4/README.md) adds multi-Layer, multi-Branch, and
+The [0.1.4 plan](0.1/0.1.4/README.md) prioritizes economical retained tool-call
+states while preserving correctness and measured checkpoint behavior.
+[Issue #72](https://github.com/Ephemeral-AI-Lab/layerfs/issues/72) and the
+[evidence index](0.1/0.1.4/evidence.md) support the priority;
+[issue #18](https://github.com/Ephemeral-AI-Lab/layerfs/issues/18) tracks storage
+planning. Optimization approaches and numerical gates will be discussed later.
+Existing compatibility requirements remain unchanged.
+
+## Draft compatibility-preserving 0.1.5 work
+
+The [0.1.5 README](0.1/0.1.5/README.md) adds multi-Layer, multi-Branch, and
 history-depth evidence without changing the established product architecture.
 
 - [ ] Measure bounded Commit-history depths and Branch fan-out profiles.

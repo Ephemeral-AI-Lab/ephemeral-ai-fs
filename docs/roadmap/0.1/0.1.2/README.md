@@ -69,7 +69,9 @@ The namespace and Store supporting families have fresh release-source
 measurements and separate passing verification, recorded in the
 [supporting report](../../../../release-notes/0.1.2/supporting-benchmarks.md).
 Empirical edit claims stop at 500 MiB, with no 100 GiB synthetic or extrapolated
-claim. #18 remains far-future unscheduled storage-alternative exploration.
+claim. #18 was deferred at this closeout; its current planning status is now
+[v0.1.4 storage efficiency](../0.1.4/README.md). The retained v0.1.2 evidence
+and acceptance disposition are unchanged.
 
 ## Completion
 
