@@ -487,7 +487,7 @@ fn fast_verify_branch(
     certificate: &super::workspace_verify::FastCertificate,
     root: &Path,
     container: &ContainerId,
-) -> AnyResult<()> {
+) -> AnyResult<BTreeMap<String, layerfs_content::ObjectId>> {
     let expected = registry::expected(case, seed, step)?;
     let empty = [Entry::directory(".")];
     let before = if registry::is_import(case) {
@@ -593,7 +593,7 @@ fn fast_verify_branch(
         }
     }
     client.end_workspace_session(session.id, EndWorkspaceMode::Clean)?;
-    Ok(())
+    Ok(snapshot.file_roots)
 }
 
 fn qualify_fast_input(root: &Path, case: &Case, seed: u8, evidence: &Path) -> AnyResult<()> {
@@ -2119,7 +2119,7 @@ fn run_case(
                 if reopened.pin_branch(base)?.root != genesis_root.ok_or("history genesis root")? {
                     return Err("fast history genesis identity".into());
                 }
-                fast_verify_branch(
+                let genesis_files = fast_verify_branch(
                     &reopened,
                     &client,
                     base,
@@ -2132,6 +2132,14 @@ fn run_case(
                     &container,
                 )?;
                 observed(&client, &mut verifier_operation)?;
+                let steps = workload_source::dedup_branch_history::verification_steps(case);
+                let mut recurring_roots = BTreeMap::new();
+                if case.kind == "recurring" {
+                    recurring_roots.insert(
+                        0,
+                        genesis_files[&workload_source::dedup_workloads::shard_path(192)],
+                    );
+                }
                 for (offset, commit_id) in history.iter().enumerate() {
                     let record = &records[commit_id];
                     if record.parent_commit_id
@@ -2143,6 +2151,10 @@ fn run_case(
                     {
                         return Err("fast history parent topology".into());
                     }
+                    let step = offset + 1;
+                    if !steps.contains(&step) {
+                        continue;
+                    }
                     let fork = client.fork_branch(
                         EntityName::new(format!("fast-history-{}", offset + 1))?,
                         LocalForkSource::Branch {
@@ -2150,7 +2162,7 @@ fn run_case(
                             commit_id: *commit_id,
                         },
                     )?;
-                    fast_verify_branch(
+                    let files = fast_verify_branch(
                         &reopened,
                         &client,
                         fork,
@@ -2162,12 +2174,31 @@ fn run_case(
                         root,
                         &container,
                     )?;
+                    if case.kind == "metadata" && files != genesis_files {
+                        return Err("sampled metadata history changed file content roots".into());
+                    }
+                    if case.kind == "recurring" {
+                        let file_root = files[&workload_source::dedup_workloads::shard_path(192)];
+                        if recurring_roots
+                            .insert(step % 2, file_root)
+                            .is_some_and(|old| old != file_root)
+                        {
+                            return Err(
+                                "sampled recurring history changed A/B content roots".into()
+                            );
+                        }
+                    }
                     observed(&client, &mut verifier_operation)?;
                 }
                 emit(
                     "fast-history-complete",
                     &[
-                        ("snapshot_count", (history.len() + 1).to_string()),
+                        ("snapshot_count", steps.len().to_string()),
+                        ("retained_snapshot_count", (history.len() + 1).to_string()),
+                        ("verified_steps", format!("{steps:?}")),
+                        ("coverage_schema", quote("checkpoint-fast-v1")),
+                        ("full_history_payload_verified", (steps.len() == history.len() + 1).to_string()),
+                        ("omissions", quote("unselected historical snapshot content; exhaustive historical object/storage census")),
                         ("commit_count", history.len().to_string()),
                         ("topology_status", quote("pass")),
                         ("exhaustive_object_union_status", quote("deferred_phase2")),

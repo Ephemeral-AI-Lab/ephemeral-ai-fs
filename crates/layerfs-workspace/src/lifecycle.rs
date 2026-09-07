@@ -100,6 +100,10 @@ impl Workspace {
         ) {
             crate::changes::inject_candidate_failure_once();
         }
+        // Streaming admission occurs while constructing files, before the final
+        // candidate is returned to the Store publication entrypoint.
+        #[cfg(feature = "test-instrumentation")]
+        layerfs_layerstack_store::verification_candidate(self.branch_id, 0);
         let generation = if let Some(remote) = &self.remote {
             remote
                 .backing
@@ -718,7 +722,16 @@ impl Workspaces {
         {
             return Err(WorkspaceError::InvalidExecution);
         }
-        crate::projection::pause(&worker)?;
+        // A failed resume may already have ended the projection. Its control
+        // channel cannot be paused again; attach below creates a fresh owner.
+        let attached = worker
+            .projection_handle
+            .lock()
+            .map_err(|_| WorkspaceError::WorkspaceBusy)?
+            .is_some();
+        if attached {
+            crate::projection::pause(&worker)?;
+        }
         let _quiesced = worker.quiesce()?;
         crate::projection::end(&worker)?;
         {
@@ -903,7 +916,12 @@ impl Workspaces {
         {
             return Err(WorkspaceError::InvalidPlacement);
         }
-        crate::projection::pause(&worker)?;
+        // Discard must remain usable after a backing write failure. FREEZE
+        // flushes pending bytes and rejects a failed owner; shutdown below
+        // closes admission and releases those bytes without publishing them.
+        if mode == EndWorkspaceMode::Clean {
+            crate::projection::pause(&worker)?;
+        }
         let _quiesced = match worker.quiesce() {
             Ok(quiesced) => quiesced,
             Err(error) => {

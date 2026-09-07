@@ -3816,9 +3816,15 @@ fn consume_checked_owned_page(
     let transaction =
         connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let begin_ns = elapsed_ns(begin_started);
+    #[cfg(feature = "test-instrumentation")]
+    crate::schema::verification_store_checkpoint(
+        crate::schema::VerificationStoreFault::LaterAdmissionBatch,
+    )?;
     let insert = insert_checked_object_batch(&transaction, &batch, statement_number, &mut |_| {})?;
     let commit_started = Instant::now();
     transaction.commit()?;
+    #[cfg(feature = "test-instrumentation")]
+    crate::schema::verification_early_committed();
     Ok(AdmissionBatchMetrics {
         insert,
         begin_ns,

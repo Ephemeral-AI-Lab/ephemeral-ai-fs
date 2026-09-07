@@ -290,6 +290,14 @@ pub struct OperationCut {
     _writeback: OwnedRwLockWriteGuard<()>,
 }
 
+impl OperationCut {
+    /// Admit folio reads/writeback during cache reconciliation while keeping
+    /// namespace/size mutations excluded until the caller drops the guard.
+    pub(crate) fn reopen_writeback(self) -> OwnedRwLockWriteGuard<()> {
+        self._ordinary
+    }
+}
+
 impl OperationGate {
     #[cfg(any(
         test,
@@ -376,7 +384,17 @@ mod tests {
                     .await
                     .is_err()
             );
-            drop(cut);
+            let ordinary = cut.reopen_writeback();
+            let laundering = tokio::time::timeout(Duration::from_secs(2), gate.enter(true))
+                .await
+                .unwrap();
+            assert!(
+                tokio::time::timeout(Duration::from_millis(10), gate.enter(false))
+                    .await
+                    .is_err()
+            );
+            drop(laundering);
+            drop(ordinary);
             let _continued = tokio::time::timeout(Duration::from_secs(2), gate.enter(false))
                 .await
                 .unwrap();

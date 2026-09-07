@@ -35,7 +35,7 @@ pub(crate) const IDS: [&str; 28] = [
 pub(crate) fn cases() -> Vec<Case> {
     IDS.iter()
         .map(|&kind| Case {
-            id: format!("workspace-{kind}-compact-v2-proof"),
+            id: format!("workspace-{kind}-{}-proof", if kind == "published-presentation-failure" { "smoke-v3" } else { "compact-v2" }),
             family: FAMILY,
             tier: 1,
             kind,
@@ -51,6 +51,15 @@ pub(crate) fn resolve(id: &str) -> Result<Case> {
 pub(crate) fn data(case: &Case, tag: &str, len: u64) -> Result<Content> {
     d::content(FAMILY, &case.id, 1, 0, tag, len)
 }
+pub(crate) fn fixture_for(case: &Case) -> Result<Vec<Entry>> {
+    if case.kind != "published-presentation-failure" {
+        return fixture();
+    }
+    let mut entries = d::directories(&["sentinels", "work", "work/a"]);
+    entries.push(Entry::file("sentinels/witness.dat", data(case, "witness", 4096)?));
+    Ok(entries)
+}
+
 pub(crate) fn fixture() -> Result<Vec<Entry>> {
     let mut rows = d::directories(&[
         "sentinels",
@@ -115,7 +124,7 @@ fn remap(map: &mut BTreeMap<String, Entry>, from: &str, to: &str) {
     }
 }
 pub(crate) fn expected(case: &Case, state: &str, ordinal: u64) -> Result<Vec<Entry>> {
-    let mut m: BTreeMap<_, _> = fixture()?
+    let mut m: BTreeMap<_, _> = fixture_for(case)?
         .into_iter()
         .map(|e| (e.path.clone(), e))
         .collect();
@@ -320,11 +329,14 @@ pub(crate) fn self_check() -> Result<()> {
             != 10
         || rows
             .iter()
-            .any(|case| !case.id.ends_with("-compact-v2-proof"))
+            .any(|case| !case.id.ends_with(if case.kind == "published-presentation-failure" { "-smoke-v3-proof" } else { "-compact-v2-proof" }))
     {
         return Err("reliability compact fixture contract".into());
     }
     for c in rows {
+        if c.kind == "published-presentation-failure" && super::workspace_common::validate_entries(&fixture_for(&c)?)? != 4096 {
+            return Err("recovery smoke witness size".into());
+        }
         let expected = expected(&c, "done", 1)?;
         if super::workspace_common::validate_entries(&expected)? > 50 * d::MIB
             || expected

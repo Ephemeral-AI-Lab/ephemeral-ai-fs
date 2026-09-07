@@ -54,8 +54,8 @@ pub use layerfs_content::filesystem::{
 pub use objects::{read_batch_counters, reset_read_batch_counters, ReadBatchCounters};
 #[cfg(feature = "test-instrumentation")]
 pub use schema::{
-    arm_verification_store_fault, take_verification_store_fault_receipt, VerificationStoreFault,
-    VerificationStoreFaultReceipt,
+    arm_verification_store_fault, take_verification_store_fault_receipt, verification_candidate,
+    VerificationStoreFault, VerificationStoreFaultReceipt,
 };
 #[cfg(feature = "test-instrumentation")]
 pub use schema::{reset_sql_trace, sql_trace};

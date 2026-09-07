@@ -45,6 +45,7 @@ struct Owner {
     directories: Mutex<HashMap<NodeId, DirectoryCookies>>,
     ranges: Mutex<HashMap<BackingId, BackingRef>>,
     edit: Mutex<Option<PendingSplices>>,
+    kernel_edit: Mutex<Option<Arc<KernelEdit>>>,
     gate: OperationGate,
     writes: crate::write_metrics::AtomicFuseWriteMetrics,
     reads: crate::write_metrics::AtomicFuseReadMetrics,
@@ -85,6 +86,22 @@ struct PendingSplices {
     cache_ranges: Vec<std::ops::Range<u64>>,
     cut: crate::live_runtime::OperationCut,
     _charge: crate::live_runtime::LiveReservation,
+}
+
+struct KernelEdit {
+    node: NodeId,
+    file: layerfs_workspace_core::FileData,
+    ranges: Vec<std::ops::Range<u64>>,
+    _charge: crate::live_runtime::LiveReservation,
+}
+
+struct KernelEditGuard<'a>(&'a Mutex<Option<Arc<KernelEdit>>>);
+impl Drop for KernelEditGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut edit) = self.0.lock() {
+            edit.take();
+        }
+    }
 }
 
 struct DirectoryCookies {
@@ -554,6 +571,7 @@ impl LiveOwner {
             directories: Default::default(),
             ranges: Default::default(),
             edit: Default::default(),
+            kernel_edit: Default::default(),
             gate: Default::default(),
             cut: Default::default(),
             install: Default::default(),
@@ -835,6 +853,46 @@ impl LiveOwner {
         }
         let _order = self.ordered(node).await?;
         self.exclude_prefill(node).await?;
+        let acknowledged = bytes.len();
+        let edit = self
+            .0
+            .kernel_edit
+            .lock()
+            .map_err(|_| PortError::Io)?
+            .clone();
+        let reconciled;
+        let bytes = if let Some(edit) = edit.filter(|edit| edit.node == node) {
+            // A queued dirty folio can contain pre-SDK bytes even though the
+            // live view is installed. Preserve the SDK ranges while laundering
+            // that folio; unrelated mapped writes remain in the incoming bytes.
+            let len = match &edit.file {
+                layerfs_workspace_core::FileData::Base { len, .. } => *len,
+                layerfs_workspace_core::FileData::Edited { pieces, .. } => pieces.len(),
+            };
+            let count = bytes.len().min(len.saturating_sub(offset) as usize);
+            let mut patched = bytes[..count].to_vec();
+            for range in &edit.ranges {
+                let start = offset.max(range.start);
+                let end = (offset + count as u64).min(range.end);
+                if start < end {
+                    let replacement = self
+                        .read_file(&edit.file, start, (end - start) as usize)
+                        .await?;
+                    if replacement.len() != (end - start) as usize {
+                        return Err(PortError::Io);
+                    }
+                    patched[(start - offset) as usize..(end - offset) as usize]
+                        .copy_from_slice(&replacement);
+                }
+            }
+            reconciled = patched;
+            &reconciled[..]
+        } else {
+            bytes
+        };
+        if bytes.is_empty() {
+            return Ok(acknowledged);
+        }
         let mut window = self.0.append.lock().await;
         if window
             .as_ref()
@@ -955,7 +1013,7 @@ impl LiveOwner {
             .writes
             .live_edit_ns
             .fetch_add(ns(applying), Ordering::Relaxed);
-        result
+        result.map(|_| acknowledged)
     }
 
     async fn flush_append(&self, window: &mut Option<AppendWindow>) -> PortResult<()> {
@@ -2364,9 +2422,18 @@ impl LiveOwner {
                     Data::File(file) => file.clone(),
                     _ => return Err(PortError::Invalid),
                 };
-                // Queued post-flush faults must read the installed view before
-                // notification can wait for their locked kernel folios.
-                drop(pending.cut);
+                // Protect the installed ranges until invalidation has drained
+                // old dirty folios. Reopen folio callbacks, but keep namespace
+                // and size changes excluded until reconciliation completes.
+                *self.0.kernel_edit.lock().map_err(|_| PortError::Io)? =
+                    Some(Arc::new(KernelEdit {
+                        node,
+                        file: file.clone(),
+                        ranges: pending.cache_ranges.clone(),
+                        _charge: pending._charge,
+                    }));
+                let _ordinary = pending.cut.reopen_writeback();
+                let _kernel_edit = KernelEditGuard(&self.0.kernel_edit);
                 #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
                 if let Some(notifier) = self.0.notifier.get().cloned() {
                     let updated = async {
@@ -2948,6 +3015,112 @@ mod immutable_acquisition_tests {
             directory.base = None;
         }
         owner
+    }
+
+    #[test]
+    fn stale_folio_preserves_sdk_ranges_and_cannot_regrow_truncated_tail() {
+        let runtime = LiveRuntime::new().unwrap();
+        let handler = Arc::new(|request: &[u8]| match request {
+            [wire::SEED] => Ok(seed()),
+            [wire::RESERVE, ..] => {
+                let mut reply = Vec::new();
+                for value in [7, 0, 1024 * 1024] {
+                    wire::u64_out(&mut reply, value);
+                }
+                Ok(reply)
+            }
+            _ => Err(PortError::Io),
+        });
+        let owner = runtime
+            .block_on(LiveOwner::local(
+                handler,
+                Arc::new(|_| Ok(())),
+                runtime.scheduler(),
+            ))
+            .unwrap();
+        if let Data::Directory(directory) =
+            &mut owner.state().unwrap().nodes.get_mut(&ROOT).unwrap().data
+        {
+            directory.base = None;
+        }
+        let node = owner.create_file(ROOT, b"edited", 0o600).unwrap().node;
+        let file = {
+            let mut state = owner.state().unwrap();
+            let prepared = state
+                .prepare_splices(
+                    node,
+                    vec![(
+                        0,
+                        0,
+                        Some(Piece::Inline {
+                            bytes: Arc::from(&b"ASB"[..]),
+                            offset: 0,
+                            len: 3,
+                        }),
+                    )],
+                )
+                .unwrap();
+            state.apply_edit(prepared).unwrap();
+            let Data::File(file) = &state.nodes[&node].data else {
+                panic!("file")
+            };
+            file.clone()
+        };
+        *owner.0.kernel_edit.lock().unwrap() = Some(Arc::new(KernelEdit {
+            node,
+            file,
+            ranges: vec![1..2],
+            _charge: owner.0.scheduler.reserve_live(1024).unwrap(),
+        }));
+        let guard = KernelEditGuard(&owner.0.kernel_edit);
+        assert_eq!(
+            runtime
+                .block_on(owner.write_owned(node, 0, b"Q0Z"))
+                .unwrap(),
+            3
+        );
+        assert_eq!(
+            runtime.block_on(owner.read_owned(node, 0, 3)).unwrap(),
+            b"QSZ"
+        );
+        drop(guard);
+        runtime.block_on(owner.write_owned(node, 1, b"N")).unwrap();
+        assert_eq!(
+            runtime.block_on(owner.read_owned(node, 0, 3)).unwrap(),
+            b"QNZ"
+        );
+        let file = {
+            let mut state = owner.state().unwrap();
+            let prepared = state.prepare_splices(node, vec![(2, 1, None)]).unwrap();
+            state.apply_edit(prepared).unwrap();
+            let Data::File(file) = &state.nodes[&node].data else {
+                panic!("file")
+            };
+            file.clone()
+        };
+        *owner.0.kernel_edit.lock().unwrap() = Some(Arc::new(KernelEdit {
+            node,
+            file,
+            ranges: vec![2..u64::MAX],
+            _charge: owner.0.scheduler.reserve_live(1024).unwrap(),
+        }));
+        let guard = KernelEditGuard(&owner.0.kernel_edit);
+        assert_eq!(
+            runtime
+                .block_on(owner.write_owned(node, 0, b"abcde"))
+                .unwrap(),
+            5
+        );
+        assert_eq!(
+            runtime.block_on(owner.read_owned(node, 0, 9)).unwrap(),
+            b"ab"
+        );
+        drop(guard);
+        runtime.block_on(owner.write_owned(node, 2, b"M")).unwrap();
+        assert_eq!(
+            runtime.block_on(owner.read_owned(node, 0, 9)).unwrap(),
+            b"abM"
+        );
     }
 
     #[test]
