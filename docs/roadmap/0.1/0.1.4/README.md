@@ -28,6 +28,14 @@ preserving correctness, historical readability, and the demonstrated localized
 checkpoint behavior. The direction is an outcome, not a selected storage design.
 No speedup, storage ratio, or universal advantage over Git is promised.
 
+## Research boundary
+
+The [storage-efficiency boundary](storage-efficiency-boundary.md) records the
+SQLite-only durable storage constraint, conditional speed/storage tradeoffs,
+and preference for a new benchmark family. The benchmark definition and test
+environment are placeholders for a separate discussion. No optimization
+implementation is selected.
+
 ## Supporting evidence and tracking
 
 - [Issue #18 — v0.1.4 storage-efficiency planning](https://github.com/Ephemeral-AI-Lab/layerfs/issues/18)
@@ -52,8 +60,9 @@ No speedup, storage ratio, or universal advantage over Git is promised.
 - Discuss optimization approaches, format compatibility, numerical budgets, and
   implementation/release gates separately before implementation begins.
 
-This document selects no backend, encoding, packing layout, compaction policy,
-chunk profile, or small-file representation. It starts no implementation or
+The durable storage boundary is SQLite-only; packs inside SQLite are permitted
+as research candidates. No encoding, packing layout, compaction policy, chunk
+profile, or small-file representation is selected. It starts no implementation or
 benchmark campaign and does not import historical footprint targets as new gates.
 
 ## Follow-up planning

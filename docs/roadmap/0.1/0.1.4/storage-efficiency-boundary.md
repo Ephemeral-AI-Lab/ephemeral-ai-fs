@@ -1,0 +1,158 @@
+# v0.1.4 storage-efficiency research boundary
+
+Status: owner-directed planning boundary, 2026-09-08. This records storage scope
+and tradeoff guidance. It is not a benchmark contract, selected implementation,
+or permission to collect qualification samples. Benchmark and test-environment
+sections are deliberately placeholders for the next discussion.
+
+Related: [v0.1.4 scope](README.md), [supporting evidence](evidence.md),
+[issue #18](https://github.com/Ephemeral-AI-Lab/layerfs/issues/18), and
+[issue #72](https://github.com/Ephemeral-AI-Lab/layerfs/issues/72).
+
+## Objective
+
+Make retaining filesystem states at agent tool-call boundaries economical while
+preserving most of LayerFS's demonstrated checkpoint performance, correctness,
+and historical readability. Storage efficiency and operation cost must be
+assessed together. No universal advantage over Git is claimed.
+
+The broader multi-agent/multi-Branch scaling campaign remains v0.1.5. Required
+correctness of existing shared-object and Branch behavior is not deferred.
+
+## Durable storage boundary
+
+All authoritative durable Store content remains inside SQLite for this phase:
+Branches, Commits, roots, object identities, lookup information, and stored
+object representations. Packs are acceptable candidates if stored inside
+SQLite, such as pack BLOBs. External durable pack files and a second durable
+object backend are out of scope.
+
+```text
+SQLite Store
+  ├── Branches, Commits, roots
+  ├── Object identities and lookup information
+  └── Object representations
+        ├── Individual values, if selected
+        └── Packs inside SQLite, if selected
+```
+
+This boundary selects no schema, pack size, encoding, or compaction lifecycle.
+It does not prohibit existing runtime spools or legitimate temporary maintenance
+files. Required SQLite journals/sidecars, spools, and temporary space must be
+accounted for in their declared scopes; they must not conceal retained storage
+or become an unacknowledged external durable object store.
+
+## Research candidates, not implementation commitments
+
+| Area | Question |
+| --- | --- |
+| Compression within SQLite | How much content saving is possible while retaining SQLite publication and stable logical object identities? |
+| Packing inside SQLite | Does grouping encoded objects reduce overhead enough to justify the indexing and lifecycle work? |
+| Delta encoding | Do similar retained versions offer additional savings that justify base selection, reconstruction, and dependency management? |
+| Small-file representation | Does avoiding unnecessary per-file objects or mappings materially reduce overhead? |
+
+These are possible investigations, not four required implementations or a frozen
+execution order. External-pack comparison is excluded by the SQLite-only
+boundary. Algorithm, codec, thresholds, schema, and implementation choices remain
+open. Representation changes require explicit compatibility review rather than
+being treated as physical encoding changes automatically.
+
+## Performance versus storage tradeoff
+
+The owner accepts some performance sacrifice for a substantial storage gain:
+
+- Around 50% more elapsed time can be acceptable if retained storage becomes as
+  efficient as Git under the eventual matched comparison.
+- Around 50% more elapsed time for only 10% less retained allocation is not
+  acceptable.
+- Most of the useful checkpoint performance should be preserved. A 50% increase
+  is a conditional tradeoff example, not a blanket allowance for every operation.
+
+For this discussion, interpret “50% slower” as 1.5 times elapsed latency
+(for example, 4 ms to 6 ms), not half the throughput. Final operation-specific
+limits and aggregation rules remain to be agreed.
+
+Use explicit quantities when the measurement contract is defined:
+
+```text
+storage_reduction = 1 - candidate_allocation / baseline_allocation
+latency_increase = candidate_latency / baseline_latency - 1
+git_storage_multiple = candidate_allocation / matched_git_allocation
+```
+
+The denominator must have a declared, matching scope. Undefined quantities remain
+unavailable with a reason. Retained allocation includes required storage overhead;
+canonical bytes and candidate reuse are separate measurements, not substitutes.
+
+| Outcome | Planning disposition |
+| --- | --- |
+| Modest storage gain with negligible latency impact | Potentially worthwhile if complexity is small |
+| 10% less storage with 50% more elapsed latency | Unacceptable tradeoff |
+| Substantial storage gain with modest latency impact | Worth evaluating against the full set of requirements |
+| Git-comparable retained storage with about 50% more foreground latency | Potentially acceptable, subject to correctness, reads, resources, and the final contract |
+| Greater slowdown or a materially different tradeoff | Requires a separate decision; no blanket authorization |
+| Corruption, lost retained states, weakened acknowledgements, or violation of agreed hard limits | Unacceptable regardless of savings |
+
+“Git-comparable” is deliberately not assigned a numerical tolerance yet. The
+previously suggested 1.25× band was a proposal, not an agreed boundary. No
+historical absolute MB target is adopted as a v0.1.4 gate.
+
+## Accounting and behavioral safeguards
+
+- Compare unchanged LayerFS and the candidate under the same eventual operation
+  and environment contract. Keep Git's retained-history and workflow comparisons
+  separately scoped and explicitly matched where a comparison is claimed.
+- Report foreground checkpoint work, complete tool-call lifecycle, and historical
+  reads separately. Do not hide a severe case regression in an aggregate average.
+- Report absolute elapsed time as well as ratios. Numerical latency, tail-latency,
+  resource, and noise/repetition rules remain to be specified.
+- Count immediate storage and any post-maintenance storage separately. Include
+  the CPU, elapsed time, I/O, and peak temporary allocation required to reach the
+  claimed compact state, plus any interference with foreground operations.
+- Preserve public filesystem behavior, historical content, isolation, and
+  authentication. Do not weaken acknowledgement or durability semantics to
+  improve results.
+- Physical encoding should preserve logical object identities. Any schema,
+  canonical representation, or compatibility change needs a separately agreed
+  contract and existing-Store handling before implementation.
+- Preserve historical evidence and failed outcomes. Existing exploratory reports
+  do not qualify a future candidate and must not be relabeled as new samples.
+
+## New benchmark family — placeholder
+
+**Owner preference: create a new benchmark family for this research.** Existing
+families and reports are supporting evidence; they are not automatically the new
+family's benchmark baseline or acceptance population. Existing infrastructure
+may be reused without inheriting old scenario identities or silently changing
+old contracts. Required product regression obligations remain separate.
+
+To discuss next:
+
+- Family name, purpose, exact claim, and scenario IDs: **TBD**.
+- Baseline/candidate revisions and Git comparison scope: **TBD**.
+- Fixtures, file populations, edit schedules, checkpoint counts, and tiers: **TBD**.
+- Public operation surfaces, lifecycle, and timing boundaries: **TBD**.
+- Repetitions, ordering, cache treatment, and decision statistics: **TBD**.
+- Verification coverage, independent oracle, and failure classification: **TBD**.
+- Numerical storage/performance/resource gates and artifact contract: **TBD**.
+
+No earlier proposed family list, tier sequence, repeat count, or latency result
+is adopted here as the new family's specification. Freeze the new contract
+before benchmark implementation or qualification sampling.
+
+## Test environment — placeholder
+
+The environment will be discussed separately. This document specifies no new
+topology, hardware profile, container limits, timeout, or preparation policy.
+Existing repository rules remain in force until explicitly amended; leaving
+this section open does not authorize a conflicting environment.
+
+- Host/container ownership and hardware/runtime identities: **TBD**.
+- Resources, timeouts, measurement coordination, and background activity: **TBD**.
+- Input preparation, transfer, build reuse, cache policy, and sample isolation: **TBD**.
+- Resource sampling, Store/temporary allocation measurement, and cleanup: **TBD**.
+
+## Next decision
+
+Define the new benchmark family and its consistent test environment, then agree
+numerical tradeoff gates before implementing or measuring storage candidates.
