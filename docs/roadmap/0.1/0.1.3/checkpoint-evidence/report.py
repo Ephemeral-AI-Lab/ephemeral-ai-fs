@@ -132,6 +132,8 @@ def derive(campaign, registry):
         if len(samples) != 1:
             errors.append(f'expected exactly one sample: {case}')
             continue
+        if not data or data[-1].get('kind') != 'summary' or data[-1].get('status') != 'PASS':
+            errors.append(f'missing or failed performance completion summary: {case}')
         sample = samples[0]
         identity = sample.get('identities', {})
         identities.add((identity.get('source_identity'), identity.get('product_identity'), identity.get('image')))
@@ -258,7 +260,7 @@ def write(report, output):
         writer.writeheader()
         writer.writerows({**r, **{k: json.dumps(r.get(k), separators=(',', ':')) for k in ('omissions', 'sampled_paths_or_ranges')}} for r in report['verification'])
     text = ['# v0.1.3 benchmark checkpoint', '', f"Status: **{report['status']}**.", '',
-            'One fixed-seed observation per case. Timers retain their family-specific scopes. Setup and verification are separate. Across-case ranges are not latency distributions. See report.json for phases, identities, resources, coverage and evidence hashes.', '',
+            'One fixed-seed observation per case. Timers retain their family-specific scopes. Setup and verification are separate. Across-case ranges are not latency distributions. [JSON report](report.json), [performance CSV](performance.csv), and [verification CSV](verification.csv) contain phases, identities, resources, coverage and evidence hashes.', '',
             '| Family | Performance cases | Performance outcomes | Verification outcomes | Across-case range (ms) |',
             '|---|---:|---|---|---|']
     for family, row in report['families'].items():
@@ -269,7 +271,8 @@ def write(report, output):
             if row['family'] == family:
                 phases = ' / '.join(milliseconds(row.get(key)) for key in ('exec_ns', 'sdk_edit_ns', 'commit_ns'))
                 memory = ' / '.join('—' if row.get(key) is None else f"{row[key] / 2**20:.2f}" for key in ('host_peak_rss_bytes', 'container_peak_bytes'))
-                text.append(f"| {row['case']} | {row['timer']} | {milliseconds(row['elapsed_ns'])} | {phases} | {memory} | {milliseconds(row.get('previous_elapsed_ns'))} | {row['status']} / {row['verification']} | {row.get('target_status', '—')} |")
+                label = f"[{row['case']}](raw/{row['evidence']})" if row.get('evidence') else row['case']
+                text.append(f"| {label} | {row['timer']} | {milliseconds(row['elapsed_ns'])} | {phases} | {memory} | {milliseconds(row.get('previous_elapsed_ns'))} | {row['status']} / {row['verification']} | {row.get('target_status', '—')} |")
     text += ['', 'Historical subsecond bulk targets are separate from the family threshold:']
     for row in report['performance']:
         if row.get('additional_target_assessments'):
@@ -282,7 +285,7 @@ def write(report, output):
             text.append('| ' + row['case'] + ' | ' + ' | '.join(values) + ' |')
     text += ['', 'All Git stage values are milliseconds. Git commit and LayerFS Commit are separate operations.']
     text += ['', '## Verification', '', '| Test | Result | Wall (s) |', '|---|---|---:|']
-    text += [f"| {r['case']} | {r['status']} | {r.get('wall_seconds', '—')} |" for r in report['verification']]
+    text += [f"| " + (f"[{r['case']}](raw/{r['evidence']})" if r.get('evidence') else r['case']) + f" | {r['status']} | {r.get('wall_seconds', '—')} |" for r in report['verification']]
     if report['errors']:
         text += ['', '## Incomplete requirements', ''] + ['- ' + error for error in report['errors']]
     (output / 'report.md').write_text('\n'.join(text) + '\n')

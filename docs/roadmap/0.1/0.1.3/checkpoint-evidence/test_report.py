@@ -28,7 +28,7 @@ class ReportTest(unittest.TestCase):
             }))
             performance = root / 'performance' / family / case / 'perf.jsonl'
             performance.parent.mkdir(parents=True)
-            performance.write_text(json.dumps(sample) + '\n')
+            performance.write_text(json.dumps(sample) + '\n' + json.dumps({'kind': 'summary', 'status': 'PASS'}) + '\n')
             proof = root / 'verification' / family / case / 'verification.json'
             proof.parent.mkdir(parents=True)
             receipt = {**identity, 'image_identity': 'image', 'status': 'PASS', 'cleanup': {'status': 'PASS'}}
