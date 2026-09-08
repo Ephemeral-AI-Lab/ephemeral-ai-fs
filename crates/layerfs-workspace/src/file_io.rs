@@ -672,6 +672,157 @@ fn as_usize(value: u64) -> Result<usize> {
     usize::try_from(value).map_err(|_| StoreError::InvalidInput("file range"))
 }
 
+impl HostSpool {
+    pub(crate) fn reserve_append(
+        &mut self,
+        directory: &Path,
+        bytes: u64,
+        logical_bytes: u64,
+        policy: crate::ResourcePolicy,
+    ) -> Result<(BackingRef, u64)> {
+        if self.bytes.saturating_add(bytes) > policy.max_spool_bytes {
+            self.retire();
+        }
+        policy
+            .check(
+                logical_bytes
+                    .max(self.bytes)
+                    .checked_add(bytes)
+                    .ok_or(StoreError::InvalidInput("workspace spool limit"))?,
+            )
+            .map_err(crate::live_error)?;
+        if let Some(segment) = self.current.and_then(|id| self.segments.get(&id)) {
+            let physical = spool_segment(segment)?;
+            let offset = physical.len.load(Ordering::Relaxed);
+            if offset.saturating_add(bytes) <= physical.capacity {
+                return Ok((segment.clone(), offset));
+            }
+        }
+        self.retire();
+        let started = std::time::Instant::now();
+        let id = self.next_id;
+        self.next_id = id
+            .checked_add(1)
+            .ok_or(StoreError::Integrity("spool segment identity"))?;
+        let segment = BackingRef::new(
+            BackingId(id),
+            SpoolSegment::new(
+                directory,
+                id,
+                SPOOL_SEGMENT_BYTES.max(bytes).min(policy.max_spool_bytes),
+                self.physical.clone(),
+            )?,
+        );
+        self.segments.insert(id, segment.clone());
+        self.current = Some(id);
+        self.note_open(elapsed_ns(started));
+        Ok((segment, 0))
+    }
+
+    pub(crate) fn retire(&mut self) {
+        let started = std::time::Instant::now();
+        let mut scan_ns = 0_u64;
+        let mut retired = 0_u64;
+        self.segments.retain(|id, segment| {
+            let scan_started = std::time::Instant::now();
+            let keep = !segment.is_unique();
+            if !keep {
+                self.bytes = self.bytes.saturating_sub(
+                    spool_segment(segment)
+                        .expect("host segment registry")
+                        .len
+                        .load(Ordering::Relaxed),
+                );
+                if self.current == Some(*id) {
+                    self.current = None;
+                }
+                retired += 1;
+            }
+            scan_ns = scan_ns.saturating_add(elapsed_ns(scan_started));
+            keep
+        });
+        layerfs_layerstack_store::note_workspace_spool_retirement(
+            elapsed_ns(started),
+            scan_ns,
+            retired,
+        );
+    }
+    fn note_open(&mut self, ns: u64) {
+        self.metrics.write_open_count = self.metrics.write_open_count.saturating_add(1);
+        self.metrics.write_ns = self.metrics.write_ns.saturating_add(ns);
+    }
+}
+
+impl HostSpool {
+    pub(crate) fn append(
+        &mut self,
+        backing: &BackingRef,
+        physical_start: u64,
+        bytes: &[u8],
+        #[cfg(feature = "test-instrumentation")] inject_short: bool,
+    ) -> Result<()> {
+        let started = std::time::Instant::now();
+        let appended = bytes.len() as u64;
+        if self.segments.get(&backing.id().0) != Some(backing) {
+            return Err(StoreError::Integrity("spool append ownership"));
+        }
+        let segment = spool_segment(backing)?;
+        if physical_start != segment.len.load(Ordering::Relaxed)
+            || physical_start
+                .checked_add(appended)
+                .is_none_or(|end| end > segment.capacity)
+        {
+            return Err(StoreError::Integrity("spool append range"));
+        }
+
+        segment.check()?;
+        let file = &segment.file;
+        #[cfg(feature = "test-instrumentation")]
+        let append = if inject_short {
+            file.write_all_at(&bytes[..bytes.len() / 2], physical_start)
+                .and_then(|_| Err(std::io::Error::other("injected short spool append")))
+        } else {
+            append_spool(file, bytes, physical_start)
+        };
+        #[cfg(not(feature = "test-instrumentation"))]
+        let append = append_spool(file, bytes, physical_start);
+        segment.observe();
+        if let Err(error) = append {
+            // No visible range references this tail; other files' earlier
+            // bytes in the shared segment must never be truncated.
+            #[cfg(test)]
+            let cleanup = if INJECT_APPEND_CLEANUP_FAILURE.with(|inject| inject.replace(false)) {
+                Err(std::io::Error::other("injected spool rollback failure"))
+            } else {
+                file.set_len(physical_start)
+            };
+            #[cfg(not(test))]
+            let cleanup = file.set_len(physical_start);
+            segment.observe();
+            if cleanup.is_err() {
+                let retained = file.metadata()?.len();
+                let extra = retained
+                    .checked_sub(physical_start)
+                    .ok_or(StoreError::Integrity("spool append cleanup length"))?;
+                segment.len.store(retained, Ordering::Relaxed);
+                self.bytes = self
+                    .bytes
+                    .checked_add(extra)
+                    .ok_or(StoreError::Integrity("spool segment charge"))?;
+                return Err(StoreError::Integrity("spool append cleanup failure"));
+            }
+            return Err(error.into());
+        }
+        segment
+            .len
+            .store(physical_start + appended, Ordering::Relaxed);
+        self.bytes += appended;
+        self.metrics.write_bytes = self.metrics.write_bytes.saturating_add(appended);
+        self.metrics.write_ns = self.metrics.write_ns.saturating_add(elapsed_ns(started));
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1188,156 +1339,5 @@ mod tests {
         assert_eq!(workspace.physical_spool_snapshot().0, Some(0));
         drop(workspace);
         std::fs::remove_dir_all(root).unwrap();
-    }
-}
-
-impl HostSpool {
-    pub(crate) fn reserve_append(
-        &mut self,
-        directory: &Path,
-        bytes: u64,
-        logical_bytes: u64,
-        policy: crate::ResourcePolicy,
-    ) -> Result<(BackingRef, u64)> {
-        if self.bytes.saturating_add(bytes) > policy.max_spool_bytes {
-            self.retire();
-        }
-        policy
-            .check(
-                logical_bytes
-                    .max(self.bytes)
-                    .checked_add(bytes)
-                    .ok_or(StoreError::InvalidInput("workspace spool limit"))?,
-            )
-            .map_err(crate::live_error)?;
-        if let Some(segment) = self.current.and_then(|id| self.segments.get(&id)) {
-            let physical = spool_segment(segment)?;
-            let offset = physical.len.load(Ordering::Relaxed);
-            if offset.saturating_add(bytes) <= physical.capacity {
-                return Ok((segment.clone(), offset));
-            }
-        }
-        self.retire();
-        let started = std::time::Instant::now();
-        let id = self.next_id;
-        self.next_id = id
-            .checked_add(1)
-            .ok_or(StoreError::Integrity("spool segment identity"))?;
-        let segment = BackingRef::new(
-            BackingId(id),
-            SpoolSegment::new(
-                directory,
-                id,
-                SPOOL_SEGMENT_BYTES.max(bytes).min(policy.max_spool_bytes),
-                self.physical.clone(),
-            )?,
-        );
-        self.segments.insert(id, segment.clone());
-        self.current = Some(id);
-        self.note_open(elapsed_ns(started));
-        Ok((segment, 0))
-    }
-
-    pub(crate) fn retire(&mut self) {
-        let started = std::time::Instant::now();
-        let mut scan_ns = 0_u64;
-        let mut retired = 0_u64;
-        self.segments.retain(|id, segment| {
-            let scan_started = std::time::Instant::now();
-            let keep = !segment.is_unique();
-            if !keep {
-                self.bytes = self.bytes.saturating_sub(
-                    spool_segment(segment)
-                        .expect("host segment registry")
-                        .len
-                        .load(Ordering::Relaxed),
-                );
-                if self.current == Some(*id) {
-                    self.current = None;
-                }
-                retired += 1;
-            }
-            scan_ns = scan_ns.saturating_add(elapsed_ns(scan_started));
-            keep
-        });
-        layerfs_layerstack_store::note_workspace_spool_retirement(
-            elapsed_ns(started),
-            scan_ns,
-            retired,
-        );
-    }
-    fn note_open(&mut self, ns: u64) {
-        self.metrics.write_open_count = self.metrics.write_open_count.saturating_add(1);
-        self.metrics.write_ns = self.metrics.write_ns.saturating_add(ns);
-    }
-}
-
-impl HostSpool {
-    pub(crate) fn append(
-        &mut self,
-        backing: &BackingRef,
-        physical_start: u64,
-        bytes: &[u8],
-        #[cfg(feature = "test-instrumentation")] inject_short: bool,
-    ) -> Result<()> {
-        let started = std::time::Instant::now();
-        let appended = bytes.len() as u64;
-        if self.segments.get(&backing.id().0) != Some(backing) {
-            return Err(StoreError::Integrity("spool append ownership"));
-        }
-        let segment = spool_segment(backing)?;
-        if physical_start != segment.len.load(Ordering::Relaxed)
-            || physical_start
-                .checked_add(appended)
-                .is_none_or(|end| end > segment.capacity)
-        {
-            return Err(StoreError::Integrity("spool append range"));
-        }
-
-        segment.check()?;
-        let file = &segment.file;
-        #[cfg(feature = "test-instrumentation")]
-        let append = if inject_short {
-            file.write_all_at(&bytes[..bytes.len() / 2], physical_start)
-                .and_then(|_| Err(std::io::Error::other("injected short spool append")))
-        } else {
-            append_spool(file, bytes, physical_start)
-        };
-        #[cfg(not(feature = "test-instrumentation"))]
-        let append = append_spool(file, bytes, physical_start);
-        segment.observe();
-        if let Err(error) = append {
-            // No visible range references this tail; other files' earlier
-            // bytes in the shared segment must never be truncated.
-            #[cfg(test)]
-            let cleanup = if INJECT_APPEND_CLEANUP_FAILURE.with(|inject| inject.replace(false)) {
-                Err(std::io::Error::other("injected spool rollback failure"))
-            } else {
-                file.set_len(physical_start)
-            };
-            #[cfg(not(test))]
-            let cleanup = file.set_len(physical_start);
-            segment.observe();
-            if cleanup.is_err() {
-                let retained = file.metadata()?.len();
-                let extra = retained
-                    .checked_sub(physical_start)
-                    .ok_or(StoreError::Integrity("spool append cleanup length"))?;
-                segment.len.store(retained, Ordering::Relaxed);
-                self.bytes = self
-                    .bytes
-                    .checked_add(extra)
-                    .ok_or(StoreError::Integrity("spool segment charge"))?;
-                return Err(StoreError::Integrity("spool append cleanup failure"));
-            }
-            return Err(error.into());
-        }
-        segment
-            .len
-            .store(physical_start + appended, Ordering::Relaxed);
-        self.bytes += appended;
-        self.metrics.write_bytes = self.metrics.write_bytes.saturating_add(appended);
-        self.metrics.write_ns = self.metrics.write_ns.saturating_add(elapsed_ns(started));
-        Ok(())
     }
 }
