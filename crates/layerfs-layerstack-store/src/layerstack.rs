@@ -2,8 +2,7 @@ use crate::ids::TypedId;
 use crate::objects::{
     admit_initialization_objects, empty_root, insert_initialization_object_batch,
     insert_initialization_segment_batch, BuiltRoot, CheckedOutputAdmission, DeferredObjectStore,
-    InitializationDirectAdmissionWriter, InitializationSqlPhase, InitializationTaskObjectBuffer,
-    ObjectBuffer, OutputWriterMetrics,
+    InitializationDirectAdmissionWriter, InitializationSqlPhase, ObjectBuffer, OutputWriterMetrics,
 };
 #[cfg(test)]
 use crate::objects::{
@@ -886,7 +885,6 @@ struct DirectWorkerState {
     pair_blocks: Vec<crate::objects::CompactInodePairBlock>,
     pairs: crate::objects::CompactInodePairWriter,
     metadata_cache: layerfs_content::filesystem::PortableMetadataCache,
-    structural_peak_bytes: u64,
 }
 
 struct PreparedDirectWorker {
@@ -1097,18 +1095,12 @@ fn direct_initialize_root_directories_inner(
                 pair_blocks: Vec::new(),
                 pairs: crate::objects::CompactInodePairWriter::new(pair_pending_bytes)?,
                 metadata_cache: Default::default(),
-                structural_peak_bytes: 0,
             })
         },
         |worker, index, task, objects| {
             let pair_checkpoint = worker.pairs.checkpoint();
-            let mut structure = InitializationTaskObjectBuffer::new();
-            let mut import = NativeImport::new_split_with_cache(
-                seed,
-                objects,
-                &mut structure,
-                std::mem::take(&mut worker.metadata_cache),
-            );
+            let mut import = NativeImport::new(seed, objects);
+            import.metadata_cache = std::mem::take(&mut worker.metadata_cache);
             let children = match task {
                 DirectInitializationTask::Directory(task) => import
                     .directory(&task.native, &task.logical, false)
@@ -1150,13 +1142,7 @@ fn direct_initialize_root_directories_inner(
                 }
                 Err(error) => return Err(error),
             };
-            if imported.hard_links.is_empty() {
-                worker.structural_peak_bytes = worker
-                    .structural_peak_bytes
-                    .max(structure.explicit_owned_bytes());
-                objects.note_hash_invocations(structure.hash_invocations());
-                structure.move_into(objects)?;
-            } else {
+            if !imported.hard_links.is_empty() {
                 fallback.store(true, std::sync::atomic::Ordering::Release);
             }
             worker.pair_blocks.push(worker.pairs.block_since(
@@ -1173,7 +1159,6 @@ fn direct_initialize_root_directories_inner(
         },
         |worker| {
             let slab = OutputWriterMetrics {
-                structural_peak_bytes: worker.structural_peak_bytes,
                 producer_files: worker
                     .tasks
                     .iter()
@@ -1199,7 +1184,6 @@ fn direct_initialize_root_directories_inner(
     let prepared = prepared
         .into_iter()
         .map(|(mut worker, mut writer)| {
-            writer.structural_peak_bytes = worker.slab.structural_peak_bytes;
             writer.producer_files = worker.slab.producer_files;
             writer.producer_bytes = worker.slab.producer_bytes;
             worker.slab = writer;
@@ -1807,10 +1791,9 @@ fn finish_parallel_root(
     })
 }
 
-struct NativeImport<'objects, 'structure, S: ObjectStore, T: ObjectStore> {
+struct NativeImport<'objects, S: ObjectStore> {
     seed: [u8; 32],
     objects: &'objects mut S,
-    structure: Option<&'structure mut T>,
     hard_links:
         std::collections::HashMap<(u64, u64), (layerfs_content::tree::inode::InodeId, usize)>,
     records: Vec<Option<ImportedRecord>>,
@@ -1820,12 +1803,11 @@ struct NativeImport<'objects, 'structure, S: ObjectStore, T: ObjectStore> {
     metadata_cache: layerfs_content::filesystem::PortableMetadataCache,
 }
 
-impl<'objects, S: ObjectStore> NativeImport<'objects, 'objects, S, S> {
+impl<'objects, S: ObjectStore> NativeImport<'objects, S> {
     fn new(seed: [u8; 32], objects: &'objects mut S) -> Self {
         Self {
             seed,
             objects,
-            structure: None,
             hard_links: std::collections::HashMap::new(),
             records: Vec::new(),
             scanned_files: 0,
@@ -1834,30 +1816,6 @@ impl<'objects, S: ObjectStore> NativeImport<'objects, 'objects, S, S> {
             metadata_cache: Default::default(),
         }
     }
-}
-
-impl<'objects, 'structure, S: ObjectStore, T: ObjectStore>
-    NativeImport<'objects, 'structure, S, T>
-{
-    fn new_split_with_cache(
-        seed: [u8; 32],
-        objects: &'objects mut S,
-        structure: &'structure mut T,
-        metadata_cache: layerfs_content::filesystem::PortableMetadataCache,
-    ) -> Self {
-        Self {
-            seed,
-            objects,
-            structure: Some(structure),
-            hard_links: std::collections::HashMap::new(),
-            records: Vec::new(),
-            scanned_files: 0,
-            scanned_bytes: 0,
-            source: SourceImportMetrics::default(),
-            metadata_cache,
-        }
-    }
-
     fn portable_metadata(
         &mut self,
         kind: layerfs_content::tree::inode::InodeKind,
@@ -1931,7 +1889,7 @@ impl<'objects, 'structure, S: ObjectStore, T: ObjectStore>
     }
 
     fn finish_compact_with_cache(
-        mut self,
+        self,
         pairs: &mut crate::objects::CompactInodePairWriter,
     ) -> Result<(
         CompactImportedTree,
@@ -1945,10 +1903,8 @@ impl<'objects, 'structure, S: ObjectStore, T: ObjectStore>
             let (inode, record) =
                 record.ok_or(StoreError::Integrity("Layer initialization inode record"))?;
             let canonical = layerfs_content::tree::inode::codec::encode_inode_record(record)?;
-            let record = match self.structure.as_deref_mut() {
-                Some(structure) => structure.put_owned(canonical)?,
-                None => self.objects.put_owned(canonical)?,
-            };
+            // Reference counts are final before inode records enter bounded output.
+            let record = self.objects.put_owned(canonical)?;
             pairs.push(inode, record)?;
         }
         Ok((
@@ -2162,10 +2118,9 @@ impl<'objects, 'structure, S: ObjectStore, T: ObjectStore>
             children.push((name, child_inode));
         }
 
-        let content = match self.structure.as_deref_mut() {
-            Some(structure) => filesystem::build_initial_directory(structure, children)?,
-            None => filesystem::build_initial_directory(self.objects, children)?,
-        };
+        // The directory builder emits only its final reachable nodes. Stream them
+        // through the existing bounded writer instead of retaining the subtree.
+        let content = filesystem::build_initial_directory(self.objects, children)?;
         let metadata_root = self.portable_metadata(
             InodeKind::Directory,
             metadata.permissions().mode(),
@@ -3107,6 +3062,63 @@ mod tests {
         let (expected, files, _) = legacy_directory_root(&source, [29; 32]).unwrap();
         assert_eq!(files, 4_000);
         assert_direct_objects(&store, &direct, &expected);
+
+        drop(expected);
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn nested_mixed_root_streams_structure_without_restarting_import() {
+        let root = temporary("nested-mixed-direct");
+        let source = root.join("source");
+        let nested = source.join("lib/python/site-packages");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(source.join("pyvenv.cfg"), b"python").unwrap();
+        for directory in 0..40 {
+            let path = nested.join(format!("d{directory:02}"));
+            std::fs::create_dir(&path).unwrap();
+            for file in 0..100_u64 {
+                std::fs::write(path.join(format!("f{file:03}")), file.to_be_bytes()).unwrap();
+            }
+        }
+        std::os::unix::fs::symlink("../..", nested.join("python-link")).unwrap();
+        let store = LayerStackStore::create(root.join("store.sqlite")).unwrap();
+        let direct = direct_initialize_root_directories(&store.db, &source, [43; 32])
+            .unwrap()
+            .expect("nested structure must not exceed a cumulative task buffer");
+        assert_eq!(
+            (direct.scanned_files, direct.scanned_bytes),
+            (4_001, 32_006)
+        );
+        let (expected, _, _) = serial_directory_root(&source, [43; 32]).unwrap();
+        assert_direct_objects(&store, &direct, &expected);
+        let expected_ids = expected
+            .objects
+            .ids_in_order(usize::MAX)
+            .unwrap()
+            .unwrap()
+            .into_iter()
+            .map(|id| id.as_bytes().to_vec())
+            .collect::<std::collections::BTreeSet<_>>();
+        let connection = store.db.reader().unwrap();
+        let mut statement = connection.prepare("SELECT object_id FROM objects").unwrap();
+        let mut actual = statement
+            .query_map([], |row| row.get::<_, Vec<u8>>(0))
+            .unwrap()
+            .collect::<std::result::Result<std::collections::BTreeSet<_>, _>>()
+            .unwrap();
+        drop(statement);
+        drop(connection);
+        // The final batch can repeat identities already admitted by an earlier batch.
+        actual.extend(
+            direct
+                .final_batch
+                .iter()
+                .map(|object| object.id.as_bytes().to_vec()),
+        );
+        assert_eq!(actual, expected_ids);
+        assert!(direct.diagnostics.slab.partial_peak_payload_bytes <= 256 * 1024);
 
         drop(expected);
         drop(store);

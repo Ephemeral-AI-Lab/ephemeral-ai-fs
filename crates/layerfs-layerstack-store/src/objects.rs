@@ -21,7 +21,6 @@ pub(crate) const INITIALIZATION_ADMISSION_BATCH_COUNT: usize = ADMISSION_BATCH_C
 pub(crate) const INITIALIZATION_SLAB_BYTES: usize = 256 * 1024;
 pub(crate) const INITIALIZATION_SLAB_OBJECTS: usize = 512;
 pub(crate) const INITIALIZATION_SLAB_QUEUE_SLOTS: usize = 4;
-pub(crate) const INITIALIZATION_TASK_STRUCTURAL_BYTES: usize = 256 * 1024;
 const CANDIDATE_MEMORY_BYTES: usize = 8 * 1024 * 1024;
 const CANDIDATE_INDEX_BYTES: usize = 64 * 1024 * 1024;
 const CANDIDATE_SPILL_BUFFER_BYTES: usize = 1024 * 1024;
@@ -158,77 +157,6 @@ impl AuthenticatedCanonicalObject {
             None => layerfs_content::identify_canonical(&bytes)?.0,
         };
         Ok(Self(CanonicalObject { id, bytes }))
-    }
-}
-
-pub(crate) struct InitializationTaskObjectBuffer {
-    objects: Vec<AuthenticatedCanonicalObject>,
-    payload_bytes: usize,
-}
-
-impl InitializationTaskObjectBuffer {
-    pub(crate) fn new() -> Self {
-        Self {
-            objects: Vec::with_capacity(128),
-            payload_bytes: 0,
-        }
-    }
-
-    pub(crate) fn explicit_owned_bytes(&self) -> u64 {
-        self.payload_bytes as u64
-            + (self.objects.capacity() * std::mem::size_of::<AuthenticatedCanonicalObject>()) as u64
-    }
-
-    pub(crate) fn hash_invocations(&self) -> u64 {
-        self.objects.len() as u64
-    }
-
-    pub(crate) fn move_into(self, store: &mut FinalizedOutputWriter) -> CoreResult<()> {
-        for object in self.objects {
-            store.push_authenticated(object)?;
-        }
-        Ok(())
-    }
-
-    fn push_owned(&mut self, canonical: Vec<u8>) -> CoreResult<ObjectId> {
-        let owned = self
-            .payload_bytes
-            .checked_add(canonical.len())
-            .and_then(|payload| {
-                payload.checked_add(
-                    self.objects
-                        .len()
-                        .checked_add(1)?
-                        .checked_mul(std::mem::size_of::<AuthenticatedCanonicalObject>())?,
-                )
-            })
-            .ok_or(CoreError::LengthOverflow)?;
-        if owned > INITIALIZATION_TASK_STRUCTURAL_BYTES {
-            return Err(CoreError::ObjectLimitExceeded);
-        }
-        let canonical_len = canonical.len();
-        let object = AuthenticatedCanonicalObject::new(canonical, None)?;
-        let id = object.id;
-        self.payload_bytes = self
-            .payload_bytes
-            .checked_add(canonical_len)
-            .ok_or(CoreError::LengthOverflow)?;
-        self.objects.push(object);
-        Ok(id)
-    }
-}
-
-impl ObjectStore for InitializationTaskObjectBuffer {
-    fn get(&self, _id: ObjectId) -> CoreResult<Vec<u8>> {
-        Err(CoreError::InvalidRecord("direct structural get"))
-    }
-
-    fn put(&mut self, canonical: &[u8]) -> CoreResult<ObjectId> {
-        self.push_owned(canonical.to_vec())
-    }
-
-    fn put_owned(&mut self, canonical: Vec<u8>) -> CoreResult<ObjectId> {
-        self.push_owned(canonical)
     }
 }
 
@@ -608,10 +536,6 @@ impl FinalizedOutputWriter {
         Ok(self.metrics)
     }
 
-    pub(crate) fn note_hash_invocations(&mut self, calls: u64) {
-        self.metrics.canonical_hash_calls = self.metrics.canonical_hash_calls.saturating_add(calls);
-    }
-
     fn flush(&mut self) -> Result<()> {
         if self.objects.is_empty() {
             return Ok(());
@@ -648,10 +572,6 @@ impl FinalizedOutputWriter {
         self.metrics.canonical_hash_calls += 1;
         self.push_object(object, copied)?;
         Ok(id)
-    }
-
-    fn push_authenticated(&mut self, object: AuthenticatedCanonicalObject) -> CoreResult<()> {
-        self.push_object(object, false)
     }
 
     fn push_object(
@@ -4590,22 +4510,6 @@ mod tests {
             assert!(AuthenticatedCanonicalObject::new(invalid.clone(), None).is_err());
             assert!(AuthenticatedCanonicalObject::new(invalid, Some(expected)).is_err());
         }
-    }
-
-    #[test]
-    fn structural_handoff_identity_is_fixed_at_buffer_insertion() {
-        let bytes =
-            layerfs_content::encode_bytes_object(b"authenticated structural object").unwrap();
-        let expected = ObjectId::for_bytes(&bytes);
-        let wrong = ObjectId::for_bytes(b"different structural object");
-        assert!(matches!(
-            AuthenticatedCanonicalObject::new(bytes.clone(), Some(wrong)),
-            Err(CoreError::IdentityMismatch)
-        ));
-
-        let mut buffer = InitializationTaskObjectBuffer::new();
-        assert_eq!(buffer.put_owned(bytes).unwrap(), expected);
-        assert_eq!(buffer.objects[0].id, expected);
     }
 
     #[test]
