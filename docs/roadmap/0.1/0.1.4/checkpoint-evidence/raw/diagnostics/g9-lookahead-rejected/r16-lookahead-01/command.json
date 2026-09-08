@@ -1,0 +1,1 @@
+["cargo", "test", "-p", "layerfs-layerstack-store", "native_full_lookahead", "--", "--nocapture"]
