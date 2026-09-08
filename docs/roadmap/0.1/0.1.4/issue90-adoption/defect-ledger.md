@@ -1,5 +1,8 @@
 # Phase-1 repair ledger
 
+**Resolved: all D01–D09 and A01–A09 have passing final proof on candidate593f4ad01.**
+See [verification and exact custody](verification.md).
+
 This is additive to the immutable #88 ledger. Historical P/D/accepted results and
 unequal cleanup residues remain unchanged. Proof names below identify required
 checks; the final verification report supplies executed results and source seals.
@@ -33,7 +36,7 @@ workloads, timers and sample definitions are unchanged. The Docker correctness
 stage now runs all FUSE library tests, including #71 checkpoint ownership tests.
 
 The ignored `parallel_large_spill_matches_legacy_after_fresh_store_reopen` is
-applicable on this host and must run explicitly. It constructs100,004,100 actual
+applicable on this host and passed its explicit lane. It constructs100,004,100 actual
 file bytes and checks complete canonical identity/content after reopen against
 the legacy construction oracle. It is correctness coverage, not a performance
 sample or a substitute for #91's full workloads.

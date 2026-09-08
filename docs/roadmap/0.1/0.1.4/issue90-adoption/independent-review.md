@@ -104,3 +104,46 @@ Updated reviewed-source SHA-256 values:
 | `benchmark/fs-bench-pro/Dockerfile.layerfs` | `e05eba21100c134e62502ff81242e03d65214d4e2f16cee4433469fac201c31e` |
 
 Full workspace, complete Store, explicitly ignored large-spill, live FUSE, and container-runtime results remain pending final root receipts at this addendum. Earlier focused passes are not silently relabeled as exact-final-candidate full-suite proof.
+
+## Final receipt audit and closure disposition
+
+The final audit supersedes the earlier pending-validation dispositions. The reviewer independently read the final raw logs, commands, result JSON, per-run source records, expanded compatibility-probe source, and `final-identity.json` under `/Users/yifanxu/Ephemeral-AI-Lab/layerfs-issue90-runs`. All listed final runs record the same clean candidate:
+
+- Commit: `593f4ad018bf34b3f180baf66e1ae5cf40c36647`.
+- Tree: `755ad78b2fa090d5afda6c27a1086dd628b3ec91`.
+- Source seal: `55c0f273b8ffb5612a0c907f4c4692084ef006e740c917bf34d82b07a3c315d7`.
+- Product seal: `e279fce6024490e04833038dd834b21e2f5f31077730c9e255477eb648d2804c`.
+- Dirty patch: empty, SHA-256 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+
+The only subsequent product-area diff examined after the prior review is A09's public Workspace **test** repair in `crates/layerfs-workspace/tests/file_edit.rs`. It replaces ineffective object-count-derived publication fault ordinals with the existing `u64::MAX - 1` / `u64::MAX - 2` sentinels. It strengthens residue assertions: construction/admission failure leaves exactly the baseline object count; failure after durable staging retains exactly the successful candidate's inserted objects. Branch and other metadata counts remain unchanged, and the existing retry checks remain. No production assertion was weakened or encoding policy altered by that change.
+
+| Final receipt | Independently verified outcome |
+|---|---|
+| `workspace-build-final-01` | Workspace build exit 0. |
+| `workspace-final-02` | Parsed 37 native test-executable summaries: 389 reported PASS, zero FAIL, one ignored. Warm execution reports 88 seconds and four bounded jobs. The Store executable contributes 88 PASS, zero FAIL, one ignored, with zero filtered tests. |
+| `large-spill-final-01` | Exact named ignored test explicitly activated using `--exact --ignored`: one PASS, zero FAIL. Its source verifies four files totaling 100,004,100 bytes, identical canonical root/object count, and every retained object's bytes after fresh Store reopen. |
+| `runtime-check-final-02` | Linux daemon five PASS; selected proxy completion test one PASS; all FUSE library tests 31 PASS, including checkpoint validation, retry, partial installation, and streaming beyond the former 16,384-node cap. Docker target build exits 0. |
+| `live-final-02` | Logged `LAYERFS_LIVE_DOCKER=1` and the sealed image tag; all three managed SDK/container tests PASS with no filtering. Actual FUSE mount and lifecycle assertions execute. `containers-after.txt` is empty. |
+| `old-binary-final-01` | Actual older-source/candidate probe exits 0. Expanded fixture imports an 8192-byte regular file, requires native admission in the version-7 arm, performs full readback, verifies old-code open rejection without mutation, and alternates old/new version-6 Directory writes with complete readback. No journal/WAL/SHM residue. |
+| `quality-final-01` | Formatting check, workspace warning-denying Clippy (`-D warnings`), and `git diff --check` all exit 0. |
+| `docs-final-01` | One real compile-fail doctest PASS, no failures. Other crates correctly report zero doctests; those are not represented as additional tested guarantees. |
+
+The native workspace total is a harness total, not a claim that environment-gated live tests execute automatically. The four direct-host Linux-FUSE tests are unactivated on macOS and are not counted as live coverage. That topology is inapplicable on this host. Applicable managed Linux FUSE coverage ran explicitly in `live-final-02`, with host SDK/SQLite and Linux daemon/FUSE/workload; Linux runtime unit checks ran separately. This does not introduce or claim support for a Docker-owned SQLite Store. The separately activated managed lane resolves the previously pending supported FUSE/container integration obligation.
+
+The final runtime image is Linux arm64 `sha256:bcdef310f25f5a430f4e6e8c8c312213d5561cd18d0d23955dcfbec5b8029299`, tagged `layerfs-issue90:55c0f273b8ffb561`; its labels match the candidate commit/tree/source/product seals. Native build/tests use Rust 1.85.1 and the locked workspace graph; quality checks use Rust 1.96.0. The actual older-source probe retains its separate lock (`abbb04982d514607adfb34ed6fa2114d1f9d2edb36ee8caeb0d15b5e7aacd66e`) and source hash (`6bf040c828daf3c113da949c119f9329d505feefdfd90fc939cd9ef904361b44`), with clean old source `bfbc46c11dbb4d8dd949b54845e222cf42cd822f`. It remains an actual-code compatibility verifier, not an archived shipping executable.
+
+Earlier failing receipts remain preserved, including the incorrect route-count assertion, intermediate A08 mismatch, missed Workspace publication ordinal, unavailable Docker socket attempts, and the recorded Docker GUI quit event. They are not replaced by successful reruns or attributed to another producer. The recovered final Docker/live runs have their own exit results and source seals.
+
+Raw final log SHA-256 values:
+
+| Receipt `output.log` | SHA-256 |
+|---|---|
+| `workspace-final-02` | `3f4cb6e294b7e0e94c9d395f450bedac5b91f23d8a0d4d04c7ec933e0a2fa06f` |
+| `large-spill-final-01` | `9d9eddd59fb043a100ef1144d77cff3d0a0db21536c6753c781f3fe4eb5a2ad4` |
+| `runtime-check-final-02` | `40c1b04621d2bb648c121b3d1fb3c7bc757b9baa4c3d9e99e718e0e35aaf9135` |
+| `live-final-02` | `4a0bc0a6abce510a409559f6b3ece3ade45a0930103925e5a2df05bf49178082` |
+| `old-binary-final-01` | `c76a2a29b12946f28cd29c577af5061703aebf40d4dec4cf0382ffc964fae45c` |
+| `quality-final-01` | `16f8d098f75fbb430b5d227b75730e5e6609120bcda25dcaf8bb512f0079b5ba` |
+| `docs-final-01` | `b479d4283866cb993b570802ee5fbf44a651efe026d8ed1790ff6d6d58090ea8` |
+
+**Final independent disposition:** no unresolved implementation or applicable correctness/quality-gate blocker was identified for phase-1 completion. The nine original failures and additional reviewed defects have concrete repairs with meaningful final passing coverage. Root may close issue 90 after publishing the resolved ledger, compatibility/ingestion contract, exact candidate handoff to issue 91, and reviewable source through the authorized workflow. This review does not itself publish or close an issue, merge a PR, start phase 2, or claim broad performance qualification. The reviewed adoption candidate remains the exact source above; subsequent reporting-only commits should reference it rather than silently reassigning its results.

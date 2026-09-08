@@ -1,9 +1,11 @@
 # Storage adoption phase 1 (#90)
 
-Status: repairs and validation in progress. This is a new adoption candidate,
+Status: phase1 repairs and all applicable local validation completed. This is a new adoption candidate,
 not the producer of #88's storage measurements. Issue #91 owns performance
 qualification. No PR merge, migration, rollout or full benchmark campaign is
-part of this work.
+part of this work. See the [final verification report](verification.md),
+[resolved ledger](defect-ledger.md), [independent review](independent-review.md)
+and [exact phase2 handoff](phase2-handoff.md).
 
 ## Integration and source ownership
 

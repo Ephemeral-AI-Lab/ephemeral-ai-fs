@@ -1,0 +1,1 @@
+["cargo", "+1.85.1", "test", "--workspace", "--doc", "--all-features", "--locked"]
