@@ -56,8 +56,9 @@ def main(run,tool,out):
                 pr=None if prior is None or prior[2]>262144 else ('file',{'id':prior[1]})
                 emit('s3',unit,path,pr,s['index'],'file')
             else:
+                eligible_oldchunks=oldchunks if prior is not None and prior[2]>262144 else []
                 for c in chunks:
-                    pc=next((x for x in oldchunks if x['offset']<c['offset']+c['length'] and x['offset']+x['length']>c['offset']),None)
+                    pc=next((x for x in eligible_oldchunks if x['offset']<c['offset']+c['length'] and x['offset']+x['length']>c['offset']),None)
                     emit('s3',c,path,None if pc is None else ('chunk',pc),s['index'],'chunk')
         prev=cur;db.commit()
         assert time.monotonic_ns()-start<4*3600*10**9
