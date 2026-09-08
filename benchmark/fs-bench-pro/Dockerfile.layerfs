@@ -68,7 +68,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
  && cargo test --locked --jobs 2 -p layerfs-fuse --features proxy,live \
       --test proxy owned_write_reply_releases_receive_loop_and_completes_once \
  && cargo test --locked --jobs 2 -p layerfs-fuse --features proxy,live \
-      --lib live_runtime
+      --lib
 
 FROM rust:1.85.1-bookworm@sha256:e51d0265072d2d9d5d320f6a44dde6b9ef13653b035098febd68cce8fa7c0bc4
 

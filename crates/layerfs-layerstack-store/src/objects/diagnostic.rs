@@ -523,14 +523,18 @@ mod tests {
         };
         let a = make(b"first");
         let b = make(b"second");
-        let prepare = |objects| {
-            let mut owner = CheckedOutputAdmission::new(&db).unwrap();
-            owner.admit_page(objects).unwrap();
-            let finished = owner.finish().unwrap();
-            PreparedAdmission::prepare_missing(&db, finished.final_batch).unwrap()
-        };
-        let first = prepare(vec![a.clone()]);
-        let second = prepare(vec![a, b.clone()]);
+        let mut owner = CheckedOutputAdmission::new(&db).unwrap();
+        owner.admit_page(vec![a.clone()]).unwrap();
+        let mut first_batch = owner.finish().unwrap().final_batch;
+        let session = first_batch.1.clone();
+        first_batch.2 = false;
+        let first = PreparedAdmission::prepare_missing(&db, first_batch).unwrap();
+        // Two prepared cohorts deliberately share one writer owner. This preserves
+        // the late CAS race without trying to acquire a second independent permit.
+        let mut owner = CheckedOutputAdmission::with_session(&db, session.clone()).unwrap();
+        owner.admit_page(vec![a, b.clone()]).unwrap();
+        let second =
+            PreparedAdmission::prepare_missing(&db, owner.finish().unwrap().final_batch).unwrap();
         first.publish(&db, &mut 0, |_, _, _| Ok(())).unwrap();
         let before = db.physical_storage_receipt();
         second.publish(&db, &mut 0, |_, _, _| Ok(())).unwrap();
@@ -555,6 +559,7 @@ mod tests {
             all.diag_new_full_count + all.diag_new_delta_count
         );
         assert_eq!(db.read_object_row(b.id).unwrap(), b.bytes);
+        drop(session);
         drop(db);
         std::fs::remove_dir_all(folder).unwrap();
     }

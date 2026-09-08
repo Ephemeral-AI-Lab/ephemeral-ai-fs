@@ -64,61 +64,220 @@ fn physical_json(receipt: layerfs_layerstack_store::PhysicalStorageReceipt) -> S
         ("native_full_encode_ns", receipt.native_full_encode_ns),
         ("native_full_frame_count", receipt.native_full_frame_count),
         ("native_full_frame_bytes", receipt.native_full_frame_bytes),
-        ("native_prefix_encode_calls", receipt.native_prefix_encode_calls),
+        (
+            "native_prefix_encode_calls",
+            receipt.native_prefix_encode_calls,
+        ),
         ("native_prefix_encode_ns", receipt.native_prefix_encode_ns),
-        ("native_prefix_frame_count", receipt.native_prefix_frame_count),
-        ("native_prefix_frame_bytes", receipt.native_prefix_frame_bytes),
-        ("native_fallback_no_hint_count", receipt.native_fallback_no_hint_count),
-        ("native_fallback_no_hint_bytes", receipt.native_fallback_no_hint_bytes),
-        ("native_fallback_unavailable_count", receipt.native_fallback_unavailable_count),
-        ("native_fallback_unavailable_bytes", receipt.native_fallback_unavailable_bytes),
-        ("native_fallback_legacy_delta_count", receipt.native_fallback_legacy_delta_count),
-        ("native_fallback_legacy_delta_bytes", receipt.native_fallback_legacy_delta_bytes),
-        ("native_fallback_role_count", receipt.native_fallback_role_count),
-        ("native_fallback_role_bytes", receipt.native_fallback_role_bytes),
-        ("native_fallback_depth_count", receipt.native_fallback_depth_count),
-        ("native_fallback_depth_bytes", receipt.native_fallback_depth_bytes),
-        ("native_fallback_budget_count", receipt.native_fallback_budget_count),
-        ("native_fallback_budget_bytes", receipt.native_fallback_budget_bytes),
-        ("native_fallback_full_wins_count", receipt.native_fallback_full_wins_count),
-        ("native_fallback_full_wins_bytes", receipt.native_fallback_full_wins_bytes),
-        ("native_admitted_full_count", receipt.native_admitted_full_count),
-        ("native_admitted_full_bytes", receipt.native_admitted_full_bytes),
-        ("native_admitted_prefix_count", receipt.native_admitted_prefix_count),
-        ("native_admitted_prefix_bytes", receipt.native_admitted_prefix_bytes),
+        (
+            "native_prefix_frame_count",
+            receipt.native_prefix_frame_count,
+        ),
+        (
+            "native_prefix_frame_bytes",
+            receipt.native_prefix_frame_bytes,
+        ),
+        (
+            "native_fallback_no_hint_count",
+            receipt.native_fallback_no_hint_count,
+        ),
+        (
+            "native_fallback_no_hint_bytes",
+            receipt.native_fallback_no_hint_bytes,
+        ),
+        (
+            "native_fallback_unavailable_count",
+            receipt.native_fallback_unavailable_count,
+        ),
+        (
+            "native_fallback_unavailable_bytes",
+            receipt.native_fallback_unavailable_bytes,
+        ),
+        (
+            "native_fallback_legacy_delta_count",
+            receipt.native_fallback_legacy_delta_count,
+        ),
+        (
+            "native_fallback_legacy_delta_bytes",
+            receipt.native_fallback_legacy_delta_bytes,
+        ),
+        (
+            "native_fallback_role_count",
+            receipt.native_fallback_role_count,
+        ),
+        (
+            "native_fallback_role_bytes",
+            receipt.native_fallback_role_bytes,
+        ),
+        (
+            "native_fallback_depth_count",
+            receipt.native_fallback_depth_count,
+        ),
+        (
+            "native_fallback_depth_bytes",
+            receipt.native_fallback_depth_bytes,
+        ),
+        (
+            "native_fallback_budget_count",
+            receipt.native_fallback_budget_count,
+        ),
+        (
+            "native_fallback_budget_bytes",
+            receipt.native_fallback_budget_bytes,
+        ),
+        (
+            "native_fallback_full_wins_count",
+            receipt.native_fallback_full_wins_count,
+        ),
+        (
+            "native_fallback_full_wins_bytes",
+            receipt.native_fallback_full_wins_bytes,
+        ),
+        (
+            "native_admitted_full_count",
+            receipt.native_admitted_full_count,
+        ),
+        (
+            "native_admitted_full_bytes",
+            receipt.native_admitted_full_bytes,
+        ),
+        (
+            "native_admitted_prefix_count",
+            receipt.native_admitted_prefix_count,
+        ),
+        (
+            "native_admitted_prefix_bytes",
+            receipt.native_admitted_prefix_bytes,
+        ),
         ("diag_invalid", receipt.diag_invalid),
-        ("diag_limit_memory_first_empty_count", receipt.diag_limit_memory_first_empty_count),
-        ("diag_limit_memory_first_empty_bytes", receipt.diag_limit_memory_first_empty_bytes),
-        ("diag_limit_memory_inherited_empty_count", receipt.diag_limit_memory_inherited_empty_count),
-        ("diag_limit_memory_inherited_empty_bytes", receipt.diag_limit_memory_inherited_empty_bytes),
-        ("diag_limit_file_first_empty_count", receipt.diag_limit_file_first_empty_count),
-        ("diag_limit_file_first_empty_bytes", receipt.diag_limit_file_first_empty_bytes),
-        ("diag_limit_file_inherited_empty_count", receipt.diag_limit_file_inherited_empty_count),
-        ("diag_limit_file_inherited_empty_bytes", receipt.diag_limit_file_inherited_empty_bytes),
-        ("diag_limit_operation_first_empty_count", receipt.diag_limit_operation_first_empty_count),
-        ("diag_limit_operation_first_empty_bytes", receipt.diag_limit_operation_first_empty_bytes),
-        ("diag_limit_operation_inherited_empty_count", receipt.diag_limit_operation_inherited_empty_count),
-        ("diag_limit_operation_inherited_empty_bytes", receipt.diag_limit_operation_inherited_empty_bytes),
-        ("diag_limit_descriptor_first_empty_count", receipt.diag_limit_descriptor_first_empty_count),
-        ("diag_limit_descriptor_first_empty_bytes", receipt.diag_limit_descriptor_first_empty_bytes),
-        ("diag_limit_descriptor_inherited_empty_count", receipt.diag_limit_descriptor_inherited_empty_count),
-        ("diag_limit_descriptor_inherited_empty_bytes", receipt.diag_limit_descriptor_inherited_empty_bytes),
-        ("diag_limit_memory_first_count", receipt.diag_limit_memory_first_count),
-        ("diag_limit_memory_first_bytes", receipt.diag_limit_memory_first_bytes),
-        ("diag_limit_memory_inherited_count", receipt.diag_limit_memory_inherited_count),
-        ("diag_limit_memory_inherited_bytes", receipt.diag_limit_memory_inherited_bytes),
-        ("diag_limit_file_first_count", receipt.diag_limit_file_first_count),
-        ("diag_limit_file_first_bytes", receipt.diag_limit_file_first_bytes),
-        ("diag_limit_file_inherited_count", receipt.diag_limit_file_inherited_count),
-        ("diag_limit_file_inherited_bytes", receipt.diag_limit_file_inherited_bytes),
-        ("diag_limit_operation_first_count", receipt.diag_limit_operation_first_count),
-        ("diag_limit_operation_first_bytes", receipt.diag_limit_operation_first_bytes),
-        ("diag_limit_operation_inherited_count", receipt.diag_limit_operation_inherited_count),
-        ("diag_limit_operation_inherited_bytes", receipt.diag_limit_operation_inherited_bytes),
-        ("diag_limit_descriptor_first_count", receipt.diag_limit_descriptor_first_count),
-        ("diag_limit_descriptor_first_bytes", receipt.diag_limit_descriptor_first_bytes),
-        ("diag_limit_descriptor_inherited_count", receipt.diag_limit_descriptor_inherited_count),
-        ("diag_limit_descriptor_inherited_bytes", receipt.diag_limit_descriptor_inherited_bytes),
+        (
+            "diag_limit_memory_first_empty_count",
+            receipt.diag_limit_memory_first_empty_count,
+        ),
+        (
+            "diag_limit_memory_first_empty_bytes",
+            receipt.diag_limit_memory_first_empty_bytes,
+        ),
+        (
+            "diag_limit_memory_inherited_empty_count",
+            receipt.diag_limit_memory_inherited_empty_count,
+        ),
+        (
+            "diag_limit_memory_inherited_empty_bytes",
+            receipt.diag_limit_memory_inherited_empty_bytes,
+        ),
+        (
+            "diag_limit_file_first_empty_count",
+            receipt.diag_limit_file_first_empty_count,
+        ),
+        (
+            "diag_limit_file_first_empty_bytes",
+            receipt.diag_limit_file_first_empty_bytes,
+        ),
+        (
+            "diag_limit_file_inherited_empty_count",
+            receipt.diag_limit_file_inherited_empty_count,
+        ),
+        (
+            "diag_limit_file_inherited_empty_bytes",
+            receipt.diag_limit_file_inherited_empty_bytes,
+        ),
+        (
+            "diag_limit_operation_first_empty_count",
+            receipt.diag_limit_operation_first_empty_count,
+        ),
+        (
+            "diag_limit_operation_first_empty_bytes",
+            receipt.diag_limit_operation_first_empty_bytes,
+        ),
+        (
+            "diag_limit_operation_inherited_empty_count",
+            receipt.diag_limit_operation_inherited_empty_count,
+        ),
+        (
+            "diag_limit_operation_inherited_empty_bytes",
+            receipt.diag_limit_operation_inherited_empty_bytes,
+        ),
+        (
+            "diag_limit_descriptor_first_empty_count",
+            receipt.diag_limit_descriptor_first_empty_count,
+        ),
+        (
+            "diag_limit_descriptor_first_empty_bytes",
+            receipt.diag_limit_descriptor_first_empty_bytes,
+        ),
+        (
+            "diag_limit_descriptor_inherited_empty_count",
+            receipt.diag_limit_descriptor_inherited_empty_count,
+        ),
+        (
+            "diag_limit_descriptor_inherited_empty_bytes",
+            receipt.diag_limit_descriptor_inherited_empty_bytes,
+        ),
+        (
+            "diag_limit_memory_first_count",
+            receipt.diag_limit_memory_first_count,
+        ),
+        (
+            "diag_limit_memory_first_bytes",
+            receipt.diag_limit_memory_first_bytes,
+        ),
+        (
+            "diag_limit_memory_inherited_count",
+            receipt.diag_limit_memory_inherited_count,
+        ),
+        (
+            "diag_limit_memory_inherited_bytes",
+            receipt.diag_limit_memory_inherited_bytes,
+        ),
+        (
+            "diag_limit_file_first_count",
+            receipt.diag_limit_file_first_count,
+        ),
+        (
+            "diag_limit_file_first_bytes",
+            receipt.diag_limit_file_first_bytes,
+        ),
+        (
+            "diag_limit_file_inherited_count",
+            receipt.diag_limit_file_inherited_count,
+        ),
+        (
+            "diag_limit_file_inherited_bytes",
+            receipt.diag_limit_file_inherited_bytes,
+        ),
+        (
+            "diag_limit_operation_first_count",
+            receipt.diag_limit_operation_first_count,
+        ),
+        (
+            "diag_limit_operation_first_bytes",
+            receipt.diag_limit_operation_first_bytes,
+        ),
+        (
+            "diag_limit_operation_inherited_count",
+            receipt.diag_limit_operation_inherited_count,
+        ),
+        (
+            "diag_limit_operation_inherited_bytes",
+            receipt.diag_limit_operation_inherited_bytes,
+        ),
+        (
+            "diag_limit_descriptor_first_count",
+            receipt.diag_limit_descriptor_first_count,
+        ),
+        (
+            "diag_limit_descriptor_first_bytes",
+            receipt.diag_limit_descriptor_first_bytes,
+        ),
+        (
+            "diag_limit_descriptor_inherited_count",
+            receipt.diag_limit_descriptor_inherited_count,
+        ),
+        (
+            "diag_limit_descriptor_inherited_bytes",
+            receipt.diag_limit_descriptor_inherited_bytes,
+        ),
         ("diag_hints_0_count", receipt.diag_hints_0_count),
         ("diag_hints_0_bytes", receipt.diag_hints_0_bytes),
         ("diag_hints_1_count", receipt.diag_hints_1_count),
@@ -131,52 +290,145 @@ fn physical_json(receipt: layerfs_layerstack_store::PhysicalStorageReceipt) -> S
         ("diag_hints_4_bytes", receipt.diag_hints_4_bytes),
         ("diag_event_base_bytes", receipt.diag_event_base_bytes),
         ("diag_event_budget_bytes", receipt.diag_event_budget_bytes),
-        ("diag_event_candidate_bytes", receipt.diag_event_candidate_bytes),
-        ("diag_event_mixed_rejection_bytes", receipt.diag_event_mixed_rejection_bytes),
-        ("diag_event_fetch_budget_count", receipt.diag_event_fetch_budget_count),
-        ("diag_event_fetch_budget_bytes", receipt.diag_event_fetch_budget_bytes),
-        ("diag_event_match_budget_count", receipt.diag_event_match_budget_count),
-        ("diag_event_match_budget_bytes", receipt.diag_event_match_budget_bytes),
-        ("diag_event_instruction_budget_count", receipt.diag_event_instruction_budget_count),
-        ("diag_event_instruction_budget_bytes", receipt.diag_event_instruction_budget_bytes),
-        ("diag_event_memory_budget_count", receipt.diag_event_memory_budget_count),
-        ("diag_event_memory_budget_bytes", receipt.diag_event_memory_budget_bytes),
+        (
+            "diag_event_candidate_bytes",
+            receipt.diag_event_candidate_bytes,
+        ),
+        (
+            "diag_event_mixed_rejection_bytes",
+            receipt.diag_event_mixed_rejection_bytes,
+        ),
+        (
+            "diag_event_fetch_budget_count",
+            receipt.diag_event_fetch_budget_count,
+        ),
+        (
+            "diag_event_fetch_budget_bytes",
+            receipt.diag_event_fetch_budget_bytes,
+        ),
+        (
+            "diag_event_match_budget_count",
+            receipt.diag_event_match_budget_count,
+        ),
+        (
+            "diag_event_match_budget_bytes",
+            receipt.diag_event_match_budget_bytes,
+        ),
+        (
+            "diag_event_instruction_budget_count",
+            receipt.diag_event_instruction_budget_count,
+        ),
+        (
+            "diag_event_instruction_budget_bytes",
+            receipt.diag_event_instruction_budget_bytes,
+        ),
+        (
+            "diag_event_memory_budget_count",
+            receipt.diag_event_memory_budget_count,
+        ),
+        (
+            "diag_event_memory_budget_bytes",
+            receipt.diag_event_memory_budget_bytes,
+        ),
         ("diag_cursor_attached", receipt.diag_cursor_attached),
         ("diag_cursor_queries", receipt.diag_cursor_queries),
         ("diag_cursor_inherited", receipt.diag_cursor_inherited),
         ("diag_cursor_memory_limit", receipt.diag_cursor_memory_limit),
         ("diag_cursor_file_limit", receipt.diag_cursor_file_limit),
-        ("diag_cursor_operation_limit", receipt.diag_cursor_operation_limit),
-        ("diag_cursor_descriptor_limit", receipt.diag_cursor_descriptor_limit),
+        (
+            "diag_cursor_operation_limit",
+            receipt.diag_cursor_operation_limit,
+        ),
+        (
+            "diag_cursor_descriptor_limit",
+            receipt.diag_cursor_descriptor_limit,
+        ),
         ("diag_cursor_grants", receipt.diag_cursor_grants),
         ("diag_cursor_query_bytes", receipt.diag_cursor_query_bytes),
         ("diag_selected_pack_count", receipt.diag_selected_pack_count),
-        ("diag_selected_pack_last_id", receipt.diag_selected_pack_last_id),
+        (
+            "diag_selected_pack_last_id",
+            receipt.diag_selected_pack_last_id,
+        ),
         ("diag_selected_pack_bytes", receipt.diag_selected_pack_bytes),
-        ("diag_selected_pack_groups", receipt.diag_selected_pack_groups),
-        ("diag_selected_pack_records", receipt.diag_selected_pack_records),
-        ("diag_selected_unlocated_records", receipt.diag_selected_unlocated_records),
-        ("diag_occurrence_preexisting_count", receipt.diag_occurrence_preexisting_count),
-        ("diag_occurrence_preexisting_bytes", receipt.diag_occurrence_preexisting_bytes),
-        ("diag_occurrence_preexisting_grants", receipt.diag_occurrence_preexisting_grants),
-        ("diag_occurrence_missing_count", receipt.diag_occurrence_missing_count),
-        ("diag_occurrence_missing_bytes", receipt.diag_occurrence_missing_bytes),
-        ("diag_occurrence_missing_grants", receipt.diag_occurrence_missing_grants),
-        ("diag_occurrence_duplicate_count", receipt.diag_occurrence_duplicate_count),
-        ("diag_occurrence_duplicate_bytes", receipt.diag_occurrence_duplicate_bytes),
-        ("diag_occurrence_duplicate_grants", receipt.diag_occurrence_duplicate_grants),
+        (
+            "diag_selected_pack_groups",
+            receipt.diag_selected_pack_groups,
+        ),
+        (
+            "diag_selected_pack_records",
+            receipt.diag_selected_pack_records,
+        ),
+        (
+            "diag_selected_unlocated_records",
+            receipt.diag_selected_unlocated_records,
+        ),
+        (
+            "diag_occurrence_preexisting_count",
+            receipt.diag_occurrence_preexisting_count,
+        ),
+        (
+            "diag_occurrence_preexisting_bytes",
+            receipt.diag_occurrence_preexisting_bytes,
+        ),
+        (
+            "diag_occurrence_preexisting_grants",
+            receipt.diag_occurrence_preexisting_grants,
+        ),
+        (
+            "diag_occurrence_missing_count",
+            receipt.diag_occurrence_missing_count,
+        ),
+        (
+            "diag_occurrence_missing_bytes",
+            receipt.diag_occurrence_missing_bytes,
+        ),
+        (
+            "diag_occurrence_missing_grants",
+            receipt.diag_occurrence_missing_grants,
+        ),
+        (
+            "diag_occurrence_duplicate_count",
+            receipt.diag_occurrence_duplicate_count,
+        ),
+        (
+            "diag_occurrence_duplicate_bytes",
+            receipt.diag_occurrence_duplicate_bytes,
+        ),
+        (
+            "diag_occurrence_duplicate_grants",
+            receipt.diag_occurrence_duplicate_grants,
+        ),
         ("diag_eligible_count", receipt.diag_eligible_count),
         ("diag_eligible_bytes", receipt.diag_eligible_bytes),
-        ("diag_no_predecessor_count", receipt.diag_no_predecessor_count),
-        ("diag_no_predecessor_bytes", receipt.diag_no_predecessor_bytes),
+        (
+            "diag_no_predecessor_count",
+            receipt.diag_no_predecessor_count,
+        ),
+        (
+            "diag_no_predecessor_bytes",
+            receipt.diag_no_predecessor_bytes,
+        ),
         ("diag_missing_span_count", receipt.diag_missing_span_count),
         ("diag_missing_span_bytes", receipt.diag_missing_span_bytes),
-        ("diag_complete_empty_count", receipt.diag_complete_empty_count),
-        ("diag_complete_empty_bytes", receipt.diag_complete_empty_bytes),
+        (
+            "diag_complete_empty_count",
+            receipt.diag_complete_empty_count,
+        ),
+        (
+            "diag_complete_empty_bytes",
+            receipt.diag_complete_empty_bytes,
+        ),
         ("diag_limited_empty_count", receipt.diag_limited_empty_count),
         ("diag_limited_empty_bytes", receipt.diag_limited_empty_bytes),
-        ("diag_complete_hints_count", receipt.diag_complete_hints_count),
-        ("diag_complete_hints_bytes", receipt.diag_complete_hints_bytes),
+        (
+            "diag_complete_hints_count",
+            receipt.diag_complete_hints_count,
+        ),
+        (
+            "diag_complete_hints_bytes",
+            receipt.diag_complete_hints_bytes,
+        ),
         ("diag_limited_hints_count", receipt.diag_limited_hints_count),
         ("diag_limited_hints_bytes", receipt.diag_limited_hints_bytes),
         ("diag_new_full_count", receipt.diag_new_full_count),
@@ -185,26 +437,80 @@ fn physical_json(receipt: layerfs_layerstack_store::PhysicalStorageReceipt) -> S
         ("diag_new_delta_bytes", receipt.diag_new_delta_bytes),
         ("diag_race_count", receipt.diag_race_count),
         ("diag_race_bytes", receipt.diag_race_bytes),
-        ("diag_terminal_no_predecessor_count", receipt.diag_terminal_no_predecessor_count),
-        ("diag_terminal_no_predecessor_bytes", receipt.diag_terminal_no_predecessor_bytes),
-        ("diag_terminal_missing_span_count", receipt.diag_terminal_missing_span_count),
-        ("diag_terminal_missing_span_bytes", receipt.diag_terminal_missing_span_bytes),
-        ("diag_terminal_no_overlap_count", receipt.diag_terminal_no_overlap_count),
-        ("diag_terminal_no_overlap_bytes", receipt.diag_terminal_no_overlap_bytes),
-        ("diag_terminal_correspondence_limit_count", receipt.diag_terminal_correspondence_limit_count),
-        ("diag_terminal_correspondence_limit_bytes", receipt.diag_terminal_correspondence_limit_bytes),
+        (
+            "diag_terminal_no_predecessor_count",
+            receipt.diag_terminal_no_predecessor_count,
+        ),
+        (
+            "diag_terminal_no_predecessor_bytes",
+            receipt.diag_terminal_no_predecessor_bytes,
+        ),
+        (
+            "diag_terminal_missing_span_count",
+            receipt.diag_terminal_missing_span_count,
+        ),
+        (
+            "diag_terminal_missing_span_bytes",
+            receipt.diag_terminal_missing_span_bytes,
+        ),
+        (
+            "diag_terminal_no_overlap_count",
+            receipt.diag_terminal_no_overlap_count,
+        ),
+        (
+            "diag_terminal_no_overlap_bytes",
+            receipt.diag_terminal_no_overlap_bytes,
+        ),
+        (
+            "diag_terminal_correspondence_limit_count",
+            receipt.diag_terminal_correspondence_limit_count,
+        ),
+        (
+            "diag_terminal_correspondence_limit_bytes",
+            receipt.diag_terminal_correspondence_limit_bytes,
+        ),
         ("diag_terminal_base_count", receipt.diag_terminal_base_count),
         ("diag_terminal_base_bytes", receipt.diag_terminal_base_bytes),
-        ("diag_terminal_budget_count", receipt.diag_terminal_budget_count),
-        ("diag_terminal_budget_bytes", receipt.diag_terminal_budget_bytes),
-        ("diag_terminal_no_delta_count", receipt.diag_terminal_no_delta_count),
-        ("diag_terminal_no_delta_bytes", receipt.diag_terminal_no_delta_bytes),
-        ("diag_terminal_mixed_rejection_count", receipt.diag_terminal_mixed_rejection_count),
-        ("diag_terminal_mixed_rejection_bytes", receipt.diag_terminal_mixed_rejection_bytes),
-        ("diag_terminal_delta_count", receipt.diag_terminal_delta_count),
-        ("diag_terminal_delta_bytes", receipt.diag_terminal_delta_bytes),
-        ("diag_terminal_unknown_count", receipt.diag_terminal_unknown_count),
-        ("diag_terminal_unknown_bytes", receipt.diag_terminal_unknown_bytes),
+        (
+            "diag_terminal_budget_count",
+            receipt.diag_terminal_budget_count,
+        ),
+        (
+            "diag_terminal_budget_bytes",
+            receipt.diag_terminal_budget_bytes,
+        ),
+        (
+            "diag_terminal_no_delta_count",
+            receipt.diag_terminal_no_delta_count,
+        ),
+        (
+            "diag_terminal_no_delta_bytes",
+            receipt.diag_terminal_no_delta_bytes,
+        ),
+        (
+            "diag_terminal_mixed_rejection_count",
+            receipt.diag_terminal_mixed_rejection_count,
+        ),
+        (
+            "diag_terminal_mixed_rejection_bytes",
+            receipt.diag_terminal_mixed_rejection_bytes,
+        ),
+        (
+            "diag_terminal_delta_count",
+            receipt.diag_terminal_delta_count,
+        ),
+        (
+            "diag_terminal_delta_bytes",
+            receipt.diag_terminal_delta_bytes,
+        ),
+        (
+            "diag_terminal_unknown_count",
+            receipt.diag_terminal_unknown_count,
+        ),
+        (
+            "diag_terminal_unknown_bytes",
+            receipt.diag_terminal_unknown_bytes,
+        ),
         ("diag_size_lt64_count", receipt.diag_size_lt64_count),
         ("diag_size_lt64_bytes", receipt.diag_size_lt64_bytes),
         ("diag_size_lt256_count", receipt.diag_size_lt256_count),
@@ -222,8 +528,14 @@ fn physical_json(receipt: layerfs_layerstack_store::PhysicalStorageReceipt) -> S
         ("diag_event_base", receipt.diag_event_base),
         ("diag_event_budget", receipt.diag_event_budget),
         ("diag_event_candidate", receipt.diag_event_candidate),
-        ("diag_event_mixed_rejection", receipt.diag_event_mixed_rejection),
-        ("diag_file_source_without_chunk", receipt.diag_file_source_without_chunk),
+        (
+            "diag_event_mixed_rejection",
+            receipt.diag_event_mixed_rejection,
+        ),
+        (
+            "diag_file_source_without_chunk",
+            receipt.diag_file_source_without_chunk,
+        ),
         ("diag_nonfile_chunk_count", receipt.diag_nonfile_chunk_count),
         ("diag_nonfile_chunk_bytes", receipt.diag_nonfile_chunk_bytes),
     ];
@@ -374,7 +686,7 @@ fn workload(
         .chain(args.iter().copied())
         .map(OsString::from)
         .collect();
-    let output = timed(&store, "exec", || execute(client, id, argv))?;
+    let output = timed(store, "exec", || execute(client, id, argv))?;
     emit(
         "storage-smoke-execution",
         &[
@@ -402,7 +714,7 @@ fn commit(
     index: usize,
     sdk: bool,
 ) -> AnyResult<()> {
-    let status = timed(&store, "commit", || {
+    let status = timed(store, "commit", || {
         Ok(client.commit_workspace_session_with_status(id)?)
     })?;
     let (head, created) = match status.result {

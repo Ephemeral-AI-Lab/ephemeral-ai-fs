@@ -2923,13 +2923,6 @@ mod tests {
     #[cfg(feature = "test-instrumentation")]
     #[test]
     fn empty_composite_admission_uses_no_object_point_selects() {
-        if std::thread::available_parallelism()
-            .map(std::num::NonZeroUsize::get)
-            .unwrap_or(1)
-            < 2
-        {
-            return;
-        }
         let root = temporary("composite-sql-shape");
         let source = root.join("source");
         std::fs::create_dir_all(source.join("left")).unwrap();
@@ -2945,22 +2938,58 @@ mod tests {
                 LayerStackInitialization::Directory(source),
             )
             .unwrap();
-        let trace = crate::schema::sql_trace();
+        let trace = crate::schema::sql_trace()
+            .iter()
+            .map(|sql| {
+                sql.lines()
+                    .filter(|line| !line.trim_start().starts_with("--"))
+                    .flat_map(str::split_whitespace)
+                    .collect::<String>()
+                    .to_ascii_uppercase()
+            })
+            .collect::<Vec<_>>();
         let object_inserts = trace
             .iter()
-            .filter(|sql| sql.contains("INSERT INTO objects(object_id, bytes)"))
+            .filter(|sql| sql.starts_with("INSERTINTOOBJECTS("))
             .collect::<Vec<_>>();
-        assert!(!object_inserts.is_empty());
-        assert!(object_inserts
+        assert!(
+            !object_inserts.is_empty(),
+            "selected-locator INSERT must execute: {trace:?}"
+        );
+        for sql in object_inserts {
+            assert!(
+                sql.starts_with("INSERTINTOOBJECTS(OBJECT_ID,CANONICAL_LENGTH,PACK_ID,GROUP_NUMBER,RECORD_NUMBER)VALUES"),
+                "unexpected selected-locator write: {sql}"
+            );
+            assert!(
+                !sql.contains("RETURNING"),
+                "admission must not fetch inserted IDs: {sql}"
+            );
+        }
+        assert!(
+            trace
+                .iter()
+                .any(|sql| sql.starts_with("INSERTINTOOBJECT_PACKS(PACK_ID,DATA)VALUES")),
+            "packed payload INSERT must execute: {trace:?}"
+        );
+        let object_reads = trace
             .iter()
-            .all(|sql| !sql.contains("RETURNING object_id")));
-        assert!(trace
-            .iter()
-            .all(|sql| !sql.contains("SELECT bytes FROM objects WHERE object_id =")));
-        assert!(trace
-            .iter()
-            .filter(|sql| sql.contains("FROM objects"))
-            .all(|sql| sql.contains("SELECT NOT EXISTS") || sql.contains("WHERE object_id IN")));
+            .filter(|sql| sql.contains("FROMOBJECTS"))
+            .collect::<Vec<_>>();
+        assert!(
+            !object_reads.is_empty(),
+            "CAS membership probes must execute: {trace:?}"
+        );
+        for sql in object_reads {
+            assert!(
+                !sql.contains("WHEREOBJECT_ID="),
+                "unexpected object point read: {sql}"
+            );
+            assert!(
+                sql.contains("SELECTNOTEXISTS") || sql.contains("WHEREOBJECT_IDIN("),
+                "admission must use batched membership/dependency probes: {sql}"
+            );
+        }
 
         drop(store);
         std::fs::remove_dir_all(root).unwrap();
@@ -3204,6 +3233,7 @@ mod tests {
         assert_direct_objects(&store, &direct, &expected);
 
         drop(expected);
+        drop(direct);
         drop(store);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -3261,6 +3291,7 @@ mod tests {
         assert!(direct.diagnostics.slab.partial_peak_payload_bytes <= 256 * 1024);
 
         drop(expected);
+        drop(direct);
         drop(store);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -3283,6 +3314,7 @@ mod tests {
         assert_direct_objects(&store, &direct, &expected);
 
         drop(expected);
+        drop(direct);
         drop(store);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -3315,6 +3347,7 @@ mod tests {
         let (expected, _, _) = legacy_directory_root(&source, [41; 32]).unwrap();
         assert_direct_objects(&store, &direct, &expected);
         drop(expected);
+        drop(direct);
         drop(store);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -3407,6 +3440,7 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_direct_objects(&store, &direct, &expected);
+        drop(direct);
         drop(store);
 
         // Enough bytes for the root plan, but none for another expanded directory.
@@ -3444,6 +3478,7 @@ mod tests {
         .unwrap();
         assert_direct_objects(&store, &direct, &expected);
         drop(expected);
+        drop(direct);
         drop(store);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -3505,6 +3540,7 @@ mod tests {
         let (expected, _, _) = serial_directory_root(&source, [49; 32]).unwrap();
         assert_direct_objects(&store, &direct, &expected);
         drop(expected);
+        drop(direct);
         drop(store);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -3523,6 +3559,7 @@ mod tests {
         let (expected, _, _) = serial_directory_root(&source, [51; 32]).unwrap();
         assert_direct_objects(&store, &direct, &expected);
         drop(expected);
+        drop(direct);
         drop(store);
         std::fs::remove_dir_all(root).unwrap();
     }

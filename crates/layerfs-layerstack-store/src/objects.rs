@@ -2169,8 +2169,10 @@ impl DeferredObjectStore {
             });
         let mut file_reserved = 0u64;
         let mut diagnostic_stop = 0u8;
-        let mut diagnostic_stats = crate::PhysicalStorageReceipt::default();
-        diagnostic_stats.diag_cursor_attached = u64::from(predecessor.is_some());
+        let mut diagnostic_stats = crate::PhysicalStorageReceipt {
+            diag_cursor_attached: u64::from(predecessor.is_some()),
+            ..Default::default()
+        };
         let mut push = |mut object: AuthenticatedCanonicalObject| {
             object.1.has_predecessor |= predecessor.is_some();
             if let (Some((reader, cursor, operation_reserved, available)), Some((start, len))) =
@@ -3082,8 +3084,15 @@ impl crate::schema::StoreDb {
 
 impl CheckedOutputAdmission {
     pub(crate) fn new(db: &crate::schema::StoreDb) -> Result<Self> {
+        Self::with_session(db, AdmissionSession::new(db)?)
+    }
+
+    fn with_session(
+        db: &crate::schema::StoreDb,
+        session: std::sync::Arc<AdmissionSession>,
+    ) -> Result<Self> {
         Ok(Self {
-            session: AdmissionSession::new(db)?,
+            session,
             db: db.clone(),
             incoming: Vec::with_capacity(INITIALIZATION_SLAB_OBJECTS),
             incoming_index: HashMap::new(),
@@ -4885,6 +4894,7 @@ mod tests {
         );
         assert_eq!(finished.diagnostics.collision_checks, 1);
 
+        drop(finished);
         drop(db);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -5249,21 +5259,26 @@ mod tests {
         let first_id = ObjectId::for_bytes(&first);
         let second_id = ObjectId::for_bytes(&second);
         let corrupt_id = ObjectId::for_bytes(&corrupt);
-        {
-            let connection = db.writer().unwrap();
-            for (id, bytes) in [
-                (first_id, first.as_slice()),
-                (second_id, second.as_slice()),
-                (corrupt_id, second.as_slice()),
-            ] {
-                connection
-                    .execute(
-                        crate::statements::objects::INSERT,
-                        rusqlite::params![id.as_bytes().as_slice(), bytes],
-                    )
-                    .unwrap();
-            }
-        }
+        let objects = [
+            (first_id, &first),
+            (second_id, &second),
+            (corrupt_id, &corrupt),
+        ]
+        .into_iter()
+        .map(|(id, bytes)| CanonicalObject {
+            id,
+            bytes: bytes.clone(),
+        })
+        .collect();
+        let mut admission = CheckedOutputAdmission::new(&db).unwrap();
+        admission.admit(sealed_segment(objects)).unwrap();
+        finish_segment_admission(&db, admission);
+        // Admission itself must authenticate. Corruption belongs after a valid
+        // fixture: point the unrelated ID at the second object's locator/length.
+        db.writer().unwrap().execute(
+            "UPDATE objects SET (canonical_length,pack_id,group_number,record_number) = (SELECT canonical_length,pack_id,group_number,record_number FROM objects WHERE object_id=?1) WHERE object_id=?2",
+            rusqlite::params![second_id.as_bytes().as_slice(), corrupt_id.as_bytes().as_slice()],
+        ).unwrap();
 
         reset_read_batch_counters();
         let rows = db
@@ -5300,13 +5315,22 @@ mod tests {
             }
         );
         let trace = crate::schema::sql_trace();
-        assert_eq!(trace.len(), 1);
-        assert!(trace[0].contains("WHERE object_id ="));
-        assert!(!trace[0].contains(" IN "));
-        assert!(matches!(
-            db.read_object_rows(&[ObjectId::for_bytes(b"missing")]),
+        let locator_reads = trace
+            .iter()
+            .filter(|sql| sql.contains("FROM objects "))
+            .collect::<Vec<_>>();
+        assert_eq!(locator_reads.len(), 1, "{trace:?}");
+        assert!(locator_reads[0].contains("WHERE object_id ="));
+        assert!(!locator_reads[0].contains(" IN "));
+        let missing = ObjectId::for_bytes(b"missing");
+        assert_eq!(
+            db.read_object_rows(&[missing]),
+            Err(StoreError::Integrity("visible object missing"))
+        );
+        assert_eq!(
+            db.read_object_rows(&[first_id, missing]),
             Err(StoreError::Integrity("visible object cardinality"))
-        ));
+        );
         assert!(db.read_object_rows(&[corrupt_id]).is_err());
 
         struct Claimed(Vec<CanonicalObject>);

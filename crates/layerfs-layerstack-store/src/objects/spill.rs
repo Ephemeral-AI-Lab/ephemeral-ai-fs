@@ -548,7 +548,7 @@ impl SpillObjects {
     pub(super) fn visit_ordered(
         &self,
         order: &IdOrder,
-        visitor: &mut dyn FnMut(ObjectId, &mut Vec<u8>, PhysicalHints) -> Result<()>,
+        visitor: &mut impl FnMut(ObjectId, &mut Vec<u8>, PhysicalHints) -> Result<()>,
     ) -> Result<()> {
         self.healthy()?;
         let mut file = self

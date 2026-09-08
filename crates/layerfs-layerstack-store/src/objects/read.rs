@@ -293,10 +293,7 @@ impl StoreDb {
         if range.len() > 37 + pack::NATIVE_FRAME_LIMIT {
             return Err(StoreError::Integrity("native record bound"));
         }
-        if budget
-            .as_deref_mut()
-            .is_some_and(|b| !b.charge(range.len(), range.len()))
-        {
+        if budget.is_some_and(|b| !b.charge(range.len(), range.len())) {
             return Ok(None);
         }
         let mut record = vec![0; range.len()];

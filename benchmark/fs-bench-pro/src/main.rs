@@ -681,7 +681,10 @@ fn run() -> AnyResult<()> {
     {
         return workspace_bench::dispatch(&args);
     }
-    if args.first().is_some_and(|arg| arg == "storage-smoke-session") {
+    if args
+        .first()
+        .is_some_and(|arg| arg == "storage-smoke-session")
+    {
         return storage_smoke::dispatch(&args);
     }
     match args.as_slice() {
