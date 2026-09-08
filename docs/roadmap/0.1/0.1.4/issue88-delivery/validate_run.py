@@ -251,6 +251,7 @@ def run(args):
             require(typed[0] == expected.get('id_prefixes', {'commit': 0x12})['commit'], 'commit domain prefix')
         ack = unique(step['receipts'], 'storage-smoke-allocation')
         row = {'checkpoint': i, 'snapshot': 'acknowledgement before verifier', 'provenance': f'performance-result.json#{"ready" if i == 0 else "records/"+str(i-1)}'}
+        row.update(source_sha=step.get('sha'), source_tree=step.get('tree'), source_oracle_sha256=step.get('oracle_sha256'), source_manifest_sha256=step.get('manifest_sha256'), previous_layerfs_mapping=ready['layer_id'] if i == 1 else checkpoints[i-1].get('commit_id') if i else None, resulting_layerfs_mapping=step.get('commit_id', ready['layer_id']), created=step.get('created'), source_identity_null_reason='Init has no source checkpoint or prior mapping' if i == 0 else None)
         errors = []
         try:
             row.update(aggregate(step['receipts'], strict=False))
