@@ -9,7 +9,8 @@ use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 
 pub const APPLICATION_ID: i64 = 0x4c46_534c;
 pub const SCHEMA_VERSION: i64 = 6;
-pub const SQLITE_PAGE_SIZE_BYTES: i64 = 64 * 1024;
+// Creation policy is independent of supported existing schema-6 layouts.
+pub const NEW_STORE_PAGE_SIZE_BYTES: i64 = 4096;
 pub const SQLITE_PAGE_CACHE_KIB: i64 = 32 * 1024;
 
 #[cfg(feature = "test-instrumentation")]
@@ -205,7 +206,7 @@ impl StoreDb {
         let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
         let mut connection = Connection::open_with_flags(&path, flags)?;
         if mode == OpenMode::Create {
-            connection.pragma_update(None, "page_size", SQLITE_PAGE_SIZE_BYTES)?;
+            connection.pragma_update(None, "page_size", NEW_STORE_PAGE_SIZE_BYTES)?;
         }
         configure_connection(&connection)?;
         if mode == OpenMode::Create {
@@ -352,7 +353,7 @@ fn verify_schema(connection: &Connection, version: i64) -> Result<()> {
     let page_size: i64 = connection.pragma_query_value(None, "page_size", |row| row.get(0))?;
     if application_id != APPLICATION_ID
         || user_version != version
-        || page_size != SQLITE_PAGE_SIZE_BYTES
+        || !matches!(page_size, 4096 | 65536)
     {
         return Err(StoreError::WrongStoreSchema);
     }
@@ -512,7 +513,7 @@ mod tests {
         let path = root.join("store.sqlite");
         let connection = Connection::open(&path).unwrap();
         connection
-            .pragma_update(None, "page_size", SQLITE_PAGE_SIZE_BYTES)
+            .pragma_update(None, "page_size", NEW_STORE_PAGE_SIZE_BYTES)
             .unwrap();
         connection
             .pragma_update(None, "journal_mode", "WAL")

@@ -130,12 +130,41 @@ fn storage(store: &LayerStackStore, label: &str) -> AnyResult<()> {
     }
     // Outside operation timing, and before any verifier-created records.
     let canonical = store.canonical_storage()?;
+    let (page_size, page_count, freelist) =
+        store.inspect_connection(|connection| -> AnyResult<(u64, u64, u64)> {
+            let read = |name: &str| -> AnyResult<u64> {
+                let value: i64 = connection.pragma_query_value(None, name, |row| row.get(0))?;
+                Ok(value.try_into()?)
+            };
+            Ok((
+                read("page_size")?,
+                read("page_count")?,
+                read("freelist_count")?,
+            ))
+        })??;
+    let database = std::fs::metadata(store.path())?;
     emit(
         "storage-smoke-allocation",
         &[
             ("label", quote(label)),
             ("store_apparent_bytes", apparent.to_string()),
             ("store_allocated_bytes", allocated.to_string()),
+            ("database_logical_bytes", database.len().to_string()),
+            (
+                "database_allocated_bytes",
+                (database.blocks() * 512).to_string(),
+            ),
+            (
+                "sidecar_logical_bytes",
+                (apparent - database.len()).to_string(),
+            ),
+            (
+                "sidecar_allocated_bytes",
+                (allocated - database.blocks() * 512).to_string(),
+            ),
+            ("page_size_bytes", page_size.to_string()),
+            ("page_count", page_count.to_string()),
+            ("freelist_page_count", freelist.to_string()),
             ("canonical_bytes", canonical.encoded_bytes.to_string()),
             ("canonical_objects", canonical.objects.to_string()),
         ],
@@ -296,7 +325,7 @@ pub fn dispatch(args: &[OsString]) -> AnyResult<()> {
     let container = ContainerId(container.to_string_lossy().into_owned());
     let case = case.to_str().ok_or("smoke case encoding")?;
     let performance = mode == "performance";
-    if !performance && mode != "verification" {
+    if !performance && mode != "verification" && mode != "compatibility" {
         return Err("smoke mode".into());
     }
     if !matches!(
@@ -491,8 +520,13 @@ pub fn dispatch(args: &[OsString]) -> AnyResult<()> {
                             commit_id: identity.parse()?,
                         }
                     };
+                    let prefix = if mode == "compatibility" {
+                        "compat"
+                    } else {
+                        "verify"
+                    };
                     let fork = client
-                        .fork_branch(EntityName::new(format!("verify-{ordinal}"))?, source)?;
+                        .fork_branch(EntityName::new(format!("{prefix}-{ordinal}"))?, source)?;
                     let session = timed(&store, "verify-mount", || {
                         Ok(client.create_workspace_session(request(fork, &container))?)
                     })?;

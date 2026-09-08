@@ -267,7 +267,8 @@ def run_case(args, output, case, fixture, image, mode, remaining_phase_seconds, 
             if mode == "performance" and case.startswith("fuse-"):
                 runtime.install_tree(sample.name, Path(fixture["input"]), "/input/fixture", runtime.Deadline.after(120))
             env = {**os.environ, "TMPDIR":str(tmp), "LAYERFS_EXEC_TRANSPORT":"daemon", "LAYERFS_FUSE_TRANSPORT":"daemon"}
-            command = [args.host_binary, "storage-smoke-session", str(host), sample.id, mode, case, fixture["input"]]
+            session_mode = "compatibility" if args.storage_compat_run else mode
+            command = [args.host_binary, "storage-smoke-session", str(host), sample.id, session_mode, case, fixture["input"]]
             result["command"] = command
             proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr, text=True, bufsize=1, env=env, start_new_session=True)
             messages = queue.Queue()
@@ -368,10 +369,70 @@ def run_case(args, output, case, fixture, image, mode, remaining_phase_seconds, 
     return result
 
 
+def page_size(path):
+    with path.open("rb") as stream:
+        header = stream.read(18)
+    if header[:16] != b"SQLite format 3\0":
+        raise ValueError("compatibility source is not SQLite")
+    value = int.from_bytes(header[16:18], "big")
+    return 65536 if value == 1 else value
+
+
+def prepare_compatibility(args, current, host_identity, image, deadline):
+    source, output = args.storage_compat_run.resolve(), args.output.resolve()
+    if output == source or output.is_relative_to(source):
+        raise ValueError("compatibility output must be outside retained source")
+    saved = json.loads((source / "identity.json").read_text())
+    manifest = json.loads((source / "verification-manifest.json").read_text())
+    before = seal(source)
+    if any(before.get(name) != digest for name, digest in manifest.items()):
+        raise ValueError("retained verification manifest changed")
+    if saved["smoke"] != args.storage_smoke or saved["contract_sha256"] != runtime.file_sha256(runner.REPO / CONTRACT):
+        raise ValueError("compatibility workload/contract mismatch")
+    if json.loads((source / "verification-summary.json").read_text())["status"] != "PASS":
+        raise ValueError("compatibility requires completed original verification")
+    fixtures = saved["fixtures"]
+    if args.storage_smoke == "deepseek-five":
+        if deepseek_inputs(args.data, deadline) != fixtures:
+            raise ValueError("compatibility frozen DeepSeek fixture mismatch")
+    else:
+        for fixture in fixtures.values():
+            if seal(Path(fixture["input"])) != fixture["input_seal"]:
+                raise ValueError("compatibility original fixture/oracle bytes changed")
+    if set(fixtures) != set(CASES[args.storage_smoke]):
+        raise ValueError("compatibility case population mismatch")
+    output.mkdir(parents=True, exist_ok=False)
+    copies = {}
+    for case in CASES[args.storage_smoke]:
+        original, copied = source / case, output / case
+        host = copied / "host-runtime"
+        host.mkdir(parents=True)
+        performance = json.loads((original / "performance-result.json").read_text())
+        if performance["status"] != "PASS" or performance["cleanup_status"] != "PASS":
+            raise ValueError("compatibility requires quiescent successful producer")
+        old_store, new_store = original / "host-runtime/store.sqlite", host / "store.sqlite"
+        if page_size(old_store) != 65536:
+            raise ValueError("compatibility source must retain 64-KiB layout")
+        copies[case] = runtime.closed_store_copy(old_store, new_store, deadline=deadline)
+        copies[case]["page_size_before"] = page_size(new_store)
+        for name in ("branch-id", "layer-id"):
+            (host / name).write_bytes((original / "host-runtime" / name).read_bytes())
+        save(copied / "performance-result.json", performance)
+    save(output / "compatibility-identity.json", {
+        "schema": "storage-smoke-compatibility-v1", "smoke": args.storage_smoke,
+        "mode": "compatibility-verification", "admission_eligible": False,
+        "allocation_comparison_eligible": False, "source_run": str(source),
+        "producer": saved, "verifier": {"host_identity": host_identity,
+            "image_id": image["Id"], "source": current},
+        "source_seal_before": before, "copies": copies, "copy_seal_before": seal(output)})
+    return fixtures, before
+
+
 def main(argv=None):
     p = argparse.ArgumentParser()
     p.add_argument("--storage-smoke", choices=tuple(CASES), required=True)
     p.add_argument("--storage-verify-run", type=Path)
+    p.add_argument("--storage-compat-run", type=Path)
     p.add_argument("--source-arm", choices=("baseline","candidate"), default="candidate")
     p.add_argument("--repetition", type=int, choices=(1,2,3), default=1)
     p.add_argument("--output", type=Path)
@@ -380,7 +441,7 @@ def main(argv=None):
     p.add_argument("--data", type=Path, default=Path("/Users/yifanxu/Ephemeral-AI-Lab/deepseek-history-data"))
     p.add_argument("--fixtures", type=Path, default=Path("/Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-data"))
     args = p.parse_args(argv)
-    if not args.image or (args.output is None) == (args.storage_verify_run is None):
+    if not args.image or (args.output is None) == (args.storage_verify_run is None) or (args.storage_compat_run and (not args.output or args.storage_verify_run)):
         p.error("--image and exactly one of --output / --storage-verify-run required")
     with (Path(os.environ.get("TMPDIR","/tmp"))/"layerfs-infra-measurement.lock").open("a") as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -392,10 +453,15 @@ def main(argv=None):
         if host_identity["binary_sha256"] != runtime.file_sha256(args.host_binary) or host_identity["LAYERFS_SOURCE_SEAL"] != current["LAYERFS_SOURCE_SEAL"] or labels["dev.layerfs.product-seal"] != current["LAYERFS_PRODUCT_SEAL"] or labels["dev.layerfs.source-seal"] != current["LAYERFS_SOURCE_SEAL"]:
             raise ValueError("stale host/image/source identity")
         deadline = runtime.Deadline.after(600 if args.storage_smoke == "deepseek-five" else 120)
-        fixtures = deepseek_inputs(args.data,deadline) if args.storage_smoke == "deepseek-five" else synthetic_inputs(args.fixtures,args.storage_smoke,deadline)
+        if args.storage_compat_run:
+            fixtures, source_seal = prepare_compatibility(args, current, host_identity, image, deadline)
+        else:
+            fixtures = deepseek_inputs(args.data,deadline) if args.storage_smoke == "deepseek-five" else synthetic_inputs(args.fixtures,args.storage_smoke,deadline)
         preparation_ns = time.monotonic_ns()-start
         output = args.storage_verify_run or args.output
-        if args.storage_verify_run:
+        if args.storage_compat_run:
+            mode = "verification"
+        elif args.storage_verify_run:
             saved = json.loads((output/"identity.json").read_text())
             if saved["host_identity"]["binary_sha256"] != host_identity["binary_sha256"] or saved["image_id"] != image["Id"] or saved["fixtures"] != fixtures:
                 raise ValueError("verification custody mismatch")
@@ -420,6 +486,16 @@ def main(argv=None):
             remaining_phase_seconds -= result.get("work_wall_ns",0)/1e9
             if result["status"] != "PASS": break
         success = len(results) == len(fixtures) and all(r["status"] == "PASS" and r["cleanup_status"] == "PASS" for r in results)
+        if args.storage_compat_run:
+            source_unchanged = seal(args.storage_compat_run.resolve()) == source_seal
+            page_sizes = {case: page_size(output / case / "host-runtime/store.sqlite")
+                          for case in CASES[args.storage_smoke]}
+            compatibility_ok = source_unchanged and all(size == 65536 for size in page_sizes.values())
+            success = success and compatibility_ok
+            save(output / "compatibility-result.json", {
+                "status": "PASS" if success else "INCOMPLETE",
+                "source_unchanged": source_unchanged, "page_sizes_after": page_sizes,
+                "copy_seal_after": seal(output), "allocation_comparison_eligible": False})
         save(output/(mode+"-summary.json"),{"status":"PASS" if success else "INCOMPLETE","cases":[r["case"] for r in results],"wall_ns":time.monotonic_ns()-start,"preparation_ns":preparation_ns})
         save(output/(mode+"-manifest.json"),seal(output))
         print(json.dumps({"output":str(output),"mode":mode,"status":"PASS" if success else "INCOMPLETE"}),flush=True)

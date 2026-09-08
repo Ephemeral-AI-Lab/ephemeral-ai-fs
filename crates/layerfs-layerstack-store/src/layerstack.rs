@@ -2919,11 +2919,11 @@ mod tests {
             .unwrap();
         assert_eq!(
             baseline_bytes,
-            baseline_pages as u64 * crate::schema::SQLITE_PAGE_SIZE_BYTES as u64
+            baseline_pages as u64 * crate::schema::NEW_STORE_PAGE_SIZE_BYTES as u64
         );
         assert_eq!(
             failed_bytes,
-            failed_pages as u64 * crate::schema::SQLITE_PAGE_SIZE_BYTES as u64
+            failed_pages as u64 * crate::schema::NEW_STORE_PAGE_SIZE_BYTES as u64
         );
         assert!(failed_pages >= baseline_pages);
         assert!(
