@@ -1006,10 +1006,13 @@ mod zstandard {
             let mut dictionary_magic = random.clone();
             dictionary_magic[..4].copy_from_slice(&[0x37, 0xa4, 0x30, 0xec]);
             for source in [&random, &repeated, &dictionary_magic] {
+                // ZSTD_window_update reduces an overlapping dictionary range
+                // (compress_internal.h). Use disjoint operands as production does.
+                let prefix_source = source.to_vec();
                 for size in sizes {
                     for prefix_size in [0, 1, 7, 8, 63, 64, 1024, 32768] {
                         let raw = &source[..size];
-                        let prefix = &source[..prefix_size];
+                        let prefix = &prefix_source[..prefix_size];
                         let encoded = native_compress(raw, Some(prefix)).unwrap();
                         assert!(encoded.capacity() <= NATIVE_FRAME_LIMIT);
                         assert_eq!(encoded, dynamic_frame(raw, prefix));
@@ -1017,25 +1020,29 @@ mod zstandard {
                     }
                 }
             }
-            let frame = native_compress(&random, Some(&random)).unwrap();
+            let valid_base = random.clone();
+            let frame = native_compress(&random, Some(&valid_base)).unwrap();
+            let full = native_compress(&random, None).unwrap();
+            assert!(37 + frame.len() < 5 + full.len(), "fixture must select and use PREFIX");
+            assert_eq!(native_decompress(&frame, random.len(), Some(&valid_base)).unwrap(), random);
             let wrong = vec![0u8; NATIVE_RAW_LIMIT];
             assert!(native_decompress(&frame, random.len(), Some(&wrong)).is_err());
-            assert!(native_decompress(&frame, random.len() - 1, Some(&random)).is_err());
-            assert!(native_decompress(&frame[..frame.len()-1], random.len(), Some(&random)).is_err());
+            assert!(native_decompress(&frame, random.len() - 1, Some(&valid_base)).is_err());
+            assert!(native_decompress(&frame[..frame.len()-1], random.len(), Some(&valid_base)).is_err());
             let mut extra = frame.clone(); extra.push(0);
-            assert!(native_decompress(&extra, random.len(), Some(&random)).is_err());
+            assert!(native_decompress(&extra, random.len(), Some(&valid_base)).is_err());
             extra = frame.clone(); extra.extend_from_slice(&frame);
-            assert!(native_decompress(&extra, random.len(), Some(&random)).is_err());
+            assert!(native_decompress(&extra, random.len(), Some(&valid_base)).is_err());
             for bad in [0x01, 0x02, 0x03, 0x08, 0x10] {
                 let mut broken = frame.clone(); broken[4] |= bad;
-                assert!(native_decompress(&broken, random.len(), Some(&random)).is_err());
+                assert!(native_decompress(&broken, random.len(), Some(&valid_base)).is_err());
             }
             let mut no_checksum = frame.clone(); no_checksum[4] &= !4;
-            assert!(native_decompress(&no_checksum, random.len(), Some(&random)).is_err());
+            assert!(native_decompress(&no_checksum, random.len(), Some(&valid_base)).is_err());
             let mut checksum = frame.clone(); *checksum.last_mut().unwrap() ^= 1;
-            assert!(native_decompress(&checksum, random.len(), Some(&random)).is_err());
+            assert!(native_decompress(&checksum, random.len(), Some(&valid_base)).is_err());
             let mut skippable = frame.clone(); skippable[..4].copy_from_slice(&[0x50,0x2a,0x4d,0x18]);
-            assert!(native_decompress(&skippable, random.len(), Some(&random)).is_err());
+            assert!(native_decompress(&skippable, random.len(), Some(&valid_base)).is_err());
             // Explicit non-single-segment header declares windowLog21. The
             // oversized window is rejected before block/checksum decoding.
             let excessive_window = [0x28,0xb5,0x2f,0xfd,0x84,0x58,0,0,0,0,1,0,0,0,0,0,0];
