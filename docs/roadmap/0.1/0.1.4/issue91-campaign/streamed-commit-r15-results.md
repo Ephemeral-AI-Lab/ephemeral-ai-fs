@@ -47,7 +47,8 @@ and2.540153s G8 before subtracting their separately retained before observations
 All physical page-size receipts remain4096. Init's database bytes remain550821888;
 its G8 CPU/RSS observations worsened and are retained in raw receipts.
 
-Correctness:60 Workspace unit tests;93 Store unit tests;8 Store integration tests;
+Correctness:60 Workspace unit tests;92 Store unit tests passed (one existing
+large-spill test ignored by the default invocation);8 Store integration tests;
 one Store compile-fail doctest passed. The new regression proves delivery before
 EOF, zero private spill, canonical identity equality, original slab bounds, and
 late read error after committed admission batches followed by exact Store-count
