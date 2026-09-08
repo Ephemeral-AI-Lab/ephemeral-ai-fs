@@ -1979,6 +1979,7 @@ pub(crate) struct CheckedOutputAdmission {
     incoming_index: HashMap<ObjectId, usize>,
     incoming_bytes: usize,
     batch: Vec<AuthenticatedCanonicalObject>,
+    full_lookahead: admission::FullLookahead,
     seen: SpillableObjectSet,
     pending: HashMap<ObjectId, usize>,
     batch_bytes: usize,
@@ -1997,6 +1998,7 @@ pub(crate) struct MissingBatch(
     std::sync::Arc<AdmissionSession>,
     bool,
     Option<u64>,
+    admission::FullLookahead,
 );
 
 impl std::ops::Deref for MissingBatch {
@@ -3121,6 +3123,7 @@ impl CheckedOutputAdmission {
             incoming_index: HashMap::new(),
             incoming_bytes: 0,
             batch: Vec::with_capacity(INITIALIZATION_SLAB_OBJECTS),
+            full_lookahead: admission::FullLookahead::default(),
             // Only preexisting occurrences need a separate uniqueness index.
             // This session's published packs already identify its fresh output.
             seen: SpillableObjectSet::bounded(CANDIDATE_INDEX_BYTES / 4)?,
@@ -3222,6 +3225,7 @@ impl CheckedOutputAdmission {
             self.session.clone(),
             false,
             Some(self.batch_epoch),
+            std::mem::take(&mut self.full_lookahead),
         ))
     }
 
@@ -3256,6 +3260,10 @@ impl CheckedOutputAdmission {
             .publication_epoch
             .load(std::sync::atomic::Ordering::Acquire);
         let known = self.db.object_locations(&ids)?;
+        // Collision reconstruction keeps its original physical reservation.
+        if !known.is_empty() {
+            self.full_lookahead.discard(&self.db);
+        }
         drop(ids);
         let preexisting = known
             .iter()
@@ -3280,7 +3288,9 @@ impl CheckedOutputAdmission {
         self.note_collision_reads(metrics);
         drop(supplied);
         let mut stats = crate::PhysicalStorageReceipt::default();
-        for mut object in page {
+        let page_capacity = page.capacity();
+        let mut page = page.into_iter();
+        while let Some(mut object) = page.next() {
             if let Some(location) = known.get(&object.id) {
                 if location.pack <= self.session.baseline_pack && first.contains(&object.id) {
                     let bytes = object.bytes.len() as u64;
@@ -3303,7 +3313,16 @@ impl CheckedOutputAdmission {
             } else {
                 diagnostic::occurrence(&mut object, 1, &mut stats);
                 diagnostic::eligible(&object, &mut stats);
-                self.push_pending(object, &mut probe_epoch)?;
+                // Only an entirely missing page offers Store-free lookahead.
+                let tail = if known.is_empty() {
+                    page.as_slice()
+                } else {
+                    &[]
+                };
+                let associations = page_capacity
+                    * std::mem::size_of::<AuthenticatedCanonicalObject>()
+                    + (self.incoming_index.capacity() + self.pending.capacity()) * 64;
+                self.push_pending(object, &mut probe_epoch, tail, associations)?;
             }
         }
         self.db.note_physical(stats);
@@ -3386,6 +3405,8 @@ impl CheckedOutputAdmission {
         &mut self,
         object: AuthenticatedCanonicalObject,
         probe_epoch: &mut u64,
+        lookahead: &[AuthenticatedCanonicalObject],
+        lookahead_associations: usize,
     ) -> Result<()> {
         if object.bytes.len() > ADMISSION_BATCH_BYTES {
             return Err(StoreError::Integrity("canonical object admission size"));
@@ -3399,7 +3420,11 @@ impl CheckedOutputAdmission {
                 .session
                 .publication_epoch
                 .load(std::sync::atomic::Ordering::Acquire);
-            self.flush_batch()?;
+            self.flush_batch_with_lookahead(
+                lookahead,
+                lookahead_associations,
+                object.bytes.capacity(),
+            )?;
             let after = self
                 .session
                 .publication_epoch
@@ -3456,6 +3481,15 @@ impl CheckedOutputAdmission {
     }
 
     fn flush_batch(&mut self) -> Result<()> {
+        self.flush_batch_with_lookahead(&[], 0, 0)
+    }
+
+    fn flush_batch_with_lookahead(
+        &mut self,
+        lookahead: &[AuthenticatedCanonicalObject],
+        lookahead_associations: usize,
+        triggering_capacity: usize,
+    ) -> Result<()> {
         if self.batch.is_empty() {
             return Ok(());
         }
@@ -3464,7 +3498,15 @@ impl CheckedOutputAdmission {
         if batch.is_empty() {
             return Ok(());
         }
-        let metrics = consume_checked_owned_page(&self.db, batch, &mut self.statement_number)?;
+        let (metrics, frames) = consume_checked_owned_page(
+            &self.db,
+            batch,
+            &mut self.statement_number,
+            lookahead,
+            lookahead_associations,
+            triggering_capacity,
+        )?;
+        self.full_lookahead = frames;
         self.checked.record(&metrics);
         self.batch = Vec::with_capacity(capacity);
         self.diagnostics.record_sql_batch(
@@ -3626,18 +3668,28 @@ fn consume_checked_owned_page(
     db: &crate::schema::StoreDb,
     batch: MissingBatch,
     statement_number: &mut u64,
-) -> Result<AdmissionBatchMetrics> {
+    lookahead: &[AuthenticatedCanonicalObject],
+    lookahead_associations: usize,
+    triggering_capacity: usize,
+) -> Result<(AdmissionBatchMetrics, admission::FullLookahead)> {
     let prepared = admission::PreparedAdmission::prepare_missing(db, batch)?;
-    let (_, metrics) = prepared.publish(db, statement_number, |_, _, _| {
-        #[cfg(feature = "test-instrumentation")]
-        crate::schema::verification_store_checkpoint(
-            crate::schema::VerificationStoreFault::LaterAdmissionBatch,
-        )?;
-        Ok(())
-    })?;
+    let ((_, metrics), frames) = prepared.publish_with_lookahead(
+        db,
+        statement_number,
+        lookahead,
+        lookahead_associations,
+        triggering_capacity,
+        |_, _, _| {
+            #[cfg(feature = "test-instrumentation")]
+            crate::schema::verification_store_checkpoint(
+                crate::schema::VerificationStoreFault::LaterAdmissionBatch,
+            )?;
+            Ok(())
+        },
+    )?;
     #[cfg(feature = "test-instrumentation")]
     crate::schema::verification_early_committed();
-    Ok(metrics)
+    Ok((metrics, frames))
 }
 
 impl ObjectSource for crate::schema::StoreDb {

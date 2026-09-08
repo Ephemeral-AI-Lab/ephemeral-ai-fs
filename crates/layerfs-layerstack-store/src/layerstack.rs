@@ -24,6 +24,9 @@ impl LayerStackStore {
         source: LayerStackInitialization,
     ) -> Result<InitializeLayerStackResult> {
         let mut initialization_diagnostic = InitializationDiagnostic::from_env();
+        let physical_before = initialization_diagnostic
+            .as_ref()
+            .map(|_| self.db.physical_storage_receipt());
         let layer_stack_id = LayerStackId::new();
         let seed = initialization_seed(&layer_stack_id, initialization_diagnostic.is_some())?;
         let (
@@ -190,7 +193,11 @@ impl LayerStackStore {
         );
         if let Some(mut diagnostic) = initialization_diagnostic {
             diagnostic.fast = fast_diagnostics;
-            diagnostic.emit();
+            diagnostic.emit(
+                self.db
+                    .physical_storage_receipt()
+                    .since(physical_before.unwrap_or_default()),
+            );
         }
         Ok(InitializeLayerStackResult {
             layer_stack_id,
@@ -614,7 +621,7 @@ impl InitializationDiagnostic {
         })
     }
 
-    fn emit(self) {
+    fn emit(self, physical: crate::PhysicalStorageReceipt) {
         let fast_path = u8::from(self.fast.is_some());
         let parent_merge_bytes = if fast_path == 1 { "0" } else { "na" };
         let fast = self.fast.unwrap_or_default();
@@ -791,6 +798,22 @@ impl InitializationDiagnostic {
             admission.sql_batch_count,
             admission.sql_batch_count,
             admission.sql_commit_ns,
+        );
+        eprintln!(
+            "layerfs-initialization-diagnostic-lookahead-v1 nonce={} eligible={} encoded={} consumed={} discarded={} runs={} worker_peak={} worker_ns={} overlap_ns={} join_ns={} spawn_ns={} reserved_physical_peak_bytes={} frame_peak_bytes={}",
+            self.nonce,
+            physical.native_lookahead_eligible,
+            physical.native_lookahead_encoded,
+            physical.native_lookahead_consumed,
+            physical.native_lookahead_discarded,
+            physical.native_lookahead_runs,
+            physical.native_lookahead_worker_peak,
+            physical.native_lookahead_worker_ns,
+            physical.native_lookahead_overlap_ns,
+            physical.native_lookahead_join_ns,
+            physical.native_lookahead_spawn_ns,
+            physical.native_lookahead_reserved_physical_peak_bytes,
+            physical.native_lookahead_frame_peak_bytes,
         );
         for producer in fast.producers {
             eprintln!(

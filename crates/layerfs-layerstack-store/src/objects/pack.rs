@@ -325,6 +325,10 @@ pub(super) fn native_decompress(
     zstandard::native_decompress(frame, raw_length, prefix)
 }
 
+pub(super) fn native_frame_capacity(raw_length: usize) -> Result<usize> {
+    zstandard::native_frame_capacity(raw_length)
+}
+
 pub(super) enum Record<'a> {
     Full(&'a [u8]),
     Delta {
@@ -920,6 +924,17 @@ mod zstandard {
     #[cfg(test)]
     thread_local! { static NATIVE_CONTEXT_INITIALIZATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
+    pub(super) fn native_frame_capacity(raw_length: usize) -> Result<usize> {
+        if raw_length > NATIVE_RAW_LIMIT {
+            return Err(invalid());
+        }
+        let bound = checked(unsafe { ZSTD_compressBound(raw_length) })?;
+        if bound > NATIVE_FRAME_LIMIT {
+            return Err(resource());
+        }
+        Ok(bound)
+    }
+
     pub(super) fn native_compress_in(
         memory: &mut [u64],
         cached: &mut Option<NativeContext>,
@@ -967,10 +982,7 @@ mod zstandard {
                     },
                     prefix.len(),
                 ))?;
-                let bound = checked(ZSTD_compressBound(raw.len()))?;
-                if bound > NATIVE_FRAME_LIMIT {
-                    return Err(resource());
-                }
+                let bound = native_frame_capacity(raw.len())?;
                 let mut encoded = output(bound)?;
                 if encoded.capacity() > NATIVE_FRAME_LIMIT {
                     return Err(resource());

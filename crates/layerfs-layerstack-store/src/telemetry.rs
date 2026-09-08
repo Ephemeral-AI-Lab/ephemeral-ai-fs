@@ -21,7 +21,7 @@ macro_rules! physical_storage_receipt {
 
         impl PhysicalStorageReceipt {
             pub fn since(self, before: Self) -> Self {
-                Self { $($field: if matches!(stringify!($field), "diag_selected_pack_last_id" | "diag_invalid") { self.$field } else { self.$field.saturating_sub(before.$field) },)+ }
+                Self { $($field: if matches!(stringify!($field), "diag_selected_pack_last_id" | "diag_invalid" | "native_lookahead_reserved_physical_peak_bytes" | "native_lookahead_frame_peak_bytes" | "native_lookahead_worker_peak") { self.$field } else { self.$field.saturating_sub(before.$field) },)+ }
             }
         }
 
@@ -33,7 +33,7 @@ macro_rules! physical_storage_receipt {
         impl PhysicalStorageCounters {
             pub(crate) fn note(&self, receipt: PhysicalStorageReceipt) {
                 $(if receipt.$field != 0 {
-                    if stringify!($field) == "diag_selected_pack_last_id" {
+                    if matches!(stringify!($field), "diag_selected_pack_last_id" | "native_lookahead_reserved_physical_peak_bytes" | "native_lookahead_frame_peak_bytes" | "native_lookahead_worker_peak") {
                         self.$field.fetch_max(receipt.$field, std::sync::atomic::Ordering::Relaxed);
                     } else if stringify!($field).starts_with("diag_") {
                         if self.$field.fetch_update(std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed,
@@ -242,6 +242,18 @@ physical_storage_receipt!(
     native_full_encode_ns,
     native_full_frame_count,
     native_full_frame_bytes,
+    native_lookahead_eligible,
+    native_lookahead_encoded,
+    native_lookahead_consumed,
+    native_lookahead_discarded,
+    native_lookahead_runs,
+    native_lookahead_worker_peak,
+    native_lookahead_worker_ns,
+    native_lookahead_overlap_ns,
+    native_lookahead_join_ns,
+    native_lookahead_spawn_ns,
+    native_lookahead_reserved_physical_peak_bytes,
+    native_lookahead_frame_peak_bytes,
     native_prefix_encode_calls,
     native_prefix_encode_ns,
     native_prefix_frame_count,

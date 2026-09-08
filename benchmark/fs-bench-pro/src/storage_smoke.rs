@@ -65,6 +65,45 @@ fn physical_json(receipt: layerfs_layerstack_store::PhysicalStorageReceipt) -> S
         ("native_full_frame_count", receipt.native_full_frame_count),
         ("native_full_frame_bytes", receipt.native_full_frame_bytes),
         (
+            "native_lookahead_eligible",
+            receipt.native_lookahead_eligible,
+        ),
+        ("native_lookahead_encoded", receipt.native_lookahead_encoded),
+        (
+            "native_lookahead_consumed",
+            receipt.native_lookahead_consumed,
+        ),
+        (
+            "native_lookahead_discarded",
+            receipt.native_lookahead_discarded,
+        ),
+        ("native_lookahead_runs", receipt.native_lookahead_runs),
+        (
+            "native_lookahead_worker_peak",
+            receipt.native_lookahead_worker_peak,
+        ),
+        (
+            "native_lookahead_worker_ns",
+            receipt.native_lookahead_worker_ns,
+        ),
+        (
+            "native_lookahead_overlap_ns",
+            receipt.native_lookahead_overlap_ns,
+        ),
+        ("native_lookahead_join_ns", receipt.native_lookahead_join_ns),
+        (
+            "native_lookahead_spawn_ns",
+            receipt.native_lookahead_spawn_ns,
+        ),
+        (
+            "native_lookahead_reserved_physical_peak_bytes",
+            receipt.native_lookahead_reserved_physical_peak_bytes,
+        ),
+        (
+            "native_lookahead_frame_peak_bytes",
+            receipt.native_lookahead_frame_peak_bytes,
+        ),
+        (
             "native_prefix_encode_calls",
             receipt.native_prefix_encode_calls,
         ),
