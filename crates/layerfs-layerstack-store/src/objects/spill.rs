@@ -691,6 +691,16 @@ fn scratch_index(label: &str, schema: &str) -> Result<(Connection, TempPath)> {
 }
 
 impl SpillDiskIndex {
+    #[cfg(test)]
+    pub(super) fn test_path(&self) -> &std::path::Path {
+        &self._path.0
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_connection(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.connection.lock().unwrap()
+    }
+
     fn new() -> Result<Self> {
         let (connection, path) = scratch_index("candidate-index",
             "CREATE TABLE offsets (id BLOB PRIMARY KEY CHECK(length(id)=32), offset INTEGER NOT NULL CHECK(offset>=0), length INTEGER NOT NULL CHECK(length>=0)) WITHOUT ROWID;")?;

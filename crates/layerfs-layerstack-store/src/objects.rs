@@ -4309,14 +4309,14 @@ mod tests {
         assert_eq!(spill.index_bytes, 0);
         assert!(spill.pending.is_empty());
         let disk = spill.disk_index.as_ref().unwrap();
-        let index_path = disk._path.0.clone();
+        let index_path = disk.test_path().to_path_buf();
         let payload_path = spill.path.clone();
         assert_eq!(
             std::fs::metadata(&index_path).unwrap().permissions().mode() & 0o777,
             0o600
         );
         {
-            let connection = disk.connection.lock().unwrap();
+            let connection = disk.test_connection();
             let rows: i64 = connection
                 .query_row("SELECT count(*) FROM offsets", [], |row| row.get(0))
                 .unwrap();
