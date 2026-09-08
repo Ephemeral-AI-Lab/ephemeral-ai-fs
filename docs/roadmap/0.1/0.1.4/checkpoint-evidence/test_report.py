@@ -61,6 +61,10 @@ def check():
         errors = []
         r.validate_outcomes(dict(good, **{field: None}), errors)
         assert errors, field
+    for invalid in (-1, float('nan'), float('inf')):
+        errors = []
+        r.validate_outcomes(dict(good, host_peak_rss_bytes=invalid), errors)
+        assert errors
     values = r.metrics(dict(host_resources=[dict(phase='before', disk_write_bytes=20),
         dict(phase='after-product', disk_write_bytes=50), dict(phase='final', disk_write_bytes=90)],
         route_metrics=[dict(schema='x', spool_write_bytes=10), dict(schema='x', spool_write_bytes=20)]))
@@ -83,6 +87,7 @@ def check():
     r.normalize_historical_seed(copy.deepcopy(historical), r.BASE,
                                 dict(declaration, seed_or_sdk_repetition=2), manifest, errors)
     assert errors  # Never infer seed from candidate when original receipts disagree.
+    assert r.contract_errors(old, dict(new, preparation={'fixture': {'input_plan_sha256': 'changed'}}), mapping[0])
     print('v0.1.4 report focused checks: PASS')
 
 

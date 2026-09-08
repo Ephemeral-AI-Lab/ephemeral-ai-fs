@@ -233,6 +233,7 @@ impl PreparedAdmission {
         let mut groups =
             Vec::<pack::EncodedGroup>::with_capacity(objects.len().min(pack::GROUP_COUNT_LIMIT));
         let mut full_group_length = 4usize;
+        let mut encoder = None;
         for object in objects {
             self.native_scratch(
                 &pending,
@@ -247,7 +248,12 @@ impl PreparedAdmission {
                 layerfs_content::decode_bytes_object(&object.bytes)?,
             )?;
             let started = Instant::now();
-            let full = pack::native_compress(raw, None);
+            let full = (|| {
+                if encoder.is_none() {
+                    encoder = Some(pack::NativeEncoder::new()?);
+                }
+                encoder.as_mut().unwrap().compress(raw, None)
+            })();
             let elapsed = super::elapsed_ns(started);
             stats.native_full_encode_calls += 1;
             stats.native_full_encode_ns += elapsed;
@@ -265,6 +271,7 @@ impl PreparedAdmission {
                     &mut groups,
                     input_associations,
                     full.capacity(),
+                    &mut encoder,
                     stats,
                 )?;
                 full_group_length = 4;
@@ -276,6 +283,8 @@ impl PreparedAdmission {
             stats.eligible_targets += 1;
             stats.absent_predecessors += u64::from(!object.1.has_predecessor);
             if let Some(id) = object.prior_ids().iter().flatten().next().copied() {
+                // Reader and encoder each own bounded scratch; never overlap them.
+                drop(encoder.take());
                 search.reads.begin_target();
                 if search.trials == 512
                     || self
@@ -359,7 +368,10 @@ impl PreparedAdmission {
                                 // The reader owns a separate canonical allocation;
                                 // target and prefix cannot overlap as codec operands.
                                 let started = Instant::now();
-                                let result = pack::native_compress(raw, Some(prefix));
+                                let result = (|| {
+                                    encoder = Some(pack::NativeEncoder::new()?);
+                                    encoder.as_mut().unwrap().compress(raw, Some(prefix))
+                                })();
                                 let elapsed = super::elapsed_ns(started);
                                 stats.native_prefix_encode_calls += 1;
                                 stats.native_prefix_encode_ns += elapsed;
@@ -431,7 +443,15 @@ impl PreparedAdmission {
                 terminal,
             });
         }
-        self.flush_native_group(&mut pending, &mut groups, input_associations, 0, stats)?;
+        drop(encoder.take());
+        self.flush_native_group(
+            &mut pending,
+            &mut groups,
+            input_associations,
+            0,
+            &mut encoder,
+            stats,
+        )?;
         if !groups.is_empty() {
             let length =
                 16 + 16 * groups.len() + groups.iter().map(|g| g.bytes.len()).sum::<usize>();
@@ -448,6 +468,7 @@ impl PreparedAdmission {
         groups: &mut Vec<pack::EncodedGroup>,
         input_associations: usize,
         live_full_capacity: usize,
+        encoder: &mut Option<pack::NativeEncoder>,
         stats: &mut crate::PhysicalStorageReceipt,
     ) -> Result<()> {
         if pending.is_empty() {
@@ -457,16 +478,35 @@ impl PreparedAdmission {
             4 + 4 * pending.len() + pending.iter().map(|p| p.record.len()).sum::<usize>();
         let assembled_length =
             16 + 16 * groups.len() + groups.iter().map(|g| g.bytes.len()).sum::<usize>();
-        // Conservative peak: old records, copied group, old groups, copied pack
-        // and references can coexist. There is no codec context at this stage.
+        // Keep scratch reuse only when the unchanged physical ceiling also fits
+        // old records, copied group/pack and references. Releasing the encoder
+        // restores the previous assembly ownership without changing pack layout.
+        let extra = live_full_capacity
+            + group_length
+            + assembled_length
+            + pending.len() * std::mem::size_of::<&[u8]>();
+        if encoder.is_some()
+            && self
+                .native_scratch(
+                    pending,
+                    groups,
+                    input_associations,
+                    extra + pack::NATIVE_ENCODE_WORKSPACE,
+                )
+                .is_err()
+        {
+            drop(encoder.take());
+        }
         self.native_scratch(
             pending,
             groups,
             input_associations,
-            live_full_capacity
-                + group_length
-                + assembled_length
-                + pending.len() * std::mem::size_of::<&[u8]>(),
+            extra
+                + if encoder.is_some() {
+                    pack::NATIVE_ENCODE_WORKSPACE
+                } else {
+                    0
+                },
         )?;
         let refs = pending
             .iter()

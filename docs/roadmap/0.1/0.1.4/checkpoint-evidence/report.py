@@ -5,6 +5,7 @@ import csv
 import hashlib
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 
@@ -108,7 +109,10 @@ def contract_errors(old, current, mapping):
         errors.append('timer differs from mapping')
     if old.get('definition') != current.get('definition'):
         errors.append('registered workload/public route differs')
-    # Content/operation manifests are source-independent; source/root seals are not.
+    if (old.get('preparation') or {}).get('fixture') != (current.get('preparation') or {}).get('fixture'):
+        errors.append('prepared fixture content differs')
+    # Include exact operation-source manifests; a source change needs an explicit
+    # reviewed contract mapping, never a silent waiver based on matching names.
     fields = ('fixture_digest', 'edited_fixture_digest', 'edit_plan_sha256', 'replacement_sha256',
               'operation_key', 'operation_surface', 'payload_seed', 'logical_operation_count',
               'timed_call_graph_manifest_sha256', 'operation_route_manifest_sha256')
@@ -143,7 +147,7 @@ def compare(report, baseline, mapping, plan):
         if row:
             row.update(previous=None, previous_elapsed_ns=old.get('elapsed_ns') if eligible else None,
                        difference_ns=None, difference_percent=None,
-                       comparison_eligibility='directly-comparable' if eligible else (match or {}).get('classification', 'unmapped'),
+                       comparison_eligibility='directly-comparable' if eligible else 'incompatible-contract' if reasons else 'missing-observation' if row.get('sample_count') != plan['sample_count'] else (match or {}).get('classification', 'unmapped'),
                        comparison_reason='; '.join(reasons) or (match or {}).get('reason'),
                        historical_checkpoint='9f5a641d223606c45e5e6aa8a20094c12f9139a1')
         old_metrics, new_metrics = metrics(old or {}), metrics(row or {})
@@ -205,8 +209,9 @@ def validate_outcomes(row, errors):
         if row.get(field) != 'PASS':
             errors.append(f"failed or missing {field}: {key(row)}")
     for field in ('host_peak_rss_bytes', 'container_peak_bytes', 'container_cpu_ns'):
-        if not numeric(row.get(field)):
-            errors.append(f"missing required resource {field}: {key(row)}")
+        value = row.get(field)
+        if not numeric(value) or not math.isfinite(value) or value < 0:
+            errors.append(f"missing or invalid required resource {field}: {key(row)}")
     if row.get('definition', {}).get('setup_policy') != 'fresh-output' and row.get('prepared_master_unchanged') is not True:
         errors.append(f"failed or missing custody: {key(row)}")
 
@@ -246,6 +251,13 @@ def derive(campaign, registry, frozen=FROZEN, baseline_dir=BASE):
     for proof in report['verification']:
         if proof['status'] == 'EXCLUDED_LONG':
             proof['status'] = 'NOT_RUN_OPTIONAL'
+            proof['reason'] = plan['long_test_reason']
+    for family, summary in report['families'].items():
+        statuses = {}
+        for proof in report['verification']:
+            if proof['family'] == family:
+                statuses[proof['status']] = statuses.get(proof['status'], 0) + 1
+        summary['verification_statuses'] = statuses
     report.update(schema='layerfs-v014-historical-checkpoint-v1', release='0.1.4',
                   baseline={k: manifest[k] for k in ('tag', 'tag_commit', 'accepted_checkpoint')},
                   baseline_release_limit='v0.1.3 release includes later FUSE correctness repair; complete historical performance campaign not rerun',
