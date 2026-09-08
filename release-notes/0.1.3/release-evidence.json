@@ -1,0 +1,70 @@
+{
+  "schema": "layerfs-v013-release-evidence-v1",
+  "benchmark_checkpoint": "9f5a641d223606c45e5e6aa8a20094c12f9139a1",
+  "release_base": "28177560c8f049c02192e18c263cdc5543c1ab52",
+  "unchanged_paths": [
+    "crates/",
+    "tools/",
+    "benchmark/fs-bench-pro/"
+  ],
+  "package_version": "0.1.3",
+  "build_identity": {
+    "LAYERFS_SOURCE_COMMIT": "28177560c8f049c02192e18c263cdc5543c1ab52",
+    "LAYERFS_SOURCE_TREE": "0da76a0f749db3a098f6dda658b4c83dff02bbf5",
+    "LAYERFS_SOURCE_DIRTY": "true",
+    "LAYERFS_SOURCE_SEAL": "63a175a85b307972ca94201115bb57836cf58912175f6cb4b42be4f478d7ef6d",
+    "LAYERFS_PRODUCT_SEAL": "3c797bc6dbfd9b03b919c270b609cad839000b68d67e34f3b00d24717e07f39a",
+    "WORKLOAD_SOURCE_SHA256": "2ec809798656deef9ac05903c9e3bd77921f6ef9c6c87f24060812a81b93bf76"
+  },
+  "checkpoint": {
+    "performance_pass": 198,
+    "routine_verification_pass": 226,
+    "families": 17,
+    "excluded_long": 1,
+    "rederived_status": "PASS"
+  },
+  "native_tests": {
+    "passed": 348,
+    "failed": 0,
+    "ignored": 1,
+    "seconds": 79
+  },
+  "local_log_hashes": {
+    "native-tests": {
+      "sha256": "5ba1fa7ca78e6e7a912856a1d0759ec127ea6c0280fe8834ce117896a08a4467",
+      "scope": "local release preparation log; not a performance sample"
+    },
+    "clippy": {
+      "sha256": "ee6d0336de8f414409262f0a590bc3154176a437f16ac54dda51b92dade77378",
+      "scope": "local release preparation log; not a performance sample"
+    },
+    "build": {
+      "sha256": "68d60be43c3a5ac84bbb73b66476e0e86c2216026dd09a26c74e9c481fd99475",
+      "scope": "local release preparation log; not a performance sample"
+    },
+    "python-tests": {
+      "sha256": "8fdc80d5bb3c0d8b558755d7a90dd1b0e492aad123ebde1983ac602359cf60d2",
+      "scope": "local release preparation log; not a performance sample"
+    },
+    "report-tests": {
+      "sha256": "108c829c31e651d56b91ecf9e3b375806257a55e1cb0b96233b711be478e7e9b",
+      "scope": "local release preparation log; not a performance sample"
+    },
+    "report-derive": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "scope": "local release preparation log; not a performance sample"
+    }
+  },
+  "live_docker": {
+    "initial": {
+      "passed": 2,
+      "failed": 1,
+      "seconds": 9.35,
+      "original_log_sha256": "97f7257bba09c2ff2346cda07856b88b61c51044f332c563eefaa58d29bc0e3d",
+      "published_log": "qualification/live-docker-initial.log",
+      "published_log_sha256": "e2098d0d3343d384ba86e1e99871620c49e2f2d5e5d0a4a827b1df7f88e8c44c"
+    },
+    "status": "repair_required"
+  },
+  "publication_ci": "must pass on final release source; final run linked in GitHub release announcement"
+}

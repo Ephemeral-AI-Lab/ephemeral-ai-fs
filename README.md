@@ -9,7 +9,7 @@
 <p align="center">
   <a href="https://github.com/Ephemeral-AI-Lab/layerfs/actions/workflows/ci.yml"><img src="https://github.com/Ephemeral-AI-Lab/layerfs/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
-  <a href="release-notes/0.1.2/README.md"><img src="https://img.shields.io/badge/status-developer%20preview-orange.svg" alt="Developer preview"></a>
+  <a href="release-notes/0.1.3/README.md"><img src="https://img.shields.io/badge/status-developer%20preview-orange.svg" alt="Developer preview"></a>
   <a href="docs/assets/community/wechat-ephemeral-ai-lab.jpg"><img src="https://img.shields.io/badge/WeChat-Scan%20QR-07C160?logo=wechat&amp;logoColor=white" alt="WeChat QR invite"></a>
   <a href="https://discord.gg/DrgJ4DX9E"><img src="https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&amp;logoColor=white" alt="Join Discord"></a>
   <a href="https://x.com/yifanxu_ephai"><img src="https://img.shields.io/badge/X-%40yifanxu_ephai-000000?logo=x&amp;logoColor=white" alt="Follow @yifanxu_ephai on X"></a>
@@ -31,7 +31,7 @@ The filesystem remains load-bearing for recursive multi-agent exploration
 without multiplying storage.
 
 > [!WARNING]
-> LayerFS 0.1.2 is a Developer Preview. It is intended
+> LayerFS 0.1.3 is a Developer Preview. It is intended
 > for local evaluation, agent-runtime integration, and performance research—not
 > production storage. It does not provide crash- or power-loss-durability
 > guarantees. Keep an independent copy of important data.
@@ -96,7 +96,7 @@ allocation, equations, source identity, and raw evidence.
 ### 🧩 LayerFS components
 
 The storage engine, SDK, CLI, and filesystem projection are implemented in the
-0.1.2 Developer Preview. They remain separate public boundaries so callers do
+0.1.3 Developer Preview. They remain separate public boundaries so callers do
 not depend on private CAS handles or storage formats.
 
 | **Status** | **Component** | **Role** |
@@ -113,7 +113,7 @@ Each `workspace exec` starts a fresh process. `commit` publishes the Workspace s
 
 ## 🛠️ Quickstart
 
-The current release is built from source. You need **macOS or Linux** and **Rust 1.85 or newer**. Docker, `/dev/fuse`, and `CAP_SYS_ADMIN` are needed only for managed container-FUSE workspaces. Packages are not published to crates.io in 0.1.2.
+The current release is built from source. You need **macOS or Linux** and **Rust 1.85 or newer**. Docker, `/dev/fuse`, and `CAP_SYS_ADMIN` are needed only for managed container-FUSE workspaces. Packages are not published to crates.io in 0.1.3.
 
 From the repository root:
 
@@ -132,7 +132,7 @@ mkdir -p "$PWD/.layerfs"
 "$LAYERFS_BIN" query layerstacks
 ```
 
-This creates a SQLite Store and an empty LayerStack with a genesis Layer. Continue with the [complete quickstart](docs/versioned/0.1.2/quickstart.md) for Branch creation, Workspace execution, commits, cleanup, directory imports, managed containers, and real FUSE.
+This creates a SQLite Store and an empty LayerStack with a genesis Layer. Continue with the [complete quickstart](docs/versioned/0.1.3/quickstart.md) for Branch creation, Workspace execution, commits, cleanup, directory imports, managed containers, and real FUSE.
 
 When importing an existing directory, keep the Store file **outside** the directory being imported or projected:
 
@@ -159,17 +159,17 @@ crates/
 tools/layerfs-eval             Store and Branch integrity evaluator
 benchmark/                     filesystem and end-to-end benchmarks
 containers/layerfs-fuse        managed Linux FUSE runtime image
-docs/versioned/0.1.1          previous versioned product manual
-release-notes/0.1.1            previous release record
-docs/versioned/0.1.2          current versioned product manual
-release-notes/0.1.2            release contract, evidence, and limitations
+docs/versioned/0.1.2          previous versioned product manual
+release-notes/0.1.2            previous release record
+docs/versioned/0.1.3          current versioned product manual
+release-notes/0.1.3            release contract, evidence, and limitations
 ```
 
 ## ⚠️ Current limitations
 
 LayerFS is suitable for evaluation and integration work, but the preview boundary matters:
 
-- 0.1.2 operates against one Store per Client; there is no cross-host synchronization;
+- 0.1.3 operates against one Store per Client; there is no cross-host synchronization;
 - live-process transaction visibility does not imply crash or power-loss durability;
 - the SDK is consumed from this repository; there is no published crates.io package or default runtime image;
 - managed FUSE requires Docker, `/dev/fuse`, and `CAP_SYS_ADMIN`;
@@ -181,7 +181,7 @@ LayerFS is suitable for evaluation and integration work, but the preview boundar
 - the detached CLI context owner does not forward an interactive PTY; and
 - CLI JSON output is a preview text envelope, not a stable machine API.
 
-Read the full [limitations](docs/versioned/0.1.2/limitations.md) before using LayerFS with important data.
+Read the full [limitations](docs/versioned/0.1.3/limitations.md) before using LayerFS with important data.
 
 ## 📚 Documentation
 
@@ -190,12 +190,13 @@ Start with the [documentation index](docs/README.md), or jump directly to a focu
 | Goal | Guide |
 | --- | --- |
 | Learn the concepts | [Core concepts](docs/general/concepts.md) |
-| Run the CLI and SDK | [Quickstart](docs/versioned/0.1.2/quickstart.md) |
-| Find a CLI command | [CLI reference](docs/versioned/0.1.2/cli.md) |
-| Integrate with Rust | [Rust SDK reference](docs/versioned/0.1.2/sdk.md) |
-| Configure container FUSE | [Container runtime](docs/versioned/0.1.2/container-runtime.md) |
-| Understand storage | [Storage format](docs/versioned/0.1.2/storage-format.md) |
-| Review released evidence | [0.1.2 release record](release-notes/0.1.2/README.md) |
+| Run the CLI and SDK | [Quickstart](docs/versioned/0.1.3/quickstart.md) |
+| Find a CLI command | [CLI reference](docs/versioned/0.1.3/cli.md) |
+| Integrate with Rust | [Rust SDK reference](docs/versioned/0.1.3/sdk.md) |
+| Configure container FUSE | [Container runtime](docs/versioned/0.1.3/container-runtime.md) |
+| Understand storage | [Storage format](docs/versioned/0.1.3/storage-format.md) |
+| Review v0.1.3 changes | [Numbered changelog](docs/releases/v0.1.3/CHANGELOG.md) |
+| Review released evidence | [0.1.3 release record](release-notes/0.1.3/README.md) |
 | Review completed 0.1.2 work | [0.1.2 checklist](docs/roadmap/0.1/0.1.2/README.md) |
 | Contribute changes | [0.1.x development guide](docs/roadmap/0.1/development.md) |
 
@@ -216,7 +217,7 @@ The [first-principles learning site](https://learn.layerfs.ai/) is educational m
 
 See the [roadmap checklist](docs/roadmap/README.md) and
 [roadmap architecture notes](docs/roadmap/architecture.md) for acceptance gates,
-ownership boundaries, and sequencing. Use the [Rust SDK reference](docs/versioned/0.1.2/sdk.md)
+ownership boundaries, and sequencing. Use the [Rust SDK reference](docs/versioned/0.1.3/sdk.md)
 to integrate the current public SDK.
 
 ## 🤝 Contributing

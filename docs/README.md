@@ -1,24 +1,24 @@
 # LayerFS documentation
 
-> **Status:** Current documentation entry point for the LayerFS 0.1.2 Developer Preview.
+> **Status:** Current documentation entry point for the LayerFS 0.1.3 Developer Preview.
 
-## Use LayerFS 0.1.2
+## Use LayerFS 0.1.3
 
-- [Manual](versioned/0.1.2/README.md)
-- [Quickstart](versioned/0.1.2/quickstart.md)
-- [Product specification](versioned/0.1.2/specification.md)
-- [CLI reference](versioned/0.1.2/cli.md)
-- [Rust SDK reference](versioned/0.1.2/sdk.md)
-- [Container runtime](versioned/0.1.2/container-runtime.md)
-- [Storage format](versioned/0.1.2/storage-format.md)
-- [Limitations](versioned/0.1.2/limitations.md)
-- [Release record](../release-notes/0.1.2/README.md)
+- [Manual](versioned/0.1.3/README.md)
+- [Quickstart](versioned/0.1.3/quickstart.md)
+- [Product specification](versioned/0.1.3/specification.md)
+- [CLI reference](versioned/0.1.3/cli.md)
+- [Rust SDK reference](versioned/0.1.3/sdk.md)
+- [Container runtime](versioned/0.1.3/container-runtime.md)
+- [Storage format](versioned/0.1.3/storage-format.md)
+- [Limitations](versioned/0.1.3/limitations.md)
+- [Release record](../release-notes/0.1.3/README.md)
 
 ## Plan and build
 
 - [Roadmap](roadmap/README.md)
 - [0.1.1 history](roadmap/0.1/0.1.1/README.md)
-- [0.1.2 current plan](roadmap/0.1/0.1.2/README.md)
+- [0.1.3 completed checkpoint](roadmap/0.1/0.1.3/README.md)
 - [0.1.x development](roadmap/0.1/development.md)
 - [Core concepts](general/concepts.md)
 - [Benchmark rules](general/benchmark_rules.md)

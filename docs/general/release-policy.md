@@ -24,6 +24,11 @@ A release candidate is eligible only when:
 - A patch release within `0.1.x` preserves the documented public API, CLI,
   daemon protocol, canonical identity, and Store-format contract while
   correcting behavior or documentation.
+- The user-authorized 0.1.3 Developer Preview is an explicit exception to the
+  earlier blanket Store-format promise: it migrates schema 4 to schema 5.
+  Canonical identity remains unchanged, but migration is one-way and runtime
+  components must be version-matched. The [0.1.3 release contract](../../release-notes/0.1.3/release-contract.md)
+  defines the upgrade boundary; do not infer downgrade or mixed-version support.
 - A pre-1.0 minor release such as `0.2.0` may define a revised public or
   storage contract and must document its compatibility boundary explicitly.
 - A 1.0-or-later major release follows ordinary stable semantic-versioning
