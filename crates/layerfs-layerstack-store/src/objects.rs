@@ -35,6 +35,9 @@ pub(crate) const INITIALIZATION_SLAB_QUEUE_SLOTS: usize = 4;
 pub(crate) const INITIALIZATION_TASK_STRUCTURAL_BYTES: usize = 256 * 1024;
 const CANDIDATE_MEMORY_BYTES: usize = 8 * 1024 * 1024;
 const CANDIDATE_INDEX_BYTES: usize = 64 * 1024 * 1024;
+// C: cumulative metadata-lookup allowance, not resident memory. The frozen
+// full157 bound is 3763 attached flat-root cursors * 2 grants * 131136 bytes.
+const CORRESPONDENCE_OPERATION_RESERVATION_BYTES: u64 = 1024 * 1024 * 1024;
 const CANDIDATE_SPILL_BUFFER_BYTES: usize = 1024 * 1024;
 
 #[cfg(feature = "test-instrumentation")]
@@ -2085,7 +2088,7 @@ impl DeferredObjectStore {
                             std::sync::atomic::Ordering::Relaxed,
                             |used| {
                                 used.checked_add(FETCH_RESERVATION)
-                                    .filter(|sum| *sum <= 16 * 1024 * 1024)
+                                    .filter(|sum| *sum <= CORRESPONDENCE_OPERATION_RESERVATION_BYTES)
                             },
                         )
                         .is_err()

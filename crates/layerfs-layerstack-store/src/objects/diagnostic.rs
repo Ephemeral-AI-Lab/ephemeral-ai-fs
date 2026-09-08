@@ -415,7 +415,9 @@ mod tests {
             .set_physical_predecessor(
                 store.snapshot_reader(prior_root),
                 layerfs_content::file::rope::FileStateRoot(prior_root),
-                std::sync::Arc::new(std::sync::atomic::AtomicU64::new(127 * 131136)),
+                std::sync::Arc::new(std::sync::atomic::AtomicU64::new(
+                    super::super::CORRESPONDENCE_OPERATION_RESERVATION_BYTES / 131136 * 131136,
+                )),
             )
             .unwrap();
         let bytes = vec![b'z'; 40000];
