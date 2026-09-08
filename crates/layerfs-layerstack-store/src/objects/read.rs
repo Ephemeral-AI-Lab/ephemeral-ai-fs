@@ -30,6 +30,35 @@ pub(super) fn validation_reserve(length: usize) -> usize {
 }
 
 impl StoreDb {
+    /// Logical closure needs presence, not a second set of allocated locators.
+    /// Callers pass distinct IDs; authentication remains on every demanded read.
+    pub(super) fn objects_exist(&self, ids: &[ObjectId]) -> Result<bool> {
+        if ids.is_empty() {
+            return Ok(true);
+        }
+        let connection = self.reader()?;
+        let count = usize::try_from(connection.limit(Limit::SQLITE_LIMIT_VARIABLE_NUMBER)?)
+            .map_err(|_| StoreError::Integrity("SQLite parameter limit"))?
+            .min(OBJECT_PAGE_COUNT);
+        if count == 0 {
+            return Err(StoreError::Integrity("SQLite parameter limit"));
+        }
+        for page in ids.chunks(count) {
+            let sql = format!(
+                "SELECT count(*) FROM objects WHERE object_id IN ({})",
+                vec!["?"; page.len()].join(",")
+            );
+            let found: i64 = connection.prepare_cached(&sql)?.query_row(
+                params_from_iter(page.iter().map(|id| id.as_bytes().as_slice())),
+                |row| row.get(0),
+            )?;
+            if found != page.len() as i64 {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     /// This is the membership probe. Callers retain the returned locations for
     /// decoding, rather than issuing a second membership query during validation.
     pub(super) fn object_locations(
@@ -108,28 +137,25 @@ impl StoreDb {
         blob.read_at_exact(&mut directory, 16 + 16 * group)?;
         let entry = pack::entry(&directory, count, length)?;
         if entry.oversized {
-            return Err(StoreError::Integrity(
-                "oversized object requires bounded extraction",
-            ));
+            // Carry checked directory facts into bounded singleton extraction.
+            return Ok((entry, Vec::new()));
         }
         let mut encoded = vec![0; entry.range.len()];
         blob.read_at_exact(&mut encoded, entry.range.start)?;
         Ok((entry, encoded))
     }
 
-    fn singleton_range(&self, location: Location) -> Result<std::ops::Range<usize>> {
+    fn singleton_range(
+        &self,
+        location: Location,
+        entry: &pack::GroupEntry,
+    ) -> Result<std::ops::Range<usize>> {
         let connection = self.reader()?;
         let blob = connection.blob_open("main", "object_packs", "data", location.pack, true)?;
         let length = blob.len();
-        let mut header = [0; 16];
-        blob.read_at_exact(&mut header, 0)?;
-        let count = pack::header(&header, length)?;
-        if count != 1 || location.group != 0 || location.record != 0 {
+        if location.group != 0 || location.record != 0 || length != entry.range.end {
             return Err(StoreError::Integrity("oversized object locator"));
         }
-        let mut directory = [0; 16];
-        blob.read_at_exact(&mut directory, 16)?;
-        let entry = pack::entry(&directory, count, length)?;
         if !entry.oversized
             || entry.codec != pack::Codec::Raw
             || location.canonical_length <= pack::GROUP_LIMIT - 9
@@ -148,8 +174,13 @@ impl StoreDb {
         Ok(41..length)
     }
 
-    fn singleton(&self, id: ObjectId, location: Location) -> Result<Vec<u8>> {
-        let range = self.singleton_range(location)?;
+    fn singleton(
+        &self,
+        id: ObjectId,
+        location: Location,
+        entry: &pack::GroupEntry,
+    ) -> Result<Vec<u8>> {
+        let range = self.singleton_range(location, entry)?;
         // This allocation is the returned canonical object, not extraction scratch.
         let mut output = vec![0; range.len()];
         for (index, part) in output.chunks_mut(pack::GROUP_LIMIT).enumerate() {
@@ -167,7 +198,8 @@ impl StoreDb {
         location: Location,
         canonical: &[u8],
     ) -> Result<()> {
-        let range = self.singleton_range(location)?;
+        let (entry, _) = self.extract_group(location.pack, location.group)?;
+        let range = self.singleton_range(location, &entry)?;
         if range.len() != canonical.len() {
             return Err(StoreError::Integrity("object length collision"));
         }
@@ -222,23 +254,19 @@ impl StoreDb {
         let groups = group_locations(locations);
         let mut pending = BTreeMap::<ObjectId, Vec<PendingDelta>>::new();
         for ((pack_id, group), targets) in groups {
-            // Lengths 65528..65536 may be stored DELTA. The selected header,
-            // not the caller's proposed representation, decides the route.
-            if targets
-                .iter()
-                .any(|(_, location)| location.canonical_length > pack::GROUP_LIMIT - 9)
-            {
-                if let [(id, location)] = targets.as_slice() {
-                    if self.is_singleton(*location)? {
-                        emit(CanonicalObject {
-                            id: *id,
-                            bytes: self.singleton(*id, *location)?,
-                        })?;
-                        continue;
-                    }
-                }
-            }
+            // The selected entry decides the 65528..65536 RAW/DELTA overlap.
+            // Do not fetch its directory a second time just to choose the route.
             let (entry, encoded) = self.extract_group(pack_id, group)?;
+            if entry.oversized {
+                let [(id, location)] = targets.as_slice() else {
+                    return Err(StoreError::Integrity("singleton locator alias"));
+                };
+                emit(CanonicalObject {
+                    id: *id,
+                    bytes: self.singleton(*id, *location, &entry)?,
+                })?;
+                continue;
+            }
             let decoded = decode(entry, encoded)?;
             let mut requested = record_slots(targets)?;
             pack::visit_records(&decoded, false, |index, record| {
@@ -289,22 +317,21 @@ impl StoreDb {
             {
                 return Err(StoreError::Integrity("delta base length"));
             }
-            if let [(id, location)] = targets.as_slice() {
-                if location.canonical_length > pack::GROUP_LIMIT - 9
-                    && self.is_singleton(*location)?
-                {
-                    let bytes = self.singleton(*id, *location)?;
-                    finish_deltas(
-                        pending
-                            .remove(id)
-                            .ok_or(StoreError::Integrity("delta base association"))?,
-                        &bytes,
-                        emit,
-                    )?;
-                    continue;
-                }
-            }
             let (entry, encoded) = self.extract_group(pack_id, group)?;
+            if entry.oversized {
+                let [(id, location)] = targets.as_slice() else {
+                    return Err(StoreError::Integrity("singleton base alias"));
+                };
+                let bytes = self.singleton(*id, *location, &entry)?;
+                finish_deltas(
+                    pending
+                        .remove(id)
+                        .ok_or(StoreError::Integrity("delta base association"))?,
+                    &bytes,
+                    emit,
+                )?;
+                continue;
+            }
             let decoded = decode(entry, encoded)?;
             let mut requested = record_slots(targets)?;
             pack::visit_records(&decoded, false, |index, record| {
@@ -331,20 +358,6 @@ impl StoreDb {
             return Err(StoreError::Integrity("delta base coverage"));
         }
         Ok(())
-    }
-
-    fn is_singleton(&self, location: Location) -> Result<bool> {
-        let connection = self.reader()?;
-        let blob = connection.blob_open("main", "object_packs", "data", location.pack, true)?;
-        let mut header = [0; 16];
-        blob.read_at_exact(&mut header, 0)?;
-        let count = pack::header(&header, blob.len())?;
-        if location.group >= count {
-            return Err(StoreError::Integrity("object group locator"));
-        }
-        let mut directory = [0; 16];
-        blob.read_at_exact(&mut directory, 16 + 16 * location.group)?;
-        Ok(pack::entry(&directory, count, blob.len())?.oversized)
     }
 }
 

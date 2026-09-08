@@ -559,6 +559,9 @@ impl<'admission> InitializationDirectAdmissionWriter<'admission> {
 
 impl ObjectStore for InitializationDirectAdmissionWriter<'_> {
     fn get(&self, id: ObjectId) -> CoreResult<Vec<u8>> {
+        if let Some(index) = self.admission.incoming_index.get(&id) {
+            return Ok(self.admission.incoming[*index].bytes.clone());
+        }
         if let Some(index) = self.admission.pending.get(&id) {
             return Ok(self.admission.batch[*index].bytes.clone());
         }
@@ -1802,7 +1805,11 @@ pub(crate) struct AdmissionBatchMetrics {
 
 pub(crate) struct CheckedOutputAdmission {
     db: crate::schema::StoreDb,
+    incoming: Vec<AuthenticatedCanonicalObject>,
+    incoming_index: HashMap<ObjectId, usize>,
+    incoming_bytes: usize,
     batch: Vec<AuthenticatedCanonicalObject>,
+    available: SpillableObjectSet,
     seen: SpillableObjectSet,
     pending: HashMap<ObjectId, usize>,
     batch_bytes: usize,
@@ -1814,8 +1821,19 @@ pub(crate) struct CheckedOutputAdmission {
     final_phase: bool,
 }
 
+/// Owned initially missing canonical output with closed external dependencies.
+/// Only the accumulator creates this handoff; final publishers cannot reprobe it.
+pub(crate) struct MissingBatch(Vec<AuthenticatedCanonicalObject>);
+
+impl std::ops::Deref for MissingBatch {
+    type Target = [AuthenticatedCanonicalObject];
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 pub(crate) struct FinishedOutputAdmission {
-    pub final_batch: Vec<AuthenticatedCanonicalObject>,
+    pub final_batch: MissingBatch,
     pub statement_number: u64,
     pub receipt: crate::CandidateReceipt,
     pub checked: CheckedAdmission,
@@ -2688,8 +2706,15 @@ impl CheckedOutputAdmission {
     pub(crate) fn new(db: &crate::schema::StoreDb) -> Result<Self> {
         Ok(Self {
             db: db.clone(),
+            incoming: Vec::with_capacity(INITIALIZATION_SLAB_OBJECTS),
+            incoming_index: HashMap::new(),
+            incoming_bytes: 0,
             batch: Vec::with_capacity(INITIALIZATION_SLAB_OBJECTS),
-            seen: SpillableObjectSet::empty()?,
+            // Two independent facts share the existing index allowance: seen
+            // input IDs and closed, available dependencies. Leave half for
+            // bounded logical-reference decoding and temporary lookup pages.
+            seen: SpillableObjectSet::bounded(CANDIDATE_INDEX_BYTES / 4)?,
+            available: SpillableObjectSet::bounded(CANDIDATE_INDEX_BYTES / 4)?,
             pending: HashMap::new(),
             batch_bytes: 0,
             validation_reserve: 0,
@@ -2707,6 +2732,7 @@ impl CheckedOutputAdmission {
     }
 
     pub(crate) fn finish(mut self) -> Result<FinishedOutputAdmission> {
+        self.probe_incoming()?;
         let final_batch = self.take_batch()?;
         Ok(FinishedOutputAdmission {
             final_batch,
@@ -2728,6 +2754,11 @@ impl CheckedOutputAdmission {
         }
         let owned = transient
             .saturating_add(incoming)
+            .saturating_add(self.incoming_bytes as u64)
+            .saturating_add(
+                (self.incoming.capacity() * std::mem::size_of::<CanonicalObject>()) as u64,
+            )
+            .saturating_add((self.incoming_index.capacity() * 64) as u64)
             .saturating_add(self.batch_bytes as u64)
             .saturating_add((self.batch.capacity() * std::mem::size_of::<CanonicalObject>()) as u64)
             .saturating_add((self.pending.capacity() * 64) as u64);
@@ -2750,21 +2781,59 @@ impl CheckedOutputAdmission {
         Ok(())
     }
 
-    fn take_batch(&mut self) -> Result<Vec<AuthenticatedCanonicalObject>> {
+    fn take_batch(&mut self) -> Result<MissingBatch> {
+        self.close_dependencies()?;
         let batch = std::mem::take(&mut self.batch);
         self.pending.clear();
         self.batch_bytes = 0;
         self.validation_reserve = 0;
-        let ids = batch.iter().map(|object| object.id).collect::<Vec<_>>();
+        Ok(MissingBatch(batch))
+    }
+
+    fn close_dependencies(&mut self) -> Result<()> {
+        let mut dependencies = BTreeSet::new();
+        for object in &self.batch {
+            for id in referenced_objects(&object.bytes)? {
+                if !self.pending.contains_key(&id) {
+                    dependencies.insert(id);
+                }
+            }
+        }
+        let dependencies = dependencies.into_iter().collect::<Vec<_>>();
+        for page in dependencies.chunks(OBJECT_PAGE_COUNT) {
+            let known = self.available.membership(page)?;
+            let missing = page
+                .iter()
+                .copied()
+                .filter(|id| !known.contains(id))
+                .collect::<Vec<_>>();
+            if !self.db.objects_exist(&missing)? {
+                return Err(StoreError::Integrity("new object dependency missing"));
+            }
+            self.available.insert_page(&missing)?;
+        }
+        Ok(())
+    }
+
+    fn probe_incoming(&mut self) -> Result<()> {
+        if self.incoming.is_empty() {
+            return Ok(());
+        }
+        let page = std::mem::take(&mut self.incoming);
+        self.incoming_index.clear();
+        self.incoming_bytes = 0;
+        let ids = page.iter().map(|object| object.id).collect::<Vec<_>>();
         let first = self
             .seen
             .insert_page(&ids)?
             .into_iter()
             .collect::<BTreeSet<_>>();
-        let (fresh, repeated): (Vec<_>, Vec<_>) = batch
+        let (fresh, repeated): (Vec<_>, Vec<_>) = page
             .into_iter()
             .partition(|object| first.contains(&object.id));
         if !repeated.is_empty() {
+            // Supplied duplicate occurrences still compare their actual bytes;
+            // they are not new admission candidates or new initial probes.
             let ids = repeated.iter().map(|object| object.id).collect::<Vec<_>>();
             let known = self.db.object_locations(&ids)?;
             if known.len() != ids.len() {
@@ -2776,21 +2845,91 @@ impl CheckedOutputAdmission {
                 .collect();
             let mut metrics = ObjectInsertMetrics::default();
             admission::compare(&self.db, &known, &supplied, &mut metrics)?;
-            self.diagnostics.collision_checks += repeated.len() as u64;
+            self.note_collision_reads(metrics);
             self.diagnostics.cross_batch_skipped_objects += repeated.len() as u64;
-            self.diagnostics.cross_batch_skipped_bytes += repeated
-                .iter()
-                .map(|object| object.bytes.len() as u64)
-                .sum::<u64>();
+            self.diagnostics.cross_batch_skipped_bytes += metrics.skipped_bytes;
         }
-        Ok(fresh)
+        drop(repeated);
+        let ids = fresh.iter().map(|object| object.id).collect::<Vec<_>>();
+        let known = self.db.object_locations(&ids)?;
+        let supplied = fresh
+            .iter()
+            .map(|object| (object.id, object.bytes.as_slice()))
+            .collect();
+        let mut reused = ObjectInsertMetrics::default();
+        admission::compare(&self.db, &known, &supplied, &mut reused)?;
+        self.note_collision_reads(reused);
+        self.available
+            .insert_page(&known.keys().copied().collect::<Vec<_>>())?;
+        self.checked.candidate_objects += reused.skipped_ids;
+        self.checked.candidate_bytes += reused.skipped_bytes;
+        self.checked.reused_objects += reused.skipped_ids;
+        self.checked.reused_bytes += reused.skipped_bytes;
+        self.receipt.candidate_objects += reused.skipped_ids;
+        self.receipt.candidate_bytes += reused.skipped_bytes;
+        self.receipt.reused_objects += reused.skipped_ids;
+        self.receipt.reused_bytes += reused.skipped_bytes;
+        self.receipt.preexisting_reused_objects += reused.skipped_ids;
+        self.receipt.preexisting_reused_bytes += reused.skipped_bytes;
+        drop(supplied);
+        for object in fresh {
+            if !known.contains_key(&object.id) {
+                self.push_pending(object)?;
+            }
+        }
+        self.incoming = Vec::with_capacity(INITIALIZATION_SLAB_OBJECTS);
+        Ok(())
+    }
+
+    fn note_collision_reads(&mut self, metrics: ObjectInsertMetrics) {
+        self.diagnostics.collision_checks += metrics.collision_checks;
+        self.diagnostics.conflict_read_calls += metrics.conflict_read_calls;
+        self.diagnostics.conflict_read_rows += metrics.conflict_read_rows;
+        self.diagnostics.conflict_read_bytes += metrics.conflict_read_bytes;
+        self.diagnostics.conflict_read_ns += metrics.conflict_read_ns;
     }
 
     pub(crate) fn admit_object(&mut self, object: AuthenticatedCanonicalObject) -> Result<()> {
+        if object.bytes.len() > ADMISSION_BATCH_BYTES {
+            return Err(StoreError::Integrity("canonical object admission size"));
+        }
         if let Some(&index) = self.pending.get(&object.id) {
             return self.admit_duplicate(index, &object.bytes);
         }
-        self.push_pending(object)
+        if let Some(&index) = self.incoming_index.get(&object.id) {
+            self.diagnostics.collision_checks += 1;
+            if self.incoming[index].bytes != object.bytes {
+                return Err(StoreError::Integrity("object collision"));
+            }
+            self.diagnostics.pending_duplicate_objects += 1;
+            self.diagnostics.pending_duplicate_bytes += object.bytes.len() as u64;
+            return Ok(());
+        }
+        let large = object.bytes.len() > INITIALIZATION_SLAB_BYTES;
+        if !self.incoming.is_empty()
+            && (self.incoming.len() == INITIALIZATION_SLAB_OBJECTS
+                || self.incoming_bytes + object.bytes.len() > INITIALIZATION_SLAB_BYTES)
+        {
+            self.probe_incoming()?;
+        }
+        if large {
+            self.flush_batch()?;
+        }
+        self.incoming_bytes += object.bytes.len();
+        self.incoming_index.insert(object.id, self.incoming.len());
+        self.incoming.push(object);
+        if large {
+            // Retire a maximal source object before requesting another source
+            // page; it must not coexist with a second maximal canonical read.
+            self.probe_incoming()?;
+            self.flush_batch()?;
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        self.probe_incoming()?;
+        self.flush_batch()
     }
 
     fn admit_duplicate(&mut self, index: usize, bytes: &[u8]) -> Result<()> {
@@ -2813,7 +2952,8 @@ impl CheckedOutputAdmission {
         let reserve = read::validation_reserve(object.bytes.len());
         if !self.batch.is_empty()
             && (self.batch.len() == INITIALIZATION_ADMISSION_BATCH_COUNT
-                || self.batch_bytes.saturating_add(object.bytes.len()) > ADMISSION_BATCH_BYTES
+                || self.batch_bytes.saturating_add(object.bytes.len())
+                    > 2 * INITIALIZATION_SLAB_BYTES
                 || self.validation_reserve + reserve > read::VALIDATION_RESERVE)
         {
             self.flush_batch()?;
@@ -2868,7 +3008,9 @@ impl CheckedOutputAdmission {
         if batch.is_empty() {
             return Ok(());
         }
+        let ids = batch.iter().map(|object| object.id).collect::<Vec<_>>();
         let metrics = consume_checked_owned_page(&self.db, batch, &mut self.statement_number)?;
+        self.available.insert_page(&ids)?;
         self.checked.record(&metrics);
         self.batch = Vec::with_capacity(capacity);
         self.diagnostics.record_sql_batch(
@@ -2999,7 +3141,7 @@ impl WorkspaceAdmission {
         objects: DeferredObjectStore,
     ) -> Result<(CheckedAdmission, u64)> {
         objects.consume_prevalidated_pages(|page| self.admission.admit_page(page))?;
-        self.admission.flush_batch()?;
+        self.admission.flush()?;
         let finished = self.admission.finish()?;
         let admission = finished.checked;
         if admission.candidate_objects != admission.inserted_objects + admission.reused_objects
@@ -3015,10 +3157,10 @@ impl WorkspaceAdmission {
 
 fn consume_checked_owned_page(
     db: &crate::schema::StoreDb,
-    batch: Vec<AuthenticatedCanonicalObject>,
+    batch: MissingBatch,
     statement_number: &mut u64,
 ) -> Result<AdmissionBatchMetrics> {
-    let prepared = admission::PreparedAdmission::prepare(db, batch)?;
+    let prepared = admission::PreparedAdmission::prepare_missing(batch)?;
     let (_, metrics) = prepared.publish(db, statement_number, |_, _, _| {
         #[cfg(feature = "test-instrumentation")]
         crate::schema::verification_store_checkpoint(
@@ -3284,22 +3426,20 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let db = crate::schema::StoreDb::create(root.join("store.sqlite")).unwrap();
         let mut admission = CheckedOutputAdmission::new(&db).unwrap();
-        let mut seen = SpillableObjectSet::empty().unwrap();
         let objects = (0..300_u64)
             .map(|index| {
                 let bytes = layerfs_content::encode_bytes_object(&index.to_le_bytes()).unwrap();
                 AuthenticatedCanonicalObject::new(bytes, None).unwrap()
             })
             .collect::<Vec<_>>();
-        admission
-            .admit_unique_page(objects.clone(), &mut seen)
-            .unwrap();
-        admission.flush_batch().unwrap();
+        admission.admit_page(objects.clone()).unwrap();
+        admission.flush().unwrap();
         #[cfg(feature = "test-instrumentation")]
         crate::schema::reset_sql_trace();
         admission
-            .admit_unique_page(objects.iter().rev().cloned().collect(), &mut seen)
+            .admit_page(objects.iter().rev().cloned().collect())
             .unwrap();
+        admission.flush().unwrap();
         #[cfg(feature = "test-instrumentation")]
         assert_eq!(
             crate::schema::sql_trace()
@@ -3321,7 +3461,9 @@ mod tests {
         // Production owners expose no mutable bytes.
         corrupt.0.bytes = objects[1].bytes.clone();
         assert!(matches!(
-            admission.admit_unique_page(vec![corrupt], &mut seen),
+            admission
+                .admit_page(vec![corrupt])
+                .and_then(|_| admission.flush()),
             Err(StoreError::Integrity("object collision"))
         ));
         drop(admission);
@@ -3657,7 +3799,7 @@ mod tests {
             .map(|object| object.id)
             .collect::<Vec<_>>();
         let mut statement_number = finished.statement_number;
-        let (_, metrics) = PreparedAdmission::prepare(db, finished.final_batch)
+        let (_, metrics) = PreparedAdmission::prepare_missing(finished.final_batch)
             .unwrap()
             .publish(db, &mut statement_number, |_, _, _| Ok(()))
             .unwrap();
@@ -4282,7 +4424,7 @@ mod tests {
             .unwrap();
         let finished = admission.finish().unwrap();
         let mut statement_number = finished.statement_number;
-        let (_, metrics) = PreparedAdmission::prepare(&db, finished.final_batch)
+        let (_, metrics) = PreparedAdmission::prepare_missing(finished.final_batch)
             .unwrap()
             .publish(&db, &mut statement_number, |_, _, _| Ok(()))
             .unwrap();

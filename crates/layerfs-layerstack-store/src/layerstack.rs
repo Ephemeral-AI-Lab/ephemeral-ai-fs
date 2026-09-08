@@ -113,7 +113,7 @@ impl LayerStackStore {
             name: name.clone(),
             head_layer_id: layer.id,
         };
-        let prepared = PreparedAdmission::prepare(&self.db, final_batch)?;
+        let prepared = PreparedAdmission::prepare_missing(final_batch)?;
         let mut name_insert_failed = false;
         let publication = prepared.publish(
             &self.db,
@@ -529,7 +529,7 @@ struct FinishedAppendOnlyInitialization {
     root_id: layerfs_content::ObjectId,
     scanned_files: u64,
     scanned_bytes: u64,
-    final_batch: Vec<crate::objects::AuthenticatedCanonicalObject>,
+    final_batch: crate::objects::MissingBatch,
     receipt: crate::CandidateReceipt,
     statement_number: u64,
     diagnostics: FastInitializationDiagnostics,

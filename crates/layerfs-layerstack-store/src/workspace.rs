@@ -308,7 +308,7 @@ impl LayerStackStore {
         let finished = accumulator.finish()?;
         let mut receipt = finished.receipt;
         let mut statement_number = finished.statement_number;
-        let prepared = PreparedAdmission::prepare(&self.db, finished.final_batch)?;
+        let prepared = PreparedAdmission::prepare_missing(finished.final_batch)?;
         let admission = finished.checked;
         crate::telemetry::note_workspace_admission(
             admission.transactions,

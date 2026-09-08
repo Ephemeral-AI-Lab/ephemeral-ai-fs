@@ -28,10 +28,8 @@ pub(crate) struct PreparedAdmission {
 }
 
 impl PreparedAdmission {
-    pub(crate) fn prepare(
-        db: &StoreDb,
-        objects: Vec<AuthenticatedCanonicalObject>,
-    ) -> Result<Self> {
+    pub(crate) fn prepare_missing(missing: super::MissingBatch) -> Result<Self> {
+        let objects = missing.0;
         let length = objects
             .iter()
             .try_fold(0usize, |sum, object| sum.checked_add(object.bytes.len()))
@@ -51,46 +49,17 @@ impl PreparedAdmission {
         if candidates.len() != ids.len() {
             return Err(StoreError::Integrity("admission duplicate ownership"));
         }
-        let known = db.object_locations(&ids)?;
-        let supplied = objects
-            .iter()
-            .map(|object| (object.id, object.bytes.as_slice()))
-            .collect::<BTreeMap<_, _>>();
-        let mut metrics = ObjectInsertMetrics {
+        let metrics = ObjectInsertMetrics {
             submitted_rows: ids.len() as u64,
             ..Default::default()
         };
-        compare(db, &known, &supplied, &mut metrics)?;
 
-        // Newly stored edges must close over this batch or previously admitted
-        // objects. These are dependency probes, excluding all candidate IDs.
-        let mut dependencies = BTreeSet::new();
-        for object in &objects {
-            if !known.contains_key(&object.id) {
-                for dependency in
-                    layerfs_content::object::references::referenced_objects(&object.bytes)?
-                {
-                    if !candidates.contains(&dependency) {
-                        dependencies.insert(dependency);
-                    }
-                }
-            }
-        }
-        let dependencies = dependencies.into_iter().collect::<Vec<_>>();
-        if db.object_locations(&dependencies)?.len() != dependencies.len() {
-            return Err(StoreError::Integrity("new object dependency missing"));
-        }
-        drop(supplied);
-        let missing = objects
-            .into_iter()
-            .filter(|object| !known.contains_key(&object.id))
-            .collect::<Vec<_>>();
         let mut prepared = Self {
             packs: Vec::new(),
             objects: Vec::new(),
             metrics,
         };
-        prepared.prepare_full(missing)?;
+        prepared.prepare_full(objects)?;
         Ok(prepared)
     }
 
