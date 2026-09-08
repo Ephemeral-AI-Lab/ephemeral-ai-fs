@@ -54,12 +54,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .starts_with(source.canonicalize()?),
         "output must be outside source"
     );
+    let setup = Instant::now();
     std::fs::create_dir(root)?;
     let store = Arc::new(LayerStackStore::create(root.join("store.sqlite"))?);
     let client = Client::connect(store.clone())?;
     println!("baseline_store_bytes={:?}", disk(root)?);
     let name = EntityName::new("torch-venv")?;
     let source = LayerStackInitialization::Directory(source.to_path_buf());
+    println!("setup_seconds={:.9}", setup.elapsed().as_secs_f64());
     let before = usage();
     let start = Instant::now();
     let result = client.initialize_layerstack(name, source)?;
@@ -254,6 +256,7 @@ fn workspace(archive: &Path, root: &Path, image: &str) -> Result<(), Box<dyn std
     use std::{ffi::OsString, process::Command};
     assert!(archive.is_file());
     assert!(!root.exists(), "output must be absent");
+    let setup = Instant::now();
     std::fs::create_dir(root)?;
     let manager = ContainerManager::open(root.join("containers"))?;
     let name = format!(
@@ -273,113 +276,125 @@ fn workspace(archive: &Path, root: &Path, image: &str) -> Result<(), Box<dyn std
             pids: 256,
         },
     })?;
-    let result = (|| -> Result<(), Box<dyn std::error::Error>> {
-        let running = manager.start(&name)?;
-        let status = manager.status(&name)?;
-        assert!(
-            status.running
-                && status.fuse_device
-                && status.sys_admin
-                && !status.privileged
-                && status.host_binds == 0
-        );
-        assert!(Command::new("docker")
-            .args(["cp"])
-            .arg(archive)
-            .arg(format!("{name}:/input.tar"))
-            .status()?
-            .success());
-        let store = Arc::new(LayerStackStore::create(root.join("store.sqlite"))?);
-        let client = Client::connect_with_container(store.clone(), running.binding())?;
-        let initialized = client.initialize_layerstack(
-            EntityName::new("torch-venv")?,
-            LayerStackInitialization::Empty,
-        )?;
-        let branch = client.fork_branch(
-            EntityName::new("main")?,
-            LocalForkSource::Layer {
-                layer_id: initialized.genesis_layer_id,
-            },
-        )?;
-        let lifecycle = Instant::now();
-        let created = Instant::now();
-        let session = client.create_workspace_session(CreateWorkspaceSession {
-            branch_id: branch,
-            placement: WorkspacePlacement::Container {
-                container_id: running.id.clone(),
-                root: "/workspace/project".into(),
-            },
-            projection: Some(WorkspaceProjection::Fuse),
-        })?;
-        println!("create_seconds={:.9}", created.elapsed().as_secs_f64());
-        let before = usage();
-        let exec_started = Instant::now();
-        let execution = client.exec_workspace_session(
-            session.id,
-            NonEmpty::new(vec![
-                OsString::from("tar"),
-                OsString::from("--no-same-owner"),
-                OsString::from("-xpf"),
-                OsString::from("/input.tar"),
-                OsString::from("-C"),
-                OsString::from("/workspace/project"),
-            ])?,
-        )?;
-        let reader = client.workspace_output(execution.id)?;
-        let mut after = 0;
-        loop {
-            let page = reader.read(after, true)?;
-            if page.exited {
-                let receipt = page.receipt.ok_or("missing execution receipt")?;
-                assert_eq!(receipt.exit_code, Some(0));
-                assert_eq!(receipt.transport, layerfs_sdk::ExecutionTransport::Daemon);
-                break;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+        || -> Result<(), Box<dyn std::error::Error>> {
+            assert!(Command::new("docker")
+                .args(["update", "--memory-swap", "2147483648", &name])
+                .status()?
+                .success());
+            let running = manager.start(&name)?;
+            let status = manager.status(&name)?;
+            assert!(
+                status.running
+                    && status.fuse_device
+                    && status.sys_admin
+                    && !status.privileged
+                    && status.host_binds == 0
+            );
+            let delivery = Instant::now();
+            assert!(Command::new("docker")
+                .args(["cp"])
+                .arg(archive)
+                .arg(format!("{name}:/input.tar"))
+                .status()?
+                .success());
+            println!(
+                "archive_delivery_seconds={:.9}",
+                delivery.elapsed().as_secs_f64()
+            );
+            let store = Arc::new(LayerStackStore::create(root.join("store.sqlite"))?);
+            let client = Client::connect_with_container(store.clone(), running.binding())?;
+            let initialized = client.initialize_layerstack(
+                EntityName::new("torch-venv")?,
+                LayerStackInitialization::Empty,
+            )?;
+            let branch = client.fork_branch(
+                EntityName::new("main")?,
+                LocalForkSource::Layer {
+                    layer_id: initialized.genesis_layer_id,
+                },
+            )?;
+            println!("setup_seconds={:.9}", setup.elapsed().as_secs_f64());
+            let lifecycle = Instant::now();
+            let created = Instant::now();
+            let session = client.create_workspace_session(CreateWorkspaceSession {
+                branch_id: branch,
+                placement: WorkspacePlacement::Container {
+                    container_id: running.id.clone(),
+                    root: "/workspace/project".into(),
+                },
+                projection: Some(WorkspaceProjection::Fuse),
+            })?;
+            println!("create_seconds={:.9}", created.elapsed().as_secs_f64());
+            let before = usage();
+            let exec_started = Instant::now();
+            let execution = client.exec_workspace_session(
+                session.id,
+                NonEmpty::new(vec![
+                    OsString::from("tar"),
+                    OsString::from("--no-same-owner"),
+                    OsString::from("-xpf"),
+                    OsString::from("/input.tar"),
+                    OsString::from("-C"),
+                    OsString::from("/workspace/project"),
+                ])?,
+            )?;
+            let reader = client.workspace_output(execution.id)?;
+            let mut after = 0;
+            loop {
+                let page = reader.read(after, true)?;
+                if page.exited {
+                    let receipt = page.receipt.ok_or("missing execution receipt")?;
+                    assert_eq!(receipt.exit_code, Some(0));
+                    assert_eq!(receipt.transport, layerfs_sdk::ExecutionTransport::Daemon);
+                    break;
+                }
+                if exec_started.elapsed() > std::time::Duration::from_secs(300) {
+                    return Err("Exec deadline".into());
+                }
+                after = page.next_sequence;
             }
-            if exec_started.elapsed() > std::time::Duration::from_secs(300) {
-                return Err("Exec deadline".into());
-            }
-            after = page.next_sequence;
-        }
-        let exec = exec_started.elapsed().as_secs_f64();
-        println!("exec_seconds={exec:.9}");
-        let commit_started = Instant::now();
-        let commit = client.commit_workspace_session(session.id)?;
-        assert!(matches!(commit, WorkspaceCommitResult::Created { .. }));
-        let commit_seconds = commit_started.elapsed().as_secs_f64();
-        let after = usage();
-        println!("commit_seconds={commit_seconds:.9}");
-        println!("exec_commit_seconds={:.9}", exec + commit_seconds);
-        println!(
-            "host_exec_commit_user_cpu_seconds={:.6}",
-            seconds(after.ru_utime) - seconds(before.ru_utime)
-        );
-        println!(
-            "host_exec_commit_system_cpu_seconds={:.6}",
-            seconds(after.ru_stime) - seconds(before.ru_stime)
-        );
-        println!("process_peak_rss_bytes={}", after.ru_maxrss);
-        let resources = Command::new("docker").args(["exec", &name, "/bin/sh", "-c", "cat /sys/fs/cgroup/memory.peak /sys/fs/cgroup/memory.swap.current /sys/fs/cgroup/memory.events"]).output()?;
-        assert!(resources.status.success());
-        let resources = String::from_utf8(resources.stdout)?;
-        println!("container_memory_resources={resources:?}");
-        let mut lines = resources.lines();
-        assert!(lines.next().ok_or("memory peak")?.parse::<u64>()? <= 2 * 1024 * 1024 * 1024);
-        assert_eq!(lines.next(), Some("0"));
-        assert!(resources.lines().any(|line| line == "oom 0"));
-        assert!(resources.lines().any(|line| line == "oom_kill 0"));
-        let pin = store.pin_branch(branch)?;
-        println!("branch={branch}");
-        println!("commit={:?}", pin.branch.head_commit_id);
-        println!("root={:?}", pin.root);
-        drop(pin);
-        client.end_workspace_session(session.id, EndWorkspaceMode::Clean)?;
-        assert_eq!(client.active_workspace_count()?, 0);
-        assert_eq!(client.active_execution_count()?, 0);
-        println!("lifecycle_seconds={:.9}", lifecycle.elapsed().as_secs_f64());
-        drop(client);
-        drop(store);
-        Ok(())
-    })();
+            let exec = exec_started.elapsed().as_secs_f64();
+            println!("exec_seconds={exec:.9}");
+            let commit_started = Instant::now();
+            let commit = client.commit_workspace_session(session.id)?;
+            assert!(matches!(commit, WorkspaceCommitResult::Created { .. }));
+            let commit_seconds = commit_started.elapsed().as_secs_f64();
+            let after = usage();
+            println!("commit_seconds={commit_seconds:.9}");
+            println!("exec_commit_seconds={:.9}", exec + commit_seconds);
+            println!(
+                "host_exec_commit_user_cpu_seconds={:.6}",
+                seconds(after.ru_utime) - seconds(before.ru_utime)
+            );
+            println!(
+                "host_exec_commit_system_cpu_seconds={:.6}",
+                seconds(after.ru_stime) - seconds(before.ru_stime)
+            );
+            println!("process_peak_rss_bytes={}", after.ru_maxrss);
+            let resources = Command::new("docker").args(["exec", &name, "/bin/sh", "-c", "cat /sys/fs/cgroup/memory.peak /sys/fs/cgroup/memory.swap.current /sys/fs/cgroup/memory.events"]).output()?;
+            assert!(resources.status.success());
+            let resources = String::from_utf8(resources.stdout)?;
+            println!("container_memory_resources={resources:?}");
+            let mut lines = resources.lines();
+            assert!(lines.next().ok_or("memory peak")?.parse::<u64>()? <= 2 * 1024 * 1024 * 1024);
+            assert_eq!(lines.next(), Some("0"));
+            assert!(resources.lines().any(|line| line == "oom 0"));
+            assert!(resources.lines().any(|line| line == "oom_kill 0"));
+            let pin = store.pin_branch(branch)?;
+            println!("branch={branch}");
+            println!("commit={:?}", pin.branch.head_commit_id);
+            println!("root={:?}", pin.root);
+            drop(pin);
+            client.end_workspace_session(session.id, EndWorkspaceMode::Clean)?;
+            assert_eq!(client.active_workspace_count()?, 0);
+            assert_eq!(client.active_execution_count()?, 0);
+            println!("lifecycle_seconds={:.9}", lifecycle.elapsed().as_secs_f64());
+            drop(client);
+            drop(store);
+            Ok(())
+        },
+    ));
     let stop = manager.stop(&name);
     let remove = manager.remove(&name);
     if let Err(error) = &stop {
@@ -388,7 +403,10 @@ fn workspace(archive: &Path, root: &Path, image: &str) -> Result<(), Box<dyn std
     if let Err(error) = &remove {
         eprintln!("container removal error: {error}");
     }
-    result?;
+    match result {
+        Ok(result) => result?,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
     stop?;
     remove?;
     println!("cleanup=removed_owned_container");
