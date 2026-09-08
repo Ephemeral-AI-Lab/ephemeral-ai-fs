@@ -2,6 +2,82 @@ use crate::{LayerStackId, Result, StoreError, WorkspaceReadReceipt};
 use std::cell::RefCell;
 use std::time::Instant;
 
+// Store-local counters include admission workers and mounted host reads. Snapshots
+// describe the shared Store interval, not exclusive attribution under concurrency.
+// group_fetches includes header/directory extraction rejected by an optional budget.
+// encoded_read_bytes counts group payload (including record framing), excluding
+// outer pack headers/directories; blob_ranges includes those outer SQL ranges.
+// decoded_read_bytes counts full decoded groups including framing. base_fetches
+// counts distinct anchors per reader wave plus predecessor-search base fetches.
+// full_selected/delta_selected count finally admitted representations; alternative
+// byte/call/time counters also include work whose prepared output loses a race.
+// Matching counters describe optional work, and *_ns costs are nested in existing
+// operation/phase times. These counters must not be added to attributed_ns.
+macro_rules! physical_storage_receipt {
+    ($($field:ident),+ $(,)?) => {
+        #[doc(hidden)]
+        #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+        pub struct PhysicalStorageReceipt { $(pub $field: u64,)+ }
+
+        impl PhysicalStorageReceipt {
+            pub fn since(self, before: Self) -> Self {
+                Self { $($field: self.$field.saturating_sub(before.$field),)+ }
+            }
+        }
+
+        #[derive(Default)]
+        pub(crate) struct PhysicalStorageCounters {
+            $($field: std::sync::atomic::AtomicU64,)+
+        }
+
+        impl PhysicalStorageCounters {
+            pub(crate) fn note(&self, receipt: PhysicalStorageReceipt) {
+                $(if receipt.$field != 0 {
+                    self.$field.fetch_add(receipt.$field, std::sync::atomic::Ordering::Relaxed);
+                })+
+            }
+            pub(crate) fn snapshot(&self) -> PhysicalStorageReceipt {
+                PhysicalStorageReceipt {
+                    $($field: self.$field.load(std::sync::atomic::Ordering::Relaxed),)+
+                }
+            }
+        }
+    };
+}
+
+physical_storage_receipt!(
+    group_fetches,
+    encoded_read_bytes,
+    decoded_read_bytes,
+    decompression_calls,
+    base_fetches,
+    blob_ranges,
+    eligible_targets,
+    absent_predecessors,
+    usable_bases,
+    predecessor_hints,
+    candidate_trials,
+    correspondence_reserved_bytes,
+    correspondence_descriptors,
+    correspondence_budget_skips,
+    budget_skips,
+    fetch_budget_skips,
+    match_budget_skips,
+    instruction_budget_skips,
+    memory_budget_skips,
+    match_comparisons,
+    seed_hash_bytes,
+    matching_ns,
+    full_selected,
+    delta_selected,
+    rejected_mixed_groups,
+    full_alternative_bytes,
+    mixed_alternative_bytes,
+    selected_encoded_bytes,
+    encoding_calls,
+    encoding_ns,
+);
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CaptureMode {
     Live,
@@ -286,6 +362,7 @@ pub enum StorageReceipt {
     WorkspaceLifecycle(WorkspaceLifecycleReceipt),
     FuseWrite(FuseWriteReceipt),
     WorkspaceRead(WorkspaceReadReceipt),
+    PhysicalStorage(PhysicalStorageReceipt),
 }
 
 thread_local! {

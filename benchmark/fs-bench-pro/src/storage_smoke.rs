@@ -6,16 +6,75 @@ use std::os::unix::fs::{FileExt, MetadataExt};
 const MOUNT: &str = "/workspace/storage-smoke";
 const WORKLOAD: &str = "/usr/local/bin/fs-benchmark-workload";
 
-fn timed<T>(phase: &str, action: impl FnOnce() -> AnyResult<T>) -> AnyResult<T> {
+fn physical_json(receipt: layerfs_layerstack_store::PhysicalStorageReceipt) -> String {
+    let fields = [
+        ("group_fetches", receipt.group_fetches),
+        ("encoded_read_bytes", receipt.encoded_read_bytes),
+        ("decoded_read_bytes", receipt.decoded_read_bytes),
+        ("decompression_calls", receipt.decompression_calls),
+        ("base_fetches", receipt.base_fetches),
+        ("blob_ranges", receipt.blob_ranges),
+        ("eligible_targets", receipt.eligible_targets),
+        ("absent_predecessors", receipt.absent_predecessors),
+        ("usable_bases", receipt.usable_bases),
+        ("predecessor_hints", receipt.predecessor_hints),
+        ("candidate_trials", receipt.candidate_trials),
+        (
+            "correspondence_reserved_bytes",
+            receipt.correspondence_reserved_bytes,
+        ),
+        (
+            "correspondence_descriptors",
+            receipt.correspondence_descriptors,
+        ),
+        (
+            "correspondence_budget_skips",
+            receipt.correspondence_budget_skips,
+        ),
+        ("budget_skips", receipt.budget_skips),
+        ("fetch_budget_skips", receipt.fetch_budget_skips),
+        ("match_budget_skips", receipt.match_budget_skips),
+        ("instruction_budget_skips", receipt.instruction_budget_skips),
+        ("memory_budget_skips", receipt.memory_budget_skips),
+        ("match_comparisons", receipt.match_comparisons),
+        ("seed_hash_bytes", receipt.seed_hash_bytes),
+        ("matching_ns", receipt.matching_ns),
+        ("full_selected", receipt.full_selected),
+        ("delta_selected", receipt.delta_selected),
+        ("rejected_mixed_groups", receipt.rejected_mixed_groups),
+        ("full_alternative_bytes", receipt.full_alternative_bytes),
+        ("mixed_alternative_bytes", receipt.mixed_alternative_bytes),
+        ("selected_encoded_bytes", receipt.selected_encoded_bytes),
+        ("encoding_calls", receipt.encoding_calls),
+        ("encoding_ns", receipt.encoding_ns),
+    ];
+    format!(
+        "{{{}}}",
+        fields
+            .into_iter()
+            .map(|(key, value)| { format!("\"{key}\":{value}") })
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
+fn timed<T>(
+    store: &LayerStackStore,
+    phase: &str,
+    action: impl FnOnce() -> AnyResult<T>,
+) -> AnyResult<T> {
     let before = process_resource_snapshot()?;
+    let physical_before = store.physical_storage_receipt();
     let start = Instant::now();
     let result = action();
     let elapsed = elapsed_ns(start);
+    let physical = store.physical_storage_receipt().since(physical_before);
     let after = process_resource_snapshot()?;
     emit(
         "storage-smoke-phase",
         &[
             ("phase", quote(phase)),
+            ("physical_storage", physical_json(physical)),
             ("elapsed_ns", elapsed.to_string()),
             ("success", result.is_ok().to_string()),
             (
@@ -97,12 +156,17 @@ fn request(branch: BranchId, container: &ContainerId) -> CreateWorkspaceSession 
     }
 }
 
-fn workload(client: &Client, id: WorkspaceId, args: &[&str]) -> AnyResult<OutputPage> {
+fn workload(
+    store: &LayerStackStore,
+    client: &Client,
+    id: WorkspaceId,
+    args: &[&str],
+) -> AnyResult<OutputPage> {
     let argv = std::iter::once(WORKLOAD)
         .chain(args.iter().copied())
         .map(OsString::from)
         .collect();
-    let output = timed("exec", || execute(client, id, argv))?;
+    let output = timed(&store, "exec", || execute(client, id, argv))?;
     emit(
         "storage-smoke-execution",
         &[
@@ -130,7 +194,7 @@ fn commit(
     index: usize,
     sdk: bool,
 ) -> AnyResult<()> {
-    let status = timed("commit", || {
+    let status = timed(&store, "commit", || {
         Ok(client.commit_workspace_session_with_status(id)?)
     })?;
     let (head, created) = match status.result {
@@ -260,7 +324,7 @@ pub fn dispatch(args: &[OsString]) -> AnyResult<()> {
             } else {
                 LayerStackInitialization::Directory(input.join("initial"))
             };
-            let initialized = timed("init", || {
+            let initialized = timed(&store, "init", || {
                 Ok(client.initialize_layerstack(EntityName::new("storage-smoke")?, source)?)
             })?;
             emit(
@@ -274,7 +338,7 @@ pub fn dispatch(args: &[OsString]) -> AnyResult<()> {
                 )],
             );
             storage(&store, "after-init")?;
-            let branch = timed("fork", || {
+            let branch = timed(&store, "fork", || {
                 Ok(client.fork_branch(
                     EntityName::new("history")?,
                     LocalForkSource::Layer {
@@ -287,7 +351,7 @@ pub fn dispatch(args: &[OsString]) -> AnyResult<()> {
                 root.join("layer-id"),
                 initialized.genesis_layer_id.to_string(),
             )?;
-            let session = timed("mount", || {
+            let session = timed(&store, "mount", || {
                 Ok(client.create_workspace_session(request(branch, &container))?)
             })?;
             active = Some(session.id);
@@ -313,6 +377,7 @@ pub fn dispatch(args: &[OsString]) -> AnyResult<()> {
                 ["close"] => break,
                 ["read", pass] if performance && case == "small-files" => {
                     let output = workload(
+                        &store,
                         &client,
                         active.ok_or("smoke Workspace")?,
                         &["storage-smoke-read", MOUNT],
@@ -336,6 +401,7 @@ pub fn dispatch(args: &[OsString]) -> AnyResult<()> {
                     let mut execs = 0;
                     if case == "deepseek-five" {
                         workload(
+                            &store,
                             &client,
                             id,
                             &["storage-smoke-import", "/input/checkpoint", MOUNT],
@@ -343,6 +409,7 @@ pub fn dispatch(args: &[OsString]) -> AnyResult<()> {
                         execs = 1;
                     } else if case == "small-files" {
                         workload(
+                            &store,
                             &client,
                             id,
                             &["storage-smoke-small-change", MOUNT, &index.to_string()],
@@ -377,7 +444,7 @@ pub fn dispatch(args: &[OsString]) -> AnyResult<()> {
                                 });
                             }
                             members = edits.len();
-                            timed("sdk-edit", || {
+                            timed(&store, "sdk-edit", || {
                                 if index == 4 {
                                     client.edit_workspace_file_ranges(edits)?;
                                 } else {
@@ -389,6 +456,7 @@ pub fn dispatch(args: &[OsString]) -> AnyResult<()> {
                             })?;
                         } else {
                             workload(
+                                &store,
                                 &client,
                                 id,
                                 &[
@@ -424,16 +492,17 @@ pub fn dispatch(args: &[OsString]) -> AnyResult<()> {
                     };
                     let fork = client
                         .fork_branch(EntityName::new(format!("verify-{ordinal}"))?, source)?;
-                    let session = timed("verify-mount", || {
+                    let session = timed(&store, "verify-mount", || {
                         Ok(client.create_workspace_session(request(fork, &container))?)
                     })?;
                     active = Some(session.id);
                     workload(
+                        &store,
                         &client,
                         session.id,
                         &["storage-smoke-observe", MOUNT, "/input/observed.tsv"],
                     )?;
-                    timed("verify-end", || {
+                    timed(&store, "verify-end", || {
                         Ok(client.end_workspace_session(session.id, EndWorkspaceMode::Clean)?)
                     })?;
                     active = None;
@@ -448,7 +517,7 @@ pub fn dispatch(args: &[OsString]) -> AnyResult<()> {
         Ok(())
     })();
     let cleanup = if let Some(id) = active {
-        timed("end", || {
+        timed(&store, "end", || {
             Ok(client.end_workspace_session(
                 id,
                 if result.is_ok() {

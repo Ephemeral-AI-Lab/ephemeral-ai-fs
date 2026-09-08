@@ -141,8 +141,13 @@ pub(crate) struct FinalizedObjectSlab {
 
 /// Immutable ownership of bytes whose identity and complete outer framing were checked.
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[repr(transparent)]
-pub(crate) struct AuthenticatedCanonicalObject(CanonicalObject);
+pub(crate) struct AuthenticatedCanonicalObject(CanonicalObject, PhysicalHints);
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct PhysicalHints {
+    prior_ids: [Option<ObjectId>; 4],
+    first_span: Option<(u64, u32)>,
+}
 
 impl std::ops::Deref for AuthenticatedCanonicalObject {
     type Target = CanonicalObject;
@@ -161,6 +166,9 @@ impl AsRef<CanonicalObject> for CanonicalObject {
     }
 }
 impl AuthenticatedCanonicalObject {
+    pub(crate) fn prior_ids(&self) -> &[Option<ObjectId>; 4] {
+        &self.1.prior_ids
+    }
     fn new(bytes: Vec<u8>, expected: Option<ObjectId>) -> CoreResult<Self> {
         let id = match expected {
             Some(id) => {
@@ -169,7 +177,10 @@ impl AuthenticatedCanonicalObject {
             }
             None => layerfs_content::identify_canonical(&bytes)?.0,
         };
-        Ok(Self(CanonicalObject { id, bytes }))
+        Ok(Self(
+            CanonicalObject { id, bytes },
+            PhysicalHints::default(),
+        ))
     }
 }
 
@@ -919,6 +930,12 @@ pub struct DeferredObjectStore {
     index_limit: usize,
     spill_buffer_bytes: usize,
     order_memory_bytes: usize,
+    predecessor: Option<(
+        crate::SnapshotReader,
+        layerfs_content::file::rope::FileStateRoot,
+        std::sync::Arc<std::sync::atomic::AtomicU64>,
+        bool,
+    )>,
 }
 
 #[cfg(test)]
@@ -1868,6 +1885,7 @@ impl DeferredObjectStore {
             index_limit: CANDIDATE_INDEX_BYTES,
             spill_buffer_bytes: CANDIDATE_SPILL_BUFFER_BYTES - 2 * spill::ID_BUFFER_BYTES,
             order_memory_bytes: CANDIDATE_MEMORY_BYTES,
+            predecessor: None,
         })
     }
 
@@ -1905,7 +1923,7 @@ impl DeferredObjectStore {
         Ok(Some(ids))
     }
 
-    fn order_missing(&self, missing: &SpillableObjectSet) -> Result<IdOrder> {
+    fn order_missing(&self, missing: &SpillableObjectSet, expected: usize) -> Result<IdOrder> {
         let mut output = IdOrder::empty();
         let mut count = 0_usize;
         let mut page = Vec::with_capacity(OBJECT_PAGE_COUNT);
@@ -1938,7 +1956,7 @@ impl DeferredObjectStore {
         if !page.is_empty() {
             consume(&page)?;
         }
-        if count != missing.count {
+        if count != expected {
             return Err(StoreError::Integrity("candidate publication order"));
         }
         output.seal()?;
@@ -1958,7 +1976,7 @@ impl DeferredObjectStore {
                 )
             }),
             DeferredObjects::Spill(spill) => {
-                spill.visit_ordered(order, &mut |id, bytes| visitor(id, bytes))
+                spill.visit_ordered(order, &mut |id, bytes, _| visitor(id, bytes))
             }
         }
     }
@@ -1972,8 +1990,10 @@ impl DeferredObjectStore {
             DeferredObjects::Memory { rows, .. } => {
                 order.visit(|id| visitor(rows.get(&id).ok_or(StoreError::MissingObject(id))?))
             }
-            DeferredObjects::Spill(spill) => spill.visit_ordered(order, &mut |id, bytes| {
-                let checked = AuthenticatedCanonicalObject::new(std::mem::take(bytes), Some(id))?;
+            DeferredObjects::Spill(spill) => spill.visit_ordered(order, &mut |id, bytes, hints| {
+                let mut checked =
+                    AuthenticatedCanonicalObject::new(std::mem::take(bytes), Some(id))?;
+                checked.1 = hints;
                 let result = visitor(&checked);
                 *bytes = checked.0.bytes;
                 result
@@ -1999,7 +2019,47 @@ impl DeferredObjectStore {
         let page_limit = self.memory_limit.min(INITIALIZATION_SLAB_BYTES);
         let mut page = Vec::with_capacity(capacity);
         let mut page_bytes = 0_usize;
-        let mut push = |object: AuthenticatedCanonicalObject| {
+        let mut predecessor = self
+            .predecessor
+            .take()
+            .map(|(reader, root, budget, available)| {
+                (
+                    reader,
+                    layerfs_content::file::rope::PredecessorCursor::new(root),
+                    budget,
+                    available,
+                )
+            });
+        let mut file_reserved = 0u64;
+        let mut push = |mut object: AuthenticatedCanonicalObject| {
+            if let (Some((reader, cursor, operation_reserved, available)), Some((start, len))) =
+                (&mut predecessor, object.1.first_span)
+            {
+                // Each optional metadata object can require a target group and a FULL
+                // anchor group. Reserve the larger encoded bound for both counters.
+                const FETCH_RESERVATION: u64 = 131136;
+                object.1.prior_ids = cursor.hints(&CoreReader(reader), start, len, || {
+                    if !*available || file_reserved + FETCH_RESERVATION > 1024 * 1024 {
+                        return false;
+                    }
+                    if operation_reserved
+                        .fetch_update(
+                            std::sync::atomic::Ordering::Relaxed,
+                            std::sync::atomic::Ordering::Relaxed,
+                            |used| {
+                                used.checked_add(FETCH_RESERVATION)
+                                    .filter(|sum| *sum <= 16 * 1024 * 1024)
+                            },
+                        )
+                        .is_err()
+                    {
+                        return false;
+                    }
+                    file_reserved += FETCH_RESERVATION;
+                    true
+                })?;
+            }
+
             if object.bytes.len() > ADMISSION_BATCH_BYTES {
                 return Err(StoreError::Integrity("canonical object admission size"));
             }
@@ -2021,16 +2081,21 @@ impl DeferredObjectStore {
                 push(object)
             })?,
             DeferredObjects::Spill(spill) => {
-                spill.visit_ordered(&self.reachable, &mut |id, bytes| {
+                spill.visit_ordered(&self.reachable, &mut |id, bytes, hints| {
                     spill_readback_bytes = spill_readback_bytes.saturating_add(bytes.len() as u64);
                     let started = Instant::now();
-                    let object =
+                    let mut object =
                         AuthenticatedCanonicalObject::new(std::mem::take(bytes), Some(id))?;
+                    object.1 = hints;
                     storage_authentication_ns =
                         storage_authentication_ns.saturating_add(elapsed_ns(started));
                     push(object)
                 })?;
             }
+        }
+        if let Some((reader, cursor, _, available)) = predecessor {
+            let (descriptors, skips) = cursor.counters();
+            reader.note_predecessor_correspondence(file_reserved, descriptors, skips, !available);
         }
         if !page.is_empty() {
             visitor(page)?;
@@ -2072,7 +2137,7 @@ impl DeferredObjectStore {
                 )
             })?,
             DeferredObjects::Spill(spill) => {
-                spill.visit_ordered(&self.reachable, &mut |id, bytes| {
+                spill.visit_ordered(&self.reachable, &mut |id, bytes, _| {
                     push(CanonicalObject {
                         id,
                         bytes: std::mem::take(bytes),
@@ -2120,7 +2185,7 @@ impl DeferredObjectStore {
         seen.insert_page(&[root])?;
         let mut active = BTreeSet::new();
         let mut stack = vec![(root, false)];
-        let mut order = IdOrder::empty();
+        let mut order = self.predecessor.is_none().then(IdOrder::empty);
         let mut count = 0_u64;
         let mut encoded_bytes = 0_u64;
         while let Some((id, expanded)) = stack.pop() {
@@ -2131,7 +2196,9 @@ impl DeferredObjectStore {
             };
             if expanded {
                 active.remove(&id);
-                order.push_bounded(id, self.index_limit)?;
+                if let Some(order) = &mut order {
+                    order.push_bounded(id, self.index_limit)?;
+                }
                 count += 1;
                 encoded_bytes = encoded_bytes
                     .checked_add(length)
@@ -2162,8 +2229,14 @@ impl DeferredObjectStore {
             stack.push((id, true));
             stack.extend(inserted.into_iter().rev().map(|child| (child, false)));
         }
-        order.seal()?;
-        self.reachable = order;
+        // File constructors emit children before parents. Preserve first payload
+        // spans through their existing selection; generic callers retain DFS order.
+        self.reachable = if let Some(mut order) = order {
+            order.seal()?;
+            order
+        } else {
+            self.order_missing(&seen, count as usize)?
+        };
         self.count = count;
         self.encoded_bytes = encoded_bytes;
         if let DeferredObjects::Spill(spill) = &mut self.storage {
@@ -2232,7 +2305,10 @@ impl DeferredObjectStore {
             None
         };
         // The checked owner retains its identity alongside the existing index key.
-        let charge = length.saturating_add(64 + std::mem::size_of::<ObjectId>());
+        let charge = object
+            .bytes
+            .capacity()
+            .saturating_add(64 + std::mem::size_of::<AuthenticatedCanonicalObject>());
         if matches!(&self.storage, DeferredObjects::Memory { bytes, .. } if bytes.saturating_add(charge) > self.memory_limit)
         {
             self.spill()?;
@@ -2243,7 +2319,7 @@ impl DeferredObjectStore {
                 rows.insert(id, object);
                 *bytes += charge;
             }
-            DeferredObjects::Spill(spill) => spill.put(id, &object.bytes)?,
+            DeferredObjects::Spill(spill) => spill.put(&object)?,
         }
         self.reachable.push_bounded(id, self.index_limit)?;
         self.count += 1;
@@ -2294,11 +2370,8 @@ impl DeferredObjectStore {
         };
         for id in order {
             spill.put(
-                id,
-                &rows
-                    .get(&id)
-                    .ok_or(StoreError::Integrity("candidate object"))?
-                    .bytes,
+                rows.get(&id)
+                    .ok_or(StoreError::Integrity("candidate object"))?,
             )?;
         }
         self.storage = DeferredObjects::Spill(spill);
@@ -2336,6 +2409,41 @@ pub struct ObjectBuffer<'a> {
 }
 
 impl<'a> ObjectBuffer<'a> {
+    #[doc(hidden)]
+    pub fn set_physical_predecessor(
+        &mut self,
+        reader: crate::SnapshotReader,
+        root: layerfs_content::file::rope::FileStateRoot,
+        operation_reserved: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    ) -> Result<()> {
+        // Producer correspondence may overlap admission and other producers.
+        // Reserve its cursor (64 KiB) plus one bounded physical metadata read
+        // (512 KiB) from this producer's existing partition, never the encoder's
+        // 2-MiB scratch. Small partitions preserve context but skip optional work.
+        const CORRESPONDENCE_MEMORY: usize = 576 * 1024;
+        let available = self.objects.memory_limit >= CORRESPONDENCE_MEMORY + 32 * 1024;
+        if available {
+            self.objects.memory_limit -= CORRESPONDENCE_MEMORY;
+            if matches!(&self.objects.storage, DeferredObjects::Memory { bytes, .. } if *bytes > self.objects.memory_limit)
+            {
+                self.objects.spill()?;
+            }
+        }
+        self.objects.predecessor = Some((reader, root, operation_reserved, available));
+        Ok(())
+    }
+
+    #[doc(hidden)]
+    pub fn build_complete_with_predecessor(
+        mut self,
+        source: impl Read,
+        expected_len: u64,
+    ) -> Result<BuiltRoot> {
+        self.objects.references = None;
+        let completed = build_checked_file(&mut self, source, expected_len)?;
+        self.finish_all_reachable(completed.root.0, completed.counters.cdc_bytes_scanned)
+    }
+
     pub fn new(source: &'a dyn ObjectSource) -> Result<Self> {
         Ok(Self {
             source: Some(source),
@@ -2569,6 +2677,21 @@ impl ObjectStore for ObjectBuffer<'_> {
             .with_authenticated_canonical(id, callback)
     }
 
+    fn put_file_payload(
+        &mut self,
+        canonical: Vec<u8>,
+        start: u64,
+        len: u32,
+    ) -> CoreResult<ObjectId> {
+        let mut object = AuthenticatedCanonicalObject::new(canonical, None)?;
+        object.1.first_span = Some((start, len));
+        let id = object.id;
+        self.objects
+            .put_authenticated(object)
+            .map_err(|_| CoreError::Io)?;
+        Ok(id)
+    }
+
     fn put(&mut self, canonical: &[u8]) -> CoreResult<ObjectId> {
         self.put_owned(canonical.to_vec())
     }
@@ -2636,7 +2759,7 @@ impl crate::schema::StoreDb {
             .remove(&id)
             .ok_or(StoreError::Integrity("visible object missing"))?;
         let mut bytes = None;
-        self.visit_locations(&[(id, location)], |object| {
+        self.visit_locations(&mut [(id, location)], |object| {
             bytes = Some(object.bytes);
             Ok(())
         })?;
@@ -2662,9 +2785,9 @@ impl crate::schema::StoreDb {
         if locations.len() != distinct.len() {
             return Err(StoreError::Integrity("visible object cardinality"));
         }
-        let locations = locations.into_iter().collect::<Vec<_>>();
+        let mut locations = locations.into_iter().collect::<Vec<_>>();
         let mut rows = BTreeMap::new();
-        self.visit_locations(&locations, |object| {
+        self.visit_locations(&mut locations, |object| {
             rows.insert(object.id, object.bytes);
             Ok(())
         })?;
@@ -3160,7 +3283,7 @@ fn consume_checked_owned_page(
     batch: MissingBatch,
     statement_number: &mut u64,
 ) -> Result<AdmissionBatchMetrics> {
-    let prepared = admission::PreparedAdmission::prepare_missing(batch)?;
+    let prepared = admission::PreparedAdmission::prepare_missing(db, batch)?;
     let (_, metrics) = prepared.publish(db, statement_number, |_, _, _| {
         #[cfg(feature = "test-instrumentation")]
         crate::schema::verification_store_checkpoint(
@@ -3733,7 +3856,7 @@ mod tests {
         assert_eq!(owner.id, ObjectId::for_bytes(&canonical));
         assert_eq!(
             std::mem::size_of::<AuthenticatedCanonicalObject>(),
-            std::mem::size_of::<CanonicalObject>()
+            std::mem::size_of::<CanonicalObject>() + std::mem::size_of::<PhysicalHints>()
         );
         assert!(matches!(
             AuthenticatedCanonicalObject::new(
@@ -3799,7 +3922,7 @@ mod tests {
             .map(|object| object.id)
             .collect::<Vec<_>>();
         let mut statement_number = finished.statement_number;
-        let (_, metrics) = PreparedAdmission::prepare_missing(finished.final_batch)
+        let (_, metrics) = PreparedAdmission::prepare_missing(&db, finished.final_batch)
             .unwrap()
             .publish(db, &mut statement_number, |_, _, _| Ok(()))
             .unwrap();
@@ -4129,10 +4252,13 @@ mod tests {
             (count, written)
         );
         assert!(matches!(
-            objects.put_authenticated(AuthenticatedCanonicalObject(CanonicalObject {
-                id: ids[0],
-                bytes: canonical[1].clone()
-            })),
+            objects.put_authenticated(AuthenticatedCanonicalObject(
+                CanonicalObject {
+                    id: ids[0],
+                    bytes: canonical[1].clone()
+                },
+                PhysicalHints::default()
+            )),
             Err(StoreError::Integrity("candidate object collision"))
         ));
         let objects = objects.all_reachable().unwrap();
@@ -4424,7 +4550,7 @@ mod tests {
             .unwrap();
         let finished = admission.finish().unwrap();
         let mut statement_number = finished.statement_number;
-        let (_, metrics) = PreparedAdmission::prepare_missing(finished.final_batch)
+        let (_, metrics) = PreparedAdmission::prepare_missing(&db, finished.final_batch)
             .unwrap()
             .publish(&db, &mut statement_number, |_, _, _| Ok(()))
             .unwrap();
@@ -4508,7 +4634,7 @@ mod tests {
         assert!(spill.reader.lock().unwrap().write_all(&[0]).is_err());
         let mut missing = SpillableObjectSet::empty().unwrap();
         missing.insert_page(&[root]).unwrap();
-        let order = objects.order_missing(&missing).unwrap();
+        let order = objects.order_missing(&missing, missing.count).unwrap();
         let mut visited = Vec::new();
         objects
             .visit_prevalidated_order(&order, &mut |id, bytes| {

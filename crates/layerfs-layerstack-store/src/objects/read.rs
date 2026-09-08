@@ -1,7 +1,7 @@
 //! Connection-only extraction followed by bounded target and FULL-base waves.
 use super::{pack, CanonicalObject, OBJECT_PAGE_COUNT};
 use crate::schema::StoreDb;
-use crate::{Result, StoreError};
+use crate::{PhysicalStorageReceipt, Result, StoreError};
 use layerfs_content::ObjectId;
 use rusqlite::{limits::Limit, params_from_iter, OptionalExtension};
 use std::collections::BTreeMap;
@@ -16,6 +16,47 @@ pub(super) struct Location {
     pub pack: i64,
     pub group: usize,
     pub record: usize,
+}
+
+/// Optional predecessor discovery has independent per-target and batch bounds.
+#[derive(Default)]
+pub(super) struct HintReadBudget {
+    target_fetches: usize,
+    target_encoded: usize,
+    target_decoded: usize,
+    batch_encoded: usize,
+    batch_decoded: usize,
+    pub exhausted: bool,
+}
+
+impl HintReadBudget {
+    pub fn begin_target(&mut self) {
+        self.target_fetches = 0;
+        self.target_encoded = 0;
+        self.target_decoded = 0;
+        self.exhausted = false;
+    }
+
+    fn charge(&mut self, encoded: usize, decoded: usize) -> bool {
+        if self.target_encoded + encoded > 512 * 1024
+            || self.target_decoded + decoded > 512 * 1024
+            || self.batch_encoded + encoded > 8 * 1024 * 1024
+            || self.batch_decoded + decoded > 8 * 1024 * 1024
+        {
+            self.exhausted = true;
+            return false;
+        }
+        self.target_encoded += encoded;
+        self.target_decoded += decoded;
+        self.batch_encoded += encoded;
+        self.batch_decoded += decoded;
+        true
+    }
+}
+
+pub(super) enum HintRecord {
+    Full(CanonicalObject),
+    Anchor(ObjectId),
 }
 
 pub(super) fn validation_reserve(length: usize) -> usize {
@@ -124,6 +165,16 @@ impl StoreDb {
 
     /// The guard and Blob never leave this extraction boundary.
     fn extract_group(&self, pack_id: i64, group: usize) -> Result<(pack::GroupEntry, Vec<u8>)> {
+        self.extract_hint_group(pack_id, group, None)?
+            .ok_or(StoreError::Integrity("required group extraction"))
+    }
+
+    fn extract_hint_group(
+        &self,
+        pack_id: i64,
+        group: usize,
+        budget: Option<&mut HintReadBudget>,
+    ) -> Result<Option<(pack::GroupEntry, Vec<u8>)>> {
         let connection = self.reader()?;
         let blob = connection.blob_open("main", "object_packs", "data", pack_id, true)?;
         let length = blob.len();
@@ -136,13 +187,103 @@ impl StoreDb {
         let mut directory = [0; 16];
         blob.read_at_exact(&mut directory, 16 + 16 * group)?;
         let entry = pack::entry(&directory, count, length)?;
+        self.note_physical(PhysicalStorageReceipt {
+            group_fetches: 1,
+            blob_ranges: 2,
+            ..Default::default()
+        });
+        if let Some(budget) = budget {
+            if !budget.charge(entry.range.len(), entry.decoded_length) {
+                return Ok(None);
+            }
+        }
         if entry.oversized {
             // Carry checked directory facts into bounded singleton extraction.
-            return Ok((entry, Vec::new()));
+            return Ok(Some((entry, Vec::new())));
         }
         let mut encoded = vec![0; entry.range.len()];
         blob.read_at_exact(&mut encoded, entry.range.start)?;
-        Ok((entry, encoded))
+        self.note_physical(PhysicalStorageReceipt {
+            encoded_read_bytes: encoded.len() as u64,
+            blob_ranges: 1,
+            ..Default::default()
+        });
+        Ok(Some((entry, encoded)))
+    }
+
+    /// Inspect one selected predecessor representation. DELTA hints expose their
+    /// FULL anchor without reconstructing an otherwise unused target. The anchor
+    /// must be fetched with `require_full` and authenticated before matching.
+    pub(super) fn read_hint(
+        &self,
+        id: ObjectId,
+        require_full: bool,
+        budget: &mut HintReadBudget,
+    ) -> Result<Option<HintRecord>> {
+        if budget.exhausted || budget.target_fetches == 8 {
+            budget.exhausted = true;
+            return Ok(None);
+        }
+        budget.target_fetches += 1;
+        self.note_physical(PhysicalStorageReceipt {
+            base_fetches: 1,
+            ..Default::default()
+        });
+        let Some(location) = self.object_locations(&[id])?.remove(&id) else {
+            return Ok(None);
+        };
+        if location.canonical_length > pack::GROUP_LIMIT {
+            return Ok(None);
+        }
+        if !budget.charge(32, 0) {
+            return Ok(None);
+        }
+        let Some((entry, encoded)) =
+            self.extract_hint_group(location.pack, location.group, Some(budget))?
+        else {
+            return Ok(None);
+        };
+        if entry.oversized {
+            return Ok(Some(HintRecord::Full(CanonicalObject {
+                id,
+                bytes: self.singleton(id, location, &entry)?,
+            })));
+        }
+        self.note_physical(PhysicalStorageReceipt {
+            decoded_read_bytes: entry.decoded_length as u64,
+            decompression_calls: u64::from(entry.codec == pack::Codec::Zstandard),
+            ..Default::default()
+        });
+        let decoded = pack::decode_group(entry, encoded)?;
+        let mut selected = None;
+        pack::visit_records(&decoded, false, |index, record| {
+            if index != location.record {
+                return Ok(());
+            }
+            selected = Some(match record {
+                pack::Record::Full(bytes) => {
+                    authenticate(id, bytes, location.canonical_length)?;
+                    HintRecord::Full(CanonicalObject {
+                        id,
+                        bytes: bytes.to_vec(),
+                    })
+                }
+                pack::Record::Delta {
+                    base,
+                    output_length,
+                    ..
+                } => {
+                    if require_full || base == id || output_length != location.canonical_length {
+                        return Err(StoreError::Integrity("delta hint base"));
+                    }
+                    HintRecord::Anchor(base)
+                }
+            });
+            Ok(())
+        })?;
+        selected
+            .map(Some)
+            .ok_or(StoreError::Integrity("hint record locator"))
     }
 
     fn singleton_range(
@@ -165,6 +306,12 @@ impl StoreDb {
         }
         let mut framing = [0; 9];
         blob.read_at_exact(&mut framing, 32)?;
+        self.note_physical(PhysicalStorageReceipt {
+            encoded_read_bytes: 9,
+            decoded_read_bytes: 9,
+            blob_ranges: 1,
+            ..Default::default()
+        });
         if framing[..4] != 1u32.to_le_bytes()
             || framing[4..8] != ((location.canonical_length + 1) as u32).to_le_bytes()
             || framing[8] != 0
@@ -187,6 +334,12 @@ impl StoreDb {
             let connection = self.reader()?;
             let blob = connection.blob_open("main", "object_packs", "data", location.pack, true)?;
             blob.read_at_exact(part, range.start + index * pack::GROUP_LIMIT)?;
+            self.note_physical(PhysicalStorageReceipt {
+                encoded_read_bytes: part.len() as u64,
+                decoded_read_bytes: part.len() as u64,
+                blob_ranges: 1,
+                ..Default::default()
+            });
         }
         authenticate(id, &output, location.canonical_length)?;
         Ok(output)
@@ -218,13 +371,17 @@ impl StoreDb {
         Ok(())
     }
 
-    /// Plan slots once, then drain forward. Repeated groups across these bounded
-    /// drains count again; results returned by the caller have separate ownership.
+    /// Sort physical locations before draining so a group is not scattered across
+    /// internal batches by ObjectId order. Callers restore public slots/duplicates;
+    /// sorting in place adds no locator allocation. Repeated groups across bounded
+    /// drains still count again, and returned results have separate ownership.
     pub(super) fn visit_locations(
         &self,
-        locations: &[(ObjectId, Location)],
+        locations: &mut [(ObjectId, Location)],
         mut emit: impl FnMut(CanonicalObject) -> Result<()>,
     ) -> Result<()> {
+        locations
+            .sort_unstable_by_key(|(_, location)| (location.pack, location.group, location.record));
         let mut start = 0;
         while start < locations.len() {
             let mut end = start;
@@ -267,6 +424,11 @@ impl StoreDb {
                 })?;
                 continue;
             }
+            self.note_physical(PhysicalStorageReceipt {
+                decoded_read_bytes: entry.decoded_length as u64,
+                decompression_calls: u64::from(entry.codec == pack::Codec::Zstandard),
+                ..Default::default()
+            });
             let decoded = pack::decode_group(entry, encoded)?;
             let mut requested = record_slots(targets)?;
             pack::visit_records(&decoded, false, |index, record| {
@@ -305,6 +467,10 @@ impl StoreDb {
             }
         }
         let ids = pending.keys().copied().collect::<Vec<_>>();
+        self.note_physical(PhysicalStorageReceipt {
+            base_fetches: ids.len() as u64,
+            ..Default::default()
+        });
         let bases = self.object_locations(&ids)?;
         if bases.len() != ids.len() {
             return Err(StoreError::Integrity("delta base missing"));
@@ -332,6 +498,11 @@ impl StoreDb {
                 )?;
                 continue;
             }
+            self.note_physical(PhysicalStorageReceipt {
+                decoded_read_bytes: entry.decoded_length as u64,
+                decompression_calls: u64::from(entry.codec == pack::Codec::Zstandard),
+                ..Default::default()
+            });
             let decoded = pack::decode_group(entry, encoded)?;
             let mut requested = record_slots(targets)?;
             pack::visit_records(&decoded, false, |index, record| {
@@ -397,6 +568,12 @@ impl std::io::Read for SingletonComparison<'_> {
             let connection = self.db.reader()?;
             let blob = connection.blob_open("main", "object_packs", "data", self.pack, true)?;
             blob.read_at_exact(&mut buffer[..length], 41 + self.cursor)?;
+            self.db.note_physical(PhysicalStorageReceipt {
+                encoded_read_bytes: length as u64,
+                decoded_read_bytes: length as u64,
+                blob_ranges: 1,
+                ..Default::default()
+            });
             Ok(())
         })();
         result.map_err(std::io::Error::other)?;

@@ -59,32 +59,6 @@ pub(super) fn validate_node<S: ObjectRead>(
     Ok(())
 }
 
-pub(super) fn visit_extent_node<S: ObjectRead>(
-    store: &S,
-    expected: Summary,
-    root: bool,
-    counters: &mut RopeCounters,
-    ancestors: &mut Vec<ObjectId>,
-    visitor: &mut impl FnMut(&[ExtentSliceV3]) -> CoreResult<()>,
-) -> CoreResult<()> {
-    if ancestors.contains(&expected.id) {
-        return Err(CoreError::MappingCycle);
-    }
-    ancestors.push(expected.id);
-    match load_node(store, expected, root, counters)? {
-        ExtentNodeV3::Leaf { extents, .. } => visitor(&extents)?,
-        ExtentNodeV3::Branch {
-            level, children, ..
-        } => {
-            for child in child_summaries(&children, level - 1) {
-                visit_extent_node(store, child, false, counters, ancestors, visitor)?;
-            }
-        }
-    }
-    ancestors.pop();
-    Ok(())
-}
-
 pub(super) fn child_summaries(children: &[ChildDescriptorV3], level: u8) -> Vec<Summary> {
     let mut prior_bytes = 0;
     let mut prior_extents = 0;

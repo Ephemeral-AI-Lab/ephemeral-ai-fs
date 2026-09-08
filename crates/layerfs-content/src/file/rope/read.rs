@@ -1,6 +1,6 @@
 use super::build::add;
 use super::state::{FileStateRoot, ObjectRead, ReadPlan, RopeCounters, Summary};
-use super::validate::{child_summaries, validate_node, visit_extent_node};
+use super::validate::{child_summaries, validate_node};
 use crate::error::{CoreError, CoreResult};
 use crate::file::extent::{ExtentNodeV3, ExtentSliceV3, FileStateV3};
 use crate::file::extent_codec::{decode_file_state, decode_node_with_context};
@@ -167,8 +167,9 @@ pub fn visit_extents<S: ObjectRead>(
 ) -> CoreResult<(FileStateV3, RopeCounters)> {
     let mut counters = RopeCounters::default();
     let state = state(store, root, &mut counters)?;
-    visit_extent_node(
-        store,
+    let mut cursor = PredecessorCursor::new(root);
+    cursor.root = None;
+    cursor.stack.push((
         Summary {
             id: state.mapping_root,
             bytes: state.logical_len,
@@ -176,10 +177,20 @@ pub fn visit_extents<S: ObjectRead>(
             level: state.tree_level,
         },
         true,
-        &mut counters,
-        &mut Vec::new(),
-        &mut visitor,
-    )?;
+        0,
+    ));
+    let mut extents = Vec::with_capacity(crate::file::extent::MAX_ENTRIES);
+    while let Some((_, _, extent)) = cursor.next_extent(store, 0, &mut || true)? {
+        extents.push(extent);
+        if extents.len() == crate::file::extent::MAX_ENTRIES {
+            visitor(&extents)?;
+            extents.clear();
+        }
+    }
+    if !extents.is_empty() || state.extent_count == 0 {
+        visitor(&extents)?;
+    }
+    counters.nodes_read = add(counters.nodes_read, cursor.nodes_read)?;
     Ok((state, counters))
 }
 
@@ -340,5 +351,157 @@ pub(super) fn validate_summary(node: &ExtentNodeV3, expected: Summary) -> CoreRe
         Err(CoreError::InvalidRecord("extent summary"))
     } else {
         Ok(())
+    }
+}
+
+/// Private construction correspondence. Holds a forward traversal frontier, never
+/// payload bytes; whole subtrees before a changed range are skipped by summary.
+#[doc(hidden)]
+pub struct PredecessorCursor {
+    root: Option<FileStateRoot>,
+    stack: Vec<(Summary, bool, u64)>,
+    leaf: std::vec::IntoIter<ExtentSliceV3>,
+    position: u64,
+    current: Option<(u64, u64, ExtentSliceV3)>,
+    nodes_read: u64,
+    descriptors: usize,
+    exhausted: bool,
+    last_end: u64,
+}
+
+impl PredecessorCursor {
+    pub fn new(root: FileStateRoot) -> Self {
+        Self {
+            root: Some(root),
+            stack: Vec::new(),
+            leaf: Vec::new().into_iter(),
+            position: 0,
+            current: None,
+            descriptors: 0,
+            nodes_read: 0,
+            exhausted: false,
+            last_end: 0,
+        }
+    }
+
+    pub fn hints<S: ObjectRead>(
+        &mut self,
+        store: &S,
+        start: u64,
+        len: u32,
+        mut reserve_node: impl FnMut() -> bool,
+    ) -> CoreResult<[Option<ObjectId>; 4]> {
+        if len == 0 || start < self.last_end {
+            return Err(CoreError::InvalidRecord("predecessor span order"));
+        }
+        self.last_end = add(start, u64::from(len))?;
+        let mut hints = [None; 4];
+        if self.exhausted {
+            return Ok(hints);
+        }
+        let end = add(start, u64::from(len))?;
+        let mut count = 0;
+        loop {
+            if let Some((from, to, extent)) = self.current {
+                let id = extent.payload_object_id;
+                if from >= end {
+                    break;
+                }
+                if to > start && count < 4 && !hints.contains(&Some(id)) {
+                    hints[count] = Some(id);
+                    count += 1;
+                }
+                if to >= end {
+                    break;
+                }
+                self.current = None;
+            }
+            if self.descriptors == 4096 {
+                self.exhausted = true;
+                break;
+            }
+            self.current = self.next_extent(store, start, &mut reserve_node)?;
+            if self.current.is_none() {
+                break;
+            }
+        }
+        Ok(hints)
+    }
+
+    pub fn counters(&self) -> (u64, u64) {
+        (self.descriptors as u64, self.exhausted as u64)
+    }
+
+    fn next_extent<S: ObjectRead>(
+        &mut self,
+        store: &S,
+        start: u64,
+        reserve_node: &mut impl FnMut() -> bool,
+    ) -> CoreResult<Option<(u64, u64, ExtentSliceV3)>> {
+        if let Some(root) = self.root.take() {
+            if !reserve_node() {
+                self.exhausted = true;
+                return Ok(None);
+            }
+            self.nodes_read += 1;
+            let state = state(store, root, &mut RopeCounters::default())?;
+            self.stack.push((
+                Summary {
+                    id: state.mapping_root,
+                    bytes: state.logical_len,
+                    extents: state.extent_count,
+                    level: state.tree_level,
+                },
+                true,
+                0,
+            ));
+        }
+        loop {
+            if let Some(extent) = self.leaf.next() {
+                self.descriptors += 1;
+                let from = self.position;
+                self.position = add(from, u64::from(extent.logical_length))?;
+                return Ok(Some((from, self.position, extent)));
+            }
+            let Some((summary, root, base)) = self.stack.pop() else {
+                break;
+            };
+            if start != 0 && add(base, summary.bytes)? <= start {
+                continue;
+            }
+            if !reserve_node() {
+                self.exhausted = true;
+                break;
+            }
+            self.nodes_read += 1;
+            let node = store.with_authenticated_canonical(summary.id, |bytes| {
+                decode_node_with_context(bytes, root)
+            })?;
+            validate_summary(&node, summary)?;
+            match node {
+                ExtentNodeV3::Leaf { extents, .. } => {
+                    self.leaf = extents.into_iter();
+                    self.position = base;
+                }
+                ExtentNodeV3::Branch {
+                    level, children, ..
+                } => {
+                    let summaries = child_summaries(&children, level - 1);
+                    self.stack.reserve_exact(children.len());
+                    for index in (0..children.len()).rev() {
+                        let child_base = add(
+                            base,
+                            if index == 0 {
+                                0
+                            } else {
+                                children[index - 1].cumulative_logical_end
+                            },
+                        )?;
+                        self.stack.push((summaries[index], false, child_base));
+                    }
+                }
+            }
+        }
+        Ok(None)
     }
 }

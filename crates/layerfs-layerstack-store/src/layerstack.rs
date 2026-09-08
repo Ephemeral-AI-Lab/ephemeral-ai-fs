@@ -113,7 +113,7 @@ impl LayerStackStore {
             name: name.clone(),
             head_layer_id: layer.id,
         };
-        let prepared = PreparedAdmission::prepare_missing(final_batch)?;
+        let prepared = PreparedAdmission::prepare_missing(&self.db, final_batch)?;
         let mut name_insert_failed = false;
         let publication = prepared.publish(
             &self.db,

@@ -308,7 +308,7 @@ impl LayerStackStore {
         let finished = accumulator.finish()?;
         let mut receipt = finished.receipt;
         let mut statement_number = finished.statement_number;
-        let prepared = PreparedAdmission::prepare_missing(finished.final_batch)?;
+        let prepared = PreparedAdmission::prepare_missing(&self.db, finished.final_batch)?;
         let admission = finished.checked;
         crate::telemetry::note_workspace_admission(
             admission.transactions,
@@ -653,6 +653,23 @@ impl SnapshotReader {
                 .lock()
                 .map_err(|_| StoreError::Integrity("read metrics"))?,
         ))
+    }
+
+    pub(crate) fn note_predecessor_correspondence(
+        &self,
+        reserved: u64,
+        descriptors: u64,
+        skips: u64,
+        memory_skipped: bool,
+    ) {
+        self.db.note_physical(crate::PhysicalStorageReceipt {
+            correspondence_reserved_bytes: reserved,
+            correspondence_descriptors: descriptors,
+            correspondence_budget_skips: skips,
+            memory_budget_skips: u64::from(memory_skipped && skips != 0),
+            budget_skips: skips,
+            ..Default::default()
+        });
     }
 
     pub fn read_metrics_snapshot(&self) -> Result<WorkspaceReadReceipt> {

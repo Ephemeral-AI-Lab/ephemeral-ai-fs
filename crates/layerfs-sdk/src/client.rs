@@ -116,6 +116,7 @@ impl Client {
     pub fn diff(&self, request: DiffRequest) -> Result<OperationHandle> {
         let id = OperationId::new();
         layerfs_layerstack_store::take_storage_receipts();
+        let physical_before = self.0.store.physical_storage_receipt();
         let started = Instant::now();
         let handle = OperationHandle::build(id, |emit| {
             self.0
@@ -141,6 +142,7 @@ impl Client {
                 OperationOutcome::Failed
             },
             started,
+            physical_before,
         )?;
         handle
     }
@@ -483,13 +485,14 @@ impl Client {
     {
         let id = OperationId::new();
         layerfs_layerstack_store::take_storage_receipts();
+        let physical_before = self.0.store.physical_storage_receipt();
         let started = Instant::now();
         let result = action().map_err(Into::into);
         let outcome = result
             .as_ref()
             .map(classify)
             .unwrap_or(OperationOutcome::Failed);
-        self.record(id, operation, outcome, started)?;
+        self.record(id, operation, outcome, started, physical_before)?;
         result
     }
 
@@ -499,8 +502,15 @@ impl Client {
         operation: SemanticOperation,
         outcome: OperationOutcome,
         started: Instant,
+        physical_before: layerfs_layerstack_store::PhysicalStorageReceipt,
     ) -> Result<()> {
-        let storage = layerfs_layerstack_store::take_storage_receipts();
+        let mut storage = layerfs_layerstack_store::take_storage_receipts();
+        storage.push(StorageReceipt::PhysicalStorage(
+            self.0
+                .store
+                .physical_storage_receipt()
+                .since(physical_before),
+        ));
         let candidate = storage.iter().find_map(|receipt| match receipt {
             StorageReceipt::Candidate(receipt) => Some(CandidateStats {
                 candidate_objects: receipt.candidate_objects,

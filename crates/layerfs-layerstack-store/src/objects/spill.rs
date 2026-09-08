@@ -447,11 +447,13 @@ impl SpillObjects {
         result
     }
 
-    pub(super) fn put(&mut self, id: ObjectId, canonical: &[u8]) -> Result<()> {
+    pub(super) fn put(&mut self, object: &AuthenticatedCanonicalObject) -> Result<()> {
+        let id = object.id;
+        let canonical = &object.bytes;
         self.healthy()?;
         let row_len = canonical
             .len()
-            .checked_add(40)
+            .checked_add(184)
             .ok_or(StoreError::Integrity("candidate object length"))?;
         if !self.pending.is_empty()
             && self.pending.len().saturating_add(row_len) > self.buffer_bytes
@@ -459,10 +461,21 @@ impl SpillObjects {
             self.flush()?;
         }
         let start = self.end;
-        let pending_offset = self.pending.len() + 40;
+        let pending_offset = self.pending.len() + 184;
         self.pending.extend_from_slice(id.as_bytes());
         self.pending
             .extend_from_slice(&(canonical.len() as u64).to_le_bytes());
+        let mut hints = [0u8; 144];
+        if let Some((start, len)) = object.1.first_span {
+            hints[..8].copy_from_slice(&start.to_le_bytes());
+            hints[8..12].copy_from_slice(&len.to_le_bytes());
+        }
+        for (slot, id) in object.1.prior_ids.iter().enumerate() {
+            if let Some(id) = id {
+                hints[16 + slot * 32..48 + slot * 32].copy_from_slice(id.as_bytes());
+            }
+        }
+        self.pending.extend_from_slice(&hints);
         self.pending.extend_from_slice(canonical);
         self.pending_index
             .insert(id, (pending_offset, canonical.len()));
@@ -475,7 +488,7 @@ impl SpillObjects {
             if self.index_bytes.saturating_add(64) > index_limit {
                 self.spill_index()?;
             } else {
-                index.insert(id, (start + 40, canonical.len() as u64));
+                index.insert(id, (start + 184, canonical.len() as u64));
                 self.index_bytes += 64;
             }
         }
@@ -509,14 +522,14 @@ impl SpillObjects {
         let mut file = BufReader::with_capacity(self.buffer_bytes, &mut *file);
         let mut position = 0_u64;
         while position < self.end {
-            if self.end - position < 40 {
+            if self.end - position < 184 {
                 return Err(StoreError::Integrity("truncated candidate frame"));
             }
-            let mut frame = [0; 40];
+            let mut frame = [0; 184];
             file.read_exact(&mut frame)?;
-            let length = u64::from_le_bytes(frame[32..].try_into().expect("frame length"));
+            let length = u64::from_le_bytes(frame[32..40].try_into().expect("frame length"));
             position = position
-                .checked_add(40)
+                .checked_add(184)
                 .and_then(|offset| offset.checked_add(length))
                 .filter(|&end| end <= self.end)
                 .ok_or(StoreError::Integrity("candidate frame bounds"))?;
@@ -532,7 +545,7 @@ impl SpillObjects {
     pub(super) fn visit_ordered(
         &self,
         order: &IdOrder,
-        visitor: &mut dyn FnMut(ObjectId, &mut Vec<u8>) -> Result<()>,
+        visitor: &mut dyn FnMut(ObjectId, &mut Vec<u8>, PhysicalHints) -> Result<()>,
     ) -> Result<()> {
         self.healthy()?;
         let mut file = self
@@ -556,13 +569,33 @@ impl SpillObjects {
                 {
                     return Err(StoreError::InvalidInput("candidate object page"));
                 }
-                let distance = i64::try_from(i128::from(offset) - i128::from(position))
-                    .map_err(|_| StoreError::Integrity("candidate object offset"))?;
+                let distance = i64::try_from(
+                    i128::from(
+                        offset
+                            .checked_sub(144)
+                            .ok_or(StoreError::Integrity("candidate hint offset"))?,
+                    ) - i128::from(position),
+                )
+                .map_err(|_| StoreError::Integrity("candidate object offset"))?;
                 file.seek_relative(distance)?;
+                let mut encoded_hints = [0; 144];
+                file.read_exact(&mut encoded_hints)?;
+                let start = u64::from_le_bytes(encoded_hints[..8].try_into().unwrap());
+                let len = u32::from_le_bytes(encoded_hints[8..12].try_into().unwrap());
+                let mut hints = PhysicalHints {
+                    first_span: (len != 0).then_some((start, len)),
+                    ..PhysicalHints::default()
+                };
+                for slot in 0..4 {
+                    let bytes = &encoded_hints[16 + slot * 32..48 + slot * 32];
+                    if bytes.iter().any(|byte| *byte != 0) {
+                        hints.prior_ids[slot] = Some(ObjectId::from_bytes(bytes)?);
+                    }
+                }
                 canonical.resize(length, 0);
                 file.read_exact(&mut canonical)?;
                 position = offset + length as u64;
-                visitor(id, &mut canonical)?;
+                visitor(id, &mut canonical, hints)?;
             }
             Ok(())
         })

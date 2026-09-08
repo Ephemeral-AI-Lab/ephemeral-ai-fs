@@ -21,6 +21,7 @@ struct PreparedObject {
     canonical: Range<usize>,
     // Compressed records retain the original authenticated comparison operand.
     retained: Option<Vec<u8>>,
+    delta: bool,
 }
 
 pub(crate) struct PreparedAdmission {
@@ -30,7 +31,7 @@ pub(crate) struct PreparedAdmission {
 }
 
 impl PreparedAdmission {
-    pub(crate) fn prepare_missing(missing: super::MissingBatch) -> Result<Self> {
+    pub(crate) fn prepare_missing(db: &StoreDb, missing: super::MissingBatch) -> Result<Self> {
         let objects = missing.0;
         let length = objects
             .iter()
@@ -51,29 +52,48 @@ impl PreparedAdmission {
         if candidates.len() != ids.len() {
             return Err(StoreError::Integrity("admission duplicate ownership"));
         }
+        let count = ids.len();
+        drop(ids);
+        drop(candidates);
         let metrics = ObjectInsertMetrics {
-            submitted_rows: ids.len() as u64,
+            submitted_rows: count as u64,
             ..Default::default()
         };
 
         let mut prepared = Self {
             packs: Vec::new(),
-            objects: Vec::new(),
+            objects: Vec::with_capacity(count),
             metrics,
         };
-        prepared.prepare_full(objects)?;
+        let mut stats = crate::PhysicalStorageReceipt::default();
+        let result = prepared.prepare_full(db, objects, &mut stats);
+        db.note_physical(stats);
+        result?;
         Ok(prepared)
     }
 
-    fn prepare_full(&mut self, objects: Vec<AuthenticatedCanonicalObject>) -> Result<()> {
+    fn prepare_full(
+        &mut self,
+        db: &StoreDb,
+        objects: Vec<AuthenticatedCanonicalObject>,
+        stats: &mut crate::PhysicalStorageReceipt,
+    ) -> Result<()> {
+        let input_associations =
+            objects.capacity() * std::mem::size_of::<AuthenticatedCanonicalObject>();
+        let mut search = DeltaSearch {
+            input_associations,
+            ..Default::default()
+        };
         let mut ordinary = Vec::new();
         let mut bytes = 0usize;
         let mut count = 0usize;
         for object in objects {
             if object.bytes.len() + 9 > pack::GROUP_LIMIT {
-                self.prepare_ordinary(std::mem::take(&mut ordinary))?;
+                self.prepare_ordinary(db, std::mem::take(&mut ordinary), &mut search, stats)?;
                 bytes = 0;
                 count = 0;
+                stats.full_alternative_bytes += (object.bytes.len() + 9) as u64;
+                stats.selected_encoded_bytes += (object.bytes.len() + 9) as u64;
                 self.prepare_singleton(object)?;
                 continue;
             }
@@ -81,7 +101,7 @@ impl PreparedAdmission {
             // incremental bound avoids growing-prefix group recounts.
             let next = object.bytes.len() + 5 + 20;
             if bytes + next + 16 > pack::PACK_LIMIT || count == pack::RECORD_COUNT_LIMIT {
-                self.prepare_ordinary(std::mem::take(&mut ordinary))?;
+                self.prepare_ordinary(db, std::mem::take(&mut ordinary), &mut search, stats)?;
                 bytes = 0;
                 count = 0;
             }
@@ -89,10 +109,16 @@ impl PreparedAdmission {
             count += 1;
             ordinary.push(object);
         }
-        self.prepare_ordinary(ordinary)
+        self.prepare_ordinary(db, ordinary, &mut search, stats)
     }
 
-    fn prepare_ordinary(&mut self, mut objects: Vec<AuthenticatedCanonicalObject>) -> Result<()> {
+    fn prepare_ordinary(
+        &mut self,
+        db: &StoreDb,
+        mut objects: Vec<AuthenticatedCanonicalObject>,
+        search: &mut DeltaSearch,
+        stats: &mut crate::PhysicalStorageReceipt,
+    ) -> Result<()> {
         if objects.is_empty() {
             return Ok(());
         }
@@ -117,20 +143,63 @@ impl PreparedAdmission {
             }
         }
         let mut encoded = Vec::with_capacity(groups.len());
-        for group in &groups {
+        let pack_index = self.packs.len();
+        let mut offset = 16 + 16 * groups.len();
+        for (group_number, group) in groups.iter().enumerate() {
+            let mut deltas = Vec::with_capacity(group.len());
+            // All live delta capacities sum to at most the group's FULL decoded
+            // size. Matching scratch is dropped before either codec invocation.
+            let backing = encoded
+                .iter()
+                .map(|group: &pack::EncodedGroup| group.bytes.capacity())
+                .sum::<usize>();
+            let associations = search.input_associations
+                + self.packs.capacity() * std::mem::size_of::<Vec<u8>>()
+                + self.objects.capacity() * std::mem::size_of::<PreparedObject>()
+                + objects.capacity() * std::mem::size_of::<AuthenticatedCanonicalObject>()
+                + groups.capacity() * std::mem::size_of::<Vec<usize>>()
+                + groups
+                    .iter()
+                    .map(|group| group.capacity() * std::mem::size_of::<usize>())
+                    .sum::<usize>()
+                + groups.len() * std::mem::size_of::<pack::EncodedGroup>()
+                + group.len()
+                    * (std::mem::size_of::<Option<Vec<u8>>>() + std::mem::size_of::<&[u8]>());
+            // Worst codec phase: static 1-MiB context, RAW group and complete
+            // compressBound output. Optional B additionally keeps A and programs.
+            // Canonical comparison operands belong to the other <=6 MiB; count
+            // their vector associations here as a conservative duplicate charge.
+            let required = backing + associations + 1024 * 1024 + 2 * (pack::GROUP_LIMIT + 1024);
+            if required > 2 * 1024 * 1024 {
+                return Err(StoreError::Io(std::io::Error::other(
+                    "physical encoding reservation",
+                )));
+            }
+            let optional = required + 2 * (pack::GROUP_LIMIT + 1024) <= 2 * 1024 * 1024;
+            for index in group {
+                if optional {
+                    deltas.push(search.candidate(db, &objects[*index], stats)?);
+                } else {
+                    stats.memory_budget_skips += 1;
+                    stats.budget_skips += 1;
+                    deltas.push(None);
+                }
+            }
             let canonical = group
                 .iter()
                 .map(|index| objects[*index].bytes.as_slice())
                 .collect::<Vec<_>>();
-            encoded.push(pack::full_group(&canonical)?);
-        }
-        let pack_index = self.packs.len();
-        let mut offset = 16 + 16 * groups.len();
-        for (group_number, group) in groups.iter().enumerate() {
+            let (selected, mixed) = pack::encode_group(&canonical, &deltas, stats)?;
             let mut cursor = offset + 4 + 4 * group.len();
             for (record_number, index) in group.iter().enumerate() {
                 let object = &mut objects[*index];
-                let end = cursor + 1 + object.bytes.len();
+                let delta = mixed && deltas[record_number].is_some();
+                let record_length = if delta {
+                    deltas[record_number].as_ref().unwrap().len()
+                } else {
+                    1 + object.bytes.len()
+                };
+                let end = cursor + record_length;
                 self.objects.push(PreparedObject {
                     id: object.id,
                     length: object.bytes.len(),
@@ -138,12 +207,14 @@ impl PreparedAdmission {
                     group: group_number,
                     record: record_number,
                     canonical: cursor + 1..end,
-                    retained: (encoded[group_number].codec == pack::Codec::Zstandard)
+                    retained: (delta || selected.codec == pack::Codec::Zstandard)
                         .then(|| std::mem::take(&mut object.0.bytes)),
+                    delta,
                 });
                 cursor = end;
             }
-            offset += encoded[group_number].bytes.len();
+            offset += selected.bytes.len();
+            encoded.push(selected);
         }
         self.packs.push(pack::assemble(&encoded)?);
         Ok(())
@@ -187,6 +258,7 @@ impl PreparedAdmission {
             record: 0,
             canonical: 41..total,
             retained: None,
+            delta: false,
         });
         self.packs.push(bytes);
         Ok(())
@@ -242,6 +314,19 @@ impl PreparedAdmission {
         let result = publish(&transaction, &self.metrics, statement_number)?;
         let started = Instant::now();
         transaction.commit()?;
+        db.note_physical(crate::PhysicalStorageReceipt {
+            full_selected: winners
+                .iter()
+                .flatten()
+                .filter(|object| !object.delta)
+                .count() as u64,
+            delta_selected: winners
+                .iter()
+                .flatten()
+                .filter(|object| object.delta)
+                .count() as u64,
+            ..Default::default()
+        });
         Ok((
             result,
             super::AdmissionBatchMetrics {
@@ -335,6 +420,131 @@ impl PreparedAdmission {
     }
 }
 
+/// Optional search is batch-local; admitted immutable locations are the only
+/// source of bases. No record in this prepared batch can become an anchor.
+struct DeltaSearch {
+    reads: read::HintReadBudget,
+    trials: usize,
+    remaining: usize,
+    input_associations: usize,
+}
+
+impl Default for DeltaSearch {
+    fn default() -> Self {
+        Self {
+            reads: read::HintReadBudget::default(),
+            trials: 0,
+            remaining: 16 * 1024 * 1024,
+            input_associations: 0,
+        }
+    }
+}
+
+impl DeltaSearch {
+    fn candidate(
+        &mut self,
+        db: &StoreDb,
+        object: &AuthenticatedCanonicalObject,
+        stats: &mut crate::PhysicalStorageReceipt,
+    ) -> Result<Option<Vec<u8>>> {
+        // Original file-span hints identify payload chunks. No metadata/global
+        // similarity search is introduced; other canonical roles remain FULL.
+        let value = layerfs_content::decode_bytes_object(&object.bytes);
+        let Ok(value) = value else {
+            return Ok(None);
+        };
+        if !value.starts_with(layerfs_content::file::extent_codec::CHUNK_MAGIC) {
+            return Ok(None);
+        }
+        layerfs_content::file::extent_codec::decode_chunk_payload(value)?;
+        if object.bytes.len() + 9 > pack::GROUP_LIMIT {
+            return Ok(None);
+        }
+        stats.eligible_targets += 1;
+        let hints = object.prior_ids();
+        if hints.iter().all(Option::is_none) {
+            stats.absent_predecessors += 1;
+            return Ok(None);
+        }
+        let mut seen_hints = BTreeSet::new();
+        let mut anchors = BTreeSet::new();
+        let mut best: Option<(ObjectId, Vec<u8>)> = None;
+        self.reads.begin_target();
+        for id in hints.iter().flatten().copied() {
+            if !seen_hints.insert(id) || anchors.contains(&id) {
+                continue;
+            }
+            if self.trials == 512 || self.remaining == 0 {
+                stats.budget_skips += 1;
+                stats.match_budget_skips += 1;
+                break;
+            }
+            stats.predecessor_hints += 1;
+            let prior = db.read_hint(id, false, &mut self.reads)?;
+            let base = match prior {
+                Some(read::HintRecord::Full(base)) => base,
+                Some(read::HintRecord::Anchor(id)) => {
+                    if anchors.contains(&id) {
+                        continue;
+                    }
+                    match db.read_hint(id, true, &mut self.reads)? {
+                        Some(read::HintRecord::Full(base)) => base,
+                        Some(read::HintRecord::Anchor(_)) => {
+                            return Err(StoreError::Integrity("delta anchor is not FULL"))
+                        }
+                        None if self.reads.exhausted => {
+                            stats.budget_skips += 1;
+                            stats.fetch_budget_skips += 1;
+                            break;
+                        }
+                        None => continue,
+                    }
+                }
+                None if self.reads.exhausted => {
+                    stats.budget_skips += 1;
+                    stats.fetch_budget_skips += 1;
+                    break;
+                }
+                None => continue,
+            };
+            if !anchors.insert(base.id) {
+                continue;
+            }
+            let base_value = layerfs_content::decode_bytes_object(&base.bytes)?;
+            if !base_value.starts_with(layerfs_content::file::extent_codec::CHUNK_MAGIC) {
+                continue;
+            }
+            layerfs_content::file::extent_codec::decode_chunk_payload(base_value)?;
+            stats.usable_bases += 1;
+            stats.candidate_trials += 1;
+            self.trials += 1;
+            let started = Instant::now();
+            let result = pack::delta_record(
+                base.id,
+                &base.bytes,
+                &object.bytes,
+                &mut self.remaining,
+                stats,
+            );
+            stats.matching_ns += super::elapsed_ns(started);
+            let candidate = result?;
+            if let Some(candidate) = candidate {
+                if best
+                    .as_ref()
+                    .is_none_or(|(id, bytes)| (candidate.len(), base.id) < (bytes.len(), *id))
+                {
+                    best = Some((base.id, candidate));
+                }
+            }
+            if self.remaining == 0 {
+                stats.budget_skips += 1;
+                break;
+            }
+        }
+        Ok(best.map(|(_, bytes)| bytes))
+    }
+}
+
 fn sql_rows(
     connection: &rusqlite::Connection,
     parameters: usize,
@@ -395,7 +605,7 @@ pub(super) fn compare(
         metrics.skipped_ids += 1;
         metrics.skipped_bytes += canonical.len() as u64;
     }
-    db.visit_locations(&ordinary, |object| {
+    db.visit_locations(&mut ordinary, |object| {
         if supplied.get(&object.id).copied() != Some(object.bytes.as_slice()) {
             return Err(StoreError::Integrity("object collision"));
         }

@@ -26,7 +26,7 @@ pub fn replace<S: ObjectStore, R: Read>(
         start,
         delete_len,
         replacement,
-        |store, canonical| store.put(canonical),
+        |store, canonical, start, len| store.put_file_payload(canonical, start, len),
         |store, canonical| store.put(canonical),
     )
 }
@@ -43,7 +43,7 @@ fn replace_with_sinks<S, R, FP, FN>(
 where
     S: ObjectStore,
     R: Read,
-    FP: FnMut(&mut S, &[u8]) -> CoreResult<ObjectId>,
+    FP: FnMut(&mut S, Vec<u8>, u64, u32) -> CoreResult<ObjectId>,
     FN: FnMut(&mut S, &[u8]) -> CoreResult<ObjectId>,
 {
     let mut counters = RopeCounters::default();
@@ -66,7 +66,8 @@ where
         extents: old.extent_count,
         level: old.tree_level,
     };
-    let scan = scan_replacement_mapping_with(store, replacement, put_payload, put_sealed_node)?;
+    let scan =
+        scan_replacement_mapping_with(store, replacement, start, put_payload, put_sealed_node)?;
     merge_counters(&mut counters, scan.counters)?;
     let persisted_nodes = scan.persisted_nodes;
     let mut levels = scan.levels;
@@ -168,7 +169,7 @@ impl<'a, S: ObjectStore> FileMutationBatch<'a, S> {
             start,
             delete_len,
             replacement,
-            |objects, canonical| objects.put_payload(canonical),
+            |objects, canonical, start, len| objects.store.put_file_payload(canonical, start, len),
             |objects, canonical| objects.put_sealed_node(canonical),
         )?;
         self.objects.prune_to(root)?;
@@ -219,10 +220,6 @@ impl<'a, S: ObjectStore> DeferredFileObjects<'a, S> {
             prunes: 0,
             sealed_node_puts: 0,
         }
-    }
-
-    fn put_payload(&mut self, canonical: &[u8]) -> CoreResult<ObjectId> {
-        self.store.put(canonical)
     }
 
     fn put_sealed_node(&mut self, canonical: &[u8]) -> CoreResult<ObjectId> {

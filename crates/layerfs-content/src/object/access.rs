@@ -53,6 +53,16 @@ pub trait ObjectStore {
     }
 
     #[doc(hidden)]
+    fn put_file_payload(
+        &mut self,
+        canonical: Vec<u8>,
+        _start: u64,
+        _len: u32,
+    ) -> CoreResult<ObjectId> {
+        self.put_owned(canonical)
+    }
+
+    #[doc(hidden)]
     fn note_transient_owned_bytes(&mut self, _bytes: u64) -> CoreResult<()> {
         Ok(())
     }

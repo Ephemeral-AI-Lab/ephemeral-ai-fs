@@ -66,6 +66,7 @@ pub(crate) fn fail_transaction_statement(_statement: u64) -> Result<()> {
 pub(crate) struct StoreDb(Arc<StoreInner>);
 
 struct StoreInner {
+    physical: crate::telemetry::PhysicalStorageCounters,
     connection: Mutex<Connection>,
     gate: TicketGate,
     leases: Mutex<BTreeSet<BranchId>>,
@@ -221,6 +222,7 @@ impl StoreDb {
             );
         }
         let store = Self(Arc::new(StoreInner {
+            physical: Default::default(),
             connection: Mutex::new(connection),
             gate: TicketGate::default(),
             leases: Mutex::new(BTreeSet::new()),
@@ -230,6 +232,14 @@ impl StoreDb {
             created.remove = false;
         }
         Ok(store)
+    }
+
+    pub(crate) fn note_physical(&self, receipt: crate::PhysicalStorageReceipt) {
+        self.0.physical.note(receipt);
+    }
+
+    pub(crate) fn physical_storage_receipt(&self) -> crate::PhysicalStorageReceipt {
+        self.0.physical.snapshot()
     }
 
     pub fn path(&self) -> &Path {
