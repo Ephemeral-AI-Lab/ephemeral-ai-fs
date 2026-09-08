@@ -2680,9 +2680,37 @@ impl SpillDiskIndex {
 /// Workspace candidates; persistence/finality policy remains with the owner.
 pub(crate) fn build_checked_file(
     objects: &mut impl ObjectStore,
-    source: impl Read,
+    mut source: impl Read,
     expected_len: u64,
 ) -> Result<layerfs_content::file::rope::CompletedFile> {
+    if expected_len < layerfs_content::file::cdc::MINIMUM_CHUNK_BYTES as u64 {
+        // One extra byte detects growth; no canonical output precedes the EOF check.
+        let mut bytes = vec![0; expected_len as usize + 1];
+        let mut length = 0;
+        loop {
+            let read = match source.read(&mut bytes[length..]) {
+                Ok(read) => read,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error.into()),
+            };
+            if read == 0 {
+                break;
+            }
+            length += read;
+            if length > expected_len as usize {
+                return Err(StoreError::Integrity("completed file length"));
+            }
+        }
+        if length != expected_len as usize {
+            return Err(StoreError::Integrity("completed file length"));
+        }
+        let (root, counters) = layerfs_content::file::rope::build_bytes(objects, &bytes[..length])?;
+        return Ok(layerfs_content::file::rope::CompletedFile {
+            root,
+            logical_len: expected_len,
+            counters,
+        });
+    }
     let completed = layerfs_content::file::rope::build_complete(objects, source)?;
     if completed.logical_len != expected_len {
         return Err(StoreError::Integrity("completed file length"));
@@ -4013,6 +4041,76 @@ mod tests {
             }
         }
         assert!(ObjectBuffer::build_complete_file(Broken, 1).is_err());
+    }
+
+    #[test]
+    fn small_completed_files_match_streaming_and_validate_eof_before_output() {
+        struct Fragmented<'a> {
+            bytes: &'a [u8],
+            interrupt: bool,
+        }
+        impl Read for Fragmented<'_> {
+            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                if std::mem::take(&mut self.interrupt) {
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                let count = output.len().min(self.bytes.len()).min(7);
+                output[..count].copy_from_slice(&self.bytes[..count]);
+                self.bytes = &self.bytes[count..];
+                Ok(count)
+            }
+        }
+        for size in [0, 1, 8_191, 8_192] {
+            let data = (0..size).map(|i| (i % 251) as u8).collect::<Vec<_>>();
+            let mut expected = ObjectBuffer::empty().unwrap();
+            let streamed =
+                layerfs_content::file::rope::build_complete(&mut expected, data.as_slice())
+                    .unwrap();
+            let mut actual = ObjectBuffer::empty().unwrap();
+            let completed = build_checked_file(
+                &mut actual,
+                Fragmented {
+                    bytes: &data,
+                    interrupt: size < layerfs_content::file::cdc::MINIMUM_CHUNK_BYTES,
+                },
+                size as u64,
+            )
+            .unwrap();
+            assert_eq!(completed.root, streamed.root);
+            assert_eq!(completed.logical_len, streamed.logical_len);
+            assert_eq!(completed.counters, streamed.counters);
+            let expected = expected.finish(streamed.root.0, size as u64).unwrap();
+            let actual = actual.finish(completed.root.0, size as u64).unwrap();
+            assert_eq!(actual.objects.len(), expected.objects.len());
+            for id in expected.objects.ids_in_order(usize::MAX).unwrap().unwrap() {
+                assert_eq!(
+                    actual.objects.read_object(id).unwrap(),
+                    expected.objects.read_object(id).unwrap()
+                );
+            }
+        }
+        for (bytes, expected) in [
+            (b"x".as_slice(), 0),
+            (b"".as_slice(), 1),
+            (b"xy".as_slice(), 1),
+        ] {
+            let mut objects = ObjectBuffer::empty().unwrap();
+            assert!(matches!(
+                build_checked_file(&mut objects, bytes, expected),
+                Err(StoreError::Integrity("completed file length"))
+            ));
+            assert_eq!(objects.objects.len(), 0);
+        }
+        struct Broken;
+        impl Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::Other.into())
+            }
+        }
+        let mut objects = ObjectBuffer::empty().unwrap();
+        let error_after_payload = std::io::Cursor::new(b"x").chain(Broken);
+        assert!(build_checked_file(&mut objects, error_after_payload, 1).is_err());
+        assert_eq!(objects.objects.len(), 0);
     }
 
     #[test]

@@ -282,7 +282,8 @@ pub(super) fn metadata<S: ObjectStore>(
 const PORTABLE_METADATA_CACHE_CAPACITY: usize = 8;
 
 pub struct PortableMetadataCache {
-    entries: [Option<(InodeKind, PortableMetadataV1, ObjectId)>; PORTABLE_METADATA_CACHE_CAPACITY],
+    entries: [Option<(InodeKind, PortableMetadataV1, ObjectId, ObjectId)>;
+        PORTABLE_METADATA_CACHE_CAPACITY],
     next: usize,
 }
 
@@ -307,7 +308,7 @@ impl PortableMetadataCache {
         self.entries
             .iter()
             .flatten()
-            .find_map(|(cached_kind, metadata, cached_root)| {
+            .find_map(|(cached_kind, metadata, cached_root, _)| {
                 (*cached_kind == kind && *cached_root == root).then_some(*metadata)
             })
     }
@@ -322,16 +323,23 @@ impl PortableMetadataCache {
         mtime_nanoseconds: u32,
     ) -> CoreResult<(ObjectId, bool)> {
         let portable = portable_metadata(kind, mode, mtime_seconds, mtime_nanoseconds);
-        if let Some((_, _, root)) = self
+        if let Some((_, _, root, _)) = self
             .entries
             .iter()
             .flatten()
-            .find(|(cached_kind, cached, _)| *cached_kind == kind && *cached == portable)
+            .find(|(cached_kind, cached, _, _)| *cached_kind == kind && *cached == portable)
         {
             return Ok((*root, true));
         }
-        let root = build_portable_metadata_value(store, kind, portable)?;
-        self.entries[self.next] = Some((kind, portable, root));
+        let mode_root = self
+            .entries
+            .iter()
+            .flatten()
+            .find_map(|(_, cached, _, mode)| {
+                (cached.permission_mode == portable.permission_mode).then_some(*mode)
+            });
+        let (root, mode_root) = build_portable_metadata_value(store, kind, portable, mode_root)?;
+        self.entries[self.next] = Some((kind, portable, root, mode_root));
         self.next = (self.next + 1) % Self::CAPACITY;
         Ok((root, false))
     }
@@ -349,7 +357,9 @@ pub fn build_portable_metadata<S: ObjectStore>(
         store,
         kind,
         portable_metadata(kind, mode, mtime_seconds, mtime_nanoseconds),
+        None,
     )
+    .map(|(root, _)| root)
 }
 
 fn portable_metadata(
@@ -374,24 +384,32 @@ fn build_portable_metadata_value<S: ObjectStore>(
     store: &mut S,
     kind: InodeKind,
     portable: PortableMetadataV1,
-) -> CoreResult<ObjectId> {
+    mode_root: Option<ObjectId>,
+) -> CoreResult<(ObjectId, ObjectId)> {
     let mode_bytes = portable.mode_bytes(kind)?;
     let mtime_bytes = portable.mtime_bytes()?;
-    let (mode, _) = build_bytes(store, &mode_bytes)?;
+    let mode_root = match mode_root {
+        Some(root) => root,
+        None => {
+            let (mode, _) = build_bytes(store, &mode_bytes)?;
+            mode.0
+        }
+    };
     let (mtime, _) = build_bytes(store, &mtime_bytes)?;
-    build_metadata_tree(
+    let root = build_metadata_tree(
         store,
         &[
             MetadataEntryV1 {
                 key: MetadataKey::new("portable".to_owned(), b"mode".to_vec())?,
-                value_file_root: mode.0,
+                value_file_root: mode_root,
             },
             MetadataEntryV1 {
                 key: MetadataKey::new("portable".to_owned(), b"mtime".to_vec())?,
                 value_file_root: mtime.0,
             },
         ],
-    )
+    )?;
+    Ok((root, mode_root))
 }
 
 fn path(value: &str) -> CoreResult<CanonicalPath> {
@@ -473,6 +491,78 @@ mod tests {
                 .get_or_build(&mut store, InodeKind::RegularFile, 0o644, 1, 0)
                 .unwrap()
                 .1
+        );
+    }
+
+    #[test]
+    fn portable_metadata_cache_reuses_modes_with_unique_mtimes() {
+        let mut store = MemoryStore::default();
+        let mut uncached = MemoryStore::default();
+        let mut cache = PortableMetadataCache::default();
+        for seconds in 0..32 {
+            let kind = if seconds % 2 == 0 {
+                InodeKind::RegularFile
+            } else {
+                InodeKind::Directory
+            };
+            let puts = store.puts;
+            let (root, hit) = cache
+                .get_or_build(&mut store, kind, 0o100755, seconds, 123)
+                .unwrap();
+            assert!(!hit);
+            assert_eq!(store.puts - puts, if seconds == 0 { 7 } else { 4 });
+            assert_eq!(
+                root,
+                build_portable_metadata(&mut uncached, kind, 0o755, seconds, 123).unwrap()
+            );
+            assert_eq!(store.objects, uncached.objects);
+            assert_eq!(
+                cache.get_by_root(kind, root),
+                Some(portable_metadata(kind, 0o755, seconds, 123))
+            );
+        }
+        assert_eq!(cache.entry_count(), PortableMetadataCache::CAPACITY);
+
+        for (kind, mode) in [
+            (InodeKind::Directory, 0o41777),
+            (InodeKind::RegularFile, 0o101777),
+            (InodeKind::Symlink, 0o120777),
+        ] {
+            let root = cache.get_or_build(&mut store, kind, mode, 35, 0).unwrap().0;
+            assert_eq!(
+                root,
+                build_portable_metadata(&mut uncached, kind, mode, 35, 0).unwrap()
+            );
+            assert_eq!(store.objects, uncached.objects);
+        }
+
+        // A cached regular-file mode must not bypass symlink or timestamp validation.
+        let puts = store.puts;
+        for (kind, nanos) in [
+            (InodeKind::Symlink, 0),
+            (InodeKind::RegularFile, 1_000_000_000),
+        ] {
+            assert!(cache
+                .get_or_build(&mut store, kind, 0o755, 40, nanos)
+                .is_err());
+        }
+        assert_eq!(store.puts, puts);
+
+        // Evict every 0755 entry, including its retained mode root.
+        for seconds in 40..48 {
+            cache
+                .get_or_build(&mut store, InodeKind::RegularFile, 0o644, seconds, 0)
+                .unwrap();
+        }
+        let puts = store.puts;
+        let (root, hit) = cache
+            .get_or_build(&mut store, InodeKind::RegularFile, 0o755, 50, 0)
+            .unwrap();
+        assert!(!hit);
+        assert_eq!(store.puts - puts, 7);
+        assert_eq!(
+            root,
+            build_portable_metadata(&mut uncached, InodeKind::RegularFile, 0o755, 50, 0).unwrap()
         );
     }
 }

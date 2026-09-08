@@ -399,6 +399,40 @@ pub fn build_initial_directory(
     Ok(root)
 }
 
+/// Builds strictly sorted, unique bindings without incremental tree insertion.
+/// Scratch and retained canonical objects keep their existing construction bounds;
+/// only final reachable objects are transferred to the caller's store.
+#[doc(hidden)]
+pub fn build_initial_directory_sorted(
+    store: &mut impl ObjectStore,
+    entries: impl IntoIterator<Item = (crate::CanonicalName, InodeId)>,
+) -> CoreResult<DirectoryStateRoot> {
+    Ok(build_initial_directory_sorted_observed(store, entries)?.0)
+}
+
+fn build_initial_directory_sorted_observed(
+    store: &mut impl ObjectStore,
+    entries: impl IntoIterator<Item = (crate::CanonicalName, InodeId)>,
+) -> CoreResult<(
+    DirectoryStateRoot,
+    crate::tree::batch::TreeBatchCounters,
+    usize,
+)> {
+    let mut deferred = DeferredDirectory::new(store);
+    let empty = empty_directory(&mut deferred)?;
+    let (root, counters) = crate::tree::batch::directory_apply_sorted_with_budget(
+        &mut deferred,
+        empty,
+        entries
+            .into_iter()
+            .map(|(name, inode)| Ok((name, Some(inode)))),
+        crate::tree::batch::SORTED_TREE_UPDATE_SCRATCH_BYTES,
+    )?;
+    let peak_bytes = deferred.peak_charged_bytes();
+    deferred.commit(root)?;
+    Ok((root, counters, peak_bytes))
+}
+
 pub fn apply_directory_changes_observed(
     store: &mut impl ObjectStore,
     root: DirectoryStateRoot,
@@ -897,6 +931,78 @@ mod tests {
         assert_eq!(
             build_initial_directory(&mut store, [entry.clone(), entry]),
             Err(CoreError::NameCollision)
+        );
+        assert!(store.objects.is_empty());
+    }
+
+    #[test]
+    fn initial_directory_sorted_wide_matches_final_objects_with_bounded_work() {
+        for (count, long_names) in [
+            (0, false),
+            (1, false),
+            (512, false),
+            (513, false),
+            (7589, false),
+            (7589, true),
+        ] {
+            let entries = || {
+                (0..count).map(|index| {
+                    let prefix = format!("f{index:05}");
+                    let suffix = if long_names {
+                        255 - prefix.len()
+                    } else {
+                        index % 37
+                    };
+                    (
+                        crate::CanonicalName::new(&format!("{prefix}{}", "x".repeat(suffix)))
+                            .unwrap(),
+                        InodeId::allocate([47; 32], index as u64),
+                    )
+                })
+            };
+            let mut expected = CountingStore::default();
+            let mut deferred = DeferredDirectory::new(&mut expected);
+            let mut root = empty_directory(&mut deferred).unwrap();
+            let mut incremental_nodes = 0;
+            for (name, inode) in entries() {
+                let (next, counters) = directory_insert(&mut deferred, root, name, inode).unwrap();
+                incremental_nodes += counters.nodes_created;
+                root = next;
+                deferred.prune_to(root).unwrap();
+            }
+            deferred.commit(root).unwrap();
+            let mut actual = CountingStore::default();
+            let (sorted, counters, peak_bytes) =
+                build_initial_directory_sorted_observed(&mut actual, entries()).unwrap();
+            assert_eq!(sorted, root, "count={count}, long_names={long_names}");
+            assert_eq!(actual.objects, expected.objects);
+            assert!(
+                counters.peak_scratch_bytes < crate::tree::batch::SORTED_TREE_UPDATE_SCRATCH_BYTES
+            );
+            assert!(peak_bytes <= crate::tree::directory::DEFERRED_DIRECTORY_MAX_BYTES);
+            if count > 512 {
+                assert!(counters.nodes_created < incremental_nodes);
+            }
+        }
+    }
+
+    #[test]
+    fn initial_directory_sorted_rejects_invalid_order_and_ownership_overflow_privately() {
+        let entry = |index| {
+            (
+                crate::CanonicalName::new(&format!("f{index:06}{}", "x".repeat(248))).unwrap(),
+                InodeId::allocate([47; 32], index),
+            )
+        };
+        for indices in [[1, 0], [0, 0]] {
+            let mut store = CountingStore::default();
+            assert!(build_initial_directory_sorted(&mut store, indices.map(entry)).is_err());
+            assert!(store.objects.is_empty());
+        }
+        let mut store = CountingStore::default();
+        assert_eq!(
+            build_initial_directory_sorted(&mut store, (0..100_000).map(entry)),
+            Err(CoreError::ObjectLimitExceeded),
         );
         assert!(store.objects.is_empty());
     }
