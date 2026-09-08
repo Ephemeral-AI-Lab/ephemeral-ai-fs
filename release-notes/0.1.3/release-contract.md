@@ -1,6 +1,6 @@
 # LayerFS 0.1.3 release contract
 
-> **Status:** Release candidate for LayerFS 0.1.3 Developer Preview.
+> **Status:** Released for LayerFS 0.1.3 Developer Preview.
 
 This is a source-only Developer Preview. The release tag identifies the complete reviewed source and manual; packages, executables, and container images are built from that source by the consumer.
 
@@ -16,4 +16,4 @@ Live-FUSE Workspaces can Commit while commands and open handles continue, subjec
 
 The accepted checkpoint has 198 passing performance cases and 226 passing routine proofs. One 600-second endurance definition is excluded. Sampled coverage, cold SDK verification limits, original failures, and unmet latency targets remain recorded. Final mixed-v3 bulk-create/delete-100 observations are below one second, but one sample does not establish a sustained subsecond guarantee. Git's aggressive latency targets remain missed.
 
-The [engineering account](../../docs/releases/v0.1.3/engineering.md) includes historical exploratory results. They are not newly measured release-source speedups. The release is bound to the accepted checkpoint by unchanged Rust implementation sources, apart from package-version metadata, and by final native, static, live-Docker, and CI checks recorded in [verification](verification.md).
+The [engineering account](../../docs/releases/v0.1.3/engineering.md) includes historical exploratory results. They are not newly measured release-source speedups. The release retains the accepted checkpoint evidence at its original source. Release qualification adds a narrow FUSE writeback-drain correction in `live_owner.rs` and `live_runtime.rs`, plus package-version metadata and documentation. Final native, static, live-Docker, and CI checks are recorded in [verification](verification.md); no benchmark timing is relabeled as a measurement of the repaired release source.

@@ -1,6 +1,6 @@
 # LayerFS 0.1.3 artifacts
 
-> **Status:** Release candidate artifact specification for LayerFS 0.1.3.
+> **Status:** Released artifact specification for LayerFS 0.1.3.
 
 | Asset | Contents |
 |---|---|

@@ -8,7 +8,7 @@ LayerFS 0.1.3 is a benchmark-driven redesign of Commit processing, temporary bac
 - In-place checkpoint installation, ordered namespace finalization, shared backing segments, and owned object admission remove repeated reconstruction, file cleanup, copying, and spill readback.
 - Payload, CAS/CDC, and Workspace-reuse scaling improvements with separately recorded qualification campaigns.
 - Approximately **3× faster measured high-tier Git workflows**: 5.83→1.85 seconds and 14.12→4.64 seconds in the corrected comparison (one baseline observation, three-run final medians); backing requests fell about 92%.
-- Repairs for stale mapped-page writeback over SDK edits, failed-owner Discard, hard-link preservation, and post-publication presentation recovery.
+- Repairs for stale mapped-page writeback over SDK edits, failed-owner Discard, hard-link preservation, and post-publication presentation recovery. Release qualification additionally fixed premature SDK-protection retirement while admitted writebacks were still queued.
 - **198/198 performance cases and 226/226 routine proofs pass across 17 families.** Final mixed-file lifecycle observations include create 1,000 files/100 MiB in **0.990 seconds** and delete in **0.259 seconds**. These are single observations, not latency guarantees.
 - Simplified benchmark infrastructure and bounded history verification with explicit coverage.
 

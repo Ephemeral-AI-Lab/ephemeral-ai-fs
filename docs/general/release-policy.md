@@ -24,7 +24,7 @@ A release candidate is eligible only when:
 - A patch release within `0.1.x` preserves the documented public API, CLI,
   daemon protocol, canonical identity, and Store-format contract while
   correcting behavior or documentation.
-- The user-authorized 0.1.3 Developer Preview is an explicit exception to the
+- The 0.1.3 Developer Preview is an explicit exception to the
   earlier blanket Store-format promise: it migrates schema 4 to schema 5.
   Canonical identity remains unchanged, but migration is one-way and runtime
   components must be version-matched. The [0.1.3 release contract](../../release-notes/0.1.3/release-contract.md)

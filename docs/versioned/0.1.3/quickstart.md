@@ -1,6 +1,6 @@
 # LayerFS 0.1.3 quickstart
 
-> **Status:** Release candidate for LayerFS 0.1.3.
+> **Status:** Released for LayerFS 0.1.3.
 
 This guide creates one Store, one LayerStack, one Branch, and one
 host-materialized Workspace. This path needs Rust but not Docker.

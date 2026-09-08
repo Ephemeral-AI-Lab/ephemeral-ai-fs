@@ -1,0 +1,22 @@
+   Compiling layerfs-fuse v0.1.3 (<release-checkout>/crates/layerfs-fuse)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.75s
+     Running unittests src/lib.rs (target/debug/deps/layerfs_fuse-aa633217d60dc71d)
+
+running 1 test
+kernel-edit trace guard-drop node=NodeId(2)
+
+thread 'live_owner::immutable_acquisition_tests::stale_folio_preserves_sdk_ranges_and_cannot_regrow_truncated_tail' panicked at crates/layerfs-fuse/src/live_owner.rs:3122:9:
+assertion `left == right` failed
+  left: [81, 48, 90]
+ right: [81, 83, 90]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test live_owner::immutable_acquisition_tests::stale_folio_preserves_sdk_ranges_and_cannot_regrow_truncated_tail ... FAILED
+
+failures:
+
+failures:
+    live_owner::immutable_acquisition_tests::stale_folio_preserves_sdk_ranges_and_cannot_regrow_truncated_tail
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 25 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p layerfs-fuse --lib`

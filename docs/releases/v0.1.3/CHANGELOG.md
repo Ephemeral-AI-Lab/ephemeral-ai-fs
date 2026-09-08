@@ -1,6 +1,6 @@
 # LayerFS v0.1.3
 
-**Status: Release candidate for LayerFS 0.1.3 Developer Preview.**
+**Status: Released for LayerFS 0.1.3 Developer Preview.**
 
 LayerFS v0.1.3 grew out of a benchmark-driven optimization cycle across the
 Workspace lifecycle: payload creation, directory traversal, bulk changes, SDK
@@ -78,8 +78,10 @@ Read in order: **[Highlights](#highlights) → [Engineering details](engineering
 8. **Writeback coherence and recovery.** Fixed delayed mapped-page writeback
    overwriting SDK edits, stale tails undoing truncation, failed-owner Discard,
    and recovery after publication succeeded but updating the live view failed.
-   All **three required live Docker tests executed and passed** on the final
-   checkpoint product.[^final]
+   All **three required live Docker tests executed and passed** on the recorded
+   checkpoint product.[^final] Release qualification subsequently exposed an
+   admitted-writeback race; the release correction drains those callbacks before
+   retiring SDK protection. See [release verification](../../../release-notes/0.1.3/verification.md).
    [How it works →](engineering.md#8-writeback-coherence-and-recovery)
 
 9. **Reusable benchmark preparation.** Consolidated setup, collection, and

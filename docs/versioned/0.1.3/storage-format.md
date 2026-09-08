@@ -1,6 +1,6 @@
 # LayerFS 0.1.3 storage format
 
-> **Status:** Release candidate for LayerFS 0.1.3.
+> **Status:** Released for LayerFS 0.1.3.
 
 ## File and connection
 

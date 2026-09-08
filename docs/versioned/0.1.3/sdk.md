@@ -1,6 +1,6 @@
 # LayerFS 0.1.3 Rust SDK
 
-> **Status:** Release candidate for LayerFS 0.1.3.
+> **Status:** Released for LayerFS 0.1.3.
 
 The SDK package is available from this repository:
 

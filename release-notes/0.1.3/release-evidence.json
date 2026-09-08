@@ -3,19 +3,11 @@
   "benchmark_checkpoint": "9f5a641d223606c45e5e6aa8a20094c12f9139a1",
   "release_base": "28177560c8f049c02192e18c263cdc5543c1ab52",
   "unchanged_paths": [
-    "crates/",
     "tools/",
-    "benchmark/fs-bench-pro/"
+    "benchmark/fs-bench-pro/",
+    "crates/ except the two FUSE files listed under release_repair"
   ],
   "package_version": "0.1.3",
-  "build_identity": {
-    "LAYERFS_SOURCE_COMMIT": "28177560c8f049c02192e18c263cdc5543c1ab52",
-    "LAYERFS_SOURCE_TREE": "0da76a0f749db3a098f6dda658b4c83dff02bbf5",
-    "LAYERFS_SOURCE_DIRTY": "true",
-    "LAYERFS_SOURCE_SEAL": "63a175a85b307972ca94201115bb57836cf58912175f6cb4b42be4f478d7ef6d",
-    "LAYERFS_PRODUCT_SEAL": "3c797bc6dbfd9b03b919c270b609cad839000b68d67e34f3b00d24717e07f39a",
-    "WORKLOAD_SOURCE_SHA256": "2ec809798656deef9ac05903c9e3bd77921f6ef9c6c87f24060812a81b93bf76"
-  },
   "checkpoint": {
     "performance_pass": 198,
     "routine_verification_pass": 226,
@@ -27,7 +19,8 @@
     "passed": 348,
     "failed": 0,
     "ignored": 1,
-    "seconds": 79
+    "seconds": 74,
+    "scope": "repaired release source; live gates separately executed9/9"
   },
   "local_log_hashes": {
     "native-tests": {
@@ -53,6 +46,26 @@
     "report-derive": {
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "scope": "local release preparation log; not a performance sample"
+    },
+    "native-final": {
+      "sha256": "6b5da9c402d0140135e5dac7020c8b2fa7e15ba32f6bc50176e486b4683c7d7d",
+      "scope": "repaired release-source validation; not a performance sample"
+    },
+    "build-final": {
+      "sha256": "fd4c0acffb5e8e7d5365860c6c89a33f931308796c39b2f2ebced198569a9b02",
+      "scope": "repaired release-source validation; not a performance sample"
+    },
+    "clippy-final": {
+      "sha256": "9b38687f5d14cb8800aebad91616f63dcd7c89e18f9369ff8b5df44a0720b7b2",
+      "scope": "repaired release-source validation; not a performance sample"
+    },
+    "fuse-repair-tests": {
+      "sha256": "0a04e09d3d160b88bce34fbf00272c84a4a550f70d2465568b3c50b2842fcb97",
+      "scope": "repaired release-source validation; not a performance sample"
+    },
+    "repair-build": {
+      "sha256": "fc3b8334519ad7069c20c680305dcbd4cbbd2ac74d39aa757a3117cb1664f0ae",
+      "scope": "repaired release-source validation; not a performance sample"
     }
   },
   "live_docker": {
@@ -62,9 +75,98 @@
       "seconds": 9.35,
       "original_log_sha256": "97f7257bba09c2ff2346cda07856b88b61c51044f332c563eefaa58d29bc0e3d",
       "published_log": "qualification/live-docker-initial.log",
-      "published_log_sha256": "e2098d0d3343d384ba86e1e99871620c49e2f2d5e5d0a4a827b1df7f88e8c44c"
+      "published_log_sha256": "ac1c238af1974f19e424103e25f313256f9c0ac79d5ef1c5e300d724524a6971",
+      "published_log_redactions": "checkout path replaced and trailing whitespace normalized; original hash retained"
     },
-    "status": "repair_required"
+    "status": "PASS",
+    "diagnostics": {
+      "live-diagnostic": {
+        "original_sha256": "559a590e7fc8b7d98476d4f4f2f6e637e5b223149edd60090ade1cd6e1e508b3",
+        "published_log": "qualification/live-diagnostic.log",
+        "published_sha256": "a33329a37caa37287f6cb028680d3423a2c5b90d63cd6a7cca4063fed1c3146d"
+      },
+      "guard-regression-before": {
+        "original_sha256": "fc191e64b49bfc466ebce6d2c2d8990595de57c30e602e738a42471014d27726",
+        "published_log": "qualification/guard-regression-before.log",
+        "published_sha256": "0db82435f059a37bccd8b5472044add90e3a83aabf6a6084683e9a2c59690522"
+      }
+    },
+    "diagnostic_result": "Instrumented live run passed; does not erase initial failure. Deterministic accepted-writeback guard-retirement regression failed Q0Z instead of QSZ before repair.",
+    "planned_requalification": "Three consecutive predeclared full live-suite executions on repaired source; stop and retain any failure rather than retry for a green result.",
+    "repaired_runs": [
+      {
+        "run": 1,
+        "passed": 3,
+        "failed": 0,
+        "seconds": 8.83,
+        "original_log_sha256": "a0d2c1f2f745609097326f2c4a7c0beec5b6e5aaba4299004b029acec270366c",
+        "published_log": "qualification/live-docker-repaired-1.log",
+        "published_log_sha256": "bc858ecec5260172aeb0577abab6b7aa845abea795e3764a1d4c701949ac0701"
+      },
+      {
+        "run": 2,
+        "passed": 3,
+        "failed": 0,
+        "seconds": 8.27,
+        "original_log_sha256": "d743822e782bd662cb8200f0db8960fe90f8c7b27bc3a5efe3bc9842d55e59b2",
+        "published_log": "qualification/live-docker-repaired-2.log",
+        "published_log_sha256": "187fe65338b4f85f0e6749da7e1e7aa1fa8ebf7a4f861e69b3a78fe68cc88925"
+      },
+      {
+        "run": 3,
+        "passed": 3,
+        "failed": 0,
+        "seconds": 8.47,
+        "original_log_sha256": "757efc0668a8c9160beaaa87523235a84a5a719d21549dd1c57bb25e70f34ab5",
+        "published_log": "qualification/live-docker-repaired-3.log",
+        "published_log_sha256": "fe0ede49346151848209c39a31f5e533d29d29d4c70b482679f089007c3b628a"
+      }
+    ],
+    "image": "sha256:a5dca07683d70d968d989baec3f2dec711ed94e4370f9121e3d69d0888e518bb",
+    "total_repaired_test_executions": 9
   },
-  "publication_ci": "must pass on final release source; final run linked in GitHub release announcement"
+  "publication_ci": "Required on final PR head and merged source; final source and successful run linked in GitHub release announcement.",
+  "initial_build_identity": {
+    "LAYERFS_SOURCE_COMMIT": "28177560c8f049c02192e18c263cdc5543c1ab52",
+    "LAYERFS_SOURCE_TREE": "0da76a0f749db3a098f6dda658b4c83dff02bbf5",
+    "LAYERFS_SOURCE_DIRTY": "true",
+    "LAYERFS_SOURCE_SEAL": "63a175a85b307972ca94201115bb57836cf58912175f6cb4b42be4f478d7ef6d",
+    "LAYERFS_PRODUCT_SEAL": "3c797bc6dbfd9b03b919c270b609cad839000b68d67e34f3b00d24717e07f39a",
+    "WORKLOAD_SOURCE_SHA256": "2ec809798656deef9ac05903c9e3bd77921f6ef9c6c87f24060812a81b93bf76"
+  },
+  "build_identity": {
+    "LAYERFS_SOURCE_COMMIT": "40e5c3f90407334b8110dd3bb91a070c84bfae7d",
+    "LAYERFS_SOURCE_TREE": "6edebb86cb6f52305fdf8e91a80cb71f889548f8",
+    "LAYERFS_SOURCE_DIRTY": "true",
+    "LAYERFS_SOURCE_SEAL": "3ed37e540f80856edb8efff240a0481d86dc4ccb5eedde6983ed76366f39dfd3",
+    "LAYERFS_PRODUCT_SEAL": "0bda13cfd3e8a9900fe3b66f0c41e922581806970bc6d42cfb2bef5f5af46c7d",
+    "WORKLOAD_SOURCE_SHA256": "2ec809798656deef9ac05903c9e3bd77921f6ef9c6c87f24060812a81b93bf76"
+  },
+  "release_repair": {
+    "paths": [
+      "crates/layerfs-fuse/src/live_owner.rs",
+      "crates/layerfs-fuse/src/live_runtime.rs"
+    ],
+    "purpose": "Drain already-admitted writeback callbacks before retiring SDK range protection; clear protection while both operation lanes remain cut.",
+    "regression": "Deterministic existing test extension failed Q0Z versus QSZ before repair and passed after repair.",
+    "limit": "Does not prove draining of kernel work not yet admitted to callback processing.",
+    "focused_tests": {
+      "passed": 26,
+      "failed": 0,
+      "log": "qualification/fuse-repair-tests.log",
+      "sha256": "a8dfa9aa862590230ef6f93c55179218f3eba5d108dbf7695686e1cc66f66f91"
+    }
+  },
+  "initial_native_tests": {
+    "passed": 348,
+    "failed": 0,
+    "ignored": 1,
+    "seconds": 79
+  },
+  "documentation": {
+    "local_file_links": "PASS,18documents",
+    "whitespace": "PASS",
+    "manual": "docs/versioned/0.1.3/",
+    "source_metadata_version": "all12workspacepackages0.1.3"
+  }
 }

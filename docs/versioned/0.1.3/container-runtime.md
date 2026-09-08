@@ -1,6 +1,6 @@
 # LayerFS 0.1.3 container runtime
 
-> **Status:** Release candidate for LayerFS 0.1.3.
+> **Status:** Released for LayerFS 0.1.3.
 
 LayerFS projects live Workspaces through real FUSE inside a prepared Linux
 container. In this placement, the Linux daemon owns the shared live Workspace

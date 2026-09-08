@@ -1,6 +1,6 @@
 # Building LayerFS v0.1.3 through benchmarks
 
-> Status: Release candidate for LayerFS 0.1.3 Developer Preview. This engineering
+> Status: Released for LayerFS 0.1.3 Developer Preview. This engineering
 > account accompanies the [v0.1.3 changelog](CHANGELOG.md). It distinguishes
 > exploratory measurements from the final published development checkpoint.
 
@@ -15,7 +15,9 @@ The sections below explain the changes and the evidence behind them. Historical
 measurements retain their original workload and source boundaries. The final
 checkpoint is [PR #76, source
 `9f5a641d223606c45e5e6aa8a20094c12f9139a1`](https://github.com/Ephemeral-AI-Lab/layerfs/pull/76).
-Writing this document did not execute new benchmarks or tests.
+Benchmark numbers retain their recorded sources. New release checks and the
+subsequent writeback-drain correction are recorded in
+[release verification](../../../release-notes/0.1.3/verification.md).
 
 ## 1. Commit without Workspace reconstruction
 
@@ -236,6 +238,15 @@ and SDK resize/write coherence. The [checkpoint repair record and retained live
 logs](https://github.com/Ephemeral-AI-Lab/layerfs/blob/9f5a641d223606c45e5e6aa8a20094c12f9139a1/docs/roadmap/0.1/0.1.3/checkpoint-evidence/README.md)
 include the original failure. These results strengthen the tested live-operation
 contract; they do not expand crash or power-loss durability guarantees.
+
+Release qualification found a remaining admitted-callback race: a writeback
+could already hold its admission guard while waiting for inode ordering, then
+run after SDK protection had been retired. A deterministic regression reproduced
+`Q0Z` instead of the required `QSZ`. The release correction reuses the existing
+`CacheFlush::finish` drain, clears protection while both operation lanes remain
+closed, then resumes normal operations. It does not add a sleep, change cache
+policy, or claim to establish a kernel-wide durability barrier. The initial
+failure and subsequent qualification are retained in the release record.
 
 ## 9. Reusable benchmark preparation
 

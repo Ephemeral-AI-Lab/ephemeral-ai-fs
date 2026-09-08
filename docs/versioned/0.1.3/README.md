@@ -1,6 +1,6 @@
 # LayerFS 0.1.3 manual
 
-> **Status:** Release candidate for LayerFS 0.1.3.
+> **Status:** Released for LayerFS 0.1.3.
 
 LayerFS 0.1.3 is a Developer Preview for local versioned Workspaces. It shares
 live filesystem state between FUSE operations and SDK edits, supports Commit

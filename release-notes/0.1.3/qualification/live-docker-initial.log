@@ -19,7 +19,7 @@ after failed boundary diagnostic Commit: Ok(Created { previous_head: Some(Commit
 after failed boundary committed path=held-a byte777=[0] read=Ok(LogicalCounters { namespace: NamespaceCounters { nodes_read: 2, nodes_created: 0 }, inode_table: InodeTableCounters { nodes_read: 2, nodes_created: 0 }, rope: RopeCounters { payload_bytes_read: 1, payload_ids_read: 1, payload_batches_read: 1, max_payload_batch: 1, payload_bytes_written: 0, cdc_bytes_scanned: 0, chunks_created: 0, nodes_read: 2, nodes_created: 0, deferred_peak_bytes: 0, deferred_prunes: 0, tree_level_before: None, logical_len_before: None, logical_len_after: None }, structural_deferred_peak_bytes: 0, structural_deferred_prunes: 0 })
 after failed boundary committed path=held-b byte777=[83] read=Ok(LogicalCounters { namespace: NamespaceCounters { nodes_read: 2, nodes_created: 0 }, inode_table: InodeTableCounters { nodes_read: 2, nodes_created: 0 }, rope: RopeCounters { payload_bytes_read: 1, payload_ids_read: 1, payload_batches_read: 1, max_payload_batch: 1, payload_bytes_written: 0, cdc_bytes_scanned: 0, chunks_created: 0, nodes_read: 2, nodes_created: 0, deferred_peak_bytes: 0, deferred_prunes: 0, tree_level_before: None, logical_len_before: None, logical_len_after: None }, structural_deferred_peak_bytes: 0, structural_deferred_prunes: 0 })
 layerfs-workspace: owner-drop cleanup w:1f0b7be129ce7fb2c73a51c49280290a: WorkspaceBusy
-daemon stdout: 
+daemon stdout:
 daemon stderr: layerfs-daemon: execution failed reason=2 status=Ok(ExitStatus(unix_wait_status(15)))
 
 

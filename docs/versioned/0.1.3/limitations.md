@@ -1,6 +1,6 @@
 # LayerFS 0.1.3 limitations
 
-> **Status:** Release candidate for LayerFS 0.1.3 Developer Preview.
+> **Status:** Released for LayerFS 0.1.3 Developer Preview.
 
 LayerFS is for local evaluation and development. Keep independent copies of
 important data; it is not a backup service or a hostile-code security boundary.
