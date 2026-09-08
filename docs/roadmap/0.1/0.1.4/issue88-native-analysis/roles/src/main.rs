@@ -169,6 +169,22 @@ impl Cache {
     }
 
 }
+fn derive_retention(idx: &Connection) -> rusqlite::Result<()> {
+    idx.execute_batch("CREATE UNIQUE INDEX selected_id ON records(id) WHERE selected=1;
+      CREATE TABLE logical_retained(id BLOB PRIMARY KEY) WITHOUT ROWID;
+      INSERT INTO logical_retained WITH RECURSIVE walk(id) AS (SELECT id FROM roots UNION SELECT e.child FROM edges e JOIN walk w ON e.parent=w.id) SELECT id FROM walk;
+      CREATE TABLE required_objects(id BLOB PRIMARY KEY) WITHOUT ROWID;
+      INSERT INTO required_objects WITH RECURSIVE walk(id) AS (SELECT id FROM logical_retained UNION SELECT r.base FROM records r JOIN walk w ON r.id=w.id WHERE r.selected=1 AND r.base IS NOT NULL) SELECT id FROM walk;
+      CREATE VIEW physical_base_only AS SELECT r.* FROM records r JOIN required_objects q ON r.id=q.id LEFT JOIN logical_retained l ON r.id=l.id WHERE r.selected=1 AND l.id IS NULL;
+      CREATE VIEW selected_outside_required AS SELECT r.* FROM records r LEFT JOIN required_objects q ON r.id=q.id WHERE r.selected=1 AND q.id IS NULL;
+      CREATE VIEW physical_unselected AS SELECT * FROM records WHERE selected=0;
+      CREATE VIEW dependency_edges AS SELECT r.id,r.pack,r.grp,r.rec,r.selected,r.kind,r.base,b.pack AS base_pack,b.grp AS base_group,b.rec AS base_record,b.kind AS base_kind,b.role AS base_role,b.bytes AS base_canonical_bytes FROM records r JOIN records b ON r.base=b.id AND b.selected=1;
+      CREATE VIEW dependency_fan_in AS SELECT base,base_kind,base_role,count(*) AS physical_references,sum(selected) AS selected_references FROM dependency_edges GROUP BY base,base_kind,base_role;
+      CREATE TABLE file_content_objects(id BLOB PRIMARY KEY) WITHOUT ROWID;
+      INSERT INTO file_content_objects WITH RECURSIVE walk(id) AS (SELECT e.child FROM edges e JOIN records p ON p.id=e.parent AND p.selected=1 AND p.role='inode_record' JOIN logical_retained retained_inode ON retained_inode.id=p.id JOIN records c ON c.id=e.child AND c.selected=1 AND c.role='FileState' WHERE e.use_label='content' UNION SELECT e.child FROM edges e JOIN walk w ON e.parent=w.id) SELECT id FROM walk;
+      CREATE VIEW file_payload AS SELECT r.* FROM records r JOIN file_content_objects f ON r.id=f.id WHERE r.selected=1 AND r.role='payload_chunk';")
+}
+
 fn main() {
     let a: Vec<_> = std::env::args().collect();
     assert_eq!(a.len(), 3, "database output-directory");
@@ -311,19 +327,7 @@ fn main() {
     // These are spillable analysis sets, not a product index. UNION visits each
     // graph node once, and dependency closure includes native intermediate PREFIX
     // objects as well as final FULL anchors; dropping intermediates is invalid.
-    idx.execute_batch("CREATE UNIQUE INDEX selected_id ON records(id) WHERE selected=1;
-      CREATE TABLE logical_retained(id BLOB PRIMARY KEY) WITHOUT ROWID;
-      INSERT INTO logical_retained WITH RECURSIVE walk(id) AS (SELECT id FROM roots UNION SELECT e.child FROM edges e JOIN walk w ON e.parent=w.id) SELECT id FROM walk;
-      CREATE TABLE required_objects(id BLOB PRIMARY KEY) WITHOUT ROWID;
-      INSERT INTO required_objects WITH RECURSIVE walk(id) AS (SELECT id FROM logical_retained UNION SELECT r.base FROM records r JOIN walk w ON r.id=w.id WHERE r.selected=1 AND r.base IS NOT NULL) SELECT id FROM walk;
-      CREATE VIEW physical_base_only AS SELECT r.* FROM records r JOIN required_objects q ON r.id=q.id LEFT JOIN logical_retained l ON r.id=l.id WHERE r.selected=1 AND l.id IS NULL;
-      CREATE VIEW selected_outside_required AS SELECT r.* FROM records r LEFT JOIN required_objects q ON r.id=q.id WHERE r.selected=1 AND q.id IS NULL;
-      CREATE VIEW physical_unselected AS SELECT * FROM records WHERE selected=0;
-      CREATE VIEW dependency_edges AS SELECT r.id,r.pack,r.grp,r.rec,r.selected,r.kind,r.base,b.pack AS base_pack,b.grp AS base_group,b.rec AS base_record,b.kind AS base_kind,b.role AS base_role,b.bytes AS base_canonical_bytes FROM records r JOIN records b ON r.base=b.id AND b.selected=1;
-      CREATE VIEW dependency_fan_in AS SELECT base,base_kind,base_role,count(*) AS physical_references,sum(selected) AS selected_references FROM dependency_edges GROUP BY base,base_kind,base_role;
-      CREATE TABLE file_content_objects(id BLOB PRIMARY KEY) WITHOUT ROWID;
-      INSERT INTO file_content_objects WITH RECURSIVE walk(id) AS (SELECT e.child FROM edges e JOIN records p ON p.id=e.parent AND p.selected=1 AND p.role='inode_record' JOIN records c ON c.id=e.child AND c.selected=1 AND c.role='FileState' WHERE e.use_label='content' UNION SELECT e.child FROM edges e JOIN walk w ON e.parent=w.id) SELECT id FROM walk;
-      CREATE VIEW file_payload AS SELECT r.* FROM records r JOIN file_content_objects f ON r.id=f.id WHERE r.selected=1 AND r.role='payload_chunk';").unwrap();
+    derive_retention(&idx).unwrap();
     let missing:i64=idx.query_row("select count(*) from required_objects q left join records r on q.id=r.id and r.selected=1 where r.id is null",[],|r|r.get(0)).unwrap();
     assert_eq!(missing,0,"retained/dependency closure must have selected locators");
     let bad:i64=idx.query_row("select count(*) from native_records n join records r using(pack,grp,rec) where r.role!='payload_chunk' or n.prefix_edges>4 or n.closure_raw_bytes>1048576",[],|r|r.get(0)).unwrap();
@@ -363,4 +367,43 @@ fn native_inventory_reconstructs_selected_prior_and_counts_closure() {
     assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         cache.native(&db,1,pack::native_record(&record).unwrap(),0,0);
     })).is_err(),"same-pack dependency must fail");
+}
+
+
+#[test]
+fn retention_keeps_prefix_intermediates_and_excludes_unretained_file_use() {
+    for retain_inode in [false, true] {
+        let idx = Connection::open_in_memory().unwrap();
+        idx.execute_batch("CREATE TABLE records(id BLOB,bytes INTEGER,role TEXT,pack INTEGER,grp INTEGER,rec INTEGER,kind TEXT,record_bytes INTEGER,selected INTEGER,base BLOB,base_pack INTEGER,base_group INTEGER);
+          CREATE TABLE edges(parent BLOB,child BLOB,use_label TEXT);
+          CREATE TABLE roots(id BLOB,source TEXT);
+          INSERT INTO records VALUES
+            (X'01',10,'payload_chunk',1,0,0,'NATIVE_FULL',6,1,NULL,NULL,NULL),
+            (X'02',11,'payload_chunk',2,0,0,'NATIVE_PREFIX',38,1,X'01',1,0),
+            (X'03',12,'payload_chunk',3,0,0,'NATIVE_PREFIX',38,1,X'02',2,0),
+            (X'03',12,'payload_chunk',4,0,0,'NATIVE_PREFIX',38,0,X'02',2,0),
+            (X'10',20,'inode_record',5,0,0,'FULL',21,1,NULL,NULL,NULL),
+            (X'11',21,'FileState',6,0,0,'FULL',22,1,NULL,NULL,NULL),
+            (X'12',22,'payload_chunk',7,0,0,'FULL',23,1,NULL,NULL,NULL);
+          INSERT INTO roots VALUES(X'03','terminal');
+          INSERT INTO edges VALUES(X'10',X'11','content'),(X'11',X'12','graph');").unwrap();
+        if retain_inode {
+            idx.execute("INSERT INTO roots VALUES(X'10','retained-file')", []).unwrap();
+        }
+        // Execute the same SQL used for a real inventory, never a test copy.
+        derive_retention(&idx).unwrap();
+        let count = |table: &str| -> i64 {
+            idx.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(count("logical_retained"), if retain_inode { 4 } else { 1 });
+        assert_eq!(count("required_objects"), if retain_inode { 6 } else { 3 });
+        assert_eq!(count("physical_base_only"), 2);
+        assert_eq!(count("physical_unselected"), 1);
+        assert_eq!(count("selected_outside_required"), if retain_inode { 0 } else { 3 });
+        assert_eq!(count("file_payload"), i64::from(retain_inode));
+        let base_kinds: String = idx.query_row("SELECT group_concat(kind,',') FROM (SELECT kind FROM physical_base_only ORDER BY pack)", [], |r| r.get(0)).unwrap();
+        assert_eq!(base_kinds, "NATIVE_FULL,NATIVE_PREFIX");
+        let duplicate: (i64,i64) = idx.query_row("SELECT selected_references,physical_references FROM dependency_fan_in WHERE base=X'02'", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
+        assert_eq!(duplicate, (1,2));
+    }
 }

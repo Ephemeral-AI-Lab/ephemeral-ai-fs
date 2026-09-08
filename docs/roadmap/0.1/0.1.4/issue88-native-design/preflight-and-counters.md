@@ -77,3 +77,17 @@ Source interfaces/resource guards and allnegativepreparations freeze before norm
 host/image builds and fresh matched smoke samples. No runtime policy was selected
 from a retained native dataset.159163199 encoded bytes remains hypothetical until
 one combined public result;134221004 allocated bytes remains separate.
+
+Reader integration inequality: existing sum(validation_reserve)≤1MiB includes
+perwave512B/target associations and legacy pending instruction bounds; the new
+sequential native chain uses the other≤1MiB. Existing request/group maps remain
+in the old association class, and the first native extraction moves into its
+chain without duplicating payload. Both reservations together remain≤2MiB.
+
+Build custody: hostd4f26f0d1 is clean; imaged4f26f0d1 has the broad checkout dirty
+flag because two census analysis files changed before its build. Product/harness
+source seal f647323ee0c412048b7f1f063a3b94250d2606d9d613105fab56dfd21d754577
+and product seals match normally. The producer-relevant dirty patch is empty;
+the complete analysis-only checkout patch e27d7e0399ac48e55ac13c8f6a1aabaf665c0950e753481f6b6ca8398470a43d
+and timestamps are archived in build-custody-qualification.json before samples.
+No clean-image claim, identity relaxation or unnecessary rebuild is made.
