@@ -2,6 +2,9 @@
 """Product-free checks: python3 test_report.py. No benchmark or Store access."""
 import copy
 import importlib.util
+import json
+import hashlib
+import tempfile
 from pathlib import Path
 
 spec = importlib.util.spec_from_file_location('v014_report', Path(__file__).with_name('report.py'))
@@ -88,7 +91,78 @@ def check():
                                 dict(declaration, seed_or_sdk_repetition=2), manifest, errors)
     assert errors  # Never infer seed from candidate when original receipts disagree.
     assert r.contract_errors(old, dict(new, preparation={'fixture': {'input_plan_sha256': 'changed'}}), mapping[0])
+    baseline_namespace = next(row for row in r.legacy.read(r.BASE / 'report.json')['performance']
+                              if row['case'] == 'namespace-100-compact-v3')
+    g0_path = r.legacy.existing(r.HERE / 'raw/generations/g0' / baseline_namespace['evidence'])
+    if g0_path.exists():
+        sample = next(row for row in r.legacy.read(g0_path) if row.get('kind') == 'sample')
+        candidate_fixture = {'preparation': sample['preparation']}
+        assert baseline_namespace['preparation']['fixture'] != sample['preparation']['fixture']
+        assert r.fixture_contract(baseline_namespace) == r.fixture_contract(candidate_fixture)
+        candidate_fixture = copy.deepcopy(candidate_fixture)
+        candidate_fixture['preparation']['fixture']['fixture_digest'] = 'changed'
+        assert r.fixture_contract(baseline_namespace) != r.fixture_contract(candidate_fixture)
+    cold = copy.deepcopy(baseline_namespace)
+    cold['preparation']['fixture']['fixture_cache_profile'] = 'cold'
+    assert r.fixture_contract(baseline_namespace) != r.fixture_contract(cold)
+    check_proof_preparation()
     print('v0.1.4 report focused checks: PASS')
+
+
+def check_proof_preparation():
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        frozen, campaign = root / 'frozen', root / 'generation'
+        frozen.mkdir()
+        campaign.mkdir()
+        def save(path, value):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(value))
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+        declaration_sha = save(frozen / 'verification-preparation-r4.json', {'cases': ['c']})
+        save(campaign / 'selections.json', {'proof_preparation_declaration_sha256': declaration_sha})
+        identity = dict(family='f', case='c', seed=1, setup_identity='fresh-output',
+                        source_identity='s', product_identity='p', input_identity='i',
+                        harness_identity='h', image='image')
+        raw_proof = {k: identity[k] for k in ('source_identity', 'product_identity', 'input_identity', 'harness_identity')}
+        raw_proof.update(family='f', case='c', image_identity='image', wall_seconds=2,
+                         status='PASS', cleanup={'status': 'PASS'})
+        proof_path = campaign / 'verification/f/c/verification.json'
+        proof_sha = save(proof_path, raw_proof)
+        runner_path = campaign / 'preparation/f/c/runner.json'
+        runner = dict(identities=identity, status='PASS', cleanup={'status': 'PASS'})
+        runner_sha = save(runner_path, runner)
+        prep = dict(identities=identity, declaration_sha256=declaration_sha,
+                    runner_sha256=runner_sha, status='PASS', returncode=0, wall_ns=500_000_000)
+        prep_path = runner_path.with_name('preparation.json')
+        prep_sha = save(prep_path, prep)
+        entry = dict(family='f', case='c', status='PASS', wall_seconds=2,
+                     receipt=str(proof_path), receipt_sha256=proof_sha,
+                     independent_preparation=dict(prep, receipt=str(prep_path), receipt_sha256=prep_sha),
+                     preparation_plus_verification_wall_seconds=2.5)
+        def derive_entry(value):
+            save(campaign / 'verification-ledger.json', [value])
+            report = dict(errors=[], raw_sha256={}, declaration={'seed': 1}, verification=[copy.deepcopy(raw_proof)])
+            r.proof_preparations(report, campaign, frozen)
+            return report
+        report = derive_entry(entry)
+        assert not report['errors'], report['errors']
+        assert report['verification'][0]['preparation_plus_verification_wall_seconds'] == 2.5
+        assert report['verification'][0]['verification_timing_comparison'].startswith('INELIGIBLE')
+        for field, value in [('preparation_plus_verification_wall_seconds', 2), ('receipt_sha256', 'wrong')]:
+            assert derive_entry(dict(entry, **{field: value}))['errors']
+        for field, value in [('receipt', str(root / 'outside.json')), ('receipt_sha256', 'wrong'), ('status', 'FAIL')]:
+            bad = copy.deepcopy(entry)
+            bad['independent_preparation'][field] = value
+            assert derive_entry(bad)['errors']
+        bad = copy.deepcopy(entry)
+        bad.pop('independent_preparation')
+        assert derive_entry(bad)['errors']
+        runner['identities'] = dict(identity, source_identity='other')
+        prep['runner_sha256'] = save(runner_path, runner)
+        prep_sha = save(prep_path, prep)
+        bad = dict(entry, independent_preparation=dict(prep, receipt=str(prep_path), receipt_sha256=prep_sha))
+        assert derive_entry(bad)['errors']
 
 
 if __name__ == '__main__':

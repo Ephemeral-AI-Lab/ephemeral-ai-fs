@@ -100,6 +100,16 @@ def severity(metric, baseline, candidate, plan):
     return 'OBSERVED_INCREASE'
 
 
+def fixture_contract(row):
+    fixture = (row.get('preparation') or {}).get('fixture')
+    if fixture is None:
+        return None
+    # Namespace fixture receipts include observer timings/cache state, not content.
+    observers = {'fixture_generate_ns', 'fixture_manifest_ns', 'fixture_plan_ns',
+                 'fixture_bytes_per_second', 'fixture_files_per_second'}
+    return {k: v for k, v in fixture.items() if k not in observers}
+
+
 def contract_errors(old, current, mapping):
     errors = []
     for field in ('timer', 'seed', 'fixture_profile', 'fixture_bytes', 'fixture_files'):
@@ -109,7 +119,7 @@ def contract_errors(old, current, mapping):
         errors.append('timer differs from mapping')
     if old.get('definition') != current.get('definition'):
         errors.append('registered workload/public route differs')
-    if (old.get('preparation') or {}).get('fixture') != (current.get('preparation') or {}).get('fixture'):
+    if fixture_contract(old) != fixture_contract(current):
         errors.append('prepared fixture content differs')
     # Include exact operation-source manifests; a source change needs an explicit
     # reviewed contract mapping, never a silent waiver based on matching names.
@@ -216,6 +226,105 @@ def validate_outcomes(row, errors):
         errors.append(f"failed or missing custody: {key(row)}")
 
 
+def proof_preparations(report, campaign, frozen):
+    """Authenticate separately scheduled prep without reclassifying proof timing."""
+    errors, evidence = report['errors'], report['raw_sha256']
+
+    def read_bound(path, expected_hash=None):
+        path = legacy.existing(path)
+        if not path.resolve().is_relative_to(campaign.resolve()) or not path.is_file():
+            raise ValueError('missing or out-of-generation evidence: ' + str(path))
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if expected_hash is not None and digest != expected_hash:
+            raise ValueError('evidence hash mismatch: ' + str(path))
+        evidence[str(path.relative_to(campaign))] = digest
+        return legacy.read(path)
+
+    selections_path = legacy.existing(campaign / 'selections.json')
+    selections = read_bound(selections_path) if selections_path.exists() else {}
+    declared_sha = selections.get('proof_preparation_declaration_sha256')
+    ledger_path = legacy.existing(campaign / 'verification-ledger.json')
+    if not ledger_path.exists():
+        if declared_sha:
+            errors.append('missing verification ledger for declared independent preparation')
+        return
+    entries = index(read_bound(ledger_path), errors, 'verification ledger')
+    has_prep = any(entry.get('independent_preparation') for entry in entries.values())
+    if not declared_sha and not has_prep:
+        return
+    declaration_path = frozen / 'verification-preparation-r4.json'
+    if not declaration_path.is_file():
+        errors.append('missing frozen independent preparation declaration')
+        return
+    declaration_sha = hashlib.sha256(declaration_path.read_bytes()).hexdigest()
+    if declaration_sha != declared_sha:
+        errors.append('independent preparation selection/declaration hash mismatch')
+    spec = legacy.read(declaration_path)
+    report['proof_preparation_declaration'] = {'path': str(declaration_path), 'sha256': declaration_sha, 'declaration': spec}
+    proofs = index(report['verification'], errors, 'derived proof')
+    for ident, entry in entries.items():
+        if entry.get('independent_preparation') and ident not in proofs:
+            errors.append(f'independent preparation lacks registered proof: {ident}')
+    for ident, proof in proofs.items():
+        entry = entries.get(ident, {})
+        prep = entry.get('independent_preparation')
+        if proof['case'] not in spec['cases']:
+            if prep:
+                errors.append(f'undeclared independent preparation: {ident}')
+            continue
+        if not prep:
+            errors.append(f'missing declared independent preparation: {ident}')
+            continue
+        proof.update(independent_preparation=prep, independent_preparation_status='INCOMPLETE',
+                     proof_wall_seconds=proof.get('wall_seconds'),
+                     verification_timing_comparison='INELIGIBLE: preparation scheduled separately; no historical verifier-wall speedup claim',
+                     preparation_plus_verification_wall_seconds=None)
+        try:
+            directory = campaign / 'preparation' / proof['family'] / proof['case']
+            expected_path = directory / 'preparation.json'
+            receipt_path = Path(prep['receipt'])
+            if not receipt_path.is_absolute():
+                receipt_path = campaign / receipt_path
+            if receipt_path.resolve() != expected_path.resolve():
+                raise ValueError('independent preparation receipt path differs from registered case')
+            saved = read_bound(expected_path, prep['receipt_sha256'])
+            if saved != {k: v for k, v in prep.items() if k not in ('receipt', 'receipt_sha256')}:
+                raise ValueError('independent preparation ledger/receipt mismatch')
+            runner = read_bound(directory / 'runner.json', saved['runner_sha256'])
+            raw_proof_path = campaign / 'verification' / proof['family'] / proof['case'] / 'verification.json'
+            proof_path = Path(entry['receipt'])
+            if not proof_path.is_absolute():
+                proof_path = campaign / proof_path
+            if proof_path.resolve() != raw_proof_path.resolve():
+                raise ValueError('proof ledger path differs from registered case')
+            raw_proof = read_bound(raw_proof_path, entry['receipt_sha256'])
+            identity = saved['identities']
+            expected = {k: raw_proof.get(k) for k in ('source_identity', 'product_identity', 'input_identity', 'harness_identity')}
+            expected.update(family=proof['family'], case=proof['case'], seed=report['declaration']['seed'],
+                            setup_identity='fresh-output', image=raw_proof.get('image_identity'))
+            if (identity != expected or any(runner.get('identities', {}).get(k) != v for k, v in expected.items())
+                    or any(v is None for v in expected.values())):
+                raise ValueError('independent preparation/proof identity mismatch')
+            if (saved.get('declaration_sha256') != declaration_sha or saved.get('status') != 'PASS'
+                    or saved.get('returncode') != 0 or runner.get('status') != 'PASS'
+                    or runner.get('cleanup', {}).get('status') != 'PASS'
+                    or raw_proof.get('status') != 'PASS' or entry.get('status') != 'PASS'
+                    or raw_proof.get('cleanup', {}).get('status') != 'PASS'):
+                raise ValueError('independent preparation/proof/cleanup did not pass')
+            prep_ns, proof_s = saved.get('wall_ns'), raw_proof.get('wall_seconds')
+            if any(not numeric(v) or not math.isfinite(v) or v < 0 for v in (prep_ns, proof_s)):
+                raise ValueError('invalid independent preparation/proof wall')
+            total = prep_ns / 1e9 + proof_s
+            if (entry.get('wall_seconds') != proof_s or proof.get('wall_seconds') != proof_s
+                    or not numeric(entry.get('preparation_plus_verification_wall_seconds'))
+                    or not math.isclose(entry['preparation_plus_verification_wall_seconds'], total, rel_tol=1e-12)):
+                raise ValueError('incorrect disjoint preparation/proof wall sum')
+            proof.update(independent_preparation_status='PASS', independent_preparation_wall_ns=prep_ns,
+                         proof_wall_seconds=proof_s, preparation_plus_verification_wall_seconds=total)
+        except (KeyError, TypeError, ValueError, OSError) as exc:
+            errors.append(f'independent preparation {ident}: {exc}')
+
+
 def derive(campaign, registry, frozen=FROZEN, baseline_dir=BASE):
     plan = legacy.read(frozen / 'declaration.json')
     report = legacy.derive(campaign, registry)
@@ -246,6 +355,7 @@ def derive(campaign, registry, frozen=FROZEN, baseline_dir=BASE):
         if report['declaration'].get(field) != plan[field]:
             report['errors'].append('generation differs from prospective declaration: ' + field)
     compare(report, baseline, mapping, plan)
+    proof_preparations(report, campaign, frozen)
     for row in report['performance']:
         validate_outcomes(row, report['errors'])
     for proof in report['verification']:
@@ -285,6 +395,17 @@ def write(report, output):
             writer = csv.DictWriter(stream, fieldnames=list(report['comparisons'][0]))
             writer.writeheader()
             writer.writerows(report['comparisons'])
+    path = output / 'verification.csv'
+    with path.open(newline='') as stream:
+        existing_rows = list(csv.DictReader(stream))
+    extra = ['independent_preparation_status', 'independent_preparation_wall_ns', 'proof_wall_seconds',
+             'preparation_plus_verification_wall_seconds', 'verification_timing_comparison']
+    if existing_rows:
+        with path.open('w', newline='') as stream:
+            writer = csv.DictWriter(stream, fieldnames=list(existing_rows[0]) + extra)
+            writer.writeheader()
+            for row, proof in zip(existing_rows, report['verification']):
+                writer.writerow({**row, **{field: proof.get(field) for field in extra}})
     text = (output / 'report.md').read_text().replace('# v0.1.3 benchmark checkpoint', '# v0.1.4 benchmark checkpoint against published v0.1.3')
     text = text.replace('(raw/', '(' + os.path.relpath(report['generation'], output) + '/')
     text += '\n## Historical comparison and qualification\n\n' + report['qualification'] + '\n\n'
@@ -294,6 +415,11 @@ def write(report, output):
         if row['metric'] == 'elapsed_ns' or row['severity'] == 'SEVERE':
             percent = 'unavailable' if row['difference_percent'] is None else f"{row['difference_percent']:+.2f}%"
             text += f"| {row['family']} / {row['case']} | {row['metric']} | {row['baseline_value']} | {row['aggregate']} | {percent} | {row['severity']} |\n"
+    separate = [p for p in report['verification'] if p.get('independent_preparation')]
+    if separate:
+        text += '\n## Independently scheduled proof preparation\n\nPreparation and verifier wall are disjoint and shown separately. Their sum includes both processes. The verifier preparation scope changed; neither warmed verifier wall nor this sum establishes a historical speedup.\n\n| Case | Preparation (ns) | Proof wall (s) | Disjoint total (s) | Evidence validation |\n|---|---:|---:|---:|---|\n'
+        for proof in separate:
+            text += f"| {proof['case']} | {proof.get('independent_preparation_wall_ns')} | {proof.get('proof_wall_seconds')} | {proof.get('preparation_plus_verification_wall_seconds')} | {proof['independent_preparation_status']} |\n"
     (output / 'report.md').write_text(text)
 
 
