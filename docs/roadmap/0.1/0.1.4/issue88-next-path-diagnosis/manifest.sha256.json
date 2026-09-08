@@ -1,0 +1,33 @@
+{
+  "scope": "this additive review artifact; excludes manifest self-hash",
+  "files": {
+    "contract.md": {
+      "sha256": "2fc8ea5d49c53ff2eaf6ba809f872bbd18841be1b7daadfa65135a526afd17a2",
+      "bytes": 539
+    },
+    "coverage.md": {
+      "sha256": "3ed6296e714894efe103fce5bdc6924642d39714d0ddcad2f3b048cac8da312c",
+      "bytes": 10652
+    },
+    "evidence-index.json": {
+      "sha256": "ff571f72e7256f65cd867655f3a728679d12e2d9223899f7f9985e457f09372d",
+      "bytes": 1488
+    },
+    "findings-and-next-step.md": {
+      "sha256": "300a89cd9c5669e38fc358299a1d5d8efe6767fa4ce5d44f4564184b15f9aa55",
+      "bytes": 9142
+    },
+    "identity-and-scope.json": {
+      "sha256": "228f3e0c16bf870961ad90fc73c4b4d8c1cbb97eb593a8c6d4e62c1334a53a0e",
+      "bytes": 2263
+    },
+    "physical.md": {
+      "sha256": "888db0d39ab37540811d716262866fb86b3eaea0b3170dd37b667aac2ea11419",
+      "bytes": 9822
+    },
+    "review.md": {
+      "sha256": "61e5e5c4888c8f8b116e0cd6b936c1334d4d8f45847b38e5a64e0efa95cf2e35",
+      "bytes": 7695
+    }
+  }
+}

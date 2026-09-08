@@ -1,0 +1,18 @@
+{
+  "status": "read-only source and existing receipt review; no new performance or encoding sample",
+  "source_checkout": "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-issue88-experiments",
+  "head": "6f1c120c68f1532a88eb866c2af593b74c3cc772",
+  "working_tree_status": " M docs/roadmap/0.1/0.1.4/issue88-experiments/review.md\n?? docs/roadmap/0.1/0.1.4/issue88-experiments/.gitignore\n?? docs/roadmap/0.1/0.1.4/issue88-experiments/README.md\n?? docs/roadmap/0.1/0.1.4/issue88-experiments/census_report.py\n?? docs/roadmap/0.1/0.1.4/issue88-experiments/findings.md\n?? docs/roadmap/0.1/0.1.4/issue88-experiments/summarize_full.py\n",
+  "sources_sha256": {
+    "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-issue88-experiments/docs/roadmap/0.1/0.1.4/issue88-experiments/findings.md": "0c987a8e5c06d297ad619f58833b86380414a2a2697e1b08287bc04e84414509",
+    "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-issue88-experiments/docs/roadmap/0.1/0.1.4/issue88-experiments/contract-v1.md": "15c559c3fbfef1681698f67eb1596095218fad5c09d946141bcff42013ff2814",
+    "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-issue88-experiments/docs/roadmap/0.1/0.1.4/issue87-diagnostic-design/findings-and-contract.md": "7e3ed75d464bdaa210b7e05a0c7d6d4ac14dcba985b93610f5d7547145ac05b8",
+    "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-issue88-experiments/crates/layerfs-layerstack-store/src/objects.rs": "56be27e9997f2ae55620b873bfa81a744943ae6ef991e15ed6ee665b58ff4173",
+    "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-issue88-experiments/crates/layerfs-layerstack-store/src/objects/admission.rs": "45c4e913c9ef2b3123eb4afd79d4f90de86351fa328251159180ab62974b530d",
+    "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-issue88-experiments/crates/layerfs-layerstack-store/src/objects/pack.rs": "002a879064bb9cec89af735d186ac67a28d7313fa48de30b68f8cfe1ece86dbe",
+    "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-issue88-experiments/docs/roadmap/0.1/0.1.4/issue88-experiments/extract_content.py": "8fe6c11d3cb49c4fabf4748adc7cb76ce47ac0b894da8d6bfec4df2f691f1b2e"
+  },
+  "units": "integer bytes and counts; durations ns where quoted",
+  "original_store_opened": false,
+  "existing_reports_finality": "issue88 findings is an uncommitted draft with full-history placeholder; this review does not certify complete sealed census"
+}

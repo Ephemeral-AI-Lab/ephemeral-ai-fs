@@ -1,0 +1,33 @@
+{
+  "status": "hashes of existing aggregate evidence; not a fresh all-input or Store authentication",
+  "files": {
+    "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/issue88-report-1/offline-results.json": {
+      "sha256": "c741a6bdc44d27499254c8ebcfba02d6af2be7afb215d4ff65612dde8697f689",
+      "bytes": 14608
+    },
+    "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/issue88-s1-preverification-snapshot-1/custody.json": {
+      "sha256": "77f1754f8f2b04b0acc7727aec3752b8dd1d6f499de025eddfc7b62c3b58adc2",
+      "bytes": 1187
+    },
+    "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/issue88-s1-full157-1/performance-summary.json": {
+      "sha256": "b5551f38383623689f6987cc1c74be3a146b6aa2f03959c6cff72976ccdbbe63",
+      "bytes": 121
+    },
+    "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/issue88-s1-full157-1/verification-summary.json": {
+      "sha256": "693b5bb2f1353bc55aa6ef4c1e78131017a2d564176944d44945472ec61ef3ff",
+      "bytes": 121
+    },
+    "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/issue88-read-costs-1/read-costs.json": {
+      "sha256": "a7960df9c69211497ef7ae91b6edde6189f73c6164ba5875f8ebcc90247279a9",
+      "bytes": 28540
+    }
+  },
+  "arithmetic": {
+    "status": "derived scenario, not measured combined Store",
+    "S2_frame_bytes": 102306097,
+    "S1_structural_group_bytes": 56857102,
+    "sum_bytes": 159163199,
+    "target_bytes": 134221004,
+    "excess_before_other_costs_bytes": 24942195
+  }
+}
