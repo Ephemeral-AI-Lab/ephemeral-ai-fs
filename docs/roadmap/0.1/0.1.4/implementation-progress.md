@@ -1,27 +1,61 @@
 # Storage architecture v3 implementation progress
 
-Status: **M3 in progress; milestones 0–2 completed and preserved below**.
-Updated 2026-09-08. This is **not final storage-v3 qualification**. Three integrated
-smokes passed public-operation completion, historical mounted readback and cleanup.
-Three comparisons exceed the original smoke elapsed allowances; the owner accepts
-the checkpoint under the subsequently stated timing tolerance below. Compression,
-delta emission and milestones 3–5 are deferred; their original targets are unchanged.
+Status: **M3 implemented and smoke-verified; stop at M3**. Updated 2026-09-08.
+The complete v0.1.4 storage design is **not qualified**. M4/M5 remain deferred.
+No merge, migration, cloud work, crash qualification or benchmark campaign ran.
 
-The latest owner scope explicitly supersedes the older full-completion instruction:
-finish milestone 2, commit/push to existing PR #81, then stop. No merge, deployment,
-conversion, automatic/in-place migration or user-data operation is authorized.
-The [approved smoke contract](implementation-smoke-contract-v1.md),
-[implementation plan](implementation-plan.md), [architecture](storage-architecture-spec.md),
-[format](sqlite-storage-format.md) and [review disposition](review-disposition.md)
-retain their original definitions. Their final-v3 compressed-storage and representation
-requirements are deferred/not applicable as **milestone-2 exit gates**, not passed,
-weakened or replaced. The three-pair final qualification has not run.
+M3 product commit: `1ac1ce4b56064a548929b070568d2373daa9e30d` on
+`codex/storage-v3-implementation`, existing draft [PR #81](https://github.com/Ephemeral-AI-Lab/layerfs/pull/81).
+Worktree `/Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3` was clean at recovered
+M2 HEAD `0e18ec561d11934f2935e20832bf49eab1afab72`. All M2 evidence is preserved;
+the complete prior ledger appears verbatim below as historical context.
 
-Subsequent owner timing disposition: the 1.58% replay increase is acceptable;
-**up to 10 ms added elapsed time or less than 30% degradation** is acceptable for
-this milestone-2 checkpoint. All reported elapsed comparisons meet that tolerance.
-This records owner acceptance separately from the unchanged frozen smoke contract
-and its original diagnostic misses; it is not final-v3 qualification.
+## M3 result and completion checklist
+
+Compression produces a material storage improvement at acceptable foreground cost
+under the owner's prospective policy. DeepSeek allocation is 52.13% below the
+unchanged baseline and 47.37% below M2; replay elapsed is +14.67% / +12.89%.
+Small-file Init saves 22.73% with equal canonical counts/bytes; final allocation
+saves 26.09% versus M2 with the COW-population caveat below. Incompressible binary
+histories show little or no incremental allocated-space saving; this is not a
+universal storage benefit claim. The owner reiterated after these observations
+that storage optimization is the priority and timing margins are generous; no
+historical result or frozen gate was relabeled because of that later message.
+
+- [x] Source custody, current branch/HEAD, instructions, idle prior tasks and M2 evidence verified.
+- [x] Prospective M3–M5 performance policy recorded before candidate measurements (`d941f86bc`).
+- [x] Bounded Zstandard FULL groups and framing-aware RAW selection implemented in shared writer.
+- [x] Bounded range extraction/decompression with ordinary canonical authentication implemented.
+- [x] Shared Init/Commit lifecycle, localized COW, bulk SQL, permits and connection boundaries preserved.
+- [x] All three approved smokes, 33 historical mappings, no-change and cleanup checks passed.
+- [x] Source and result review found no unresolved M3 defect requiring a fix/rerun; no speculative tuning.
+- [x] Allocation, elapsed, physical/resource accounting, historical controls and limitations recorded separately.
+- [x] Separate M3 JSON evidence added; original M2 JSON and raw evidence unchanged.
+- [x] Final product diff reviewed: obsolete unsupported-codec branch removed, no duplicate owner or M4/M5 work.
+- [x] Product and evidence committed/pushed to existing implementation branch/PR; PR remains unmerged.
+
+No M3 checklist item remains incomplete. This is a development milestone, not
+final three-pair, aggregate-load or complete v0.1.4 qualification.
+
+## Actual module ownership
+
+- `objects/pack.rs` owns existing wire framing plus Zstandard trial/selection and
+  bounded decode. Its private FFI module uses the bundled pinned Zstandard 1.5.7
+  static-context APIs. `lib.rs` denies unsafe globally with a narrow allowance
+  inside that module; documented alignment/lifetime rules bound this native call.
+- `objects/admission.rs` retains canonical comparison operands by moving vectors
+  for compressed records, and borrows RAW operands from immutable prepared packs.
+  Its existing permit, single final recheck and bounded multirow INSERT owner stay
+  intact; zero-winner/mixed-pack rules and synchronous partial flushes are unchanged.
+- `objects/read.rs` extracts header/selected directory/group ranges under the
+  connection guard, then delegates decode outside it. Existing target/base waves
+  coalesce requested groups and canonical authentication remains in the same owner.
+- Store `Cargo.toml`/workspace `Cargo.lock` pin `zstd-sys =2.0.16` (bundled 1.5.7),
+  defaults disabled, experimental static APIs enabled. New transitive build
+  dependencies are recorded; no external dependency source was modified.
+- Canonical constructors, CDC/COW trees, public SnapshotReader cache, schema/SQL,
+  Init discovery, staging, head checks and finalization code are unchanged in M3.
+  No physical DELTA emission, shadow machinery, extra cache, scheduler or backend.
 
 ## Owner update for M3–M5 (prospective, 2026-09-08)
 
@@ -47,6 +81,234 @@ M3 follows the frozen one-observation-per-coherent-slice development procedure,
 using all three approved smokes because shared Commit/read behavior is affected.
 The M5 final three-pair qualification will not run. Baseline and M2 comparisons
 are descriptive historical comparisons, not new matched timing controls.
+
+### M3 custody and implementation decisions before measurements
+
+The implementation task found the clean expected branch at M2 HEAD, with PR #81
+open/draft at that same revision. Earlier implementation tasks and the later
+read-only design-review task were idle. No active smoke/build process or measurement
+lock owner was found. The unrelated `layerfs-phase21-binary-build` sleeping
+container is preserved. Baseline/M2 final verification manifests and retained M2
+host binary hashes were checked; frozen fixture/cache/resource definitions agree.
+
+Keep existing 16/32-KiB role targets, 64-KiB ordinary decoded limit, 256-KiB decoded
+pack cap, count/admission bounds and oversized FULL/RAW route unchanged. Encode
+eligible closed groups once with level 1, checksum, content size and <=64-KiB
+window. The complete Zstandard frame must save at least 16 bytes versus decoded
+RAW framing; the pack directory has the same size for either codec. Compression
+errors/resource failures propagate; RAW is only the explicit size/savings choice.
+
+Use pinned Zstandard native static contexts to enforce actual allocator bounds:
+compression workspace <=1 MiB and decoder workspace <=256 KiB, inside the existing
+2-MiB physical reservation. A private byte-codec FFI boundary is necessary because
+the safe binding lacks static-context APIs; deny unsafe elsewhere and document
+pointer/alignment/lifetime invariants at that boundary. No codec cache, worker or
+new memory-management subsystem. Pinned `compressBound(65536)` is 65,824 bytes (defensive trial cap 66,560).
+Selected compressed Vecs retain trial capacity until assembly; truncation is not
+reported as memory release. For a normal pack, the conservative group-capacity
+sum is <=279,552 bytes. Shared admission still caps ordinary canonical batches at
+512 KiB, plus <=256 KiB incoming; >256-KiB objects flush alone through RAW spool.
+Existing source consumption moves canonical vectors out of the <=6-MiB resident
+owner. Encoding's <=1-MiB context, <=~512-KiB accumulated encoded backing, one
+<=64-KiB raw group and <=65-KiB trial leave room for bounded directories/associations
+inside the 2-MiB reservation. Assembly happens after the context drops. Decoder
+workspace plus encoded/decoded ordinary groups is <=384 KiB; the existing 1-MiB
+late-validation reserve remains unchanged. These are conservative source-derived
+bounds, not observed process peaks. Existing final-owned diagnostics do not include
+codec/pack scratch and must not be described as measuring inclusive memory. Compressed records move their authenticated canonical
+operands into prepared admission for late equality; RAW records keep borrowing
+from their prepared pack. Encoding remains outside admission and connection locks.
+
+## Integrated smoke evidence and comparisons
+
+[Machine-readable M3 evidence](implementation-milestone-3.json) contains exact raw
+operands, per-step routes/resources, manifests, group census and original diagnostic
+checks. Artifact root: `/Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs`.
+Every case has one observation per arm. Historical baseline/M2 timings are not
+matched new controls; baseline predates untimed Init receipt rendering. M2 and M3
+harness files match exactly. Frozen fixtures, interfaces, cache/resource profiles
+and all final control/candidate manifests were checked. No OS cache purge or
+completed Store reuse occurred. All final primary allocation receipts predate
+verifier-created Branches and include required SQLite sidecars.
+
+| Case | Baseline allocation B | M2 allocation B | M3 allocation B | Reduction baseline / M2 | Mutation + Commit ms: baseline / M2 / M3 |
+| --- | ---: | ---: | ---: | --- | --- |
+| DeepSeek first five | 12,320,768 | 11,206,656 | 5,898,240 | 52.13% / 47.37% | 1095.992 / 1113.313 / 1256.791 |
+| SDK text-32k | 983,040 | 983,040 | 983,040 | 0% / 0% | 32.937 / 28.004 / 33.138 |
+| SDK binary-8m | 11,141,120 | 10,354,688 | 10,354,688 | 7.06% / 0% | 28.220 / 35.820 / 39.050 |
+| Ordinary text-32k | 1,179,648 | 1,179,648 | 983,040 | 16.67% / 16.67% | 40.491 / 45.286 / 49.442 |
+| Ordinary binary-8m | 11,206,656 | 10,420,224 | 10,354,688 | 7.60% / 0.63% | 263.891 / 260.997 / 266.834 |
+| Small files | 1,441,792 | 1,507,328 | 1,114,112 | 22.73% / 26.09% | 22.108 / 26.283 / 30.301 |
+
+These sums contain the declared individual public mutation and Commit timers,
+including required output drain/finalization; they are not whole smoke wall time.
+Small-file after-Init allocation is 1,114,112 versus 1,441,792 in both controls.
+Init elapsed is 8.561 ms versus 7.833 M2 / 7.029 baseline. First read is 25.329 ms
+versus 23.719 / 19.658; repeated read is 7.666 ms versus 7.419 / 7.439. Neither
+pass is described as OS-cold. Binary Init takes 20.234 ms SDK /18.903 ms ordinary
+versus M2 14.174 /14.141; those percentage increases remain short total operations.
+
+All changed frequent-edit Commits still use one object-admission transaction;
+separate stage/publication transactions remain. DeepSeek admissions are unchanged
+at 11/9/10/15/12. SDK member/call counts remain 1/1/1/3/0 and 1/1/1/1/0, with zero
+SDK-caused FUSE writes. Ordinary in-place, truncate/rewrite and tempfile/rename
+routes remain intact. Each unchanged edit Commit returns UpToDate.
+
+| Artifacts | Historical mappings | Performance / verification / cleanup |
+| --- | ---: | --- |
+| `m3-checkpoint-small-1` | 4/4 | PASS / PASS / PASS |
+| `m3-checkpoint-edits-1` | 24/24 | PASS / PASS / PASS |
+| `m3-checkpoint-deepseek-1` | 5/5 | PASS / PASS / PASS |
+
+Mounted reopened readers checked 114,620,274 bytes across the 33 mappings, plus
+path/type/mode/symlink oracle comparisons. Every owned container was removed and
+no workspace stage remained. No candidate failure or rerun occurred; the first
+matching build and integrated smoke set succeeded. Source review and the below
+read-only accounting are not additional product verification suites.
+
+Original tighter diagnostic misses remain explicit: SDK binary steps 2/3/4,
+small-file first read and small-file steps 2/3. All original storage/resource
+checks hold in this single observation; final DELTA coverage is deferred to M4,
+not passed. Under the prospective policy, short public calls and substantial
+DeepSeek/small-file saving justify the actual cost. No attempt was made to shave
+insignificant milliseconds or change the old diagnostic results into passes.
+
+### Physical bytes, resource costs and attribution
+
+| Case | Packs | RAW / Zstd groups | FULL records | Pack BLOB bytes | Encoded group savings vs their RAW framing |
+| --- | ---: | --- | ---: | ---: | ---: |
+| DeepSeek | 58 | 3 / 421 | 5,556 | 3,140,288 | 5,876,859 |
+| SDK text | 5 | 0 / 11 | 46 | 4,305 | 58,558 |
+| SDK binary | 61 | 398 / 10 | 488 | 8,476,890 | 21,302 |
+| Ordinary text | 5 | 0 / 10 | 43 | 3,899 | 103,272 |
+| Ordinary binary | 61 | 397 / 11 | 481 | 8,498,480 | 22,742 |
+| Small files | 7 | 3 / 20 | 460 | 108,714 | 285,525 |
+
+This offline census is after verification, outside all operation timers. It
+counts all pack BLOBs, including partial packs; all records are FULL and no
+unselected record was observed. There is no concurrent-race/zero-waste guarantee.
+Encoded totals equal outer framing plus encoded groups. Decoded totals separately
+equal canonical bytes plus record directories/kinds. The JSON retains both,
+SQLite B-tree/index pages and unused allocation; compressed payload is never the
+primary allocation numerator. No DELETE, VACUUM, repack or later packing occurred.
+No per-record share of a compressed group is invented for hypothetical mixed waste.
+
+Small-file canonical population is seed-dependent: Init always has 447 objects /
+380,991 bytes; M3 final has 460/391,367 versus M2 461/396,275. Random Init-derived
+inode ordering places f032/f040 in separate COW leaves in this M3 run; restoring
+f032 reuses an additional leaf. The final 4,908 canonical-byte difference is not
+attributed to compression. Equal-population Init already saves 22.73% allocation.
+The bounded investigation is retained in `builds/m3-small-canonical-diagnostic.md`.
+DeepSeek final canonical bytes differ by 108 and one record versus M2; the large
+5,876,859-byte framed-group saving establishes the dominant compression effect
+without adding overlapping CAS/COW percentages. All edit-history canonical totals
+match M2 exactly.
+
+Observed host lifetime RSS peaks are 10,420,224–31,375,360 bytes, container peaks
+4,874,240–15,159,296 bytes, sampled spool peaks 4,096–24,576 bytes. All comparative
+and absolute resource budgets hold; no swap/OOM occurred. These are lifetime or
+sampled scopes, not precise phase maxima. Required source/output spools and owned
+staging observations are retained; unseen instantaneous peaks are not zero.
+
+DeepSeek host public-phase CPU rises 231.786 ->313.462 ms (+35.24%, +81.676 ms)
+versus M2; replay elapsed rises 12.89%, total performance work wall 3.901 ->4.786 s
+(+22.70%), and historical-verification work 2.554 ->2.600 s. All raw host CPU/I/O,
+cgroup categories, staging/disk observations and other case costs remain in JSON.
+SDK-text work wall rises 1.620 ->2.179 s (+34.52%) while mutation+Commit rises only
+28.004 ->33.138 ms: about 554 ms of the difference lies outside those product
+timers. The unchanged coordinator includes resource sampling, receipt processing
+and Docker inspection there; individual overhead attribution is unavailable.
+This is disclosed rather than called a codec regression, hidden in an average,
+or judged against an invented wall threshold. No duplicate product work or added
+per-object crossings were identified in M3 source review. Historical observations
+do not isolate machine scheduling/noise or establish aggregate throughput.
+
+Candidate membership-query counts and physical BLOB/decode call/byte counts remain
+unavailable (logical SnapshotReader counters are not physical counts). Source review
+establishes selected-range extraction and one decode per distinct group in a bounded
+wave; later drains/dependent tree levels can repeat decoding. No new persistent
+cache or second canonical verification pass was added. Static buffer bounds above
+are source-derived, separately from observed RSS.
+
+## Exact build and command custody
+
+- Product commit: `1ac1ce4b56064a548929b070568d2373daa9e30d`.
+- Prospective policy commit: `d941f86bcabe90da5f2d86ae29b2109257bd7a5f`.
+- Combined source seal: `e5731ca3a5aca6dd44f00465814982e8bfc89a0780a4d1f2abda37b93dc53f99`.
+- Product seal: `7ee60a1f0a7070d51cdd964fe52dcbe4324a99ac36d191020c50b5ef141efc7b`.
+- Host SHA-256: `20064b510c637c39997234c65c8cf27bee2c98f36d75c42d0aca92d421db17b7`.
+- Runtime image: `sha256:e43a1c6ba062b4811049d1252c39fa94f684619977640c9cec31a1db421d4dc3`.
+- Image tag: `layerfs-bench-infra:e5731ca3a5aca6dd`.
+- Retained host/sidecar: `builds/m3-checkpoint-host`, `builds/m3-checkpoint-host.identity.json`.
+- Build logs: `builds/m3-host-1.log`, `builds/m3-image-1.log`.
+- Built at policy commit plus exact product patch, now committed with matching seals.
+  Patch `builds/m3-checkpoint-source.patch` SHA-256:
+  `4a8d469d39fb261b378fc2b341e95f8e8f7ae66b0cfaecaee595ba6ee3847ade`.
+- External reproducible reporter: `builds/m3-checkpoint-report.py`; exact hash and
+  source-document/run hashes are in M3 JSON. Report-generation document hashes
+  identify the revision read, not a claim that future ledger edits retain that hash.
+
+From the implementation worktree, builds ran serially under the existing lock:
+
+```sh
+python3 benchmark/fs-bench-pro/shared/runner.py --build-host
+python3 benchmark/fs-bench-pro/shared/runner.py --build-storage-smoke-image
+```
+
+For each exact pair `small-files/small`, `frequent-edits/edits`,
+`deepseek-five/deepseek`, performance then verification ran with this command shape:
+
+```sh
+python3 benchmark/fs-bench-pro/shared/runner.py --storage-smoke CASE --source-arm candidate --repetition 1 --image layerfs-bench-infra:e5731ca3a5aca6dd --output /Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/m3-checkpoint-TAG-1
+python3 benchmark/fs-bench-pro/shared/runner.py --storage-smoke CASE --source-arm candidate --repetition 1 --image layerfs-bench-infra:e5731ca3a5aca6dd --storage-verify-run /Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/m3-checkpoint-TAG-1
+```
+
+Exact expanded commands and stream receipts remain in each run identity/results;
+wrapper logs are `builds/m3-{small,edits,deepseek}-{perf,verify}-1.log`.
+The image builder disabled its generic self-check as required. No unit, property,
+fuzz, race, crash, full-workspace, fourth smoke, full benchmark, Git arm, 157-state
+replay or M5 three-pair qualification ran.
+
+## Remaining scope
+
+M4 owns predecessor/first-span handoff, forward correspondence, shallow physical
+delta selection/emission and anchor policy. M5 owns remaining checkpoint facts,
+reconciliation/cleanup work and final integrated three-pair qualification. No
+such implementation was started. Arbitrary malformed records, oversized singleton
+matrices, selected DELTA paths, late duplicate races, FIFO/failure schedules,
+nonempty-Init fallback errors, staging/head races and failure injection are not
+covered by these smokes. Safeguards are implemented/source-reviewed where M3
+requires them; broader empirical coverage is not claimed. Compatibility remains
+schema 6/wire 1 for explicitly new Stores, legacy rejection with no conversion.
+
+---
+
+## Archived M2 ledger (verbatim; its stop instruction applied to that prior task)
+
+# Storage architecture v3 implementation progress
+
+Status: **milestones 0–2 complete as a FULL/RAW development checkpoint; stop here**.
+Updated 2026-09-08. This is **not final storage-v3 qualification**. Three integrated
+smokes passed public-operation completion, historical mounted readback and cleanup.
+Three comparisons exceed the original smoke elapsed allowances; the owner accepts
+the checkpoint under the subsequently stated timing tolerance below. Compression,
+delta emission and milestones 3–5 are deferred; their original targets are unchanged.
+
+The latest owner scope explicitly supersedes the older full-completion instruction:
+finish milestone 2, commit/push to existing PR #81, then stop. No merge, deployment,
+conversion, automatic/in-place migration or user-data operation is authorized.
+The [approved smoke contract](implementation-smoke-contract-v1.md),
+[implementation plan](implementation-plan.md), [architecture](storage-architecture-spec.md),
+[format](sqlite-storage-format.md) and [review disposition](review-disposition.md)
+retain their original definitions. Their final-v3 compressed-storage and representation
+requirements are deferred/not applicable as **milestone-2 exit gates**, not passed,
+weakened or replaced. The three-pair final qualification has not run.
+
+Subsequent owner timing disposition: the 1.58% replay increase is acceptable;
+**up to 10 ms added elapsed time or less than 30% degradation** is acceptable for
+this milestone-2 checkpoint. All reported elapsed comparisons meet that tolerance.
+This records owner acceptance separately from the unchanged frozen smoke contract
+and its original diagnostic misses; it is not final-v3 qualification.
 
 ## Recovery and source custody
 

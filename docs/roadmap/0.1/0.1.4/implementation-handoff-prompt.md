@@ -24,6 +24,10 @@ not inventing a passing threshold. Smoke evidence establishes no aggregate-load
 qualification. Historical gates, observations and failures remain unchanged;
 this policy changes no storage target and does not retrospectively pass old misses.
 
+The owner subsequently reiterated that storage optimization is the goal and timing
+margins are generous. Preserve observed costs and historical gates; do not use the
+old tighter diagnostic misses to trigger unnecessary timing optimization.
+
 M3 follows the frozen one-observation-per-coherent-slice development procedure,
 using all three approved smokes because shared Commit/read behavior is affected.
 The M5 final three-pair qualification will not run. Baseline and M2 comparisons
