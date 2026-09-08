@@ -307,6 +307,20 @@ fn native_reader_legacy_full_root_and_delta_rejection() {
         &[(other, other_canonical.len(), 0)],
     );
     assert!(f.read(other).is_err());
+    let path = f.db.path().to_owned();
+    let folder = f.folder.clone();
+    // Keep the fixture directory while releasing the exclusive Store owner.
+    let temporary = StoreDb::create(folder.join("owner-swap.sqlite")).unwrap();
+    let mut f = f;
+    drop(std::mem::replace(&mut f.db, temporary));
+    let db = StoreDb::connect(&path).unwrap();
+    assert_eq!(db.read_object_row(target).unwrap(), target_canonical);
+    assert_eq!(db.read_object_row(base).unwrap(), base_canonical);
+    assert_eq!(db.read_object_row(delta_id).unwrap(), delta_canonical);
+    assert!(db.read_object_row(child).is_err());
+    assert!(db.read_object_row(other).is_err());
+    drop(db);
+    drop(f);
 }
 
 #[test]

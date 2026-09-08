@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 
 pub const APPLICATION_ID: i64 = 0x4c46_534c;
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
+pub const LEGACY_SCHEMA_VERSION: i64 = 6;
 // Creation policy is independent of supported existing schema-6 layouts.
 pub const NEW_STORE_PAGE_SIZE_BYTES: i64 = 4096;
 pub const SQLITE_PAGE_CACHE_KIB: i64 = 32 * 1024;
@@ -67,9 +68,11 @@ pub(crate) fn fail_transaction_statement(_statement: u64) -> Result<()> {
 pub(crate) struct StoreDb(Arc<StoreInner>);
 
 struct StoreInner {
+    write_failed: std::sync::atomic::AtomicBool,
+    format_version: i64,
     physical: crate::telemetry::PhysicalStorageCounters,
     connection: Mutex<Connection>,
-    gate: TicketGate,
+    gate: Arc<TicketGate>,
     leases: Mutex<BTreeSet<BranchId>>,
     path: PathBuf,
 }
@@ -99,11 +102,11 @@ struct TicketGate {
     state: Mutex<TicketState>,
 }
 
-pub(crate) struct OperationPermit<'a> {
-    gate: &'a TicketGate,
+pub(crate) struct OperationPermit {
+    gate: Arc<TicketGate>,
 }
 
-impl Drop for OperationPermit<'_> {
+impl Drop for OperationPermit {
     fn drop(&mut self) {
         let mut state = match self.gate.state.lock() {
             Ok(state) => state,
@@ -126,14 +129,14 @@ impl Drop for OperationPermit<'_> {
 }
 
 impl TicketGate {
-    fn enter(&self) -> Result<OperationPermit<'_>> {
+    fn enter(self: &Arc<Self>) -> Result<OperationPermit> {
         let mut state = self
             .state
             .lock()
             .map_err(|_| StoreError::Integrity("operation gate"))?;
         if !state.occupied {
             state.occupied = true;
-            return Ok(OperationPermit { gate: self });
+            return Ok(OperationPermit { gate: self.clone() });
         }
         let (grant, ready) = mpsc::sync_channel(1);
         state.waiters.push_back(grant);
@@ -141,7 +144,7 @@ impl TicketGate {
         ready
             .recv()
             .map_err(|_| StoreError::Integrity("operation gate"))?;
-        Ok(OperationPermit { gate: self })
+        Ok(OperationPermit { gate: self.clone() })
     }
 }
 
@@ -159,6 +162,10 @@ impl Drop for BranchLease {
 }
 
 impl StoreDb {
+    pub(crate) fn native_format(&self) -> bool {
+        self.0.format_version == SCHEMA_VERSION
+    }
+
     pub(crate) fn same_instance(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }
@@ -200,9 +207,11 @@ impl StoreDb {
             path: path.clone(),
             remove: true,
         });
-        let _existing_version = (mode == OpenMode::Connect)
-            .then(|| preflight_connect(&path))
-            .transpose()?;
+        let format_version = if mode == OpenMode::Connect {
+            preflight_connect(&path)?
+        } else {
+            SCHEMA_VERSION
+        };
         let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
         let mut connection = Connection::open_with_flags(&path, flags)?;
         if mode == OpenMode::Create {
@@ -210,10 +219,10 @@ impl StoreDb {
         }
         configure_connection(&connection)?;
         if mode == OpenMode::Create {
-            connection.execute_batch(statements::schema::V6)?;
+            connection.execute_batch(statements::schema::V7)?;
         }
         acquire_exclusive_lock(&mut connection)?;
-        verify_schema(&connection, SCHEMA_VERSION)?;
+        verify_schema(&connection, format_version)?;
         prepare_manifest(&connection)?;
         #[cfg(feature = "test-instrumentation")]
         {
@@ -223,9 +232,11 @@ impl StoreDb {
             );
         }
         let store = Self(Arc::new(StoreInner {
+            write_failed: std::sync::atomic::AtomicBool::new(false),
+            format_version,
             physical: Default::default(),
             connection: Mutex::new(connection),
-            gate: TicketGate::default(),
+            gate: Arc::new(TicketGate::default()),
             leases: Mutex::new(BTreeSet::new()),
             path,
         }));
@@ -247,8 +258,36 @@ impl StoreDb {
         &self.0.path
     }
 
-    pub fn enter_operation(&self) -> Result<OperationPermit<'_>> {
-        self.0.gate.enter()
+    #[cfg(test)]
+    pub(crate) fn operation_waiters(&self) -> usize {
+        self.0.gate.state.lock().unwrap().waiters.len()
+    }
+
+    pub fn enter_operation(&self) -> Result<OperationPermit> {
+        self.ensure_writable()?;
+        let permit = self.0.gate.enter()?;
+        self.ensure_writable()?;
+        Ok(permit)
+    }
+
+    pub(crate) fn quarantine_writes(&self) {
+        self.0
+            .write_failed
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    fn ensure_writable(&self) -> Result<()> {
+        if self
+            .0
+            .write_failed
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            Err(StoreError::Integrity(
+                "Store writes quarantined after failed admission cleanup",
+            ))
+        } else {
+            Ok(())
+        }
     }
 
     pub fn acquire_workspace_lease(&self, branch_id: BranchId) -> Result<Option<BranchLease>> {
@@ -267,14 +306,15 @@ impl StoreDb {
     }
 
     pub fn writer(&self) -> Result<MutexGuard<'_, Connection>> {
+        self.ensure_writable()?;
+        self.reader()
+    }
+
+    pub fn reader(&self) -> Result<MutexGuard<'_, Connection>> {
         self.0
             .connection
             .lock()
             .map_err(|_| StoreError::Integrity("Store connection"))
-    }
-
-    pub fn reader(&self) -> Result<MutexGuard<'_, Connection>> {
-        self.writer()
     }
 
     pub fn data_version(&self) -> Result<u64> {
@@ -306,10 +346,22 @@ fn preflight_connect(path: &Path) -> Result<i64> {
         return Err(StoreError::WrongStoreSchema);
     }
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version != SCHEMA_VERSION {
+    if !matches!(version, LEGACY_SCHEMA_VERSION | SCHEMA_VERSION) {
         return Err(StoreError::WrongStoreSchema);
     }
     verify_schema(&connection, version)?;
+    // Research binaries wrote native packs under6 without a writer fence. They
+    // are isolated evidence, not supported legacy Stores. Inspect headers only;
+    // do not decompress, migrate or rewrite them during connect.
+    if version == LEGACY_SCHEMA_VERSION
+        && connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM object_packs WHERE substr(data,9,4) != x'01000000')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?
+    {
+        return Err(StoreError::WrongStoreSchema);
+    }
     Ok(version)
 }
 
@@ -371,7 +423,11 @@ fn prepare_manifest(connection: &Connection) -> Result<()> {
     for (name, sql) in statements::ALL {
         if matches!(
             *name,
-            "schema/v4.sql" | "schema/v5.sql" | "schema/v6.sql" | "schema/migrate_v4_to_v5.sql"
+            "schema/v4.sql"
+                | "schema/v5.sql"
+                | "schema/v6.sql"
+                | "schema/v7.sql"
+                | "schema/migrate_v4_to_v5.sql"
         ) {
             continue;
         }
@@ -394,7 +450,8 @@ fn schema_objects(connection: &Connection) -> Result<Vec<SchemaObject>> {
 fn expected_schema_objects(version: i64) -> Result<Vec<SchemaObject>> {
     let expected = Connection::open_in_memory()?;
     expected.execute_batch(match version {
-        SCHEMA_VERSION => statements::schema::V6,
+        LEGACY_SCHEMA_VERSION => statements::schema::V6,
+        SCHEMA_VERSION => statements::schema::V7,
         _ => return Err(StoreError::WrongStoreSchema),
     })?;
     schema_objects(&expected)
@@ -698,3 +755,6 @@ fn verification_store_fault_boundary_is_one_shot() {
     );
     assert!(take_verification_store_fault_receipt().is_none());
 }
+
+#[cfg(test)]
+mod compatibility;

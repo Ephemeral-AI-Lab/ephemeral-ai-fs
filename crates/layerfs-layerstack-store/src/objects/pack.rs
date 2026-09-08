@@ -798,7 +798,7 @@ pub(super) fn decode_group(entry: GroupEntry, encoded: Vec<u8>) -> Result<Vec<u8
 // The pinned library's one-shot API needs no separate streaming window buffer.
 #[allow(unsafe_code)]
 mod zstandard {
-    use super::{GROUP_LIMIT, Result, StoreError, invalid};
+    use super::{invalid, Result, StoreError, GROUP_LIMIT};
     use zstd_sys::*;
 
     const ENCODE_CONTEXT_LIMIT: usize = 1024 * 1024;

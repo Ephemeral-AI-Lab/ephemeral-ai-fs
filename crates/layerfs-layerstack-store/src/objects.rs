@@ -7,32 +7,34 @@ mod spill;
 #[cfg(test)]
 use spill::SeenStorage;
 pub use spill::SpillableObjectSet;
-use spill::{IdOrder, SpillObjects, TempPath, temporary_file};
+use spill::{temporary_file, IdOrder, SpillObjects, TempPath};
 
 use crate::{Result, StoreError};
 use layerfs_content::filesystem::{self, ContentChange, ReconcileConflict};
 use layerfs_content::object::access::{ObjectRead, ObjectStore};
 use layerfs_content::object::references::referenced_objects;
 use layerfs_content::{CoreError, CoreResult, ObjectId};
-use rusqlite::{Connection, params_from_iter, types::Value};
+use rusqlite::{params_from_iter, types::Value, Connection};
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::Instant;
 
 pub const OBJECT_PAGE_COUNT: usize = 128;
 pub const OBJECT_PAGE_BYTES: usize = 4 * 1024 * 1024;
 pub const ADMISSION_BATCH_COUNT: usize = 8191;
 pub const ADMISSION_BATCH_BYTES: usize = OBJECT_PAGE_BYTES - 1;
+// The public count is a ceiling, not a target. FILE provenance adds live
+// associations beside the codec's 1 MiB context and retained pack buffers.
+const PHYSICAL_ADMISSION_BATCH_COUNT: usize = INITIALIZATION_SLAB_OBJECTS;
 pub(crate) const INITIALIZATION_ADMISSION_BATCH_COUNT: usize = ADMISSION_BATCH_COUNT;
 pub(crate) const INITIALIZATION_SLAB_BYTES: usize = 256 * 1024;
 pub(crate) const INITIALIZATION_SLAB_OBJECTS: usize = 512;
 pub(crate) const INITIALIZATION_SLAB_QUEUE_SLOTS: usize = 4;
-pub(crate) const INITIALIZATION_TASK_STRUCTURAL_BYTES: usize = 256 * 1024;
 const CANDIDATE_MEMORY_BYTES: usize = 8 * 1024 * 1024;
 const CANDIDATE_INDEX_BYTES: usize = 64 * 1024 * 1024;
 // C: cumulative metadata-lookup allowance, not resident memory. The frozen
@@ -223,77 +225,6 @@ fn is_inode_table_leaf(canonical: &[u8]) -> CoreResult<bool> {
     ))
 }
 
-pub(crate) struct InitializationTaskObjectBuffer {
-    objects: Vec<AuthenticatedCanonicalObject>,
-    payload_bytes: usize,
-}
-
-impl InitializationTaskObjectBuffer {
-    pub(crate) fn new() -> Self {
-        Self {
-            objects: Vec::with_capacity(128),
-            payload_bytes: 0,
-        }
-    }
-
-    pub(crate) fn explicit_owned_bytes(&self) -> u64 {
-        self.payload_bytes as u64
-            + (self.objects.capacity() * std::mem::size_of::<AuthenticatedCanonicalObject>()) as u64
-    }
-
-    pub(crate) fn hash_invocations(&self) -> u64 {
-        self.objects.len() as u64
-    }
-
-    pub(crate) fn move_into(self, store: &mut FinalizedOutputWriter) -> CoreResult<()> {
-        for object in self.objects {
-            store.push_authenticated(object)?;
-        }
-        Ok(())
-    }
-
-    fn push_owned(&mut self, canonical: Vec<u8>) -> CoreResult<ObjectId> {
-        let owned = self
-            .payload_bytes
-            .checked_add(canonical.len())
-            .and_then(|payload| {
-                payload.checked_add(
-                    self.objects
-                        .len()
-                        .checked_add(1)?
-                        .checked_mul(std::mem::size_of::<AuthenticatedCanonicalObject>())?,
-                )
-            })
-            .ok_or(CoreError::LengthOverflow)?;
-        if owned > INITIALIZATION_TASK_STRUCTURAL_BYTES {
-            return Err(CoreError::ObjectLimitExceeded);
-        }
-        let canonical_len = canonical.len();
-        let object = AuthenticatedCanonicalObject::new(canonical, None)?;
-        let id = object.id;
-        self.payload_bytes = self
-            .payload_bytes
-            .checked_add(canonical_len)
-            .ok_or(CoreError::LengthOverflow)?;
-        self.objects.push(object);
-        Ok(id)
-    }
-}
-
-impl ObjectStore for InitializationTaskObjectBuffer {
-    fn get(&self, _id: ObjectId) -> CoreResult<Vec<u8>> {
-        Err(CoreError::InvalidRecord("direct structural get"))
-    }
-
-    fn put(&mut self, canonical: &[u8]) -> CoreResult<ObjectId> {
-        self.push_owned(canonical.to_vec())
-    }
-
-    fn put_owned(&mut self, canonical: Vec<u8>) -> CoreResult<ObjectId> {
-        self.push_owned(canonical)
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct OutputWriterMetrics {
     pub selected_memory_bytes: u64,
@@ -418,7 +349,7 @@ where
     I: Iterator + Send,
     I::Item: Send,
 {
-    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::sync::atomic::Ordering;
     if worker_limit == 0 && task_count != 0 {
         return Err(StoreError::InvalidInput("canonical output worker limit"));
@@ -552,6 +483,7 @@ where
 }
 
 pub struct FinalizedOutputWriter {
+    file_payload_context: bool,
     sender: std::sync::mpsc::SyncSender<FinalizedObjectSlab>,
     queue: std::sync::Arc<OutputQueueMetrics>,
     objects: Vec<AuthenticatedCanonicalObject>,
@@ -560,6 +492,7 @@ pub struct FinalizedOutputWriter {
 }
 
 pub(crate) struct InitializationDirectAdmissionWriter<'admission> {
+    file_payload_context: bool,
     admission: &'admission mut CheckedOutputAdmission,
     error: Option<StoreError>,
     transient_owned_bytes: u64,
@@ -569,6 +502,7 @@ pub(crate) struct InitializationDirectAdmissionWriter<'admission> {
 impl<'admission> InitializationDirectAdmissionWriter<'admission> {
     pub(crate) fn new(admission: &'admission mut CheckedOutputAdmission) -> Self {
         Self {
+            file_payload_context: false,
             admission,
             error: None,
             transient_owned_bytes: 0,
@@ -582,6 +516,14 @@ impl<'admission> InitializationDirectAdmissionWriter<'admission> {
 
     fn push_owned(&mut self, canonical: Vec<u8>, copied: bool) -> CoreResult<ObjectId> {
         let object = AuthenticatedCanonicalObject::new(canonical, None)?;
+        self.push_object(object, copied)
+    }
+
+    fn push_object(
+        &mut self,
+        object: AuthenticatedCanonicalObject,
+        copied: bool,
+    ) -> CoreResult<ObjectId> {
         let id = object.id;
         self.metrics.canonical_hash_calls += 1;
         let bytes = object.bytes.len() as u64;
@@ -608,6 +550,24 @@ impl<'admission> InitializationDirectAdmissionWriter<'admission> {
 }
 
 impl ObjectStore for InitializationDirectAdmissionWriter<'_> {
+    fn set_file_payload_context(&mut self, enabled: bool) -> bool {
+        std::mem::replace(&mut self.file_payload_context, enabled)
+    }
+
+    fn put_file_payload(
+        &mut self,
+        canonical: Vec<u8>,
+        start: u64,
+        len: u32,
+    ) -> CoreResult<ObjectId> {
+        let mut object = AuthenticatedCanonicalObject::new(canonical, None)?;
+        object.1.first_span = Some((start, len));
+        if self.file_payload_context {
+            object.1.diagnostic = diagnostic::FILE;
+        }
+        self.push_object(object, false)
+    }
+
     fn get(&self, id: ObjectId) -> CoreResult<Vec<u8>> {
         if let Some(index) = self.admission.incoming_index.get(&id) {
             return Ok(self.admission.incoming[*index].bytes.clone());
@@ -642,6 +602,7 @@ impl FinalizedOutputWriter {
         queue: std::sync::Arc<OutputQueueMetrics>,
     ) -> Self {
         Self {
+            file_payload_context: false,
             sender,
             queue,
             objects: Vec::with_capacity(INITIALIZATION_SLAB_OBJECTS),
@@ -677,10 +638,6 @@ impl FinalizedOutputWriter {
     pub(crate) fn finish(mut self) -> Result<OutputWriterMetrics> {
         self.flush()?;
         Ok(self.metrics)
-    }
-
-    pub(crate) fn note_hash_invocations(&mut self, calls: u64) {
-        self.metrics.canonical_hash_calls = self.metrics.canonical_hash_calls.saturating_add(calls);
     }
 
     fn flush(&mut self) -> Result<()> {
@@ -719,10 +676,6 @@ impl FinalizedOutputWriter {
         self.metrics.canonical_hash_calls += 1;
         self.push_object(object, copied)?;
         Ok(id)
-    }
-
-    fn push_authenticated(&mut self, object: AuthenticatedCanonicalObject) -> CoreResult<()> {
-        self.push_object(object, false)
     }
 
     fn push_object(
@@ -770,6 +723,27 @@ impl FinalizedOutputWriter {
 }
 
 impl ObjectStore for FinalizedOutputWriter {
+    fn set_file_payload_context(&mut self, enabled: bool) -> bool {
+        std::mem::replace(&mut self.file_payload_context, enabled)
+    }
+
+    fn put_file_payload(
+        &mut self,
+        canonical: Vec<u8>,
+        start: u64,
+        len: u32,
+    ) -> CoreResult<ObjectId> {
+        let mut object = AuthenticatedCanonicalObject::new(canonical, None)?;
+        object.1.first_span = Some((start, len));
+        if self.file_payload_context {
+            object.1.diagnostic = diagnostic::FILE;
+        }
+        let id = object.id;
+        self.metrics.canonical_hash_calls += 1;
+        self.push_object(object, false)?;
+        Ok(id)
+    }
+
     fn get(&self, _id: ObjectId) -> CoreResult<Vec<u8>> {
         Err(CoreError::InvalidRecord("direct initialization get"))
     }
@@ -1860,7 +1834,123 @@ pub(crate) struct AdmissionBatchMetrics {
     pub(crate) commit_ns: u64,
 }
 
+/// One admission owns publication until it either retains its output or removes it.
+/// Existing pack IDs never change, so the held writer gate makes this high-water
+/// mark an exact ownership boundary, including every physical dependency.
+pub(crate) struct AdmissionSession {
+    db: crate::schema::StoreDb,
+    baseline_pack: i64,
+    state: std::sync::atomic::AtomicU8,
+    _permit: crate::schema::OperationPermit,
+}
+
+impl AdmissionSession {
+    fn new(db: &crate::schema::StoreDb) -> Result<std::sync::Arc<Self>> {
+        let permit = db.enter_operation()?;
+        let baseline_pack = db.reader()?.query_row(
+            "SELECT COALESCE(MAX(pack_id),0) FROM object_packs",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(std::sync::Arc::new(Self {
+            db: db.clone(),
+            baseline_pack,
+            state: std::sync::atomic::AtomicU8::new(0),
+            _permit: permit,
+        }))
+    }
+
+    pub(crate) fn retain(&self) {
+        let _ = self.state.compare_exchange(
+            0,
+            1,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        );
+    }
+
+    pub(crate) fn resolve<T>(&self, result: Result<T>) -> Result<T> {
+        match result {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                self.rollback().map_err(|cleanup| {
+                    self.db.quarantine_writes();
+                    StoreError::Io(std::io::Error::other(format!(
+                        "{error}; admission cleanup failed: {cleanup}"
+                    )))
+                })?;
+                Err(error)
+            }
+        }
+    }
+
+    fn rollback(&self) -> Result<()> {
+        if self.state.load(std::sync::atomic::Ordering::Acquire) != 0 {
+            return Ok(());
+        }
+        let mut connection = self.db.writer()?;
+        let mut after = Vec::<u8>::new();
+        loop {
+            let ids = {
+                let mut statement = connection.prepare(
+                    "SELECT object_id FROM objects WHERE object_id > ?1 AND pack_id > ?2 ORDER BY object_id LIMIT 512",
+                )?;
+                let rows = statement
+                    .query_map(rusqlite::params![after, self.baseline_pack], |row| {
+                        row.get::<_, Vec<u8>>(0)
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                rows
+            };
+            let Some(last) = ids.last() else {
+                break;
+            };
+            after.clone_from(last);
+            let transaction =
+                connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            for id in ids {
+                transaction.execute("DELETE FROM objects WHERE object_id = ?1", [id])?;
+            }
+            transaction.commit()?;
+        }
+        loop {
+            let transaction =
+                connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let removed = transaction.execute(
+                "DELETE FROM object_packs WHERE pack_id IN (SELECT pack_id FROM object_packs WHERE pack_id > ?1 ORDER BY pack_id LIMIT 512)",
+                [self.baseline_pack],
+            )?;
+            transaction.commit()?;
+            if removed == 0 {
+                break;
+            }
+        }
+        self.state.store(2, std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+
+    fn ensure_active(&self) -> Result<()> {
+        if self.state.load(std::sync::atomic::Ordering::Acquire) == 0 {
+            Ok(())
+        } else {
+            Err(StoreError::Integrity("admission session closed"))
+        }
+    }
+}
+
+impl Drop for AdmissionSession {
+    fn drop(&mut self) {
+        // Abandoned tokens and unwinding still release their independently
+        // committed batches. Fallible public paths call resolve explicitly.
+        if let Err(error) = self.rollback() {
+            self.db.quarantine_writes();
+            eprintln!("LayerFS admission cleanup failed: {error}");
+        }
+    }
+}
+
 pub(crate) struct CheckedOutputAdmission {
+    session: std::sync::Arc<AdmissionSession>,
     db: crate::schema::StoreDb,
     incoming: Vec<AuthenticatedCanonicalObject>,
     incoming_index: HashMap<ObjectId, usize>,
@@ -1880,7 +1970,11 @@ pub(crate) struct CheckedOutputAdmission {
 
 /// Owned initially missing canonical output with closed external dependencies.
 /// Only the accumulator creates this handoff; final publishers cannot reprobe it.
-pub(crate) struct MissingBatch(Vec<AuthenticatedCanonicalObject>);
+pub(crate) struct MissingBatch(
+    Vec<AuthenticatedCanonicalObject>,
+    std::sync::Arc<AdmissionSession>,
+    bool,
+);
 
 impl std::ops::Deref for MissingBatch {
     type Target = [AuthenticatedCanonicalObject];
@@ -1902,6 +1996,7 @@ impl DeferredObjectStore {
         Self::with_reference_index(true)
     }
 
+    #[cfg(test)]
     pub(crate) fn new_all_reachable() -> Result<Self> {
         Self::with_reference_index(false)
     }
@@ -2004,6 +2099,7 @@ impl DeferredObjectStore {
         Ok(output)
     }
 
+    #[cfg(test)]
     fn visit_prevalidated_order(
         &self,
         order: &IdOrder,
@@ -2105,8 +2201,9 @@ impl DeferredObjectStore {
                             std::sync::atomic::Ordering::Relaxed,
                             std::sync::atomic::Ordering::Relaxed,
                             |used| {
-                                used.checked_add(FETCH_RESERVATION)
-                                    .filter(|sum| *sum <= CORRESPONDENCE_OPERATION_RESERVATION_BYTES)
+                                used.checked_add(FETCH_RESERVATION).filter(|sum| {
+                                    *sum <= CORRESPONDENCE_OPERATION_RESERVATION_BYTES
+                                })
                             },
                         )
                         .is_err()
@@ -2246,32 +2343,6 @@ impl DeferredObjectStore {
             visitor(&batch, true)?;
         }
         Ok(())
-    }
-
-    fn visit_membership_batches(
-        &self,
-        mut visitor: impl FnMut(&[(ObjectId, u64)]) -> Result<()>,
-    ) -> Result<()> {
-        self.reachable.visit_pages(|ids| {
-            let lengths = match &self.storage {
-                DeferredObjects::Memory { rows, .. } => ids
-                    .iter()
-                    .map(|id| rows.get(id).map(|object| object.bytes.len() as u64))
-                    .collect::<Vec<_>>(),
-                DeferredObjects::Spill(spill) => spill
-                    .locations(ids)?
-                    .into_iter()
-                    .map(|location| location.map(|(_, length)| length))
-                    .collect(),
-            };
-            let page = ids
-                .iter()
-                .copied()
-                .zip(lengths)
-                .map(|(id, length)| Ok((id, length.ok_or(StoreError::MissingObject(id))?)))
-                .collect::<Result<Vec<_>>>()?;
-            visitor(&page)
-        })
     }
 
     fn reachable_from(mut self, root: ObjectId) -> Result<Self> {
@@ -2493,6 +2564,45 @@ pub(crate) fn build_checked_file(
     source: impl Read,
     expected_len: u64,
 ) -> Result<layerfs_content::file::rope::CompletedFile> {
+    let previous = objects.set_file_payload_context(true);
+    let result = build_checked_file_inner(objects, source, expected_len);
+    objects.set_file_payload_context(previous);
+    result
+}
+
+fn build_checked_file_inner(
+    objects: &mut impl ObjectStore,
+    mut source: impl Read,
+    expected_len: u64,
+) -> Result<layerfs_content::file::rope::CompletedFile> {
+    if expected_len < layerfs_content::file::cdc::MINIMUM_CHUNK_BYTES as u64 {
+        // One extra byte detects growth; no canonical output precedes the EOF check.
+        let mut bytes = vec![0; expected_len as usize + 1];
+        let mut length = 0;
+        loop {
+            let read = match source.read(&mut bytes[length..]) {
+                Ok(read) => read,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error.into()),
+            };
+            if read == 0 {
+                break;
+            }
+            length += read;
+            if length > expected_len as usize {
+                return Err(StoreError::Integrity("completed file length"));
+            }
+        }
+        if length != expected_len as usize {
+            return Err(StoreError::Integrity("completed file length"));
+        }
+        let (root, counters) = layerfs_content::file::rope::build_bytes(objects, &bytes[..length])?;
+        return Ok(layerfs_content::file::rope::CompletedFile {
+            root,
+            logical_len: expected_len,
+            counters,
+        });
+    }
     let completed = layerfs_content::file::rope::build_complete(objects, source)?;
     if completed.logical_len != expected_len {
         return Err(StoreError::Integrity("completed file length"));
@@ -2576,6 +2686,7 @@ impl<'a> ObjectBuffer<'a> {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn empty_all_reachable() -> Result<Self> {
         Ok(Self {
             source: None,
@@ -2765,6 +2876,10 @@ impl<'a> ObjectBuffer<'a> {
 }
 
 impl ObjectStore for ObjectBuffer<'_> {
+    fn set_file_payload_context(&mut self, enabled: bool) -> bool {
+        std::mem::replace(&mut self.objects.diagnostic_file_context, enabled)
+    }
+
     fn get(&self, id: ObjectId) -> CoreResult<Vec<u8>> {
         if let Some(bytes) = self.objects.get(id).map_err(|_| CoreError::Io)? {
             return Ok(bytes);
@@ -2952,6 +3067,7 @@ impl crate::schema::StoreDb {
         Ok(output)
     }
 
+    #[cfg(test)]
     pub fn object_membership(&self, ids: &[ObjectId]) -> Result<BTreeMap<ObjectId, u64>> {
         if ids.len() > OBJECT_PAGE_COUNT {
             return Err(StoreError::InvalidInput("object membership page"));
@@ -2967,6 +3083,7 @@ impl crate::schema::StoreDb {
 impl CheckedOutputAdmission {
     pub(crate) fn new(db: &crate::schema::StoreDb) -> Result<Self> {
         Ok(Self {
+            session: AdmissionSession::new(db)?,
             db: db.clone(),
             incoming: Vec::with_capacity(INITIALIZATION_SLAB_OBJECTS),
             incoming_index: HashMap::new(),
@@ -2993,9 +3110,27 @@ impl CheckedOutputAdmission {
         self.admit(objects)
     }
 
-    pub(crate) fn finish(mut self) -> Result<FinishedOutputAdmission> {
+    pub(crate) fn session(&self) -> std::sync::Arc<AdmissionSession> {
+        self.session.clone()
+    }
+
+    pub(crate) fn resolve<T>(&self, result: Result<T>) -> Result<T> {
+        self.session.resolve(result)
+    }
+
+    pub(crate) fn abort(self) -> Result<()> {
+        self.session.rollback()
+    }
+
+    pub(crate) fn finish(self) -> Result<FinishedOutputAdmission> {
+        let session = self.session.clone();
+        session.resolve(self.finish_inner())
+    }
+
+    fn finish_inner(mut self) -> Result<FinishedOutputAdmission> {
         self.probe_incoming()?;
-        let final_batch = self.take_batch()?;
+        let mut final_batch = self.take_batch()?;
+        final_batch.2 = true;
         Ok(FinishedOutputAdmission {
             final_batch,
             statement_number: self.statement_number,
@@ -3031,25 +3166,29 @@ impl CheckedOutputAdmission {
     }
 
     pub(crate) fn admit(&mut self, objects: DeferredObjectStore) -> Result<()> {
-        objects
+        let session = self.session.clone();
+        let result = objects
             .consume_prevalidated_pages(|page| self.admit_page(page))
-            .map(|_| ())
+            .map(|_| ());
+        session.resolve(result)
     }
 
     pub(crate) fn admit_page(&mut self, page: Vec<AuthenticatedCanonicalObject>) -> Result<()> {
-        for object in page {
-            self.admit_object(object)?;
-        }
-        Ok(())
+        let session = self.session.clone();
+        session.resolve(
+            page.into_iter()
+                .try_for_each(|object| self.admit_object(object)),
+        )
     }
 
     fn take_batch(&mut self) -> Result<MissingBatch> {
+        self.session.ensure_active()?;
         self.close_dependencies()?;
         let batch = std::mem::take(&mut self.batch);
         self.pending.clear();
         self.batch_bytes = 0;
         self.validation_reserve = 0;
-        Ok(MissingBatch(batch))
+        Ok(MissingBatch(batch, self.session.clone(), false))
     }
 
     fn close_dependencies(&mut self) -> Result<()> {
@@ -3163,6 +3302,7 @@ impl CheckedOutputAdmission {
     }
 
     pub(crate) fn admit_object(&mut self, mut object: AuthenticatedCanonicalObject) -> Result<()> {
+        self.session.ensure_active()?;
         if object.bytes.len() > ADMISSION_BATCH_BYTES {
             return Err(StoreError::Integrity("canonical object admission size"));
         }
@@ -3230,7 +3370,7 @@ impl CheckedOutputAdmission {
         }
         let reserve = read::validation_reserve(object.bytes.len());
         if !self.batch.is_empty()
-            && (self.batch.len() == INITIALIZATION_ADMISSION_BATCH_COUNT
+            && (self.batch.len() == PHYSICAL_ADMISSION_BATCH_COUNT
                 || self.batch_bytes.saturating_add(object.bytes.len())
                     > 2 * INITIALIZATION_SLAB_BYTES
                 || self.validation_reserve + reserve > read::VALIDATION_RESERVE)
@@ -3336,6 +3476,9 @@ pub(crate) fn record_admission_receipt(
     }
 }
 
+/// Owns one synchronous admission through publication or abandonment.
+/// Complete or drop this token before requesting another mutation on the same
+/// Store from this thread. Other writers queue; authenticated reads remain usable.
 pub struct WorkspaceAdmission {
     pub(crate) db: crate::schema::StoreDb,
     pub(crate) workspace_id: [u8; 16],
@@ -3370,7 +3513,7 @@ impl crate::LayerStackStore {
         let mut token = self.workspace_admission(workspace_id)?;
         let cancelled = std::sync::atomic::AtomicBool::new(false);
         let mut admission_ns = 0_u64;
-        let (output, pipeline) = run_finalized_output(
+        let result = run_finalized_output(
             worker_limit,
             task_count,
             tasks,
@@ -3384,7 +3527,8 @@ impl crate::LayerStackStore {
                 admission_ns = admission_ns.saturating_add(elapsed_ns(started));
                 result
             },
-        )?;
+        );
+        let (output, pipeline) = token.admission.resolve(result)?;
         // Keep the final file batch owned by the Workspace token. Namespace
         // construction may add to it before staging closes the operation.
         let mut writer = OutputWriterMetrics::default();
@@ -3396,7 +3540,9 @@ impl crate::LayerStackStore {
             })
             .collect();
         if writer.producer_tasks != task_count as u64 {
-            return Err(StoreError::Integrity("Workspace file task coverage"));
+            return token
+                .admission
+                .resolve(Err(StoreError::Integrity("Workspace file task coverage")));
         }
         crate::telemetry::note_workspace_candidate_delivery(
             writer.selected_memory_bytes,
@@ -3416,9 +3562,17 @@ impl crate::LayerStackStore {
 
 impl WorkspaceAdmission {
     pub(crate) fn admit_remaining(
+        self,
+        objects: DeferredObjectStore,
+    ) -> Result<(CheckedAdmission, u64, std::sync::Arc<AdmissionSession>)> {
+        let session = self.admission.session.clone();
+        session.resolve(self.admit_remaining_inner(objects))
+    }
+
+    fn admit_remaining_inner(
         mut self,
         objects: DeferredObjectStore,
-    ) -> Result<(CheckedAdmission, u64)> {
+    ) -> Result<(CheckedAdmission, u64, std::sync::Arc<AdmissionSession>)> {
         objects.consume_prevalidated_pages(|page| self.admission.admit_page(page))?;
         self.admission.flush()?;
         let finished = self.admission.finish()?;
@@ -3430,7 +3584,7 @@ impl WorkspaceAdmission {
         {
             return Err(StoreError::Integrity("checked admission equation"));
         }
-        Ok((admission, finished.statement_number))
+        Ok((admission, finished.statement_number, finished.final_batch.1))
     }
 }
 
@@ -3482,7 +3636,11 @@ mod tests {
                         random ^= random << 13;
                         random ^= random >> 7;
                         random ^= random << 17;
-                        if repetitive { 0 } else { random as u8 }
+                        if repetitive {
+                            0
+                        } else {
+                            random as u8
+                        }
                     })
                     .collect::<Vec<_>>();
                 let mut selected = ObjectBuffer::bounded_output(None).unwrap();
@@ -3529,6 +3687,76 @@ mod tests {
             }
         }
         assert!(ObjectBuffer::build_complete_file(Broken, 1).is_err());
+    }
+
+    #[test]
+    fn small_completed_files_match_streaming_and_validate_eof_before_output() {
+        struct Fragmented<'a> {
+            bytes: &'a [u8],
+            interrupt: bool,
+        }
+        impl Read for Fragmented<'_> {
+            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                if std::mem::take(&mut self.interrupt) {
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                let count = output.len().min(self.bytes.len()).min(7);
+                output[..count].copy_from_slice(&self.bytes[..count]);
+                self.bytes = &self.bytes[count..];
+                Ok(count)
+            }
+        }
+        for size in [0, 1, 8_191, 8_192] {
+            let data = (0..size).map(|i| (i % 251) as u8).collect::<Vec<_>>();
+            let mut expected = ObjectBuffer::empty().unwrap();
+            let streamed =
+                layerfs_content::file::rope::build_complete(&mut expected, data.as_slice())
+                    .unwrap();
+            let mut actual = ObjectBuffer::empty().unwrap();
+            let completed = build_checked_file(
+                &mut actual,
+                Fragmented {
+                    bytes: &data,
+                    interrupt: size < layerfs_content::file::cdc::MINIMUM_CHUNK_BYTES,
+                },
+                size as u64,
+            )
+            .unwrap();
+            assert_eq!(completed.root, streamed.root);
+            assert_eq!(completed.logical_len, streamed.logical_len);
+            assert_eq!(completed.counters, streamed.counters);
+            let expected = expected.finish(streamed.root.0, size as u64).unwrap();
+            let actual = actual.finish(completed.root.0, size as u64).unwrap();
+            assert_eq!(actual.objects.len(), expected.objects.len());
+            for id in expected.objects.ids_in_order(usize::MAX).unwrap().unwrap() {
+                assert_eq!(
+                    actual.objects.read_object(id).unwrap(),
+                    expected.objects.read_object(id).unwrap()
+                );
+            }
+        }
+        for (bytes, expected) in [
+            (b"x".as_slice(), 0),
+            (b"".as_slice(), 1),
+            (b"xy".as_slice(), 1),
+        ] {
+            let mut objects = ObjectBuffer::empty().unwrap();
+            assert!(matches!(
+                build_checked_file(&mut objects, bytes, expected),
+                Err(StoreError::Integrity("completed file length"))
+            ));
+            assert_eq!(objects.objects.len(), 0);
+        }
+        struct Broken;
+        impl Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::Other.into())
+            }
+        }
+        let mut objects = ObjectBuffer::empty().unwrap();
+        let error_after_payload = std::io::Cursor::new(b"x").chain(Broken);
+        assert!(build_checked_file(&mut objects, error_after_payload, 1).is_err());
+        assert_eq!(objects.objects.len(), 0);
     }
 
     #[test]
@@ -3591,7 +3819,8 @@ mod tests {
         );
         assert_eq!(buffer.objects.index_limit * 4, CANDIDATE_INDEX_BYTES);
         assert_eq!(
-            buffer.objects.spill_buffer_bytes * 4,
+            (buffer.objects.spill_buffer_bytes + spill::ID_BUFFER_BYTES) * 4
+                + spill::ID_BUFFER_BYTES,
             CANDIDATE_SPILL_BUFFER_BYTES
         );
         assert!(buffer.partition_output(0).is_err());
@@ -3640,10 +3869,12 @@ mod tests {
         );
         assert!(failed.is_err());
         assert_eq!(store.store_counts().unwrap(), before);
-        assert!(
-            ObjectBuffer::build_complete_file_partition(data.as_slice(), data.len() as u64 + 1, 4)
-                .is_err()
-        );
+        assert!(ObjectBuffer::build_complete_file_partition(
+            data.as_slice(),
+            data.len() as u64 + 1,
+            4
+        )
+        .is_err());
         drop(store);
         std::fs::remove_file(path).unwrap();
     }
@@ -3807,19 +4038,17 @@ mod tests {
         .unwrap();
         assert!(empty.is_empty());
         assert_eq!(metrics.producer_peak, 0);
-        assert!(
-            run_finalized_output(
-                1,
-                2,
-                0..1,
-                &cancelled,
-                |_| Ok(()),
-                |_, _, _, _| Ok(()),
-                Ok,
-                |_| Ok(())
-            )
-            .is_err()
-        );
+        assert!(run_finalized_output(
+            1,
+            2,
+            0..1,
+            &cancelled,
+            |_| Ok(()),
+            |_, _, _, _| Ok(()),
+            Ok,
+            |_| Ok(())
+        )
+        .is_err());
 
         for failure in [
             "producer",
@@ -3919,7 +4148,9 @@ mod tests {
             .workspace_admission([0; 16])
             .unwrap()
             .admit_remaining(selected(0))
-            .unwrap();
+            .unwrap()
+            .2
+            .retain();
         let (_, token) = store
             .construct_workspace_files(
                 [1; 16],
@@ -3931,7 +4162,9 @@ mod tests {
                 |_| Ok(()),
             )
             .unwrap();
-        let (receipt, _) = token.admit_remaining(selected(1)).unwrap();
+        let (receipt, _, session) = token.admit_remaining(selected(1)).unwrap();
+        session.retain();
+        drop(session);
         assert_eq!(
             (
                 receipt.candidate_objects,
@@ -3951,20 +4184,31 @@ mod tests {
         assert_eq!(store.store_counts().unwrap().commits, 0);
         assert!(store.workspace_stage([1; 16]).unwrap().is_none());
         crate::schema::set_transaction_failure_at(Some(1));
-        let failed = store.construct_workspace_files(
-            [2; 16],
-            1,
-            1,
-            std::iter::once(2),
-            |_| Ok(()),
-            |_, _, index, writer| writer.send_selected(selected(index)),
-            |_| Ok(()),
-        );
+        let (_, pending) = store
+            .construct_workspace_files(
+                [2; 16],
+                1,
+                1,
+                std::iter::once(2),
+                |_| Ok(()),
+                |_, _, index, writer| writer.send_selected(selected(index)),
+                |_| Ok(()),
+            )
+            .unwrap();
+        // The small final file batch stays in the token until namespace delivery
+        // closes admission. The consumer and this final flush run on this thread.
+        assert_eq!(store.store_counts().unwrap().objects, 2);
+        assert!(store.db.object_membership(&[ids[2]]).unwrap().is_empty());
+        let failed = pending.admit_remaining(selected(2));
         crate::schema::set_transaction_failure_at(None);
-        assert!(matches!(
-            failed,
-            Err(StoreError::Integrity("injected transaction failure"))
-        ), "actual error (None means unexpected success): {:?}", failed.as_ref().err());
+        assert!(
+            matches!(
+                failed,
+                Err(StoreError::Integrity("injected transaction failure"))
+            ),
+            "actual error (None means unexpected success): {:?}",
+            failed.as_ref().err()
+        );
         assert_eq!(store.store_counts().unwrap().objects, 2);
         assert!(store.workspace_stage([2; 16]).unwrap().is_none());
         drop(store);
@@ -3991,15 +4235,13 @@ mod tests {
         // Simulate corruption through a test-only descriptor retained before seal.
         writer.write_all_at(&[0xff], offset + 9).unwrap();
         let mut handed_off = 0;
-        assert!(
-            built
-                .objects
-                .consume_prevalidated_pages(|page| {
-                    handed_off += page.len();
-                    Ok(())
-                })
-                .is_err()
-        );
+        assert!(built
+            .objects
+            .consume_prevalidated_pages(|page| {
+                handed_off += page.len();
+                Ok(())
+            })
+            .is_err());
         assert_eq!(handed_off, 0);
     }
 
@@ -4028,22 +4270,6 @@ mod tests {
             assert!(AuthenticatedCanonicalObject::new(invalid.clone(), None).is_err());
             assert!(AuthenticatedCanonicalObject::new(invalid, Some(expected)).is_err());
         }
-    }
-
-    #[test]
-    fn structural_handoff_identity_is_fixed_at_buffer_insertion() {
-        let bytes =
-            layerfs_content::encode_bytes_object(b"authenticated structural object").unwrap();
-        let expected = ObjectId::for_bytes(&bytes);
-        let wrong = ObjectId::for_bytes(b"different structural object");
-        assert!(matches!(
-            AuthenticatedCanonicalObject::new(bytes.clone(), Some(wrong)),
-            Err(CoreError::IdentityMismatch)
-        ));
-
-        let mut buffer = InitializationTaskObjectBuffer::new();
-        assert_eq!(buffer.put_owned(bytes).unwrap(), expected);
-        assert_eq!(buffer.objects[0].id, expected);
     }
 
     #[test]
@@ -4126,35 +4352,48 @@ mod tests {
             entries.sort();
             let leaf = encode_inode_table_node(&InodeTableNodeV1::Leaf(entries.clone())).unwrap();
             let mut prior = ObjectId::for_bytes(&leaf);
-            initial.push(CanonicalObject { id: prior, bytes: leaf });
+            initial.push(CanonicalObject {
+                id: prior,
+                bytes: leaf,
+            });
             let mut admission = CheckedOutputAdmission::new(&db).unwrap();
             admission.admit(sealed_segment(initial)).unwrap();
             finish_segment_admission(&db, admission);
 
             for generation in 0..2u64 {
                 let mut buffer = ObjectBuffer::new(&db).unwrap();
-                let record = buffer.put_owned(
-                    layerfs_content::encode_bytes_object(&(1000 + generation).to_be_bytes()).unwrap(),
-                ).unwrap();
+                let record = buffer
+                    .put_owned(
+                        layerfs_content::encode_bytes_object(&(1000 + generation).to_be_bytes())
+                            .unwrap(),
+                    )
+                    .unwrap();
                 entries[generation as usize].1 = record;
-                let expected = encode_inode_table_node(&InodeTableNodeV1::Leaf(entries.clone())).unwrap();
+                let expected =
+                    encode_inode_table_node(&InodeTableNodeV1::Leaf(entries.clone())).unwrap();
                 let (next, _) = inode_table_apply_sorted(
                     &mut buffer,
                     InodeTableRoot(prior),
                     std::iter::once(Ok((entries[generation as usize].0, Some(record)))),
-                ).unwrap();
+                )
+                .unwrap();
                 assert_eq!(next.0, ObjectId::for_bytes(&expected));
-                if spill { buffer.objects.spill().unwrap(); }
+                if spill {
+                    buffer.objects.spill().unwrap();
+                }
                 let built = buffer.finish(next.0, 0).unwrap();
-                built.objects.visit_authenticated_order(&built.objects.reachable, &mut |object| {
-                    if object.id == next.0 {
-                        assert_eq!(object.prior_ids(), &[Some(prior), None, None, None]);
-                        assert!(object.1.has_predecessor);
-                        assert!(object.1.first_span.is_none());
-                        assert_eq!(object.1.diagnostic & diagnostic::FILE, 0);
-                    }
-                    Ok(())
-                }).unwrap();
+                built
+                    .objects
+                    .visit_authenticated_order(&built.objects.reachable, &mut |object| {
+                        if object.id == next.0 {
+                            assert_eq!(object.prior_ids(), &[Some(prior), None, None, None]);
+                            assert!(object.1.has_predecessor);
+                            assert!(object.1.first_span.is_none());
+                            assert_eq!(object.1.diagnostic & diagnostic::FILE, 0);
+                        }
+                        Ok(())
+                    })
+                    .unwrap();
                 let before = db.physical_storage_receipt();
                 let mut admission = CheckedOutputAdmission::new(&db).unwrap();
                 admission.admit(built.objects).unwrap();
@@ -4164,12 +4403,16 @@ mod tests {
                 assert_eq!(physical.diag_eligible_count, 0);
                 assert_eq!(physical.diag_eligible_bytes, 0);
                 assert_eq!(physical.diag_missing_span_count, 0);
-                assert_eq!(physical.diag_new_full_count + physical.diag_new_delta_count, 0);
+                assert_eq!(
+                    physical.diag_new_full_count + physical.diag_new_delta_count,
+                    0
+                );
                 assert_eq!(physical.diag_invalid, 0);
                 assert_eq!(db.read_object_row(next.0).unwrap(), expected);
                 prior = next.0;
             }
-            let chunk = layerfs_content::file::extent_codec::encode_chunk_object(b"LFS4INT\0").unwrap();
+            let chunk =
+                layerfs_content::file::extent_codec::encode_chunk_object(b"LFS4INT\0").unwrap();
             assert!(!is_inode_table_leaf(&chunk).unwrap());
             let mut bad = encode_inode_table_node(&InodeTableNodeV1::Leaf(entries)).unwrap();
             bad.pop();
@@ -4564,8 +4807,8 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        // The same exact subset is delivered physically, excluding the middle row.
-        assert_eq!(owned, vec![ids[0], ids[2]]);
+        // Consumption preserves the checked child-first graph order, excluding the middle row.
+        assert_eq!(owned, vec![ids[2], ids[0]]);
     }
 
     #[cfg(unix)]
@@ -4657,7 +4900,7 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&root).unwrap();
-        for count in [0_usize, 1, 127, 128, 8190, 8191] {
+        for count in [0_usize, 1, 127, 128, 511, 512, 513, 8190, 8191] {
             let db = crate::schema::StoreDb::create(root.join(format!("{count}.sqlite"))).unwrap();
             let objects = (0..count)
                 .map(|index| {
@@ -4681,8 +4924,19 @@ mod tests {
             let (receipt, _) = finish_segment_admission(&db, admission);
             assert_eq!(receipt.candidate_objects, count as u64);
             assert_eq!(receipt.candidate_bytes, expected_bytes);
-            assert_eq!(receipt.max_transaction_objects, count as u64);
-            assert_eq!(receipt.max_transaction_bytes, expected_bytes);
+            assert_eq!(
+                receipt.max_transaction_objects,
+                count.min(PHYSICAL_ADMISSION_BATCH_COUNT) as u64
+            );
+            assert_eq!(
+                receipt.max_transaction_bytes,
+                if count == 0 {
+                    0
+                } else {
+                    (expected_bytes / count as u64)
+                        * count.min(PHYSICAL_ADMISSION_BATCH_COUNT) as u64
+                }
+            );
             drop(db);
         }
         std::fs::remove_dir_all(root).unwrap();
@@ -4817,21 +5071,34 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&root).unwrap();
-        let db = crate::schema::StoreDb::create(root.join("store.sqlite")).unwrap();
-        let count = 2 * ADMISSION_BATCH_COUNT as u64 + 46;
-        let mut admission = CheckedOutputAdmission::new(&db).unwrap();
-        for index in 0..count {
-            let bytes = layerfs_content::encode_bytes_object(&index.to_le_bytes()).unwrap();
-            admission
-                .admit_object(AuthenticatedCanonicalObject::new(bytes, None).unwrap())
+        for payload_length in [8, 1000] {
+            let db = crate::schema::StoreDb::create(root.join(format!("{payload_length}.sqlite")))
                 .unwrap();
+            let count = 2 * ADMISSION_BATCH_COUNT as u64 + 46;
+            let mut admission = CheckedOutputAdmission::new(&db).unwrap();
+            for index in 0..count {
+                let mut random = index + 1;
+                let mut payload = (0..payload_length)
+                    .map(|_| {
+                        random ^= random << 13;
+                        random ^= random >> 7;
+                        random ^= random << 17;
+                        random as u8
+                    })
+                    .collect::<Vec<_>>();
+                payload[..8].copy_from_slice(&index.to_le_bytes());
+                let bytes = layerfs_content::encode_bytes_object(&payload).unwrap();
+                admission
+                    .admit_object(AuthenticatedCanonicalObject::new(bytes, None).unwrap())
+                    .unwrap();
+            }
+            let (receipt, _) = finish_segment_admission(&db, admission);
+            assert_eq!(receipt.candidate_objects, count);
+            assert_eq!(receipt.inserted_objects, count);
+            assert!(receipt.max_transaction_objects <= ADMISSION_BATCH_COUNT as u64);
+            assert!(receipt.max_transaction_bytes < OBJECT_PAGE_BYTES as u64);
+            drop(db);
         }
-        let (receipt, _) = finish_segment_admission(&db, admission);
-        assert_eq!(receipt.candidate_objects, count);
-        assert_eq!(receipt.inserted_objects, count);
-        assert!(receipt.max_transaction_objects <= ADMISSION_BATCH_COUNT as u64);
-        assert!(receipt.max_transaction_bytes < OBJECT_PAGE_BYTES as u64);
-        drop(db);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -5062,33 +5329,30 @@ mod tests {
                 bytes: first.clone(),
             },
         ]);
-        assert!(
-            CoreReader(&reversed)
-                .get_authenticated_batch(&[first_id, second_id], |_, _| Ok(()))
-                .is_err()
-        );
+        assert!(CoreReader(&reversed)
+            .get_authenticated_batch(&[first_id, second_id], |_, _| Ok(()))
+            .is_err());
         let short = Claimed(vec![CanonicalObject {
             id: first_id,
             bytes: first,
         }]);
-        assert!(
-            CoreReader(&short)
-                .get_authenticated_batch(&[first_id, second_id], |_, _| Ok(()))
-                .is_err()
-        );
+        assert!(CoreReader(&short)
+            .get_authenticated_batch(&[first_id, second_id], |_, _| Ok(()))
+            .is_err());
         struct Untrusted(Vec<u8>);
         impl ObjectSource for Untrusted {
             fn read_object(&self, _: ObjectId) -> Result<Vec<u8>> {
                 Ok(self.0.clone())
             }
         }
-        assert!(
-            CoreReader(&Untrusted(second))
-                .get_authenticated_batch(&[corrupt_id], |_, _| Ok(()))
-                .is_err()
-        );
+        assert!(CoreReader(&Untrusted(second))
+            .get_authenticated_batch(&[corrupt_id], |_, _| Ok(()))
+            .is_err());
 
         drop(db);
         std::fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[cfg(test)]
+mod ingestion_tests;

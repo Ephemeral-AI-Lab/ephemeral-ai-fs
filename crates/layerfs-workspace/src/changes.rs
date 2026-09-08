@@ -345,7 +345,13 @@ impl Workspace {
     // edges directly preserves untouched subtrees, including a renamed directory,
     // without building either complete namespace manifest.
     fn build_frontier_candidate(&mut self, purpose: CandidatePurpose) -> Result<PreparedCommit> {
-        self.build_frontier_candidate_with_workers(purpose, 1)
+        let workers = std::thread::available_parallelism()
+            .map(std::num::NonZeroUsize::get)
+            .unwrap_or(1)
+            .min(8);
+        // CandidateInputs further caps workers by eligible tasks and partitions
+        // the existing aggregate journal, candidate and spill allowances.
+        self.build_frontier_candidate_with_workers(purpose, workers)
     }
 
     fn build_frontier_candidate_with_workers(

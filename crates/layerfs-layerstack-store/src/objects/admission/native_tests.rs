@@ -124,9 +124,17 @@ fn native_admission_late_races_compare_canonical_full_and_prefix() {
         let mut changed = raw.clone();
         changed[100] ^= 1;
         let target = object(&changed, Some(base_id));
-        let prefix = f.prepare(vec![target.clone()]);
+        let mut prefix = f.prepare(vec![target.clone()]);
         assert!(prefix.objects[0].delta);
-        let full = f.prepare(vec![object(&changed, None)]);
+        // Exercise the final canonical CAS recheck with two prepared forms under
+        // one owner; independent public admissions now serialize before prepare.
+        let session = prefix.session.clone();
+        prefix.final_batch = false;
+        let full = PreparedAdmission::prepare_missing(
+            &f.db,
+            super::super::MissingBatch(vec![object(&changed, None)], session.clone(), false),
+        )
+        .unwrap();
         assert!(!full.objects[0].delta);
         let before = f.db.physical_storage_receipt();
         if prefix_first {
@@ -136,6 +144,8 @@ fn native_admission_late_races_compare_canonical_full_and_prefix() {
             f.publish(full);
             f.publish(prefix);
         }
+        session.retain();
+        drop(session);
         let after = f.db.physical_storage_receipt().since(before);
         assert_eq!(after.diag_race_count, 1);
         assert_eq!(after.native_admitted_prefix_count, u64::from(prefix_first));
@@ -167,4 +177,116 @@ fn native_admission_peak_reservations_reject_unowned_buffers() {
     // An already assembled ordinary pack remains charged in the next lane.
     prepared.packs.push(vec![0; 2 * 1024 * 1024]);
     assert!(prepared.native_scratch(&Vec::new(), &groups, 0, 1).is_err());
+}
+
+#[test]
+fn failed_admission_reclaims_private_packs_and_preserves_waiting_owners_and_bases() {
+    let f = Fixture::new();
+    let raw = random();
+    let base = object(&raw, None);
+    let base_id = base.id;
+    f.publish(f.prepare(vec![base.clone()]));
+    let mut retained_bytes = raw.clone();
+    retained_bytes[100] ^= 1;
+    let retained = object(&retained_bytes, Some(base_id));
+    f.publish(f.prepare(vec![retained.clone()]));
+    let baseline_packs: i64 =
+        f.db.reader()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM object_packs", [], |row| row.get(0))
+            .unwrap();
+    let mut private_bytes = retained_bytes;
+    private_bytes[200] ^= 1;
+    let private = object(&private_bytes, Some(retained.id));
+    let mut owner = CheckedOutputAdmission::new(&f.db).unwrap();
+    owner
+        .admit_page(vec![base.clone(), private.clone()])
+        .unwrap();
+    owner.flush().unwrap();
+    assert_eq!(f.db.read_object_row(private.id).unwrap(), private.bytes);
+
+    std::thread::scope(|scope| {
+        let (ready, started) = std::sync::mpsc::sync_channel(1);
+        let db = f.db.clone();
+        let target = private.clone();
+        let waiting = scope.spawn(move || {
+            ready.send(()).unwrap();
+            let mut owner = CheckedOutputAdmission::new(&db).unwrap();
+            owner.admit_page(vec![target]).unwrap();
+            let finished = owner.finish().unwrap();
+            PreparedAdmission::prepare_missing(&db, finished.final_batch)
+                .unwrap()
+                .publish(&db, &mut 0, |_, _, _| Ok(()))
+                .unwrap();
+        });
+        started.recv().unwrap();
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while f.db.operation_waiters() == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "second owner must wait at the publication gate"
+            );
+            std::thread::yield_now();
+        }
+        let finished = owner.finish().unwrap();
+        let failed = PreparedAdmission::prepare_missing(&f.db, finished.final_batch)
+            .unwrap()
+            .publish(&f.db, &mut 0, |_, _, _| {
+                Err::<(), _>(StoreError::Integrity("publication proof"))
+            });
+        assert!(matches!(
+            failed,
+            Err(StoreError::Integrity("publication proof"))
+        ));
+        waiting.join().unwrap();
+    });
+    assert_eq!(f.db.read_object_row(base.id).unwrap(), base.bytes);
+    assert_eq!(f.db.read_object_row(retained.id).unwrap(), retained.bytes);
+    assert_eq!(f.db.read_object_row(private.id).unwrap(), private.bytes);
+    let packs: i64 =
+        f.db.reader()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM object_packs", [], |row| row.get(0))
+            .unwrap();
+    assert_eq!(packs, baseline_packs + 1, "failed private pack was reclaimed before the waiting owner re-admitted its canonical bytes");
+}
+
+#[test]
+fn failed_cleanup_quarantines_writes_and_keeps_preexisting_reads() {
+    let f = Fixture::new();
+    let base = object(&random(), None);
+    f.publish(f.prepare(vec![base.clone()]));
+    let mut changed = random();
+    changed[100] ^= 1;
+    let private = object(&changed, Some(base.id));
+    let mut owner = CheckedOutputAdmission::new(&f.db).unwrap();
+    owner.admit_page(vec![private]).unwrap();
+    owner.flush().unwrap();
+    f.db.writer().unwrap().execute_batch(
+        "CREATE TEMP TRIGGER fail_cleanup BEFORE DELETE ON objects BEGIN SELECT RAISE(ABORT, 'cleanup proof'); END;",
+    ).unwrap();
+    let finished = owner.finish().unwrap();
+    let failed = PreparedAdmission::prepare_missing(&f.db, finished.final_batch)
+        .unwrap()
+        .publish(&f.db, &mut 0, |_, _, _| {
+            Err::<(), _>(StoreError::Integrity("publication proof"))
+        });
+    assert!(failed
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("admission cleanup failed"));
+    assert!(matches!(
+        f.db.writer(),
+        Err(StoreError::Integrity(
+            "Store writes quarantined after failed admission cleanup"
+        ))
+    ));
+    assert!(matches!(
+        f.db.enter_operation(),
+        Err(StoreError::Integrity(
+            "Store writes quarantined after failed admission cleanup"
+        ))
+    ));
+    assert_eq!(f.db.read_object_row(base.id).unwrap(), base.bytes);
 }

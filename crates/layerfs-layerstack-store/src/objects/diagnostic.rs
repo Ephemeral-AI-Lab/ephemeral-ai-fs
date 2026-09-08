@@ -447,12 +447,10 @@ mod tests {
         let broken = broken
             .build_complete_with_predecessor(b"failure".as_slice(), 7)
             .unwrap();
-        assert!(
-            broken
-                .objects
-                .consume_prevalidated_pages(|_| Ok(()))
-                .is_err()
-        );
+        assert!(broken
+            .objects
+            .consume_prevalidated_pages(|_| Ok(()))
+            .is_err());
         let failure = store.db.physical_storage_receipt().since(before);
         assert_ne!(failure.diag_invalid, 0);
         assert_eq!(failure.diag_cursor_grants, 1);

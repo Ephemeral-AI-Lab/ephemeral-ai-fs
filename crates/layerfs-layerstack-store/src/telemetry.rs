@@ -730,18 +730,6 @@ pub fn note_workspace_commit_phase(phase: WorkspaceCommitPhase, elapsed_ns: u64)
     });
 }
 
-pub(crate) fn note_workspace_admission_validation(authentication_ns: u64, sort_ns: u64) {
-    WORKSPACE_COMMIT.with(|current| {
-        if let Some(receipt) = current.borrow_mut().as_mut() {
-            receipt.object_admission_authentication_ns = receipt
-                .object_admission_authentication_ns
-                .saturating_add(authentication_ns);
-            receipt.object_admission_sort_ns =
-                receipt.object_admission_sort_ns.saturating_add(sort_ns);
-        }
-    });
-}
-
 pub fn note_workspace_spool_retirement(total_ns: u64, scan_ns: u64, segments: u64) {
     WORKSPACE_COMMIT.with(|current| {
         if let Some(receipt) = current.borrow_mut().as_mut() {

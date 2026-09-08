@@ -1,13 +1,13 @@
 //! Prepared whole-pack admission, with one probe and one final recheck.
 use super::diagnostic;
 use super::{
-    ADMISSION_BATCH_BYTES, ADMISSION_BATCH_COUNT, AuthenticatedCanonicalObject, OBJECT_PAGE_COUNT,
-    ObjectInsertMetrics, pack, read,
+    pack, read, AuthenticatedCanonicalObject, ObjectInsertMetrics, ADMISSION_BATCH_BYTES,
+    ADMISSION_BATCH_COUNT, OBJECT_PAGE_COUNT,
 };
 use crate::schema::StoreDb;
 use crate::{Result, StoreError};
 use layerfs_content::ObjectId;
-use rusqlite::{Transaction, TransactionBehavior, limits::Limit, params_from_iter, types::Value};
+use rusqlite::{limits::Limit, params_from_iter, types::Value, Transaction, TransactionBehavior};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::ops::Range;
@@ -47,6 +47,8 @@ const _: () = {
 };
 
 pub(crate) struct PreparedAdmission {
+    session: std::sync::Arc<super::AdmissionSession>,
+    final_batch: bool,
     packs: Vec<Vec<u8>>,
     objects: Vec<PreparedObject>,
     metrics: ObjectInsertMetrics,
@@ -57,6 +59,15 @@ pub(crate) struct PreparedAdmission {
 
 impl PreparedAdmission {
     pub(crate) fn prepare_missing(db: &StoreDb, missing: super::MissingBatch) -> Result<Self> {
+        let session = missing.1.clone();
+        session.resolve(Self::prepare_missing_inner(db, missing))
+    }
+
+    fn prepare_missing_inner(db: &StoreDb, missing: super::MissingBatch) -> Result<Self> {
+        if !db.same_instance(&missing.1.db) {
+            return Err(StoreError::Integrity("admission Store ownership"));
+        }
+        missing.1.ensure_active()?;
         let objects = missing.0;
         let length = objects
             .iter()
@@ -92,6 +103,8 @@ impl PreparedAdmission {
             )));
         }
         let mut prepared = Self {
+            session: missing.1,
+            final_batch: missing.2,
             // No pack-pointer growth during either lane: at most one pack/object.
             packs: Vec::with_capacity(count),
             objects: Vec::with_capacity(count),
@@ -123,7 +136,7 @@ impl PreparedAdmission {
         // Publish the native lane first; no prepared record can become a base.
         let (native, objects): (Vec<_>, Vec<_>) = objects
             .into_iter()
-            .partition(|object| object.is_file_payload());
+            .partition(|object| db.native_format() && object.is_file_payload());
         // The original input Vec has dropped; both actual lane allocations live.
         search.input_associations = (native.capacity() + objects.capacity())
             * std::mem::size_of::<AuthenticatedCanonicalObject>();
@@ -730,11 +743,25 @@ impl PreparedAdmission {
     }
 
     pub(crate) fn publish<T>(
+        self,
+        db: &StoreDb,
+        statement_number: &mut u64,
+        publish: impl FnOnce(&Transaction<'_>, &ObjectInsertMetrics, &mut u64) -> Result<T>,
+    ) -> Result<(T, super::AdmissionBatchMetrics)> {
+        let session = self.session.clone();
+        session.resolve(self.publish_inner(db, statement_number, publish))
+    }
+
+    fn publish_inner<T>(
         mut self,
         db: &StoreDb,
         statement_number: &mut u64,
         publish: impl FnOnce(&Transaction<'_>, &ObjectInsertMetrics, &mut u64) -> Result<T>,
     ) -> Result<(T, super::AdmissionBatchMetrics)> {
+        if !db.same_instance(&self.session.db) {
+            return Err(StoreError::Integrity("admission Store ownership"));
+        }
+        self.session.ensure_active()?;
         let ids = self
             .objects
             .iter()
@@ -753,7 +780,7 @@ impl PreparedAdmission {
                 )
             })
             .collect::<BTreeMap<_, _>>();
-        let _permit = db.enter_operation()?;
+
         let late = db.object_locations(&ids)?;
         compare(db, &late, &supplied, &mut self.metrics)?;
         let mut winners = vec![Vec::new(); self.packs.len()];
@@ -779,6 +806,9 @@ impl PreparedAdmission {
         let result = publish(&transaction, &self.metrics, statement_number)?;
         let started = Instant::now();
         transaction.commit()?;
+        if self.final_batch {
+            self.session.retain();
+        }
         for object in &self.objects {
             if object.diagnostic_terminal == 0 {
                 continue;

@@ -62,6 +62,13 @@ pub trait ObjectStore {
         self.put_owned(canonical)
     }
 
+    /// Scope physical FILE provenance to a regular-file producer. Generic ropes
+    /// also store metadata values; their payload chunks must remain unmarked.
+    #[doc(hidden)]
+    fn set_file_payload_context(&mut self, _enabled: bool) -> bool {
+        false
+    }
+
     #[doc(hidden)]
     fn put_file_payload(
         &mut self,

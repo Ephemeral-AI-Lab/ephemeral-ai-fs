@@ -1,7 +1,6 @@
 use crate::objects::{
-    BuildCounters, BuiltRoot, CanonicalObject, CheckedOutputAdmission, DeferredObjectStore,
-    ObjectSource, PreparedAdmission, apply_reconcile_choices, combine_candidates,
-    reconcile_candidate,
+    apply_reconcile_choices, combine_candidates, reconcile_candidate, BuildCounters, BuiltRoot,
+    CanonicalObject, CheckedOutputAdmission, DeferredObjectStore, ObjectSource, PreparedAdmission,
 };
 use crate::records::{
     decode_branch, decode_commit, decode_layer_stack_at, decode_object_id, optional_id,
@@ -331,6 +330,8 @@ impl LayerStackStore {
                 let metadata_started = Instant::now();
                 *statement_number += 1;
                 crate::schema::fail_transaction_statement(*statement_number)?;
+                // Stable fault boundary independent of packed admission statement counts.
+                crate::schema::fail_transaction_statement(u64::MAX - 1)?;
                 if transaction.execute(
                     crate::statements::workspace::INSERT_COMMIT,
                     rusqlite::params![
@@ -359,6 +360,8 @@ impl LayerStackStore {
                 crate::schema::verification_store_checkpoint(
                     crate::schema::VerificationStoreFault::FinalPublication,
                 )?;
+                // Stable fault boundary independent of packed admission statement counts.
+                crate::schema::fail_transaction_statement(u64::MAX - 2)?;
                 if transaction.execute(
                     crate::statements::workspace::ADVANCE_BRANCH,
                     rusqlite::params![
@@ -445,7 +448,8 @@ impl LayerStackStore {
         }
 
         let started = Instant::now();
-        let (admission, mut statement_number) = admission.admit_remaining(built.objects)?;
+        let (admission, mut statement_number, session) =
+            admission.admit_remaining(built.objects)?;
         crate::telemetry::note_workspace_admission(
             admission.transactions,
             admission.max_transaction_objects,
@@ -480,8 +484,9 @@ impl LayerStackStore {
             receipt.validate()?;
         }
 
-        let _operation = self.db.enter_operation()?;
-        let stage = self.stage_workspace_root(workspace_id, expected.id, built.root_id)?;
+        let stage =
+            session.resolve(self.stage_workspace_root(workspace_id, expected.id, built.root_id))?;
+        session.retain();
         let publication_started = Instant::now();
         let begin_started = Instant::now();
         let mut connection = self.db.writer()?;
@@ -523,6 +528,8 @@ impl LayerStackStore {
             };
             statement_number += 1;
             crate::schema::fail_transaction_statement(statement_number)?;
+            // Stable fault boundary independent of packed admission statement counts.
+            crate::schema::fail_transaction_statement(u64::MAX - 1)?;
             if transaction.execute(
                 crate::statements::workspace::INSERT_COMMIT,
                 rusqlite::params![
@@ -551,6 +558,8 @@ impl LayerStackStore {
             crate::schema::verification_store_checkpoint(
                 crate::schema::VerificationStoreFault::FinalPublication,
             )?;
+            // Stable fault boundary independent of packed admission statement counts.
+            crate::schema::fail_transaction_statement(u64::MAX - 2)?;
             if transaction.execute(
                 crate::statements::workspace::ADVANCE_BRANCH,
                 rusqlite::params![
@@ -979,22 +988,36 @@ mod tests {
         let second_id = ObjectId::for_bytes(&second);
         let unrelated_id = ObjectId::for_bytes(&unrelated);
         let corrupt_id = ObjectId::for_bytes(b"different bytes");
-        {
-            let connection = store.db.writer().unwrap();
-            for (id, bytes) in [
-                (first_id, first.as_slice()),
-                (second_id, second.as_slice()),
-                (unrelated_id, unrelated.as_slice()),
-                (corrupt_id, corrupt.as_slice()),
-            ] {
-                connection
-                    .execute(
-                        crate::statements::objects::INSERT,
-                        rusqlite::params![id.as_bytes().as_slice(), bytes],
-                    )
-                    .unwrap();
-            }
+        fn admit(store: &LayerStackStore, bytes: &[u8]) -> ObjectId {
+            use layerfs_content::object::access::ObjectStore;
+            let mut buffer = crate::ObjectBuffer::empty().unwrap();
+            let id = buffer.put(bytes).unwrap();
+            let objects = buffer.finish(id, 0).unwrap().objects;
+            let mut admission = crate::objects::CheckedOutputAdmission::new(&store.db).unwrap();
+            admission.admit(objects).unwrap();
+            let mut finished = admission.finish().unwrap();
+            crate::objects::PreparedAdmission::prepare_missing(&store.db, finished.final_batch)
+                .unwrap()
+                .publish(&store.db, &mut finished.statement_number, |_, _, _| Ok(()))
+                .unwrap();
+            id
         }
+        for bytes in [&first, &second, &unrelated, &corrupt] {
+            admit(&store, bytes);
+        }
+        // Corrupt only an unrelated selected identity after valid packed admission.
+        store
+            .db
+            .writer()
+            .unwrap()
+            .execute(
+                "UPDATE objects SET object_id=?1 WHERE object_id=?2",
+                rusqlite::params![
+                    corrupt_id.as_bytes().as_slice(),
+                    ObjectId::for_bytes(&corrupt).as_bytes().as_slice()
+                ],
+            )
+            .unwrap();
 
         let reader = store.snapshot_reader(first_id);
         #[cfg(feature = "test-instrumentation")]
@@ -1090,15 +1113,10 @@ mod tests {
         .unwrap();
         assert!(structural.len() > SNAPSHOT_CACHE_PAYLOAD_BYTES);
         let structural_id = ObjectId::for_bytes(&structural);
-        store
-            .db
-            .writer()
-            .unwrap()
-            .execute(
-                crate::statements::objects::INSERT,
-                rusqlite::params![structural_id.as_bytes().as_slice(), structural],
-            )
-            .unwrap();
+        // The cache proof removed these locators; restore the real dependency
+        // before admitting a structural object that references it.
+        assert_eq!(admit(&store, &first), first_id);
+        assert_eq!(admit(&store, &structural), structural_id);
         assert_eq!(reader.read_object(structural_id).unwrap(), structural);
         reader.reset_read_metrics().unwrap();
         assert_eq!(
@@ -1116,13 +1134,11 @@ mod tests {
             reader.clone().cached_object(structural_id).unwrap(),
             Some(structural)
         );
-        assert!(
-            store
-                .snapshot_reader(first_id)
-                .cached_object(structural_id)
-                .unwrap()
-                .is_none()
-        );
+        assert!(store
+            .snapshot_reader(first_id)
+            .cached_object(structural_id)
+            .unwrap()
+            .is_none());
 
         let payload =
             layerfs_content::file::extent_codec::encode_chunk_object(&vec![0; 8192]).unwrap();

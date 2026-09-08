@@ -1,9 +1,9 @@
 //! Connection-only extraction followed by bounded target and FULL-base waves.
-use super::{CanonicalObject, OBJECT_PAGE_COUNT, pack};
+use super::{pack, CanonicalObject, OBJECT_PAGE_COUNT};
 use crate::schema::StoreDb;
 use crate::{PhysicalStorageReceipt, Result, StoreError};
 use layerfs_content::ObjectId;
-use rusqlite::{OptionalExtension, limits::Limit, params_from_iter};
+use rusqlite::{limits::Limit, params_from_iter, OptionalExtension};
 use std::collections::BTreeMap;
 
 // Leave the rest of the 2-MiB physical scratch reservation for group backing,

@@ -2,6 +2,7 @@ pub const ALL: &[(&str, &str)] = &[
     ("schema/v4.sql", schema::V4),
     ("schema/v5.sql", schema::V5),
     ("schema/v6.sql", schema::V6),
+    ("schema/v7.sql", schema::V7),
     ("schema/migrate_v4_to_v5.sql", schema::MIGRATE_V4_TO_V5),
     ("schema/schema_objects.sql", schema::SCHEMA_OBJECTS),
     ("schema/table_columns.sql", schema::TABLE_COLUMNS),
@@ -55,6 +56,7 @@ pub mod schema {
     pub const V4: &str = include_str!("../sql/schema/v4.sql");
     pub const V5: &str = include_str!("../sql/schema/v5.sql");
     pub const V6: &str = include_str!("../sql/schema/v6.sql");
+    pub const V7: &str = include_str!("../sql/schema/v7.sql");
     pub const MIGRATE_V4_TO_V5: &str = include_str!("../sql/schema/migrate_v4_to_v5.sql");
     pub const SCHEMA_OBJECTS: &str = include_str!("../sql/schema/schema_objects.sql");
     pub const TABLE_COLUMNS: &str = include_str!("../sql/schema/table_columns.sql");
@@ -132,7 +134,7 @@ mod tests {
             .collect::<Vec<_>>();
         registered.sort();
         assert_eq!(files, registered);
-        assert_eq!(ALL.len(), 44);
+        assert_eq!(ALL.len(), 45);
 
         let connection = Connection::open_in_memory().unwrap();
         connection
@@ -186,7 +188,11 @@ mod tests {
         for (name, sql) in ALL.iter().filter(|(name, _)| {
             !matches!(
                 *name,
-                "schema/v4.sql" | "schema/v5.sql" | "schema/v6.sql" | "schema/migrate_v4_to_v5.sql"
+                "schema/v4.sql"
+                    | "schema/v5.sql"
+                    | "schema/v6.sql"
+                    | "schema/v7.sql"
+                    | "schema/migrate_v4_to_v5.sql"
             )
         }) {
             assert!(sql.starts_with("-- family:"), "missing header: {name}");
@@ -195,7 +201,12 @@ mod tests {
                 sql.contains("\n-- parameters:"),
                 "missing parameter header: {name}"
             );
-            assert_eq!(sql.matches(';').count(), 1, "not one statement: {name}");
+            use rusqlite::fallible_iterator::FallibleIterator;
+            assert_eq!(
+                rusqlite::Batch::new(&connection, sql).count().unwrap(),
+                1,
+                "not one statement: {name}"
+            );
             let statement = connection
                 .prepare(sql)
                 .unwrap_or_else(|error| panic!("failed to prepare {name}: {error}"));
