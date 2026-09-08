@@ -146,3 +146,15 @@ nohint payload at585,473,955–598,419,082 canonical bytes, including at least
 The earlier sealed report remains untouched; this addendum narrows its unknowns
 and corrects prospective unique-target/race accounting. One unchanged-policy
 coverage diagnostic remains, #87 stays open, and no replay/product change ran.
+
+### Issue87 diagnostic-design research (2026-09-08)
+
+[Concrete unchanged-policy observation design and validators](issue87-diagnostic-design/README.md)
+add an oracle-only no-overlap ceiling65,446,350 canonical bytes and a
+240,892,334-byte lower bound needing another coverage explanation, under explicit
+same-path/span premises. Two-byte metadata layout witnesses, reason precedence,
+grant-credit conservation and successful-transaction-range/final-locator provenance
+make the diagnostic reviewable. Reused-triggered reservation work is not labelled
+avoidable. Executable validators reject malformed/race/cohort failures. This is
+research and analysis tooling; production instrumentation/replay remain unexecuted,
+#87 stays open, and earlier sealed artifacts remain unchanged.
