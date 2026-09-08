@@ -50,6 +50,9 @@ pub(crate) struct PreparedAdmission {
     packs: Vec<Vec<u8>>,
     objects: Vec<PreparedObject>,
     metrics: ObjectInsertMetrics,
+    native_base_max_pack: i64,
+    canonical_live_capacity: usize,
+    oversized_backing: usize,
 }
 
 impl PreparedAdmission {
@@ -82,10 +85,20 @@ impl PreparedAdmission {
             ..Default::default()
         };
 
+        let canonical_live_capacity = objects.iter().map(|o| o.bytes.capacity()).sum::<usize>();
+        if canonical_live_capacity > 6 * 1024 * 1024 {
+            return Err(StoreError::Io(std::io::Error::other(
+                "canonical data reservation",
+            )));
+        }
         let mut prepared = Self {
-            packs: Vec::new(),
+            // No pack-pointer growth during either lane: at most one pack/object.
+            packs: Vec::with_capacity(count),
             objects: Vec::with_capacity(count),
             metrics,
+            native_base_max_pack: 0,
+            canonical_live_capacity,
+            oversized_backing: 0,
         };
         let mut stats = crate::PhysicalStorageReceipt::default();
         let result = prepared.prepare_full(db, objects, &mut stats);
@@ -106,6 +119,15 @@ impl PreparedAdmission {
             input_associations,
             ..Default::default()
         };
+        // Native and legacy lanes preserve canonical input order independently.
+        // Publish the native lane first; no prepared record can become a base.
+        let (native, objects): (Vec<_>, Vec<_>) = objects
+            .into_iter()
+            .partition(|object| object.is_file_payload());
+        // The original input Vec has dropped; both actual lane allocations live.
+        search.input_associations = (native.capacity() + objects.capacity())
+            * std::mem::size_of::<AuthenticatedCanonicalObject>();
+        self.prepare_native(db, native, &mut search, stats)?;
         let mut ordinary = Vec::new();
         let mut bytes = 0usize;
         let mut count = 0usize;
@@ -132,6 +154,347 @@ impl PreparedAdmission {
             ordinary.push(object);
         }
         self.prepare_ordinary(db, ordinary, &mut search, stats)
+    }
+
+    fn physical_backing(&self) -> usize {
+        self.packs.iter().map(Vec::capacity).sum::<usize>() - self.oversized_backing
+    }
+
+    fn data_reserve(&self, extra: usize) -> Result<()> {
+        let owned =
+            self.canonical_live_capacity + self.packs.iter().map(Vec::capacity).sum::<usize>();
+        if owned + extra > 6 * 1024 * 1024 {
+            return Err(StoreError::Io(std::io::Error::other(
+                "prepared data reservation",
+            )));
+        }
+        Ok(())
+    }
+
+    fn native_scratch(
+        &self,
+        pending: &Vec<NativePrepared>,
+        groups: &Vec<pack::EncodedGroup>,
+        input_associations: usize,
+        extra: usize,
+    ) -> Result<()> {
+        let owned = self.physical_backing()
+            + pending.iter().map(|p| p.record.capacity()).sum::<usize>()
+            + groups.iter().map(|g| g.bytes.capacity()).sum::<usize>();
+        let associations = input_associations
+            + self.objects.capacity() * std::mem::size_of::<PreparedObject>()
+            + self.packs.capacity() * std::mem::size_of::<Vec<u8>>()
+            + pending.capacity() * std::mem::size_of::<NativePrepared>()
+            + groups.capacity() * std::mem::size_of::<pack::EncodedGroup>();
+        if owned + associations + extra > 2 * 1024 * 1024 {
+            return Err(StoreError::Io(std::io::Error::other(
+                "native scratch reservation",
+            )));
+        }
+        Ok(())
+    }
+
+    fn prepare_native(
+        &mut self,
+        db: &StoreDb,
+        objects: Vec<AuthenticatedCanonicalObject>,
+        search: &mut DeltaSearch,
+        stats: &mut crate::PhysicalStorageReceipt,
+    ) -> Result<()> {
+        if objects.is_empty() {
+            return Ok(());
+        }
+        let input_associations = search.input_associations;
+        let planned_associations = input_associations
+            + objects.len() * std::mem::size_of::<NativePrepared>()
+            + objects.len().min(pack::GROUP_COUNT_LIMIT)
+                * std::mem::size_of::<pack::EncodedGroup>()
+            + self.objects.capacity() * std::mem::size_of::<PreparedObject>()
+            + self.packs.capacity() * std::mem::size_of::<Vec<u8>>();
+        if planned_associations > 2 * 1024 * 1024 {
+            return Err(StoreError::Io(std::io::Error::other(
+                "native association reservation",
+            )));
+        }
+        let mut pending = Vec::<NativePrepared>::with_capacity(objects.len());
+        let mut groups =
+            Vec::<pack::EncodedGroup>::with_capacity(objects.len().min(pack::GROUP_COUNT_LIMIT));
+        let mut full_group_length = 4usize;
+        for object in objects {
+            self.native_scratch(
+                &pending,
+                &groups,
+                input_associations,
+                pack::NATIVE_ENCODE_WORKSPACE
+                    + 3 * (pack::NATIVE_FRAME_LIMIT + 37)
+                    + pack::NATIVE_RAW_LIMIT
+                    + 21,
+            )?;
+            let raw = layerfs_content::file::extent_codec::decode_chunk_payload(
+                layerfs_content::decode_bytes_object(&object.bytes)?,
+            )?;
+            let started = Instant::now();
+            let full = pack::native_compress(raw, None);
+            let elapsed = super::elapsed_ns(started);
+            stats.native_full_encode_calls += 1;
+            stats.native_full_encode_ns += elapsed;
+            stats.encoding_calls += 1;
+            stats.encoding_ns += elapsed;
+            let full = full?;
+            stats.native_full_frame_count += 1;
+            stats.native_full_frame_bytes += full.len() as u64;
+            // Grouping is frozen by the complete FULL alternative, not the
+            // eventual PREFIX size. Pack assembly still uses actual group bytes.
+            let next = 4 + 5 + full.len();
+            if full_group_length + next > pack::GROUP_LIMIT {
+                self.flush_native_group(
+                    &mut pending,
+                    &mut groups,
+                    input_associations,
+                    full.capacity(),
+                    stats,
+                )?;
+                full_group_length = 4;
+            }
+            full_group_length += next;
+            let mut terminal = diagnostic::state(&object);
+            let mut chosen = None;
+            let mut fallback = NativeFallback::NoHint;
+            stats.eligible_targets += 1;
+            stats.absent_predecessors += u64::from(!object.1.has_predecessor);
+            if let Some(id) = object.prior_ids().iter().flatten().next().copied() {
+                search.reads.begin_target();
+                if search.trials == 512
+                    || self
+                        .native_scratch(
+                            &pending,
+                            &groups,
+                            input_associations,
+                            full.capacity() + 1024 * 1024,
+                        )
+                        .is_err()
+                {
+                    fallback = NativeFallback::Budget;
+                    stats.budget_skips += 1;
+                    if search.trials == 512 {
+                        stats.match_budget_skips += 1;
+                        stats.diag_event_match_budget_count += 1;
+                        stats.diag_event_match_budget_bytes += object.bytes.len() as u64;
+                    } else {
+                        stats.memory_budget_skips += 1;
+                        stats.diag_event_memory_budget_count += 1;
+                        stats.diag_event_memory_budget_bytes += object.bytes.len() as u64;
+                    }
+                } else {
+                    stats.predecessor_hints += 1;
+                    match db.read_native_prior(id, &mut search.reads)? {
+                        read::NativePriorOutcome::Unavailable => {
+                            fallback = NativeFallback::Unavailable
+                        }
+                        read::NativePriorOutcome::UnsupportedLegacyDelta => {
+                            fallback = NativeFallback::LegacyDelta
+                        }
+                        read::NativePriorOutcome::UnsupportedRole => {
+                            fallback = NativeFallback::Role
+                        }
+                        read::NativePriorOutcome::Budget => {
+                            fallback = NativeFallback::Budget;
+                            stats.budget_skips += 1;
+                            stats.fetch_budget_skips += 1;
+                            stats.diag_event_fetch_budget_count += 1;
+                            stats.diag_event_fetch_budget_bytes += object.bytes.len() as u64;
+                        }
+                        read::NativePriorOutcome::Available {
+                            canonical,
+                            location,
+                            depth,
+                            raw_closure,
+                        } => {
+                            if depth >= 4
+                                || raw_closure
+                                    .checked_add(raw.len())
+                                    .is_none_or(|n| n > 1024 * 1024)
+                            {
+                                fallback = NativeFallback::Depth;
+                            } else if self
+                                .native_scratch(
+                                    &pending,
+                                    &groups,
+                                    input_associations,
+                                    pack::NATIVE_ENCODE_WORKSPACE
+                                        + full.capacity()
+                                        + 2 * (pack::NATIVE_FRAME_LIMIT + 37)
+                                        + canonical.bytes.capacity(),
+                                )
+                                .is_err()
+                            {
+                                fallback = NativeFallback::Budget;
+                                stats.budget_skips += 1;
+                                stats.memory_budget_skips += 1;
+                                stats.diag_event_memory_budget_count += 1;
+                                stats.diag_event_memory_budget_bytes += object.bytes.len() as u64;
+                            } else {
+                                stats.usable_bases += 1;
+                                stats.candidate_trials += 1;
+                                stats.diag_event_base += 1;
+                                stats.diag_event_base_bytes += object.bytes.len() as u64;
+                                search.trials += 1;
+                                let prefix =
+                                    layerfs_content::file::extent_codec::decode_chunk_payload(
+                                        layerfs_content::decode_bytes_object(&canonical.bytes)?,
+                                    )?;
+                                // The reader owns a separate canonical allocation;
+                                // target and prefix cannot overlap as codec operands.
+                                let started = Instant::now();
+                                let result = pack::native_compress(raw, Some(prefix));
+                                let elapsed = super::elapsed_ns(started);
+                                stats.native_prefix_encode_calls += 1;
+                                stats.native_prefix_encode_ns += elapsed;
+                                stats.encoding_calls += 1;
+                                stats.encoding_ns += elapsed;
+                                match result {
+                                    Ok(frame) => {
+                                        stats.native_prefix_frame_count += 1;
+                                        stats.native_prefix_frame_bytes += frame.len() as u64;
+                                        stats.diag_event_candidate += 1;
+                                        stats.diag_event_candidate_bytes +=
+                                            object.bytes.len() as u64;
+                                        if 37 + frame.len() < 5 + full.len() {
+                                            self.native_base_max_pack =
+                                                self.native_base_max_pack.max(location.pack);
+                                            chosen = Some(pack::native_encode_record(
+                                                raw.len(),
+                                                Some(id),
+                                                &frame,
+                                            )?);
+                                            terminal = diagnostic::DELTA;
+                                        } else {
+                                            fallback = NativeFallback::FullWins;
+                                        }
+                                    }
+                                    Err(StoreError::Io(_)) => {
+                                        // Codec helper has no I/O: this variant denotes
+                                        // its bounded workspace/output resource failure.
+                                        fallback = NativeFallback::Budget;
+                                        stats.budget_skips += 1;
+                                        stats.memory_budget_skips += 1;
+                                        stats.diag_event_memory_budget_count += 1;
+                                        stats.diag_event_memory_budget_bytes +=
+                                            object.bytes.len() as u64;
+                                    }
+                                    Err(error) => return Err(error),
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                stats.targets_without_hints += 1;
+            }
+            let delta = chosen.is_some();
+            if !delta {
+                fallback.note(object.bytes.len(), stats);
+                if terminal == diagnostic::BASE {
+                    terminal = match fallback {
+                        NativeFallback::Budget => diagnostic::BUDGET,
+                        NativeFallback::FullWins => diagnostic::NO_DELTA,
+                        _ => diagnostic::BASE,
+                    };
+                }
+                if matches!(fallback, NativeFallback::Budget) {
+                    stats.diag_event_budget += 1;
+                    stats.diag_event_budget_bytes += object.bytes.len() as u64;
+                }
+            }
+            let record = match chosen {
+                Some(record) => record,
+                None => pack::native_encode_record(raw.len(), None, &full)?,
+            };
+            stats.diag_invalid += u64::from(object.1.diagnostic_grants != 0);
+            pending.push(NativePrepared {
+                canonical: object.0,
+                record,
+                delta,
+                terminal,
+            });
+        }
+        self.flush_native_group(&mut pending, &mut groups, input_associations, 0, stats)?;
+        if !groups.is_empty() {
+            let length =
+                16 + 16 * groups.len() + groups.iter().map(|g| g.bytes.len()).sum::<usize>();
+            self.native_scratch(&pending, &groups, input_associations, length)?;
+            self.data_reserve(length)?;
+            self.packs.push(pack::assemble_native(&groups)?);
+        }
+        Ok(())
+    }
+
+    fn flush_native_group(
+        &mut self,
+        pending: &mut Vec<NativePrepared>,
+        groups: &mut Vec<pack::EncodedGroup>,
+        input_associations: usize,
+        live_full_capacity: usize,
+        stats: &mut crate::PhysicalStorageReceipt,
+    ) -> Result<()> {
+        if pending.is_empty() {
+            return Ok(());
+        }
+        let group_length =
+            4 + 4 * pending.len() + pending.iter().map(|p| p.record.len()).sum::<usize>();
+        let assembled_length =
+            16 + 16 * groups.len() + groups.iter().map(|g| g.bytes.len()).sum::<usize>();
+        // Conservative peak: old records, copied group, old groups, copied pack
+        // and references can coexist. There is no codec context at this stage.
+        self.native_scratch(
+            pending,
+            groups,
+            input_associations,
+            live_full_capacity
+                + group_length
+                + assembled_length
+                + pending.len() * std::mem::size_of::<&[u8]>(),
+        )?;
+        let refs = pending
+            .iter()
+            .map(|p| p.record.as_slice())
+            .collect::<Vec<_>>();
+        let group = pack::native_group(&refs)?;
+        drop(refs);
+        let next_bytes = 16
+            + 16 * (groups.len() + 1)
+            + group.bytes.len()
+            + groups.iter().map(|g| g.bytes.len()).sum::<usize>();
+        let next_records = group.records + groups.iter().map(|g| g.records).sum::<usize>();
+        if next_bytes > pack::PACK_LIMIT
+            || groups.len() == pack::GROUP_COUNT_LIMIT
+            || next_records > pack::RECORD_COUNT_LIMIT
+        {
+            self.data_reserve(assembled_length)?;
+            self.packs.push(pack::assemble_native(groups)?);
+            groups.clear();
+        }
+        let pack = self.packs.len();
+        let group_number = groups.len();
+        for (record_number, entry) in pending.drain(..).enumerate() {
+            let length = entry.canonical.bytes.len();
+            self.objects.push(PreparedObject {
+                id: entry.canonical.id,
+                length,
+                pack,
+                group: group_number,
+                record: record_number,
+                canonical: 0..0,
+                // Native FULL is internally compressed too: final CAS must retain
+                // the authentic canonical operand, never compare frame bytes.
+                retained: Some(entry.canonical.bytes),
+                delta: entry.delta,
+                diagnostic_terminal: entry.terminal,
+            });
+        }
+        stats.selected_encoded_bytes += group.bytes.len() as u64;
+        groups.push(group);
+        Ok(())
     }
 
     fn prepare_ordinary(
@@ -177,7 +540,7 @@ impl PreparedAdmission {
                 .map(|group| group.capacity() * std::mem::size_of::<usize>())
                 .sum::<usize>()
             + encoded.capacity() * std::mem::size_of::<pack::EncodedGroup>();
-        let mut backing = 0usize;
+        let mut backing = self.physical_backing();
         for (group_number, group) in groups.iter().enumerate() {
             let mut deltas = Vec::with_capacity(group.len());
             // All live delta capacities sum to at most the group's FULL decoded
@@ -280,15 +643,22 @@ impl PreparedAdmission {
                     stats.diag_event_mixed_rejection += 1;
                     stats.diag_event_mixed_rejection_bytes += object.bytes.len() as u64;
                 }
+                let canonical_length = object.bytes.len();
+                let retained = if delta || selected.codec == pack::Codec::Zstandard {
+                    Some(std::mem::take(&mut object.0.bytes))
+                } else {
+                    self.canonical_live_capacity -= object.0.bytes.capacity();
+                    object.0.bytes = Vec::new();
+                    None
+                };
                 self.objects.push(PreparedObject {
                     id: object.id,
-                    length: object.bytes.len(),
+                    length: canonical_length,
                     pack: pack_index,
                     group: group_number,
                     record: record_number,
                     canonical: cursor + 1..end,
-                    retained: (delta || selected.codec == pack::Codec::Zstandard)
-                        .then(|| std::mem::take(&mut object.0.bytes)),
+                    retained,
                     delta,
                     diagnostic_terminal,
                 });
@@ -297,6 +667,13 @@ impl PreparedAdmission {
             offset += selected.bytes.len();
             backing += selected.bytes.capacity();
             encoded.push(selected);
+        }
+        let length = 16 + 16 * encoded.len() + encoded.iter().map(|g| g.bytes.len()).sum::<usize>();
+        self.data_reserve(length)?;
+        if backing + fixed_associations + length > 2 * 1024 * 1024 {
+            return Err(StoreError::Io(std::io::Error::other(
+                "legacy assembly reservation",
+            )));
         }
         self.packs.push(pack::assemble(&encoded)?);
         Ok(())
@@ -324,7 +701,9 @@ impl PreparedAdmission {
         digest.update(&object.bytes);
         file.write_all(&prefix)?;
         file.write_all(&object.bytes)?;
+        self.canonical_live_capacity -= object.bytes.capacity();
         drop(object);
+        self.data_reserve(total)?;
         file.seek(SeekFrom::Start(0))?;
         let mut bytes = vec![0; total];
         file.read_exact(&mut bytes)?;
@@ -343,6 +722,9 @@ impl PreparedAdmission {
             delta: false,
             diagnostic_terminal: 0,
         });
+        // This exception belongs only to the existing constructed version-1
+        // RAW singleton; ordinary/native packs never enter this data-only lane.
+        self.oversized_backing += bytes.capacity();
         self.packs.push(bytes);
         Ok(())
     }
@@ -412,6 +794,15 @@ impl PreparedAdmission {
                     diagnostic_stats.diag_new_full_count += 1;
                     diagnostic_stats.diag_new_full_bytes += object.length as u64;
                 }
+                if self.packs[object.pack][8..12] == [2, 0, 0, 0] {
+                    if object.delta {
+                        diagnostic_stats.native_admitted_prefix_count += 1;
+                        diagnostic_stats.native_admitted_prefix_bytes += object.length as u64;
+                    } else {
+                        diagnostic_stats.native_admitted_full_count += 1;
+                        diagnostic_stats.native_admitted_full_bytes += object.length as u64;
+                    }
+                }
                 diagnostic::terminal(
                     object.diagnostic_terminal,
                     object.length,
@@ -455,6 +846,11 @@ impl PreparedAdmission {
             [],
             |row| row.get(0),
         )?;
+        // Bases came from selected immutable locations before preparation.
+        // All newly assigned IDs exceed this transaction's existing maximum.
+        if self.native_base_max_pack > next {
+            return Err(StoreError::Integrity("native base publication chronology"));
+        }
         let mut packs = Vec::new();
         let mut locators = Vec::new();
         for (index, objects) in winners.iter().enumerate() {
@@ -537,6 +933,52 @@ impl PreparedAdmission {
             }
         }
         Ok(diagnostic_stats)
+    }
+}
+
+struct NativePrepared {
+    canonical: super::CanonicalObject,
+    record: Vec<u8>,
+    delta: bool,
+    terminal: u8,
+}
+
+#[derive(Clone, Copy)]
+enum NativeFallback {
+    NoHint,
+    Unavailable,
+    LegacyDelta,
+    Role,
+    Depth,
+    Budget,
+    FullWins,
+}
+impl NativeFallback {
+    fn note(self, bytes: usize, stats: &mut crate::PhysicalStorageReceipt) {
+        macro_rules! count {
+            ($n:ident,$b:ident) => {{
+                stats.$n += 1;
+                stats.$b += bytes as u64;
+            }};
+        }
+        match self {
+            Self::NoHint => count!(native_fallback_no_hint_count, native_fallback_no_hint_bytes),
+            Self::Unavailable => count!(
+                native_fallback_unavailable_count,
+                native_fallback_unavailable_bytes
+            ),
+            Self::LegacyDelta => count!(
+                native_fallback_legacy_delta_count,
+                native_fallback_legacy_delta_bytes
+            ),
+            Self::Role => count!(native_fallback_role_count, native_fallback_role_bytes),
+            Self::Depth => count!(native_fallback_depth_count, native_fallback_depth_bytes),
+            Self::Budget => count!(native_fallback_budget_count, native_fallback_budget_bytes),
+            Self::FullWins => count!(
+                native_fallback_full_wins_count,
+                native_fallback_full_wins_bytes
+            ),
+        }
     }
 }
 
@@ -753,3 +1195,6 @@ pub(super) fn compare(
     metrics.conflict_read_ns += super::elapsed_ns(started);
     Ok(())
 }
+
+#[cfg(test)]
+mod native_tests;

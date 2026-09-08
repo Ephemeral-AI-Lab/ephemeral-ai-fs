@@ -187,6 +187,13 @@ impl AsRef<CanonicalObject> for CanonicalObject {
     }
 }
 impl AuthenticatedCanonicalObject {
+    /// Real file-owner provenance, independent of diagnostic outcome counters.
+    fn is_file_payload(&self) -> bool {
+        self.1.diagnostic & diagnostic::FILE != 0
+            && diagnostic::chunk(&self.bytes)
+            && self.bytes.len() + 9 <= pack::GROUP_LIMIT
+    }
+
     pub(crate) fn prior_ids(&self) -> &[Option<ObjectId>; 4] {
         &self.1.prior_ids
     }
@@ -3957,7 +3964,7 @@ mod tests {
         assert!(matches!(
             failed,
             Err(StoreError::Integrity("injected transaction failure"))
-        ));
+        ), "actual error (None means unexpected success): {:?}", failed.as_ref().err());
         assert_eq!(store.store_counts().unwrap().objects, 2);
         assert!(store.workspace_stage([2; 16]).unwrap().is_none());
         drop(store);

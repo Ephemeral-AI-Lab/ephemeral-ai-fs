@@ -1,4 +1,5 @@
-//! D-only fixed observations. None of these values decide product admission.
+//! Fixed observations. Outcome counters never decide product admission.
+//! The actual file-owner provenance bit is also used by the native payload lane.
 use super::AuthenticatedCanonicalObject;
 use crate::PhysicalStorageReceipt as Receipt;
 
@@ -34,9 +35,7 @@ pub(super) fn chunk(bytes: &[u8]) -> bool {
 }
 
 pub(super) fn file(object: &AuthenticatedCanonicalObject) -> bool {
-    object.1.diagnostic & FILE != 0
-        && chunk(&object.bytes)
-        && object.bytes.len() + 9 <= super::pack::GROUP_LIMIT
+    object.is_file_payload()
 }
 
 pub(super) fn state(object: &AuthenticatedCanonicalObject) -> u8 {

@@ -1,9 +1,9 @@
 //! Connection-only extraction followed by bounded target and FULL-base waves.
-use super::{pack, CanonicalObject, OBJECT_PAGE_COUNT};
+use super::{CanonicalObject, OBJECT_PAGE_COUNT, pack};
 use crate::schema::StoreDb;
 use crate::{PhysicalStorageReceipt, Result, StoreError};
 use layerfs_content::ObjectId;
-use rusqlite::{limits::Limit, params_from_iter, OptionalExtension};
+use rusqlite::{OptionalExtension, limits::Limit, params_from_iter};
 use std::collections::BTreeMap;
 
 // Leave the rest of the 2-MiB physical scratch reservation for group backing,
@@ -61,6 +61,42 @@ impl HintReadBudget {
 pub(super) enum HintRecord {
     Full(CanonicalObject),
     Anchor(ObjectId),
+}
+
+/// A missing optional hint differs from corruption in an admitted dependency.
+pub(super) enum NativePriorOutcome {
+    Available {
+        canonical: CanonicalObject,
+        location: Location,
+        depth: u8,
+        raw_closure: usize,
+    },
+    Unavailable,
+    UnsupportedLegacyDelta,
+    UnsupportedRole,
+    Budget,
+}
+
+enum Extraction {
+    Legacy(pack::GroupEntry, Vec<u8>),
+    Native {
+        record: Vec<u8>,
+        requested: usize,
+        parsed: usize,
+    },
+    NativeUnsupported,
+}
+
+struct NativeNode {
+    id: ObjectId,
+    location: Location,
+    record: Vec<u8>,
+}
+
+fn chunk_payload(canonical: &[u8]) -> Result<&[u8]> {
+    Ok(layerfs_content::file::extent_codec::decode_chunk_payload(
+        layerfs_content::decode_bytes_object(canonical)?,
+    )?)
 }
 
 pub(super) fn validation_reserve(length: usize) -> usize {
@@ -169,50 +205,120 @@ impl StoreDb {
 
     /// The guard and Blob never leave this extraction boundary.
     fn extract_group(&self, pack_id: i64, group: usize) -> Result<(pack::GroupEntry, Vec<u8>)> {
-        self.extract_hint_group(pack_id, group, None)?
-            .ok_or(StoreError::Integrity("required group extraction"))
+        match self.extract_record_group(pack_id, group, 0, false, None)? {
+            Some(Extraction::Legacy(entry, encoded)) => Ok((entry, encoded)),
+            _ => Err(StoreError::Integrity("legacy required group version")),
+        }
     }
 
-    fn extract_hint_group(
+    fn extract_record_group(
         &self,
         pack_id: i64,
         group: usize,
-        budget: Option<&mut HintReadBudget>,
-    ) -> Result<Option<(pack::GroupEntry, Vec<u8>)>> {
+        ordinal: usize,
+        native: bool,
+        mut budget: Option<&mut HintReadBudget>,
+    ) -> Result<Option<Extraction>> {
+        if budget.as_deref_mut().is_some_and(|b| !b.charge(32, 0)) {
+            return Ok(None);
+        }
         let connection = self.reader()?;
         let blob = connection.blob_open("main", "object_packs", "data", pack_id, true)?;
         let length = blob.len();
-        let mut header = [0; 16];
-        blob.read_at_exact(&mut header, 0)?;
-        let count = pack::header(&header, length)?;
-        if group >= count {
+        let mut header_bytes = [0; 16];
+        blob.read_at_exact(&mut header_bytes, 0)?;
+        let header = pack::versioned_header(&header_bytes, length)?;
+        if group >= header.group_count {
             return Err(StoreError::Integrity("object group locator"));
         }
         let mut directory = [0; 16];
         blob.read_at_exact(&mut directory, 16 + 16 * group)?;
-        let entry = pack::entry(&directory, count, length)?;
+        let entry = pack::versioned_entry(&directory, header, length)?;
         self.note_physical(PhysicalStorageReceipt {
             group_fetches: 1,
             blob_ranges: 2,
             ..Default::default()
         });
-        if let Some(budget) = budget {
-            if !budget.charge(entry.range.len(), entry.decoded_length) {
+        if header.version == pack::Version::Legacy {
+            if budget
+                .as_deref_mut()
+                .is_some_and(|b| !b.charge(entry.range.len(), entry.decoded_length))
+            {
                 return Ok(None);
             }
+            if entry.oversized {
+                return Ok(Some(Extraction::Legacy(entry, Vec::new())));
+            }
+            let mut encoded = vec![0; entry.range.len()];
+            blob.read_at_exact(&mut encoded, entry.range.start)?;
+            self.note_physical(PhysicalStorageReceipt {
+                encoded_read_bytes: encoded.len() as u64,
+                blob_ranges: 1,
+                ..Default::default()
+            });
+            return Ok(Some(Extraction::Legacy(entry, encoded)));
         }
-        if entry.oversized {
-            // Carry checked directory facts into bounded singleton extraction.
-            return Ok(Some((entry, Vec::new())));
-        }
-        let mut encoded = vec![0; entry.range.len()];
-        blob.read_at_exact(&mut encoded, entry.range.start)?;
         self.note_physical(PhysicalStorageReceipt {
-            encoded_read_bytes: encoded.len() as u64,
-            blob_ranges: 1,
+            native_record_fetches: 1,
+            native_request_bytes: 32,
             ..Default::default()
         });
-        Ok(Some((entry, encoded)))
+        if !native {
+            return Ok(Some(Extraction::NativeUnsupported));
+        }
+        if entry.range.len() < 8 {
+            return Err(StoreError::Integrity("native group framing"));
+        }
+        if budget.as_deref_mut().is_some_and(|b| !b.charge(4, 4)) {
+            return Ok(None);
+        }
+        let mut count_bytes = [0; 4];
+        blob.read_at_exact(&mut count_bytes, entry.range.start)?;
+        self.note_native_range(4);
+        let count = u32::from_le_bytes(count_bytes) as usize;
+        if !(1..=pack::RECORD_COUNT_LIMIT).contains(&count) || 4 + 4 * count >= entry.range.len() {
+            return Err(StoreError::Integrity("native record count"));
+        }
+        if budget
+            .as_deref_mut()
+            .is_some_and(|b| !b.charge(4 * count, 4 * count))
+        {
+            return Ok(None);
+        }
+        let mut ends = vec![0; 4 * count];
+        blob.read_at_exact(&mut ends, entry.range.start + 4)?;
+        self.note_native_range(ends.len());
+        let range = pack::native_record_range(count, &ends, entry.range.len(), ordinal)?;
+        drop(ends);
+        if range.len() > 37 + pack::NATIVE_FRAME_LIMIT {
+            return Err(StoreError::Integrity("native record bound"));
+        }
+        if budget
+            .as_deref_mut()
+            .is_some_and(|b| !b.charge(range.len(), range.len()))
+        {
+            return Ok(None);
+        }
+        let mut record = vec![0; range.len()];
+        blob.read_at_exact(&mut record, entry.range.start + range.start)?;
+        self.note_native_range(record.len());
+        pack::native_record(&record)?;
+        let parsed = 4 + 4 * count + record.len();
+        Ok(Some(Extraction::Native {
+            record,
+            requested: 32 + parsed,
+            parsed,
+        }))
+    }
+
+    fn note_native_range(&self, bytes: usize) {
+        self.note_physical(PhysicalStorageReceipt {
+            encoded_read_bytes: bytes as u64,
+            blob_ranges: 1,
+            native_request_bytes: bytes as u64,
+            native_parser_bytes: bytes as u64,
+            ..Default::default()
+        });
     }
 
     /// Inspect one selected predecessor representation. DELTA hints expose their
@@ -239,12 +345,17 @@ impl StoreDb {
         if location.canonical_length > pack::GROUP_LIMIT {
             return Ok(None);
         }
-        if !budget.charge(32, 0) {
-            return Ok(None);
-        }
-        let Some((entry, encoded)) =
-            self.extract_hint_group(location.pack, location.group, Some(budget))?
+        let Some(extracted) = self.extract_record_group(
+            location.pack,
+            location.group,
+            location.record,
+            false,
+            Some(budget),
+        )?
         else {
+            return Ok(None);
+        };
+        let Extraction::Legacy(entry, encoded) = extracted else {
             return Ok(None);
         };
         if entry.oversized {
@@ -288,6 +399,235 @@ impl StoreDb {
         selected
             .map(Some)
             .ok_or(StoreError::Integrity("hint record locator"))
+    }
+
+    /// The caller owns begin_target; this shares the legacy optional-work budget.
+    pub(super) fn read_native_prior(
+        &self,
+        id: ObjectId,
+        budget: &mut HintReadBudget,
+    ) -> Result<NativePriorOutcome> {
+        if !self.native_lookup_allowed(Some(budget)) {
+            return Ok(NativePriorOutcome::Budget);
+        }
+        let Some(location) = self.object_locations(&[id])?.remove(&id) else {
+            return Ok(NativePriorOutcome::Unavailable);
+        };
+        self.native_chain(id, location, None, Some(budget))
+    }
+
+    fn native_lookup_allowed(&self, budget: Option<&mut HintReadBudget>) -> bool {
+        if let Some(budget) = budget {
+            if budget.exhausted || budget.target_fetches >= 8 {
+                budget.exhausted = true;
+                return false;
+            }
+            budget.target_fetches += 1;
+        }
+        self.note_physical(PhysicalStorageReceipt {
+            base_fetches: 1,
+            ..Default::default()
+        });
+        true
+    }
+
+    fn native_chain(
+        &self,
+        target: ObjectId,
+        target_location: Location,
+        mut initial: Option<Extraction>,
+        mut budget: Option<&mut HintReadBudget>,
+    ) -> Result<NativePriorOutcome> {
+        let optional = budget.is_some();
+        let mut nodes = Vec::<NativeNode>::with_capacity(5);
+        let mut id = target;
+        let mut location = target_location;
+        let mut raw_closure = 0usize;
+        let mut encoded_work = 0usize;
+        let mut decoded_work = 0usize;
+        let mut owned_frames = 0usize;
+        let mut canonical;
+        loop {
+            let extracted = match initial.take() {
+                Some(extracted) => extracted,
+                None => match self.extract_record_group(
+                    location.pack,
+                    location.group,
+                    location.record,
+                    true,
+                    budget.as_deref_mut(),
+                )? {
+                    Some(extracted) => extracted,
+                    None => return Ok(NativePriorOutcome::Budget),
+                },
+            };
+            if !(21..=21 + pack::NATIVE_RAW_LIMIT).contains(&location.canonical_length) {
+                if optional && nodes.is_empty() && matches!(&extracted, Extraction::Legacy(..)) {
+                    return Ok(NativePriorOutcome::UnsupportedRole);
+                }
+                return Err(StoreError::Integrity("native dependency canonical length"));
+            }
+            let (requested, parsed) = match &extracted {
+                Extraction::Legacy(entry, _) => (32 + entry.range.len(), entry.decoded_length),
+                Extraction::Native {
+                    requested, parsed, ..
+                } => (*requested, *parsed),
+                Extraction::NativeUnsupported => unreachable!(),
+            };
+            encoded_work += requested;
+            decoded_work += parsed + location.canonical_length;
+            if encoded_work > 393_216 || decoded_work > 524_288 {
+                return Err(StoreError::Integrity("native chain work bound"));
+            }
+            if budget
+                .as_deref_mut()
+                .is_some_and(|b| !b.charge(0, location.canonical_length))
+            {
+                return Ok(NativePriorOutcome::Budget);
+            }
+            raw_closure += location.canonical_length - 21;
+            if raw_closure > 1_048_576 {
+                return Err(StoreError::Integrity("native closure bound"));
+            }
+            match extracted {
+                Extraction::Legacy(entry, encoded) => {
+                    if entry.oversized {
+                        return Err(StoreError::Integrity("native oversized legacy base"));
+                    }
+                    self.note_physical(PhysicalStorageReceipt {
+                        decoded_read_bytes: entry.decoded_length as u64,
+                        decompression_calls: u64::from(entry.codec == pack::Codec::Zstandard),
+                        ..Default::default()
+                    });
+                    let decoded = pack::decode_group(entry, encoded)?;
+                    let mut full = None;
+                    let mut delta = false;
+                    pack::visit_records(&decoded, false, |index, record| {
+                        if index == location.record {
+                            match record {
+                                pack::Record::Full(bytes) => {
+                                    authenticate(id, bytes, location.canonical_length)?;
+                                    full = Some(bytes.to_vec());
+                                }
+                                pack::Record::Delta { .. } => delta = true,
+                            }
+                        }
+                        Ok(())
+                    })?;
+                    if delta {
+                        if optional && nodes.is_empty() {
+                            return Ok(NativePriorOutcome::UnsupportedLegacyDelta);
+                        }
+                        return Err(StoreError::Integrity("native dependency legacy DELTA"));
+                    }
+                    canonical =
+                        full.ok_or(StoreError::Integrity("native legacy record locator"))?;
+                    if chunk_payload(&canonical).is_err() {
+                        if optional && nodes.is_empty() {
+                            return Ok(NativePriorOutcome::UnsupportedRole);
+                        }
+                        return Err(StoreError::Integrity("native dependency role"));
+                    }
+                    break;
+                }
+                Extraction::Native { record, .. } => {
+                    let (raw_length, base) = match pack::native_record(&record)? {
+                        pack::NativeRecord::Full { raw_length, .. } => (raw_length, None),
+                        pack::NativeRecord::Prefix {
+                            raw_length, base, ..
+                        } => (raw_length, Some(base)),
+                    };
+                    if raw_length + 21 != location.canonical_length {
+                        return Err(StoreError::Integrity("native canonical length"));
+                    }
+                    owned_frames += record.capacity();
+                    // Worst simultaneous ownership includes both legacy group buffers,
+                    // two raw outputs plus canonical framing, directory, and static codec.
+                    if owned_frames
+                        + nodes.capacity() * std::mem::size_of::<NativeNode>()
+                        + 2 * pack::GROUP_LIMIT
+                        + 3 * (pack::NATIVE_RAW_LIMIT + 21)
+                        + 4 * pack::RECORD_COUNT_LIMIT
+                        + pack::NATIVE_DECODE_WORKSPACE
+                        > VALIDATION_RESERVE
+                    {
+                        return Err(StoreError::Integrity("native chain scratch bound"));
+                    }
+                    nodes.push(NativeNode {
+                        id,
+                        location,
+                        record,
+                    });
+                    let Some(base) = base else {
+                        canonical = Vec::new();
+                        break;
+                    };
+                    if nodes.len() >= 5 || nodes.iter().any(|node| node.id == base) {
+                        return Err(StoreError::Integrity("native dependency depth or cycle"));
+                    }
+                    if !self.native_lookup_allowed(budget.as_deref_mut()) {
+                        return Ok(NativePriorOutcome::Budget);
+                    }
+                    let next = self
+                        .object_locations(&[base])?
+                        .remove(&base)
+                        .ok_or(StoreError::Integrity("native dependency missing"))?;
+                    if next.pack >= location.pack {
+                        return Err(StoreError::Integrity("native dependency chronology"));
+                    }
+                    self.note_physical(PhysicalStorageReceipt {
+                        native_dependency_edges: 1,
+                        ..Default::default()
+                    });
+                    id = base;
+                    location = next;
+                }
+                Extraction::NativeUnsupported => unreachable!(),
+            }
+        }
+        let depth = if canonical.is_empty() {
+            nodes.len() - 1
+        } else {
+            nodes.len()
+        };
+        for node in nodes.iter().rev() {
+            let (raw_length, frame, prefix) = match pack::native_record(&node.record)? {
+                pack::NativeRecord::Full { raw_length, frame } => (raw_length, frame, None),
+                pack::NativeRecord::Prefix {
+                    raw_length, frame, ..
+                } => (raw_length, frame, Some(chunk_payload(&canonical)?)),
+            };
+            let started = std::time::Instant::now();
+            let raw = pack::native_decompress(frame, raw_length, prefix);
+            self.note_physical(PhysicalStorageReceipt {
+                native_decode_calls: 1,
+                native_decode_ns: started.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+                native_raw_decoded_bytes: if raw.is_ok() { raw_length as u64 } else { 0 },
+                ..Default::default()
+            });
+            let raw = raw?;
+            canonical = layerfs_content::file::extent_codec::encode_chunk_object(&raw)?;
+            authenticate(node.id, &canonical, node.location.canonical_length)?;
+        }
+        let mut stats = PhysicalStorageReceipt::default();
+        match depth {
+            0 => stats.native_depth_0 = 1,
+            1 => stats.native_depth_1 = 1,
+            2 => stats.native_depth_2 = 1,
+            3 => stats.native_depth_3 = 1,
+            4 => stats.native_depth_4 = 1,
+            _ => return Err(StoreError::Integrity("native depth bound")),
+        }
+        self.note_physical(stats);
+        Ok(NativePriorOutcome::Available {
+            canonical: CanonicalObject {
+                id: target,
+                bytes: canonical,
+            },
+            location: target_location,
+            depth: depth as u8,
+            raw_closure,
+        })
     }
 
     fn singleton_range(
@@ -417,7 +757,24 @@ impl StoreDb {
         for ((pack_id, group), targets) in groups {
             // The selected entry decides the 65528..65536 RAW/DELTA overlap.
             // Do not fetch its directory a second time just to choose the route.
-            let (entry, encoded) = self.extract_group(pack_id, group)?;
+            let extracted = self
+                .extract_record_group(pack_id, group, targets[0].1.record, true, None)?
+                .ok_or(StoreError::Integrity("required native extraction"))?;
+            let (entry, encoded) = match extracted {
+                Extraction::Legacy(entry, encoded) => (entry, encoded),
+                first @ Extraction::Native { .. } => {
+                    let mut initial = Some(first);
+                    for (id, location) in record_slots(targets)?.into_values() {
+                        let result = self.native_chain(id, location, initial.take(), None)?;
+                        let NativePriorOutcome::Available { canonical, .. } = result else {
+                            return Err(StoreError::Integrity("required native chain"));
+                        };
+                        emit(canonical)?;
+                    }
+                    continue;
+                }
+                Extraction::NativeUnsupported => unreachable!(),
+            };
             if entry.oversized {
                 let [(id, location)] = targets.as_slice() else {
                     return Err(StoreError::Integrity("singleton locator alias"));
@@ -654,3 +1011,6 @@ fn finish_deltas(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod native_tests;
