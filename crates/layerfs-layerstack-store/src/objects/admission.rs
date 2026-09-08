@@ -13,111 +13,6 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::ops::Range;
 use std::time::Instant;
 
-// ponytail: one page-tail slot, not an asynchronous admission queue. Reject the
-// treatment if scoped-worker overhead exceeds its measured publication overlap.
-const LOOKAHEAD_FRAME_BYTES: usize = 128 * 1024;
-
-#[derive(Default)]
-pub(super) struct FullLookahead {
-    frames: Vec<(ObjectId, Vec<u8>)>,
-    bytes: usize,
-}
-
-impl FullLookahead {
-    fn eligible(object: &AuthenticatedCanonicalObject) -> bool {
-        object.is_file_payload()
-            && !object.1.has_predecessor
-            && object.prior_ids().iter().all(Option::is_none)
-    }
-
-    pub(super) fn owned(&self) -> usize {
-        self.bytes + self.frames.capacity() * std::mem::size_of::<(ObjectId, Vec<u8>)>()
-    }
-
-    pub(super) fn discard(&mut self, db: &StoreDb) {
-        db.note_physical(crate::PhysicalStorageReceipt {
-            native_lookahead_discarded: self
-                .frames
-                .iter()
-                .filter(|(_, frame)| !frame.is_empty())
-                .count() as u64,
-            ..Default::default()
-        });
-        *self = Self::default();
-    }
-
-    fn take(&mut self, id: ObjectId) -> Option<Vec<u8>> {
-        let index = self.frames.binary_search_by_key(&id, |(id, _)| *id).ok()?;
-        let frame = std::mem::take(&mut self.frames[index].1);
-        if frame.is_empty() {
-            return None;
-        }
-        self.bytes -= frame.capacity();
-        if self.bytes == 0 {
-            self.frames = Vec::new();
-        }
-        Some(frame)
-    }
-
-    fn encode(
-        objects: &[AuthenticatedCanonicalObject],
-        frame_budget: usize,
-        stats: &mut crate::PhysicalStorageReceipt,
-    ) -> Result<Self> {
-        let count = objects
-            .iter()
-            .filter(|object| Self::eligible(object))
-            .count();
-        if count * std::mem::size_of::<(ObjectId, Vec<u8>)>() > frame_budget {
-            return Ok(Self::default());
-        }
-        let mut output = Self {
-            frames: Vec::with_capacity(count),
-            bytes: 0,
-        };
-        stats.native_lookahead_frame_peak_bytes = output.owned() as u64;
-        let mut encoder = None;
-        let result = (|| {
-            for object in objects.iter().filter(|object| Self::eligible(object)) {
-                let raw = layerfs_content::file::extent_codec::decode_chunk_payload(
-                    layerfs_content::decode_bytes_object(&object.bytes)?,
-                )?;
-                if output
-                    .owned()
-                    .saturating_add(pack::native_frame_capacity(raw.len())?)
-                    > frame_budget
-                {
-                    break;
-                }
-                let started = Instant::now();
-                if encoder.is_none() {
-                    encoder = Some(pack::NativeEncoder::new()?);
-                }
-                let frame = encoder.as_mut().unwrap().compress(raw, None);
-                let elapsed = super::elapsed_ns(started);
-                stats.native_full_encode_calls += 1;
-                stats.native_full_encode_ns += elapsed;
-                stats.encoding_calls += 1;
-                stats.encoding_ns += elapsed;
-                let frame = frame?;
-                stats.native_full_frame_count += 1;
-                stats.native_full_frame_bytes += frame.len() as u64;
-                stats.native_lookahead_encoded += 1;
-                output.bytes += frame.capacity();
-                output.frames.push((object.id, frame));
-                stats.native_lookahead_frame_peak_bytes = output.owned() as u64;
-            }
-            Ok(())
-        })();
-        if let Err(error) = result {
-            stats.native_lookahead_discarded += output.frames.len() as u64;
-            return Err(error);
-        }
-        output.frames.sort_unstable_by_key(|(id, _)| *id);
-        Ok(output)
-    }
-}
-
 struct PreparedObject {
     id: ObjectId,
     length: usize,
@@ -161,7 +56,6 @@ pub(crate) struct PreparedAdmission {
     native_base_max_pack: i64,
     canonical_live_capacity: usize,
     oversized_backing: usize,
-    full_lookahead: FullLookahead,
 }
 
 impl PreparedAdmission {
@@ -176,13 +70,6 @@ impl PreparedAdmission {
         }
         missing.1.ensure_active()?;
         let objects = missing.0;
-        let mut full_lookahead = missing.4;
-        // A mixed/hinted batch retains its original codec headroom and decisions.
-        if objects.iter().any(|object| {
-            object.1.has_predecessor || object.prior_ids().iter().any(Option::is_some)
-        }) {
-            full_lookahead.discard(db);
-        }
         let length = objects
             .iter()
             .try_fold(0usize, |sum, object| sum.checked_add(object.bytes.len()))
@@ -209,9 +96,6 @@ impl PreparedAdmission {
         };
 
         let canonical_live_capacity = objects.iter().map(|o| o.bytes.capacity()).sum::<usize>();
-        if canonical_live_capacity.saturating_add(full_lookahead.owned()) > 6 * 1024 * 1024 {
-            full_lookahead.discard(db);
-        }
         if canonical_live_capacity > 6 * 1024 * 1024 {
             return Err(StoreError::Io(std::io::Error::other(
                 "canonical data reservation",
@@ -228,7 +112,6 @@ impl PreparedAdmission {
             native_base_max_pack: 0,
             canonical_live_capacity,
             oversized_backing: 0,
-            full_lookahead,
         };
         let mut stats = crate::PhysicalStorageReceipt::default();
         let result = prepared.prepare_full(db, objects, &mut stats);
@@ -258,7 +141,6 @@ impl PreparedAdmission {
         search.input_associations = (native.capacity() + objects.capacity())
             * std::mem::size_of::<AuthenticatedCanonicalObject>();
         self.prepare_native(db, native, &mut search, stats)?;
-        self.full_lookahead.discard(db);
         let mut ordinary = Vec::new();
         let mut bytes = 0usize;
         let mut count = 0usize;
@@ -292,9 +174,8 @@ impl PreparedAdmission {
     }
 
     fn data_reserve(&self, extra: usize) -> Result<()> {
-        let owned = self.canonical_live_capacity
-            + self.packs.iter().map(Vec::capacity).sum::<usize>()
-            + self.full_lookahead.owned();
+        let owned =
+            self.canonical_live_capacity + self.packs.iter().map(Vec::capacity).sum::<usize>();
         if owned + extra > 6 * 1024 * 1024 {
             return Err(StoreError::Io(std::io::Error::other(
                 "prepared data reservation",
@@ -311,7 +192,6 @@ impl PreparedAdmission {
         extra: usize,
     ) -> Result<()> {
         let owned = self.physical_backing()
-            + self.full_lookahead.owned()
             + pending.iter().map(|p| p.record.capacity()).sum::<usize>()
             + groups.iter().map(|g| g.bytes.capacity()).sum::<usize>();
         let associations = input_associations
@@ -355,18 +235,6 @@ impl PreparedAdmission {
         let mut full_group_length = 4usize;
         let mut encoder = None;
         for object in objects {
-            let reserve = pack::NATIVE_ENCODE_WORKSPACE
-                + 3 * (pack::NATIVE_FRAME_LIMIT + 37)
-                + pack::NATIVE_RAW_LIMIT
-                + 21;
-            if self
-                .native_scratch(&pending, &groups, input_associations, reserve)
-                .is_err()
-            {
-                // Optional carried work may never turn a valid serial batch into
-                // a reservation failure. No hinted batch retains these frames.
-                self.full_lookahead.discard(db);
-            }
             self.native_scratch(
                 &pending,
                 &groups,
@@ -379,27 +247,21 @@ impl PreparedAdmission {
             let raw = layerfs_content::file::extent_codec::decode_chunk_payload(
                 layerfs_content::decode_bytes_object(&object.bytes)?,
             )?;
-            let full = if let Some(frame) = self.full_lookahead.take(object.id) {
-                stats.native_lookahead_consumed += 1;
-                frame
-            } else {
-                let started = Instant::now();
-                let full = (|| {
-                    if encoder.is_none() {
-                        encoder = Some(pack::NativeEncoder::new()?);
-                    }
-                    encoder.as_mut().unwrap().compress(raw, None)
-                })();
-                let elapsed = super::elapsed_ns(started);
-                stats.native_full_encode_calls += 1;
-                stats.native_full_encode_ns += elapsed;
-                stats.encoding_calls += 1;
-                stats.encoding_ns += elapsed;
-                let full = full?;
-                stats.native_full_frame_count += 1;
-                stats.native_full_frame_bytes += full.len() as u64;
-                full
-            };
+            let started = Instant::now();
+            let full = (|| {
+                if encoder.is_none() {
+                    encoder = Some(pack::NativeEncoder::new()?);
+                }
+                encoder.as_mut().unwrap().compress(raw, None)
+            })();
+            let elapsed = super::elapsed_ns(started);
+            stats.native_full_encode_calls += 1;
+            stats.native_full_encode_ns += elapsed;
+            stats.encoding_calls += 1;
+            stats.encoding_ns += elapsed;
+            let full = full?;
+            stats.native_full_frame_count += 1;
+            stats.native_full_frame_bytes += full.len() as u64;
             // Grouping is frozen by the complete FULL alternative, not the
             // eventual PREFIX size. Pack assembly still uses actual group bytes.
             let next = 4 + 5 + full.len();
@@ -918,162 +780,6 @@ impl PreparedAdmission {
         self.oversized_backing += bytes.capacity();
         self.packs.push(bytes);
         Ok(())
-    }
-
-    pub(super) fn publish_with_lookahead<T>(
-        self,
-        db: &StoreDb,
-        statement_number: &mut u64,
-        lookahead: &[AuthenticatedCanonicalObject],
-        caller_associations: usize,
-        triggering_capacity: usize,
-        publish: impl FnOnce(&Transaction<'_>, &ObjectInsertMetrics, &mut u64) -> Result<T>,
-    ) -> Result<((T, super::AdmissionBatchMetrics), FullLookahead)> {
-        let eligible = lookahead
-            .iter()
-            .filter(|object| FullLookahead::eligible(object))
-            .count();
-        db.note_physical(crate::PhysicalStorageReceipt {
-            native_lookahead_eligible: eligible as u64,
-            ..Default::default()
-        });
-        // Include the parent's retained packs/objects plus publication's ID,
-        // comparison, winner, pack and locator vectors. Growing Vecs include
-        // their four-entry minimum and doubling. Rust BLOB operands are charged;
-        // SQLite keeps its separate existing cache/transient binding ownership.
-        let physical = self.physical_backing()
-            + self.full_lookahead.owned()
-            + self.objects.capacity() * std::mem::size_of::<PreparedObject>()
-            + self.packs.capacity() * std::mem::size_of::<Vec<u8>>()
-            + caller_associations
-            + self.objects.len()
-                * (std::mem::size_of::<ObjectId>()
-                    + std::mem::size_of::<(ObjectId, &[u8])>()
-                    + 2 * std::mem::size_of::<&PreparedObject>())
-            + self.packs.len()
-                * (std::mem::size_of::<Vec<&PreparedObject>>()
-                    + 4 * std::mem::size_of::<&PreparedObject>())
-            + (2 * self.packs.len()).max(4) * std::mem::size_of::<(i64, &[u8])>()
-            + (2 * self.objects.len()).max(4) * std::mem::size_of::<(i64, &PreparedObject)>()
-            + self.objects.len().min(OBJECT_PAGE_COUNT) * 32;
-        let frame_budget = (2 * 1024 * 1024usize)
-            .saturating_sub(physical.saturating_add(pack::NATIVE_ENCODE_WORKSPACE))
-            .min(LOOKAHEAD_FRAME_BYTES);
-        #[cfg(test)]
-        let frame_budget = native_tests::lookahead_budget(frame_budget);
-        let data = self.canonical_live_capacity
-            + self.packs.iter().map(Vec::capacity).sum::<usize>()
-            + lookahead
-                .iter()
-                .map(|object| object.bytes.capacity())
-                .sum::<usize>()
-            + triggering_capacity
-            + frame_budget;
-        let first_capacity = lookahead
-            .iter()
-            .find(|object| FullLookahead::eligible(object))
-            .map(|object| {
-                let raw = layerfs_content::file::extent_codec::decode_chunk_payload(
-                    layerfs_content::decode_bytes_object(&object.bytes)?,
-                )?;
-                pack::native_frame_capacity(raw.len())
-            })
-            .transpose()?;
-        let fits = first_capacity.is_some_and(|first| {
-            eligible * std::mem::size_of::<(ObjectId, Vec<u8>)>() + first <= frame_budget
-        });
-        if !db.native_format()
-            || self.final_batch
-            || self.oversized_backing != 0
-            || !fits
-            || data > 6 * 1024 * 1024
-            || self.absence_epoch
-                != Some(
-                    self.session
-                        .publication_epoch
-                        .load(std::sync::atomic::Ordering::Acquire),
-                )
-        {
-            return self
-                .publish(db, statement_number, publish)
-                .map(|result| (result, FullLookahead::default()));
-        }
-        let session = self.session.clone();
-        let started = Instant::now();
-        #[cfg(test)]
-        let hook = native_tests::take_lookahead_hook();
-        let result = std::thread::scope(|scope| {
-            let worker = std::thread::Builder::new()
-                .name("layerfs-full".into())
-                .spawn_scoped(scope, move || {
-                    #[cfg(test)]
-                    if let Some(hook) = &hook {
-                        hook.before();
-                    }
-                    let begin = super::elapsed_ns(started);
-                    let mut stats = crate::PhysicalStorageReceipt::default();
-                    let output = FullLookahead::encode(lookahead, frame_budget, &mut stats);
-                    let end = super::elapsed_ns(started);
-                    #[cfg(test)]
-                    if let Some(hook) = &hook {
-                        hook.after();
-                    }
-                    (output, stats, begin, end)
-                });
-            let Ok(worker) = worker else {
-                return self
-                    .publish_inner(db, statement_number, publish)
-                    .map(|result| (result, FullLookahead::default()));
-            };
-            let publication_begin = super::elapsed_ns(started);
-            // No resolve/rollback until the worker has joined, including errors.
-            let published = self.publish_inner(db, statement_number, publish);
-            let publication_end = super::elapsed_ns(started);
-            let joining = Instant::now();
-            let (frames, mut stats, begin, end) = match worker.join() {
-                Ok(result) => result,
-                Err(_) => {
-                    db.note_physical(crate::PhysicalStorageReceipt {
-                        native_lookahead_runs: 1,
-                        native_lookahead_worker_peak: 1,
-                        native_lookahead_join_ns: super::elapsed_ns(joining),
-                        native_lookahead_spawn_ns: publication_begin,
-                        ..Default::default()
-                    });
-                    return Err(match published {
-                        Err(error) => StoreError::Io(std::io::Error::other(format!(
-                            "{error}; native FULL lookahead worker panic"
-                        ))),
-                        Ok(_) => StoreError::Integrity("native FULL lookahead worker panic"),
-                    });
-                }
-            };
-            stats.native_lookahead_runs = 1;
-            stats.native_lookahead_worker_peak = 1;
-            stats.native_lookahead_spawn_ns = publication_begin;
-            stats.native_lookahead_join_ns = super::elapsed_ns(joining);
-            stats.native_lookahead_worker_ns = end.saturating_sub(begin);
-            stats.native_lookahead_overlap_ns = end
-                .min(publication_end)
-                .saturating_sub(begin.max(publication_begin));
-            stats.native_lookahead_reserved_physical_peak_bytes = frames.as_ref().map_or(
-                physical + pack::NATIVE_ENCODE_WORKSPACE + frame_budget,
-                |frames| physical + pack::NATIVE_ENCODE_WORKSPACE + frames.owned(),
-            ) as u64;
-            db.note_physical(stats);
-            match (published, frames) {
-                (Ok(result), Ok(frames)) => Ok((result, frames)),
-                (Err(error), Ok(mut frames)) => {
-                    frames.discard(db);
-                    Err(error)
-                }
-                (Ok(_), Err(error)) => Err(error),
-                (Err(publication), Err(worker)) => Err(StoreError::Io(std::io::Error::other(
-                    format!("{publication}; native FULL lookahead failed: {worker}"),
-                ))),
-            }
-        });
-        session.resolve(result)
     }
 
     pub(crate) fn publish<T>(

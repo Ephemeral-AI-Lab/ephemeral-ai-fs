@@ -1,37 +1,6 @@
 use super::super::{CheckedOutputAdmission, PhysicalHints};
 use super::*;
 
-thread_local! {
-    static LOOKAHEAD_BUDGET: std::cell::Cell<usize> = const { std::cell::Cell::new(LOOKAHEAD_FRAME_BYTES) };
-    static LOOKAHEAD_HOOK: std::cell::RefCell<Option<LookaheadHook>> = const { std::cell::RefCell::new(None) };
-}
-
-pub(super) fn lookahead_budget(available: usize) -> usize {
-    LOOKAHEAD_BUDGET.with(|budget| available.min(budget.get()))
-}
-
-pub(super) struct LookaheadHook {
-    started: std::sync::mpsc::SyncSender<()>,
-    resume: std::sync::mpsc::Receiver<()>,
-    done: std::sync::mpsc::SyncSender<()>,
-}
-
-impl LookaheadHook {
-    pub(super) fn before(&self) {
-        self.started.send(()).unwrap();
-        self.resume
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
-    }
-    pub(super) fn after(&self) {
-        self.done.send(()).unwrap();
-    }
-}
-
-pub(super) fn take_lookahead_hook() -> Option<LookaheadHook> {
-    LOOKAHEAD_HOOK.with(|hook| hook.borrow_mut().take())
-}
-
 struct Fixture {
     db: StoreDb,
     folder: std::path::PathBuf,
@@ -100,166 +69,6 @@ fn random() -> Vec<u8> {
 }
 
 #[test]
-fn native_full_lookahead_matches_serial_packs_and_reaches_final_batch() {
-    let run = |budget| {
-        LOOKAHEAD_BUDGET.with(|value| value.set(budget));
-        let f = Fixture::new();
-        let mut owner = CheckedOutputAdmission::new(&f.db).unwrap();
-        for index in 0..700u64 {
-            let mut raw = vec![b'x'; 1024];
-            raw[..8].copy_from_slice(&index.to_le_bytes());
-            owner.admit_object(object(&raw, None)).unwrap();
-        }
-        let finished = owner.finish().unwrap();
-        let final_frames = finished.final_batch.4.frames.len();
-        f.publish(PreparedAdmission::prepare_missing(&f.db, finished.final_batch).unwrap());
-        let packs =
-            f.db.reader()
-                .unwrap()
-                .prepare("SELECT data FROM object_packs ORDER BY pack_id")
-                .unwrap()
-                .query_map([], |row| row.get::<_, Vec<u8>>(0))
-                .unwrap()
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .unwrap();
-        let stats = f.db.physical_storage_receipt();
-        LOOKAHEAD_BUDGET.with(|value| value.set(LOOKAHEAD_FRAME_BYTES));
-        (packs, stats, final_frames)
-    };
-    let (serial, before, _) = run(0);
-    let (parallel, after, final_frames) = run(LOOKAHEAD_FRAME_BYTES);
-    assert_eq!(parallel, serial);
-    assert_eq!(before.native_lookahead_runs, 0);
-    assert!(after.native_lookahead_encoded > 0);
-    assert!(after.native_lookahead_consumed > 0);
-    assert!(final_frames > 0);
-    assert_eq!(
-        after.native_lookahead_encoded,
-        after.native_lookahead_consumed + after.native_lookahead_discarded
-    );
-    assert_eq!(
-        after.native_full_encode_calls,
-        before.native_full_encode_calls
-    );
-    assert!(after.native_lookahead_reserved_physical_peak_bytes <= 2 * 1024 * 1024);
-    assert!(after.native_lookahead_frame_peak_bytes <= LOOKAHEAD_FRAME_BYTES as u64);
-    assert_eq!(after.native_lookahead_worker_peak, 1);
-}
-
-#[test]
-fn native_full_lookahead_caps_stale_proofs_and_hints_keep_serial_policy() {
-    let f = Fixture::new();
-    let raw = random();
-    let tail = vec![object(&raw, None)];
-    let empty = FullLookahead::encode(&tail, 0, &mut Default::default()).unwrap();
-    assert_eq!(empty.owned(), 0);
-    for (associations, triggering, stale) in [
-        (2 * 1024 * 1024, 0, false),
-        (0, 6 * 1024 * 1024, false),
-        (0, 0, true),
-    ] {
-        let mut prepared = f.prepare(vec![object(b"old batch", None)]);
-        prepared.final_batch = false;
-        if stale {
-            prepared.absence_epoch = None;
-        }
-        let session = prepared.session.clone();
-        let (_, frames) = prepared
-            .publish_with_lookahead(&f.db, &mut 0, &tail, associations, triggering, |_, _, _| {
-                Ok(())
-            })
-            .unwrap();
-        assert_eq!(frames.owned(), 0);
-        session.rollback().unwrap();
-    }
-    assert_eq!(f.db.physical_storage_receipt().native_lookahead_runs, 0);
-
-    let base = object(&raw, None);
-    let base_id = base.id;
-    f.publish(f.prepare(vec![base]));
-    let mut changed = raw;
-    changed[99] ^= 7;
-    let target = object(&changed, Some(base_id));
-    let mut owner = CheckedOutputAdmission::new(&f.db).unwrap();
-    owner.admit_object(target.clone()).unwrap();
-    let mut batch = owner.finish().unwrap().final_batch;
-    let serial = PreparedAdmission::prepare_missing(
-        &f.db,
-        super::super::MissingBatch(
-            vec![target],
-            batch.1.clone(),
-            false,
-            None,
-            FullLookahead::default(),
-        ),
-    )
-    .unwrap();
-    batch.4 = FullLookahead::encode(
-        &[object(&changed, None)],
-        LOOKAHEAD_FRAME_BYTES,
-        &mut Default::default(),
-    )
-    .unwrap();
-    let cached = PreparedAdmission::prepare_missing(&f.db, batch).unwrap();
-    assert_eq!(cached.packs, serial.packs);
-    assert_eq!(cached.objects[0].delta, serial.objects[0].delta);
-    assert!(cached.objects[0].delta);
-    assert_eq!(
-        f.db.physical_storage_receipt().native_lookahead_discarded,
-        1
-    );
-    f.publish(cached);
-}
-
-#[test]
-fn native_full_lookahead_encodes_during_publication_and_joins_before_rollback() {
-    let f = Fixture::new();
-    let mut prepared = f.prepare(vec![object(b"rollback old batch", None)]);
-    prepared.final_batch = false;
-    let session = prepared.session.clone();
-    let tail = vec![object(&random(), None)];
-    let (started, saw_start) = std::sync::mpsc::sync_channel(1);
-    let (resume, resumed) = std::sync::mpsc::sync_channel(1);
-    let (done, saw_done) = std::sync::mpsc::sync_channel(1);
-    LOOKAHEAD_HOOK.with(|hook| {
-        *hook.borrow_mut() = Some(LookaheadHook {
-            started,
-            resume: resumed,
-            done,
-        })
-    });
-    let result = prepared.publish_with_lookahead(&f.db, &mut 0, &tail, 0, 0, |_, _, _| {
-        // The owner holds its publication transaction while the worker executes
-        // the real compressor; a worker attempting any Store lock would deadlock.
-        saw_start
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
-        resume.send(()).unwrap();
-        saw_done
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
-        Err::<(), _>(StoreError::Integrity("lookahead publication fault"))
-    });
-    assert!(matches!(
-        result,
-        Err(StoreError::Integrity("lookahead publication fault"))
-    ));
-    assert_eq!(session.state.load(std::sync::atomic::Ordering::Acquire), 2);
-    assert_eq!(
-        f.db.reader()
-            .unwrap()
-            .query_row("SELECT COUNT(*) FROM objects", [], |row| row
-                .get::<_, i64>(0))
-            .unwrap(),
-        0
-    );
-    let stats = f.db.physical_storage_receipt();
-    assert_eq!(stats.native_lookahead_encoded, 1);
-    assert_eq!(stats.native_lookahead_discarded, 1);
-    assert!(stats.native_lookahead_overlap_ns > 0);
-}
-
-#[test]
 fn native_admission_actual_prior_depth_first_hint_and_readback() {
     let f = Fixture::new();
     let mut raw = random();
@@ -323,13 +132,7 @@ fn native_admission_late_races_compare_canonical_full_and_prefix() {
         prefix.final_batch = false;
         let full = PreparedAdmission::prepare_missing(
             &f.db,
-            super::super::MissingBatch(
-                vec![object(&changed, None)],
-                session.clone(),
-                false,
-                None,
-                FullLookahead::default(),
-            ),
+            super::super::MissingBatch(vec![object(&changed, None)], session.clone(), false, None),
         )
         .unwrap();
         assert!(!full.objects[0].delta);
@@ -407,13 +210,7 @@ fn native_admission_batches_bound_output_and_stream_late_collision_waves() {
         let session = prepared.session.clone();
         let other = PreparedAdmission::prepare_missing(
             &f.db,
-            super::super::MissingBatch(
-                objects.clone(),
-                session.clone(),
-                false,
-                None,
-                FullLookahead::default(),
-            ),
+            super::super::MissingBatch(objects.clone(), session.clone(), false, None),
         )
         .unwrap();
         f.publish(other);
@@ -754,13 +551,7 @@ fn unchanged_absence_proof_avoids_reprobe_but_intervening_publication_rechecks()
         let publish_other = |session| {
             let other = PreparedAdmission::prepare_missing(
                 &f.db,
-                super::super::MissingBatch(
-                    objects.clone(),
-                    session,
-                    false,
-                    None,
-                    FullLookahead::default(),
-                ),
+                super::super::MissingBatch(objects.clone(), session, false, None),
             )
             .unwrap();
             f.publish(other);
