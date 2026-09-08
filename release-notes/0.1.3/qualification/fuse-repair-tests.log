@@ -1,0 +1,33 @@
+   Compiling layerfs-fuse v0.1.3 (<release-checkout>/crates/layerfs-fuse)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.45s
+     Running unittests src/lib.rs (target/debug/deps/layerfs_fuse-aa633217d60dc71d)
+
+running 26 tests
+test immutable_read_cache::tests::names_share_the_budget_and_keep_namespace_and_directory_identity ... ok
+test immutable_read_cache::tests::ranges_scopes_replacement_and_eviction_are_bounded ... ok
+test immutable_read_cache::tests::pages_keep_cursor_identity_and_share_eviction_with_names_and_content ... ok
+test protocol::tests::framing_uses_one_write_and_handles_partial_and_interrupted_output ... ok
+test protocol::tests::write_and_size_round_trip ... ok
+test live_transport::tests::vectored_frames_preserve_prefixes_across_short_writes ... ok
+test live_owner::immutable_acquisition_tests::kernel_references_preserve_unlinked_contents_until_last_forget ... ok
+test live_owner::immutable_acquisition_tests::kernel_page_rollback_overflow_and_detach_balance_pins ... ok
+test live_owner::immutable_acquisition_tests::kernel_reference_keeps_old_base_contents_after_unlink_and_root_change ... ok
+test live_owner::immutable_acquisition_tests::stale_folio_preserves_sdk_ranges_and_cannot_regrow_truncated_tail ... ok
+test live_owner::immutable_acquisition_tests::delayed_lookup_cannot_install_after_root_or_parent_revision_changes ... ok
+test live_owner::immutable_acquisition_tests::malformed_grouped_replies_do_not_install_live_nodes ... ok
+test proxy_client::tests::metadata_cache_fill_is_inside_owner_pause_barrier ... ok
+test proxy_host::tests::capabilities_use_os_entropy ... ok
+test proxy_client::tests::read_ordering_flushes_only_the_same_inode ... ok
+test live_owner::immutable_acquisition_tests::writable_open_write_and_truncate_wait_for_prefill_even_after_forget ... ok
+test write_metrics::tests::kernel_observation_round_trip_and_reset ... ok
+test proxy_client::tests::multi_stream_barrier_drains_every_stream_after_the_first_error ... ok
+test proxy_client::tests::acknowledged_unlink_is_absent_with_and_without_parent_cache ... ok
+test proxy_client::tests::readonly_pin_waits_for_ack_and_rejects_replaced_inode ... ok
+test proxy_client::tests::deferred_write_error_invalidates_optimistic_observations ... ok
+test proxy_client::tests::rename_refreshes_overwritten_alias_attributes_and_preserves_same_inode_names ... ok
+test live_runtime::tests::parked_socket_operations_release_workers_and_reservations ... ok
+test live_owner::immutable_acquisition_tests::canceled_prefill_waiter_keeps_blocking_job_guards_and_revalidates_root ... ok
+test live_runtime::tests::operation_cut_drains_callbacks_and_allows_laundering_before_freeze ... ok
+test protocol::tests::directory_fragments_preserve_complete_entries_and_reject_invalid_streams ... ok
+
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s

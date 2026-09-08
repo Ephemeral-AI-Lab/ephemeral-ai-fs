@@ -293,8 +293,11 @@ pub struct OperationCut {
 impl OperationCut {
     /// Admit folio reads/writeback during cache reconciliation while keeping
     /// namespace/size mutations excluded until the caller drops the guard.
-    pub(crate) fn reopen_writeback(self) -> OwnedRwLockWriteGuard<()> {
-        self._ordinary
+    pub(crate) fn reopen_writeback(self) -> CacheFlush {
+        CacheFlush {
+            ordinary: self._ordinary,
+            writeback: OwnedRwLockWriteGuard::rwlock(&self._writeback).clone(),
+        }
     }
 }
 
@@ -384,7 +387,7 @@ mod tests {
                     .await
                     .is_err()
             );
-            let ordinary = cut.reopen_writeback();
+            let flush = cut.reopen_writeback();
             let laundering = tokio::time::timeout(Duration::from_secs(2), gate.enter(true))
                 .await
                 .unwrap();
@@ -393,8 +396,17 @@ mod tests {
                     .await
                     .is_err()
             );
+            let mut finished = Box::pin(flush.finish());
+            std::future::poll_fn(|context| {
+                assert!(std::future::Future::poll(finished.as_mut(), context).is_pending());
+                std::task::Poll::Ready(())
+            })
+            .await;
+            assert!(gate.try_ordinary().is_none());
             drop(laundering);
-            drop(ordinary);
+            let cut = finished.await;
+            assert!(gate.try_ordinary().is_none());
+            drop(cut);
             let _continued = tokio::time::timeout(Duration::from_secs(2), gate.enter(false))
                 .await
                 .unwrap();
