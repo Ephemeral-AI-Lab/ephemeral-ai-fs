@@ -30,3 +30,11 @@ User's storage constraint remains binding: do not trade away v0.1.4 native
 FULL/PREFIX packed-storage savings for speed. Keep format/authentication/retained
 dependencies and codec selection contracts. Report allocation alongside timing
 for every new observation and full157 equal-state storage on the final candidate.
+
+The namespace10000 profile captured724 main-thread samples,689 in Init. It shows
+SQL publication/commit plus native encoding, but this fixture has too few objects
+to trigger the16MiB admission seen/available indexes' spill threshold. The large
+case's422k objects crosses that threshold. Therefore execute the predeclared
+100000 profile once, delaying4s after its observed public-operation process launch
+then sampling5s. This specifically examines late admission/spill behavior absent
+from the small reproduction; it is not a replacement timing observation.
