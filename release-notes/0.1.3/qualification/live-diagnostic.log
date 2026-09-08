@@ -1,0 +1,99 @@
+   Compiling layerfs-fuse v0.1.3 (<release-checkout>/crates/layerfs-fuse)
+   Compiling layerfs-workspace v0.1.3 (<release-checkout>/crates/layerfs-workspace)
+   Compiling layerfs-monitor v0.1.3 (<release-checkout>/crates/layerfs-monitor)
+   Compiling layerfs-sdk v0.1.3 (<release-checkout>/crates/layerfs-sdk)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.81s
+     Running tests/live_docker.rs (target/debug/deps/live_docker-4141e03aaee69595)
+
+running 1 test
+test ordinary_writes_queue_during_mapped_commit ... focused live cut container=layerfs-live-cut-40601
+live-cut stage=peer-ended-with-primary-mappings-live
+live-cut stage=first-commit
+live-cut stage=sdk-edit path=held-a
+live-cut stage=sdk-edit path=held-b
+live-cut stage=second-commit
+daemon stdout:
+daemon stderr: kernel-edit trace write-ingress scope=1 node=NodeId(2) offset=0 len=4096 byte777=0 writeback=false
+kernel-edit trace write-before-order scope=1 node=NodeId(2) offset=0 len=4096 byte777=0
+kernel-edit trace write-after-order scope=1 node=NodeId(2) byte777=0 protected=None
+kernel-edit trace write-ingress scope=1 node=NodeId(3) offset=0 len=4096 byte777=0 writeback=false
+kernel-edit trace write-before-order scope=1 node=NodeId(3) offset=0 len=4096 byte777=0
+kernel-edit trace write-after-order scope=1 node=NodeId(3) byte777=0 protected=None
+kernel-edit trace freeze-start scope=2
+kernel-edit trace freeze-done scope=2
+kernel-edit trace freeze-start scope=2
+kernel-edit trace freeze-done scope=2
+kernel-edit trace freeze-start scope=1
+kernel-edit trace write-ingress scope=1 node=NodeId(2) offset=0 len=4096 byte777=0 writeback=true
+kernel-edit trace write-before-order scope=1 node=NodeId(2) offset=0 len=4096 byte777=0
+kernel-edit trace write-after-order scope=1 node=NodeId(2) byte777=0 protected=None
+kernel-edit trace write-ingress scope=1 node=NodeId(3) offset=0 len=4096 byte777=0 writeback=true
+kernel-edit trace write-before-order scope=1 node=NodeId(3) offset=0 len=4096 byte777=0
+kernel-edit trace write-after-order scope=1 node=NodeId(3) byte777=0 protected=None
+kernel-edit trace freeze-done scope=1
+kernel-edit trace freeze-start scope=1
+kernel-edit trace write-ingress scope=1 node=NodeId(2) offset=0 len=4096 byte777=0 writeback=true
+kernel-edit trace write-before-order scope=1 node=NodeId(2) offset=0 len=4096 byte777=0
+kernel-edit trace write-after-order scope=1 node=NodeId(2) byte777=0 protected=None
+kernel-edit trace write-ingress scope=1 node=NodeId(3) offset=0 len=4096 byte777=0 writeback=true
+kernel-edit trace write-before-order scope=1 node=NodeId(3) offset=0 len=4096 byte777=0
+kernel-edit trace write-after-order scope=1 node=NodeId(3) byte777=0 protected=None
+kernel-edit trace freeze-done scope=1
+kernel-edit trace edit-apply scope=1 node=NodeId(2) ranges=[777..778]
+kernel-edit trace guard-installed scope=1 node=NodeId(2)
+kernel-edit trace store-start node=NodeId(2) offset=777 len=1
+kernel-edit trace store-done node=NodeId(2)
+kernel-edit trace inval-start node=NodeId(2)
+kernel-edit trace write-ingress scope=1 node=NodeId(2) offset=0 len=4096 byte777=83 writeback=true
+kernel-edit trace write-before-order scope=1 node=NodeId(2) offset=0 len=4096 byte777=83
+kernel-edit trace write-after-order scope=1 node=NodeId(2) byte777=83 protected=Some(NodeId(2))
+kernel-edit trace inval-done node=NodeId(2) result=Ok(())
+kernel-edit trace guard-drop node=NodeId(2)
+kernel-edit trace freeze-start scope=1
+kernel-edit trace write-ingress scope=1 node=NodeId(3) offset=0 len=4096 byte777=0 writeback=true
+kernel-edit trace write-before-order scope=1 node=NodeId(3) offset=0 len=4096 byte777=0
+kernel-edit trace write-after-order scope=1 node=NodeId(3) byte777=0 protected=None
+kernel-edit trace freeze-done scope=1
+kernel-edit trace freeze-start scope=1
+kernel-edit trace write-ingress scope=1 node=NodeId(2) offset=0 len=4096 byte777=83 writeback=true
+kernel-edit trace write-before-order scope=1 node=NodeId(2) offset=0 len=4096 byte777=83
+kernel-edit trace write-after-order scope=1 node=NodeId(2) byte777=83 protected=None
+kernel-edit trace write-ingress scope=1 node=NodeId(3) offset=0 len=4096 byte777=0 writeback=true
+kernel-edit trace write-before-order scope=1 node=NodeId(3) offset=0 len=4096 byte777=0
+kernel-edit trace write-after-order scope=1 node=NodeId(3) byte777=0 protected=None
+kernel-edit trace freeze-done scope=1
+kernel-edit trace edit-apply scope=1 node=NodeId(3) ranges=[777..778]
+kernel-edit trace guard-installed scope=1 node=NodeId(3)
+kernel-edit trace store-start node=NodeId(3) offset=777 len=1
+kernel-edit trace store-done node=NodeId(3)
+kernel-edit trace inval-start node=NodeId(3)
+kernel-edit trace write-ingress scope=1 node=NodeId(3) offset=0 len=4096 byte777=83 writeback=true
+kernel-edit trace write-before-order scope=1 node=NodeId(3) offset=0 len=4096 byte777=83
+kernel-edit trace write-after-order scope=1 node=NodeId(3) byte777=83 protected=Some(NodeId(3))
+kernel-edit trace inval-done node=NodeId(3) result=Ok(())
+kernel-edit trace guard-drop node=NodeId(3)
+kernel-edit trace freeze-start scope=1
+kernel-edit trace write-ingress scope=1 node=NodeId(2) offset=0 len=4096 byte777=83 writeback=true
+kernel-edit trace write-before-order scope=1 node=NodeId(2) offset=0 len=4096 byte777=83
+kernel-edit trace write-after-order scope=1 node=NodeId(2) byte777=83 protected=None
+kernel-edit trace write-ingress scope=1 node=NodeId(3) offset=0 len=4096 byte777=83 writeback=true
+kernel-edit trace write-before-order scope=1 node=NodeId(3) offset=0 len=4096 byte777=83
+kernel-edit trace write-after-order scope=1 node=NodeId(3) byte777=83 protected=None
+kernel-edit trace write-ingress scope=1 node=NodeId(2) offset=0 len=4096 byte777=83 writeback=true
+kernel-edit trace write-before-order scope=1 node=NodeId(2) offset=0 len=4096 byte777=83
+kernel-edit trace write-after-order scope=1 node=NodeId(2) byte777=83 protected=None
+kernel-edit trace freeze-done scope=1
+kernel-edit trace write-ingress scope=1 node=NodeId(3) offset=0 len=4096 byte777=83 writeback=true
+kernel-edit trace write-before-order scope=1 node=NodeId(3) offset=0 len=4096 byte777=83
+kernel-edit trace write-after-order scope=1 node=NodeId(3) byte777=83 protected=None
+kernel-edit trace write-ingress scope=1 node=NodeId(2) offset=0 len=4096 byte777=83 writeback=true
+kernel-edit trace write-before-order scope=1 node=NodeId(2) offset=0 len=4096 byte777=83
+kernel-edit trace write-after-order scope=1 node=NodeId(2) byte777=83 protected=None
+kernel-edit trace freeze-start scope=1
+kernel-edit trace freeze-done scope=1
+kernel-edit trace freeze-start scope=1
+kernel-edit trace freeze-done scope=1
+
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 2.28s

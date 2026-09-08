@@ -96,6 +96,14 @@ struct KernelEdit {
 }
 
 struct KernelEditGuard<'a>(&'a Mutex<Option<Arc<KernelEdit>>>);
+impl KernelEditGuard<'_> {
+    async fn finish(self, flush: crate::live_runtime::CacheFlush) {
+        // Invalidation can return while an admitted callback waits for inode
+        // ordering. Retire protection only after those callbacks finish.
+        let _cut = flush.finish().await;
+        drop(self);
+    }
+}
 impl Drop for KernelEditGuard<'_> {
     fn drop(&mut self) {
         if let Ok(mut edit) = self.0.lock() {
@@ -2432,8 +2440,8 @@ impl LiveOwner {
                         ranges: pending.cache_ranges.clone(),
                         _charge: pending._charge,
                     }));
-                let _ordinary = pending.cut.reopen_writeback();
-                let _kernel_edit = KernelEditGuard(&self.0.kernel_edit);
+                let flush = pending.cut.reopen_writeback();
+                let kernel_edit = KernelEditGuard(&self.0.kernel_edit);
                 #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
                 if let Some(notifier) = self.0.notifier.get().cloned() {
                     let updated = async {
@@ -2482,6 +2490,7 @@ impl LiveOwner {
                 }
                 #[cfg(not(all(target_os = "linux", any(feature = "host", feature = "proxy"))))]
                 let _ = (node, file);
+                kernel_edit.finish(flush).await;
             }
             wire::WRITE_METRICS => {
                 input.done().map_err(io)?;
@@ -3083,7 +3092,36 @@ mod immutable_acquisition_tests {
             runtime.block_on(owner.read_owned(node, 0, 3)).unwrap(),
             b"QSZ"
         );
-        drop(guard);
+        // Model a callback admitted during reconciliation but still waiting
+        // for inode ordering when the kernel notification returns.
+        let cut = runtime.block_on(async { owner.0.gate.cache_flush().await.finish().await });
+        let flush = cut.reopen_writeback();
+        let order = runtime.block_on(owner.ordered(node)).unwrap();
+        let callback = runtime.block_on(owner.0.gate.enter(true));
+        let mut queued = Box::pin(async {
+            let _callback = callback;
+            owner.write_owned(node, 0, b"Q0Z").await
+        });
+        runtime.block_on(std::future::poll_fn(|context| {
+            assert!(std::future::Future::poll(queued.as_mut(), context).is_pending());
+            std::task::Poll::Ready(())
+        }));
+        let mut finished = Box::pin(guard.finish(flush));
+        runtime.block_on(std::future::poll_fn(|context| {
+            assert!(std::future::Future::poll(finished.as_mut(), context).is_pending());
+            std::task::Poll::Ready(())
+        }));
+        assert!(owner.0.kernel_edit.lock().unwrap().is_some());
+        assert!(owner.0.gate.try_ordinary().is_none());
+        drop(order);
+        assert_eq!(runtime.block_on(queued).unwrap(), 3);
+        runtime.block_on(finished);
+        assert!(owner.0.kernel_edit.lock().unwrap().is_none());
+        assert!(owner.0.gate.try_ordinary().is_some());
+        assert_eq!(
+            runtime.block_on(owner.read_owned(node, 0, 3)).unwrap(),
+            b"QSZ"
+        );
         runtime.block_on(owner.write_owned(node, 1, b"N")).unwrap();
         assert_eq!(
             runtime.block_on(owner.read_owned(node, 0, 3)).unwrap(),
