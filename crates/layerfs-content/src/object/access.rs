@@ -52,7 +52,7 @@ pub trait ObjectStore {
         self.put(&canonical)
     }
 
-    /// Isolated S1 observer hook; the default preserves ordinary publication.
+    /// Optional physical origin; the default preserves ordinary publication.
     #[doc(hidden)]
     fn put_tree_origin(
         &mut self,
