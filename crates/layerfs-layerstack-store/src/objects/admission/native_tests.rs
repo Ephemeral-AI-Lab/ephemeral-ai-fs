@@ -484,3 +484,54 @@ fn admission_watermark_preserves_preexisting_counts_and_dependency_authenticatio
         assert!(f.db.read_object_row(fresh.id).is_err());
     }
 }
+
+#[test]
+fn locator_publication_is_sorted_without_changing_native_pack_bytes() {
+    let f = Fixture::new();
+    let random = random();
+    let objects = (0_u64..200)
+        .map(|i| {
+            let mut raw = random[..1024].to_vec();
+            raw[..8].copy_from_slice(&i.to_be_bytes());
+            object(&raw, None)
+        })
+        .collect::<Vec<_>>();
+    let prepared = f.prepare(objects.clone());
+    let packs = prepared.packs.clone();
+    f.db.writer().unwrap().execute_batch("CREATE TEMP TABLE insertion_order(id BLOB); CREATE TEMP TRIGGER capture_order AFTER INSERT ON main.objects BEGIN INSERT INTO insertion_order VALUES (new.object_id); END;").unwrap();
+    f.publish(prepared);
+    let inserted: Vec<Vec<u8>> =
+        f.db.reader()
+            .unwrap()
+            .prepare("SELECT id FROM insertion_order ORDER BY rowid")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+    let mut expected = objects
+        .iter()
+        .map(|o| o.id.as_bytes().to_vec())
+        .collect::<Vec<_>>();
+    expected.sort_unstable();
+    assert_eq!(
+        inserted, expected,
+        "locator insertion must retain canonical-key locality"
+    );
+    let stored: Vec<Vec<u8>> =
+        f.db.reader()
+            .unwrap()
+            .prepare("SELECT data FROM object_packs ORDER BY pack_id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+    assert_eq!(
+        stored, packs,
+        "sorting SQL locators must not change physical encoding"
+    );
+    for object in objects {
+        assert_eq!(f.db.read_object_row(object.id).unwrap(), object.bytes);
+    }
+}

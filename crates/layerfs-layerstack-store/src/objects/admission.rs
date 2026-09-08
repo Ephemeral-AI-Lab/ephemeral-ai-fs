@@ -978,11 +978,19 @@ impl PreparedAdmission {
             });
             *statement_number += 1;
             crate::schema::fail_transaction_statement(*statement_number)?;
-            if transaction.execute(&sql, params_from_iter(values))? != page.len() {
+            if transaction
+                .prepare_cached(&sql)?
+                .execute(params_from_iter(values))?
+                != page.len()
+            {
                 return Err(StoreError::Integrity("pack insertion cardinality"));
             }
             start = end;
         }
+        // Preserve pack bytes/order; only the SQL primary-key insertion order changes.
+        let sort_started = Instant::now();
+        locators.sort_unstable_by_key(|(_, object)| object.id);
+        crate::telemetry::note_workspace_admission_sort(super::elapsed_ns(sort_started));
         let locator_rows = sql_rows(transaction, 5, 12)?;
         for page in locators.chunks(locator_rows) {
             let sql = format!(
@@ -1000,7 +1008,11 @@ impl PreparedAdmission {
             });
             *statement_number += 1;
             crate::schema::fail_transaction_statement(*statement_number)?;
-            if transaction.execute(&sql, params_from_iter(values))? != page.len() {
+            if transaction
+                .prepare_cached(&sql)?
+                .execute(params_from_iter(values))?
+                != page.len()
+            {
                 return Err(StoreError::Integrity("locator insertion cardinality"));
             }
         }
