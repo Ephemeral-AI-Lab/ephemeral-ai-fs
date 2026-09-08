@@ -331,6 +331,7 @@ pub fn dispatch(args: &[OsString]) -> AnyResult<()> {
     if !matches!(
         case,
         "deepseek-five"
+            | "deepseek-full"
             | "small-files"
             | "sdk-text-32k"
             | "sdk-binary-8m"
@@ -349,7 +350,7 @@ pub fn dispatch(args: &[OsString]) -> AnyResult<()> {
     let mut active = None;
     let result = (|| -> AnyResult<()> {
         let (branch, layer) = if performance {
-            let source = if case == "deepseek-five" {
+            let source = if matches!(case, "deepseek-five" | "deepseek-full") {
                 LayerStackInitialization::Empty
             } else {
                 LayerStackInitialization::Directory(input.join("initial"))
@@ -424,12 +425,20 @@ pub fn dispatch(args: &[OsString]) -> AnyResult<()> {
                     let index: usize = index.parse()?;
                     let id = active.ok_or("smoke Workspace")?;
                     let sdk = case.starts_with("sdk-");
-                    if !(1..=if case == "small-files" { 3 } else { 5 }).contains(&index) {
+                    if !(1..=if case == "deepseek-full" {
+                        157
+                    } else if case == "small-files" {
+                        3
+                    } else {
+                        5
+                    })
+                        .contains(&index)
+                    {
                         return Err("smoke step range".into());
                     }
                     let mut members = 0;
                     let mut execs = 0;
-                    if case == "deepseek-five" {
+                    if matches!(case, "deepseek-five" | "deepseek-full") {
                         workload(
                             &store,
                             &client,

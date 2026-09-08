@@ -21,9 +21,9 @@ CONTRACT = "docs/roadmap/0.1/0.1.4/implementation-smoke-contract-v1.md"
 MANIFEST_SHA = "03f21acfb415907f521217e7a972ed512265c8d0c2da0f8034e2ff3014334271"
 SOURCE_TIP = "b0a7d2ce3b4c19d7452e364b2d7acbfa87e707ed"
 GIB = 1024**3
-CASES = {"deepseek-five": ["deepseek-five"], "small-files": ["small-files"],
+CASES = {"deepseek-full": ["deepseek-full"], "deepseek-five": ["deepseek-five"], "small-files": ["small-files"],
          "frequent-edits": ["sdk-text-32k", "sdk-binary-8m", "fuse-text-32k", "fuse-binary-8m"]}
-LIMITS = {"deepseek-five": (600, 120, 600), "frequent-edits": (300, 30, 300), "small-files": (120, 30, 120)}
+LIMITS = {"deepseek-full": (14400, 300, 14400), "deepseek-five": (600, 120, 600), "frequent-edits": (300, 30, 300), "small-files": (120, 30, 120)}
 
 
 def save(path, value):
@@ -71,17 +71,19 @@ def encode(tree):
     return "".join(f"{m}\t{o}\t{s}\t{p}\n" for p, (m, o, s) in sorted(tree.items()))
 
 
-def deepseek_inputs(data, deadline):
+def deepseek_inputs(data, deadline, count=5):
     raw_manifest = (data / "checkpoint-manifest.json").read_bytes()
     if hashlib.sha256(raw_manifest).hexdigest() != MANIFEST_SHA:
         raise ValueError("frozen DeepSeek manifest identity")
     manifest = json.loads(raw_manifest)
     if manifest["tip"] != SOURCE_TIP:
         raise ValueError("source tip")
+    if count not in (5, 157) or len(manifest["checkpoints"]) != 157:
+        raise ValueError("frozen DeepSeek checkpoint count")
     previous = {}
     blob_digests = {}
     result = []
-    for row in manifest["checkpoints"][:5]:
+    for row in manifest["checkpoints"][:count]:
         raw = git(data / "source.git", "ls-tree", "-rlz", "--full-tree", row["sha"], deadline=deadline)
         if hashlib.sha256(raw).hexdigest() != row["manifest_sha256"]:
             raise ValueError("frozen tree manifest")
@@ -113,7 +115,7 @@ def deepseek_inputs(data, deadline):
         result.append({**row, "input": str(source), "oracle": str(oracle),
                        "input_seal": seal(source), "oracle_sha256": runtime.file_sha256(oracle)})
         previous = tree
-    return {"deepseek-five": {"input": "-", "states": result}}
+    return {"deepseek-full" if count == 157 else "deepseek-five": {"input": "-", "states": result}}
 
 
 def pseudorandom(prefix, length):
@@ -286,7 +288,7 @@ def run_case(args, output, case, fixture, image, mode, remaining_phase_seconds, 
             if mode == "performance" and case == "small-files":
                 result["read_passes"] = [send("read\t"+name, "storage-smoke-read") for name in ("first", "repeat")]
             selected = fixture["states"] if mode == "performance" else performance["records"]
-            if mode == "verification" and case != "deepseek-five":
+            if mode == "verification" and case not in ("deepseek-five", "deepseek-full"):
                 selected = [{"index":0, "identity":"initial", "oracle":fixture["initial_oracle"]}, *selected]
             for row in selected:
                 if time.monotonic() >= phase_end: raise TimeoutError("smoke complete phase budget")
@@ -295,21 +297,21 @@ def run_case(args, output, case, fixture, image, mode, remaining_phase_seconds, 
                 step_start = time.monotonic_ns()
                 if mode == "performance":
                     transfer = 0
-                    if case == "deepseek-five":
+                    if case in ("deepseek-five", "deepseek-full"):
                         t = time.monotonic_ns()
                         runtime.run(["docker", "exec", sample.id, "rm", "-rf", "/input/checkpoint"], deadline=runtime.Deadline.after(30))
-                        runtime.install_tree(sample.name, Path(row["input"]), "/input/checkpoint", runtime.Deadline.after(120))
+                        runtime.install_tree(sample.name, Path(row["input"]), "/input/checkpoint", runtime.Deadline.after(300 if case == "deepseek-full" else 120))
                         transfer = time.monotonic_ns()-t
                     values = send(f"step\t{row['index']}", "storage-smoke-step")
                     record = {**row, **values[-1], "receipts":values, "transfer_ns":transfer}
-                    if case not in ("deepseek-five", "small-files") and row["index"] == 5 and record["created"]:
+                    if case not in ("deepseek-five", "deepseek-full", "small-files") and row["index"] == 5 and record["created"]:
                         raise RuntimeError("unchanged Commit created a new state")
                     record["identity"] = record["commit_id"] or "initial"
                 else:
                     identity = row.get("identity") or row["commit_id"]
-                    values = send("verify\t"+identity, "storage-smoke-verified-read", LIMITS[args.storage_smoke][2])
+                    values = send("verify\t"+identity, "storage-smoke-verified-read", LIMITS[args.storage_smoke][1 if case == "deepseek-full" else 2])
                     observed = output / f"observed-{row['index']}.tsv"
-                    runtime.run(["docker", "cp", sample.id+":/input/observed.tsv", str(observed)], deadline=runtime.Deadline.after(120))
+                    runtime.run(["docker", "cp", sample.id+":/input/observed.tsv", str(observed)], deadline=runtime.Deadline.after(300 if case == "deepseek-full" else 120))
                     actual = {}
                     for line in observed.read_text().splitlines():
                         kind, size, digest, path = line.split("\t")
@@ -452,11 +454,13 @@ def main(argv=None):
         labels = image["Config"]["Labels"]
         if host_identity["binary_sha256"] != runtime.file_sha256(args.host_binary) or host_identity["LAYERFS_SOURCE_SEAL"] != current["LAYERFS_SOURCE_SEAL"] or labels["dev.layerfs.product-seal"] != current["LAYERFS_PRODUCT_SEAL"] or labels["dev.layerfs.source-seal"] != current["LAYERFS_SOURCE_SEAL"]:
             raise ValueError("stale host/image/source identity")
-        deadline = runtime.Deadline.after(600 if args.storage_smoke == "deepseek-five" else 120)
+        if shutil.disk_usage(args.output.parent if args.output and args.output.parent.exists() else runner.REPO).free < 50*GIB:
+            raise RuntimeError("free disk reserve")
+        deadline = runtime.Deadline.after(14400 if args.storage_smoke == "deepseek-full" else 600 if args.storage_smoke == "deepseek-five" else 120)
         if args.storage_compat_run:
             fixtures, source_seal = prepare_compatibility(args, current, host_identity, image, deadline)
         else:
-            fixtures = deepseek_inputs(args.data,deadline) if args.storage_smoke == "deepseek-five" else synthetic_inputs(args.fixtures,args.storage_smoke,deadline)
+            fixtures = deepseek_inputs(args.data,deadline,157 if args.storage_smoke == "deepseek-full" else 5) if args.storage_smoke in ("deepseek-five", "deepseek-full") else synthetic_inputs(args.fixtures,args.storage_smoke,deadline)
         preparation_ns = time.monotonic_ns()-start
         output = args.storage_verify_run or args.output
         if args.storage_compat_run:
@@ -468,9 +472,11 @@ def main(argv=None):
             mode = "verification"
         else:
             output.mkdir(parents=True,exist_ok=False)
-            save(output/"identity.json", {"schema":"storage-smoke-v1","smoke":args.storage_smoke,"source_arm":args.source_arm,"repetition":args.repetition,
+            save(output/"identity.json", {"schema":"deepseek-full-m45-v1" if args.storage_smoke == "deepseek-full" else "storage-smoke-v1","smoke":args.storage_smoke,"source_arm":args.source_arm,"repetition":args.repetition,
                 "host_identity":host_identity,"image_id":image["Id"],"source":current,"fixtures":fixtures,
                 "contract_sha256":runtime.file_sha256(runner.REPO/CONTRACT),"preparation_ns":preparation_ns,
+                "full_run_contract_sha256":runtime.file_sha256(runner.REPO/"docs/roadmap/0.1/0.1.4/deepseek-full-157-m45-contract.md") if args.storage_smoke == "deepseek-full" else None,
+                "phase_operation_verification_limits_seconds":LIMITS[args.storage_smoke],
                 "admission_eligible":False,"cache_profile":"fresh-store-existing-os-cache-uncontrolled",
                 "resource_profile":"host phase CPU and lifetime RSS; container lifetime/boundary categories; sampled disk"})
             mode = "performance"
