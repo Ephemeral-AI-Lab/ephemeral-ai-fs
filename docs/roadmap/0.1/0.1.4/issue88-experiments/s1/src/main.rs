@@ -59,7 +59,7 @@ fn extract(original:&Connection,index:&Connection,c:&Connection)->u64{
    let Some(expected)=groups.remove(&(p,g)) else{continue};
    let decoded=pack::decode_group(e.clone(),data[e.range.clone()].to_vec()).unwrap();
    let cp=expected[0].1;assert!(expected.iter().all(|x|x.1==cp));
-   c.execute("INSERT INTO groups VALUES(?,?,?,?,?)",params![p,g,cp,e.range.len(),decoded.len()]).unwrap();
+   c.execute("INSERT INTO groups VALUES(?,?,?,?,?,?)",params![p,g,cp,e.range.len(),decoded.len(),blake3::hash(&data[e.range.clone()]).to_hex().to_string()]).unwrap();
    let mut seen=0;
    pack::visit_records(&decoded,false,|record,body|{
     let pack::Record::Full(canonical)=body else{panic!("structural baseline must be FULL")};
@@ -103,10 +103,10 @@ fn encode(c:&Connection,out:&Path){
  let mut frames=BufWriter::new(File::create_new(out.join("candidate-groups.bin")).unwrap());
  let mut frame_offset=0u64;let mut frame_index=BufWriter::new(File::create_new(out.join("candidate-frames.csv")).unwrap());writeln!(frame_index,"pack_id,group_number,frame_offset_bytes,frame_length_bytes,frame_blake3").unwrap();
  let mut sums=[0u64;13];let mut stats=PhysicalStorageReceipt::default();
- let mut groups=c.prepare("SELECT pack,grp,checkpoint,original_encoded FROM groups ORDER BY checkpoint,pack,grp").unwrap();let mut rows=groups.query([]).unwrap();
+ let mut groups=c.prepare("SELECT pack,grp,checkpoint,original_encoded,original_blake3 FROM groups ORDER BY checkpoint,pack,grp").unwrap();let mut rows=groups.query([]).unwrap();
  let mut last_pack=None;let mut remaining=16*1024*1024usize;let mut trials=0usize;
  while let Some(row)=rows.next().unwrap(){
-  let p:i64=row.get(0).unwrap();let g:i64=row.get(1).unwrap();let cp:i64=row.get(2).unwrap();let original:i64=row.get(3).unwrap();
+  let p:i64=row.get(0).unwrap();let g:i64=row.get(1).unwrap();let cp:i64=row.get(2).unwrap();let original:i64=row.get(3).unwrap();let original_hash:String=row.get(4).unwrap();
   if last_pack!=Some(p){remaining=16*1024*1024;trials=0;last_pack=Some(p)}
   let mut rq=c.prepare("SELECT id,canonical,role FROM objects WHERE pack=? AND grp=? ORDER BY rec").unwrap();
   let objects=rq.query_map(params![p,g],|r|Ok((id(&r.get::<_,Vec<u8>>(0)?),r.get::<_,Vec<u8>>(1)?,r.get::<_,String>(2)?))).unwrap().map(|r|r.unwrap()).collect::<Vec<_>>();
@@ -128,7 +128,7 @@ fn encode(c:&Connection,out:&Path){
    deltas.push(delta);
   }
   let refs=objects.iter().map(|o|o.1.as_slice()).collect::<Vec<_>>();let mut control_stats=PhysicalStorageReceipt::default();
-  let(control,_)=pack::encode_group(&refs,&[],&mut control_stats).unwrap();assert_eq!(control.bytes.len(),original as usize,"control codec mismatch");
+  let(control,_)=pack::encode_group(&refs,&[],&mut control_stats).unwrap();assert_eq!(control.bytes.len(),original as usize,"control codec mismatch");assert_eq!(blake3::hash(&control.bytes).to_hex().as_str(),original_hash,"control bytes differ");
   let mut trial_stats=PhysicalStorageReceipt::default();let(selected,mixed)=pack::encode_group(&refs,&deltas,&mut trial_stats).unwrap();
   let encoded=selected.bytes.len();frames.write_all(&selected.bytes).unwrap();writeln!(frame_index,"{p},{g},{frame_offset},{encoded},{}",blake3::hash(&selected.bytes).to_hex()).unwrap();frame_offset+=encoded as u64;let decoded=pack::decode_group(pack::GroupEntry{range:0..encoded,decoded_length:selected.decoded_length,codec:selected.codec,oversized:false},selected.bytes).unwrap();
   let mut admitted=0;pack::visit_records(&decoded,false,|record,body|{
@@ -151,6 +151,6 @@ fn main(){
  let args=std::env::args().collect::<Vec<_>>();assert_eq!(args.len(),4,"original-store prior-analysis-index NEW-output-dir");
  let out=Path::new(&args[3]);fs::create_dir(out).unwrap();
  let original=ro(&args[1]);let index=ro(&args[2]);let c=Connection::open(out.join("structural.sqlite")).unwrap();
- c.execute_batch("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA cache_size=-8192; CREATE TABLE objects(id BLOB PRIMARY KEY,canonical BLOB,role TEXT,pack INTEGER,grp INTEGER,rec INTEGER,checkpoint INTEGER) WITHOUT ROWID;CREATE INDEX object_location ON objects(pack,grp,rec);CREATE TABLE groups(pack INTEGER,grp INTEGER,checkpoint INTEGER,original_encoded INTEGER,original_decoded INTEGER,PRIMARY KEY(pack,grp));CREATE TABLE origins(target BLOB PRIMARY KEY,base BLOB,checkpoint INTEGER) WITHOUT ROWID;CREATE TABLE generated(id BLOB PRIMARY KEY,canonical BLOB) WITHOUT ROWID;CREATE TABLE candidate_full(id BLOB PRIMARY KEY) WITHOUT ROWID;").unwrap();
+ c.execute_batch("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA cache_size=-8192; CREATE TABLE objects(id BLOB PRIMARY KEY,canonical BLOB,role TEXT,pack INTEGER,grp INTEGER,rec INTEGER,checkpoint INTEGER) WITHOUT ROWID;CREATE INDEX object_location ON objects(pack,grp,rec);CREATE TABLE groups(pack INTEGER,grp INTEGER,checkpoint INTEGER,original_encoded INTEGER,original_decoded INTEGER,original_blake3 TEXT,PRIMARY KEY(pack,grp));CREATE TABLE origins(target BLOB PRIMARY KEY,base BLOB,checkpoint INTEGER) WITHOUT ROWID;CREATE TABLE generated(id BLOB PRIMARY KEY,canonical BLOB) WITHOUT ROWID;CREATE TABLE candidate_full(id BLOB PRIMARY KEY) WITHOUT ROWID;").unwrap();
  extract(&original,&index,&c);drop(original);drop(index);reconstruct(&c,out);encode(&c,out);println!("S1 PASS: extraction, actual engine roots, chronological candidate FULL closure and paired group reconstruction");
 }

@@ -28,8 +28,8 @@ substitute an inferred neighboring leaf. Origins are actual OFFLINE tree-engine
 observations, not historical producer logs.
 
 For each original structural group in checkpoint/pack/group order, control A uses
-all original FULL records and current pack::encode_group. A encoded length must
-match the original group's encoded length. Candidate B keeps identical canonical
+all original FULL records and current pack::encode_group. A encoded length and BLAKE3 must
+match the original group's encoded bytes. Candidate B keeps identical canonical
 records/order/membership and substitutes only origin-hinted inode-table leaves.
 The origin must be an exact leaf from an earlier checkpoint and must remain FULL
 in the candidate arm's already selected representation. Missing, same-checkpoint,
