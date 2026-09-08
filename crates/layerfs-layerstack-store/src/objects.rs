@@ -1840,6 +1840,7 @@ pub(crate) struct AdmissionBatchMetrics {
 pub(crate) struct AdmissionSession {
     db: crate::schema::StoreDb,
     baseline_pack: i64,
+    publication_epoch: AtomicU64,
     state: std::sync::atomic::AtomicU8,
     _permit: crate::schema::OperationPermit,
 }
@@ -1855,6 +1856,7 @@ impl AdmissionSession {
         Ok(std::sync::Arc::new(Self {
             db: db.clone(),
             baseline_pack,
+            publication_epoch: AtomicU64::new(0),
             state: std::sync::atomic::AtomicU8::new(0),
             _permit: permit,
         }))
@@ -1959,6 +1961,7 @@ pub(crate) struct CheckedOutputAdmission {
     seen: SpillableObjectSet,
     pending: HashMap<ObjectId, usize>,
     batch_bytes: usize,
+    batch_epoch: u64,
     statement_number: u64,
     receipt: crate::CandidateReceipt,
     checked: CheckedAdmission,
@@ -1967,11 +1970,12 @@ pub(crate) struct CheckedOutputAdmission {
 }
 
 /// Owned initially missing canonical output with closed external dependencies.
-/// Only the accumulator creates this handoff; final publishers cannot reprobe it.
+/// Only the accumulator issues absence proofs; stale proofs require a final recheck.
 pub(crate) struct MissingBatch(
     Vec<AuthenticatedCanonicalObject>,
     std::sync::Arc<AdmissionSession>,
     bool,
+    Option<u64>,
 );
 
 impl std::ops::Deref for MissingBatch {
@@ -3101,6 +3105,7 @@ impl CheckedOutputAdmission {
             seen: SpillableObjectSet::bounded(CANDIDATE_INDEX_BYTES / 4)?,
             pending: HashMap::new(),
             batch_bytes: 0,
+            batch_epoch: 0,
             statement_number: 0,
             receipt: crate::CandidateReceipt::default(),
             checked: CheckedAdmission::default(),
@@ -3191,7 +3196,12 @@ impl CheckedOutputAdmission {
         let batch = std::mem::take(&mut self.batch);
         self.pending.clear();
         self.batch_bytes = 0;
-        Ok(MissingBatch(batch, self.session.clone(), false))
+        Ok(MissingBatch(
+            batch,
+            self.session.clone(),
+            false,
+            Some(self.batch_epoch),
+        ))
     }
 
     fn close_dependencies(&mut self) -> Result<()> {
@@ -3220,6 +3230,10 @@ impl CheckedOutputAdmission {
         self.incoming_index.clear();
         self.incoming_bytes = 0;
         let ids = page.iter().map(|object| object.id).collect::<Vec<_>>();
+        let mut probe_epoch = self
+            .session
+            .publication_epoch
+            .load(std::sync::atomic::Ordering::Acquire);
         let known = self.db.object_locations(&ids)?;
         drop(ids);
         let preexisting = known
@@ -3268,7 +3282,7 @@ impl CheckedOutputAdmission {
             } else {
                 diagnostic::occurrence(&mut object, 1, &mut stats);
                 diagnostic::eligible(&object, &mut stats);
-                self.push_pending(object)?;
+                self.push_pending(object, &mut probe_epoch)?;
             }
         }
         self.db.note_physical(stats);
@@ -3347,7 +3361,11 @@ impl CheckedOutputAdmission {
         Ok(())
     }
 
-    fn push_pending(&mut self, object: AuthenticatedCanonicalObject) -> Result<()> {
+    fn push_pending(
+        &mut self,
+        object: AuthenticatedCanonicalObject,
+        probe_epoch: &mut u64,
+    ) -> Result<()> {
         if object.bytes.len() > ADMISSION_BATCH_BYTES {
             return Err(StoreError::Integrity("canonical object admission size"));
         }
@@ -3356,8 +3374,26 @@ impl CheckedOutputAdmission {
                 || self.batch_bytes.saturating_add(object.bytes.len())
                     > 2 * INITIALIZATION_SLAB_BYTES)
         {
+            let before = self
+                .session
+                .publication_epoch
+                .load(std::sync::atomic::Ordering::Acquire);
             self.flush_batch()?;
+            let after = self
+                .session
+                .publication_epoch
+                .load(std::sync::atomic::Ordering::Acquire);
+            // Incoming/pending duplicate guards make our flushed batch disjoint
+            // from this page. Any other publication keeps the old proof stale.
+            if *probe_epoch == before && before.checked_add(1) == Some(after) {
+                *probe_epoch = after;
+            }
         }
+        self.batch_epoch = if self.batch.is_empty() {
+            *probe_epoch
+        } else {
+            self.batch_epoch.min(*probe_epoch)
+        };
         self.batch_bytes = self.batch_bytes.saturating_add(object.bytes.len());
         self.pending.insert(object.id, self.batch.len());
         self.batch.push(object);

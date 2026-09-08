@@ -1,4 +1,4 @@
-//! Prepared whole-pack admission, with one probe and one final recheck.
+//! Prepared whole-pack admission with epoch-validated final collision checks.
 use super::diagnostic;
 use super::{
     pack, read, AuthenticatedCanonicalObject, ObjectInsertMetrics, ADMISSION_BATCH_BYTES,
@@ -49,6 +49,7 @@ const _: () = {
 pub(crate) struct PreparedAdmission {
     session: std::sync::Arc<super::AdmissionSession>,
     final_batch: bool,
+    absence_epoch: Option<u64>,
     packs: Vec<Vec<u8>>,
     objects: Vec<PreparedObject>,
     metrics: ObjectInsertMetrics,
@@ -103,6 +104,7 @@ impl PreparedAdmission {
         let mut prepared = Self {
             session: missing.1,
             final_batch: missing.2,
+            absence_epoch: missing.3,
             // No pack-pointer growth during either lane: at most one pack/object.
             packs: Vec::with_capacity(count),
             objects: Vec::with_capacity(count),
@@ -819,7 +821,19 @@ impl PreparedAdmission {
             })
             .collect::<Vec<_>>();
 
-        let late = db.object_locations(&ids)?;
+        // Absence was authenticated by the exact earlier lookup under this
+        // exclusive owner. An intervening publication requires the normal CAS
+        // recheck; every positive collision still compares canonical bytes.
+        let late = if self.absence_epoch
+            == Some(
+                self.session
+                    .publication_epoch
+                    .load(std::sync::atomic::Ordering::Acquire),
+            ) {
+            BTreeMap::new()
+        } else {
+            db.object_locations(&ids)?
+        };
         drop(ids);
         let retained = self.physical_backing()
             + self.objects.capacity() * std::mem::size_of::<PreparedObject>()
@@ -848,6 +862,14 @@ impl PreparedAdmission {
         let result = publish(&transaction, &self.metrics, statement_number)?;
         let started = Instant::now();
         transaction.commit()?;
+        self.session
+            .publication_epoch
+            .fetch_update(
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+                |epoch| epoch.checked_add(1),
+            )
+            .map_err(|_| StoreError::Integrity("admission publication epoch overflow"))?;
         if self.final_batch {
             self.session.retain();
         }

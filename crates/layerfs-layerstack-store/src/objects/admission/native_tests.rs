@@ -132,7 +132,7 @@ fn native_admission_late_races_compare_canonical_full_and_prefix() {
         prefix.final_batch = false;
         let full = PreparedAdmission::prepare_missing(
             &f.db,
-            super::super::MissingBatch(vec![object(&changed, None)], session.clone(), false),
+            super::super::MissingBatch(vec![object(&changed, None)], session.clone(), false, None),
         )
         .unwrap();
         assert!(!full.objects[0].delta);
@@ -210,7 +210,7 @@ fn native_admission_batches_bound_output_and_stream_late_collision_waves() {
         let session = prepared.session.clone();
         let other = PreparedAdmission::prepare_missing(
             &f.db,
-            super::super::MissingBatch(objects.clone(), session.clone(), false),
+            super::super::MissingBatch(objects.clone(), session.clone(), false, None),
         )
         .unwrap();
         f.publish(other);
@@ -530,6 +530,76 @@ fn locator_publication_is_sorted_without_changing_native_pack_bytes() {
     assert_eq!(
         stored, packs,
         "sorting SQL locators must not change physical encoding"
+    );
+    for object in objects {
+        assert_eq!(f.db.read_object_row(object.id).unwrap(), object.bytes);
+    }
+}
+
+#[cfg(feature = "test-instrumentation")]
+#[test]
+fn unchanged_absence_proof_avoids_reprobe_but_intervening_publication_rechecks() {
+    for stage in 0..3 {
+        let f = Fixture::new();
+        f.publish(f.prepare(vec![object(b"preexisting witness", None)]));
+        let objects = (0_u64..200)
+            .map(|i| object(&i.to_le_bytes(), None))
+            .collect::<Vec<_>>();
+        let mut owner = CheckedOutputAdmission::new(&f.db).unwrap();
+        owner.admit_page(objects.clone()).unwrap();
+        owner.probe_incoming().unwrap();
+        let publish_other = |session| {
+            let other = PreparedAdmission::prepare_missing(
+                &f.db,
+                super::super::MissingBatch(objects.clone(), session, false, None),
+            )
+            .unwrap();
+            f.publish(other);
+        };
+        if stage == 1 {
+            publish_other(owner.session.clone());
+        }
+        let prepared =
+            PreparedAdmission::prepare_missing(&f.db, owner.finish().unwrap().final_batch).unwrap();
+        if stage == 2 {
+            publish_other(prepared.session.clone());
+        }
+        crate::schema::reset_sql_trace();
+        let (_, metrics) = prepared.publish(&f.db, &mut 0, |_, _, _| Ok(())).unwrap();
+        let queries = crate::schema::sql_trace()
+            .iter()
+            .filter(|s| s.contains("FROM objects WHERE object_id IN ("))
+            .count();
+        assert_eq!(
+            queries > 0,
+            stage != 0,
+            "only an unchanged publication epoch proves absence"
+        );
+        assert_eq!(metrics.insert.skipped_ids, if stage != 0 { 200 } else { 0 });
+        for object in objects {
+            assert_eq!(f.db.read_object_row(object.id).unwrap(), object.bytes);
+        }
+    }
+}
+
+#[cfg(feature = "test-instrumentation")]
+#[test]
+fn streaming_absence_proofs_advance_only_over_disjoint_owned_batches() {
+    let f = Fixture::new();
+    f.publish(f.prepare(vec![object(b"preexisting witness", None)]));
+    let objects = (0_u64..1200)
+        .map(|i| object(&i.to_le_bytes(), None))
+        .collect::<Vec<_>>();
+    crate::schema::reset_sql_trace();
+    f.publish(f.prepare(objects.clone()));
+    let queries = crate::schema::sql_trace()
+        .iter()
+        .filter(|s| s.contains("FROM objects WHERE object_id IN ("))
+        .count();
+    assert_eq!(
+        queries,
+        1200_usize.div_ceil(OBJECT_PAGE_COUNT),
+        "one initial lookup per bounded page; no repeated negative lookup"
     );
     for object in objects {
         assert_eq!(f.db.read_object_row(object.id).unwrap(), object.bytes);
