@@ -18,6 +18,17 @@ framing and engineering bounds resolve design ambiguities without qualifying
 performance. It does not freeze evaluation/verification placeholders or override
 compatibility requirements.
 
+## Finalized M4 scope (2026-09-08)
+
+The [M4 plan](implementation-milestone-4-plan.md) specifies bounded depth-one
+physical deltas and at most two encoded alternatives per eligible group, with
+only the winner stored synchronously. Keep M3's level-1 codec, schema/wire and
+memory limits. Raw record savings alone do not select a DELTA group. This is a
+prospective writer-policy revision, not changed M3 evidence or benchmark gates.
+SQLite allocation tuning is deferred; SQLite/S3 hybrid work is future #82.
+M4 stops before M5 and uses only the three approved smokes. Its incremental gain
+is unknown; no minimum storage percentage or Git-parity claim is introduced.
+
 ## Objective
 
 Improve storage efficiency in the shared filesystem capture/construction and

@@ -4,7 +4,8 @@ Status: **proposed architecture v3**, 2026-09-08. Revises the independent review
 of PR #77 against product revision `28177560c8f049c02192e18c263cdc5543c1ab52`.
 This is a concrete design recommendation, not shipped behavior or implementation
 approval. Proposed bounds below are engineering choices, not measured optima.
-The compatibility disposition requires an owner decision. The full benchmark
+The schema-6/wire-1 new-Store-only compatibility scope is approved for development;
+no migration or final release qualification is implied. The full benchmark
 family and numerical qualification gates remain open. The newer development-smoke
 scope/topology is recorded separately in [PR #80's pinned plan](https://github.com/Ephemeral-AI-Lab/layerfs/blob/d9ec9c6714ca31adb7a337d2ac0f40976513908c/docs/roadmap/0.1/0.1.4/storage-smoke-test-plan.md).
 This revision implements/runs neither product code nor smokes. It supersedes the
@@ -42,15 +43,14 @@ cloud service or second authoritative backend is added.
 ## Compatibility transition
 
 Packed storage is an incompatible, explicitly versioned physical Store format.
-The proposed next schema identity is **6**, paired with pack wire version **1**;
-these are proposed assignments, not changes to the current schema-5 verifier.
+The approved development schema is **6**, paired with pack wire version **1**.
+M2/M3 implement this new-Store-only format; M4 retains these identities.
 Retain the application ID, canonical encodings, ObjectIds, current CDC profile,
 public operation outcomes and acknowledgement behavior. A schema version is not
 part of a logical ObjectId. The existing exact-schema check must dispatch only to
 explicitly supported schemas, never accept arbitrary tables or reinterpret bytes.
 
-**Recommended transition package:** first implement only explicit new packed-Store
-creation after the owner approves the format change. Opening an existing Store
+**Approved development transition:** explicit new packed-Store creation only. Opening an existing Store
 never converts or rewrites it. The packed implementation rejects legacy formats
 explicitly; existing compatible tools remain usable for those Stores. This is
 source preservation, not a claim of legacy support in the new implementation.
@@ -64,12 +64,12 @@ contract must preserve supported IDs, canonical bytes, history and staging state
 or reject unsupported source state before making a destination usable. This
 revision specifies no converter, migration procedure or conversion deliverable.
 
-**Owner decision before implementation:** accept this new-Store-only transition
-and either a narrow exception to the [0.1 schema rule](../README.md#compatibility-boundary)
-or placement of the incompatible mechanism in 0.2. If legacy access in the new
-binary is required, agree its read/write/conversion scope with that same decision.
-Until then the current 0.1 contract remains in force. All non-format compatibility
-obligations remain; a release label or this proposal grants no migration authority.
+**Owner disposition:** the narrow v0.1.4 exception to the
+[0.1 schema rule](../README.md#compatibility-boundary) and new-Store-only scope
+were approved for M2/M3 development. M4 needs no repeated approval for that scope.
+Legacy rejection and use of older compatible tools remain explicit. No converter,
+new legacy writer, silent rollback of DELTA readability, or release qualification
+is authorized. All non-format compatibility obligations remain.
 
 ## 2. Shared owners and operation boundaries
 
@@ -292,19 +292,37 @@ one base and one current/best delta owner; no global similarity index or per-app
 reindex/sort is introduced. Canonical construction order is not changed by this
 physical matcher. This algorithm is bounded approximation, not Git-equivalent search.
 
-Choose the smallest complete delta by raw record size (tie: base ObjectId), only
-if it saves at least `max(64 bytes, ceil(FULL record size / 8))` over FULL including
-the delta base ID, lengths and instructions. Record-directory cost is the same
-for these choices. This is deliberately an approximate **pre-compression** score:
-compressed FULL may beat the chosen delta. Do not trial every combination or
-compress records independently to pretend to know their group contribution.
-Compress each selected group once; use RAW unless compression saves at least 16
-bytes. Final allocation, anchors and all trial CPU decide whether this policy is
-worth retaining. If it is not, remove or revise the policy prospectively rather
-than claiming optimality. No numerical acceptance gate is implied.
+### M4 encoded-group selection (prospective revision)
 
-A target with no worthwhile delta becomes a new FULL anchor. Anchor renewal is
-this local decision, not a timed rewrite or periodic maintenance pass. Exact A/B/A
+Use the [finalized M4 plan](implementation-milestone-4-plan.md#encoded-alternative-policy).
+Fix common group membership using FULL decoded sizes and existing role/pack caps.
+For each target select the smallest complete admissible DELTA no larger than its
+FULL record (tie: base ObjectId). This is only a bounded candidate heuristic;
+it replaces the old per-record raw-size 12.5% acceptance gate.
+
+Encode A (all FULL) and, only if eligible deltas exist, B (one selected mixed
+FULL/DELTA assignment), each at most once with M3's level-1 codec. Independently
+choose RAW if the complete compressed frame fails to save 16 bytes. Select B only
+when `A_bytes - B_bytes >= max(64 bytes, ceil(A_bytes / 8))`, comparing complete
+encoded groups; identical outer directory entries cancel. Otherwise select A.
+This encoded-group threshold is a prospective engineering policy, not a measured
+optimum or a whole-Store acceptance gate. No combinatorial search, growing-prefix
+recompression or independently compressed per-record proxy is used.
+
+Only the winner is stored. Compare one group at a time, retaining one A encoding
+while building B, not two alternative packs. Charge all live capacities and trial
+CPU inside existing reservations; release matcher/base scratch before codec work
+where possible. Optional budget exhaustion stops further discovery/trials and is counted. Retain
+completed eligible candidates for the group comparison if it still fits its bounds;
+discard incomplete trials and use FULL where no complete alternative fits. Required
+encoding and integrity failures propagate. Groups without useful deltas
+and oversized RAW singletons use one route. See the plan's buffer-lifetime proof
+obligation; no allocation limit or late-validation reservation is relaxed.
+
+Only finally selected and admitted FULL representations become possible later
+anchors. Rejection of a mixed group may select FULL even for a target with a useful
+raw delta; a racing existing representation remains authoritative. Anchor renewal
+is this local decision, not a timed rewrite or periodic maintenance pass. Exact A/B/A
 recurrence still reuses the existing ID/representation. Depth one deliberately
 trades potential compression for bounded dependency depth; Git parity is unknown.
 
@@ -344,7 +362,8 @@ slabs, private mutation state and the separate bounded identity index retain the
 own charges; transfers move ownership rather than retaining two charged copies.
 
 The scratch charge includes metadata/content group buffers, pack assembly buffers,
-one base, one current trial and one best program, the <=256-KiB match table, codec
+one base, one current trial and one best program, one retained encoded group
+alternative during M4 comparison, the <=256-KiB match table, codec
 context/window, and physical directories/locators. Canonical bytes and prepared
 encoded bytes retained outside scratch use the remainder of the same allowance.
 Cumulative 8-MiB hint-fetch/decode work limits are work counters, not resident
@@ -617,7 +636,9 @@ finalization failure honestly; do not blindly republish.
 Use SQLite incremental BLOB reads on the rowid pack table. Query selected locations
 in existing bounded batches, then read the fixed header, selected directory entry
 and required encoded group ranges. Plan known requested slots/locators once and drain
-forward through bounded **internal extraction batches**. Within each batch/wave,
+forward through bounded **internal extraction batches**. Order selected locators
+by `(pack_id, group_number, record_number)` before splitting those batches, preserving
+public order/duplicates through existing slots. Within each batch/wave,
 group by `(pack_id, group_number)` and parse/decode each distinct group once; a
 second FULL-base wave may read a target group again. Later drains/dependent tree
 waves can also repeat groups, and every such read/decode is counted. The [format](sqlite-storage-format.md) specifies framing validation.
@@ -821,7 +842,8 @@ subject to short reads/writes; this is a buffering contract, not a syscall bench
 ### Group/read batching and single-pass byte work
 
 For known requested IDs, perform bounded locator pages and build the requested-slot
-plan once, then consume it forward through bounded internal extraction batches.
+plan once, order selected locators by physical pack/group/record before splitting,
+then consume it forward through bounded internal extraction batches.
 Within each internal batch, group known target locators once and fetch/decode/parse
 each distinct target group once, followed by one grouped FULL-base wave with distinct
 base IDs. A group may be decoded again in the base wave, a later internal drain or
@@ -844,8 +866,8 @@ the bytes/records actually processed by those forward batches, with per-group fo
 bounds; no growing-prefix or repeated shrinking-request scan occurs.
 
 Maintain record counts, byte totals, directory offsets and winner counts as records
-arrive. Encode a closed group once and assemble a pack with a single final framing
-pass; no recompression/copy of the entire accumulated pack per appended record.
+arrive. Encode each closed-group alternative at most once (one ordinarily, at
+most two for M4 selection) and assemble only winners with one final framing pass; no recompression/copy of the entire accumulated pack per appended record.
 Framing validation walks each decoded directory and selected instruction stream
 once per wave; duplicate records share that parse. Equality/hash work processes
 actual supplied/reconstructed bytes once per required trust-boundary pass. Several

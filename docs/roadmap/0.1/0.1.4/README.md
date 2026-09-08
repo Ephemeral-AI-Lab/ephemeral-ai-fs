@@ -1,14 +1,12 @@
 # LayerFS 0.1.4 — Storage efficiency
 
-> **Status (2026-09-08):** Planned storage-efficiency phase following the
-> completed v0.1.3 benchmark checkpoint. Architecture v3 now specifies physical
-> framing, shared ownership, admission races and read/write bounds. Compatibility/release policy requires an owner
-> decision. Development smokes have a separate agreed plan; full qualification
-> remains open. This revision starts no product implementation or execution.
+> **Status (2026-09-08):** M3 is complete as a development checkpoint in
+> draft PR #81. The [M4 plan](implementation-milestone-4-plan.md) is finalized:
+> bounded depth-one deltas, two encoded group alternatives, read batching and
+> diagnostics. M4 is not implemented; M5 and full release qualification remain open.
 >
-> **Compatibility:** Existing compatibility and acknowledgement requirements
-> remain in force. This roadmap decision authorizes no Store-format or public
-> semantic change.
+> **Compatibility:** Schema 6 / wire 1 is approved for explicitly new Stores.
+> No conversion, canonical-format change or new acknowledgement policy is authorized.
 
 ## Problem statement
 
@@ -53,8 +51,8 @@ BLOBs. Small and large files use one pipeline. It includes read/write costs,
 multiple-transaction publication, Git-comparison limits, and boundary checklists.
 Exact proposed wire framing and engineering bounds are specified; they are not
 measured settings. The [compatibility transition](storage-architecture-spec.md#compatibility-transition)
-proposes a new versioned Store with no conversion on open and leaves the release/legacy
-policy to the owner. Full qualification remains open; the development-smoke plan
+records the new-Store-only development scope with no conversion on open; final
+release qualification remains separate. Full qualification remains open; the development-smoke plan
 owns its confirmed scope/topology and remaining execution prerequisites.
 
 The [SQLite storage-format walkthrough](sqlite-storage-format.md) illustrates
@@ -79,13 +77,18 @@ change runs nothing and does not authorize migration or full release qualificati
 Use the [implementation handoff prompt](implementation-handoff-prompt.md) to assign
 the implementation with persistent milestone/smoke/fix iteration, a joint storage/
 speed completion contract and explicit evidence limits. Creating the prompt does
-not start that work or approve the pending compatibility policy.
+not start that work. The handoff now targets only M4 and stops before M5.
 
 Use the [design-review prompt](design-review-prompt.md) for an independent
 review of clarity, storage/speed tradeoffs, aggregate multi-project load, future
 cloud compatibility, and minimal final components and operation paths.
 
 ## Supporting evidence and tracking
+
+- [M4 issue #84](https://github.com/Ephemeral-AI-Lab/layerfs/issues/84) and
+  [finalized M4 plan](implementation-milestone-4-plan.md): scope, files, selection,
+  iteration and stop checklist. SQLite tuning is deferred; S3 hybrid is
+  [future #82](https://github.com/Ephemeral-AI-Lab/layerfs/issues/82).
 
 - [Issue #18 — v0.1.4 storage-efficiency planning](https://github.com/Ephemeral-AI-Lab/layerfs/issues/18)
   carries the reprioritized storage discussion and its historical research.
@@ -109,17 +112,18 @@ cloud compatibility, and minimal final components and operation paths.
 - Discuss optimization approaches, format compatibility, numerical budgets, and
   implementation/release gates separately before implementation begins.
 
-The durable storage boundary is SQLite-only; packs inside SQLite are permitted
-as research candidates. The revised encoding/layout is a concrete recommendation,
+The durable storage boundary remains SQLite-only; M3 already stores compressed
+packs in SQLite. The revised encoding/layout is a concrete recommendation,
 not implementation authorization. It changes no canonical chunk profile or
 small-file representation. It starts no implementation or benchmark campaign and
 does not import historical footprint targets as new gates.
 
 ## Follow-up planning
 
-- [ ] Agree the optimization proposal and compatibility scope.
-- [ ] Complete PR #80's remaining development-smoke prerequisites in that workstream;
-      discuss the separate full benchmark family and numerical qualification gates.
+- [x] Agree the development format scope; M3 checkpoint complete.
+- [ ] Implement the finalized M4 plan and report its incremental value.
+- [x] Resolve development-smoke prerequisites for M0–M3.
+- [ ] Keep full-family/environment and final qualification decisions separate.
 - [ ] Implement and validate only the agreed scope.
 - [ ] Publish candidate-specific storage and operation results, limitations, and
   required regression evidence before release closure.

@@ -1,14 +1,12 @@
 # SQLite packed-object storage: proposed format v3
 
-**Status: concrete proposed design, 2026-09-08.** Design revision v3 retains the
-proposed
-pack wire version **1** and SQLite schema **6** as the next reserved design
-number; neither is allocated for release until owner approval. This is not the
-current format, migration code, an implementation approval, or measured
-qualification. Every numerical choice below is a proposed engineering bound or
-policy, not a measured conclusion. The full benchmark family and numerical
-qualification gates remain open. [PR #80's development-smoke scope/topology](storage-efficiency-boundary.md#development-smokes-and-qualification)
-is already documented; this revision implements/runs neither smokes nor product code.
+**Status: M3 format implemented; M4 writer policy finalized but not implemented,
+2026-09-08.** Pack wire version **1** and SQLite schema **6** are approved for the
+new-Store-only development scope. No migration, canonical-format change or final
+release qualification is implied. M4 revises alternative selection and preserves
+the existing FULL/DELTA layout, codec settings and hard limits. Numerical policy
+choices are engineering defaults, not measured optima. The three agreed smokes
+remain the executable verification scope; this documentation runs nothing.
 
 The [research boundary](storage-efficiency-boundary.md) controls scope. The
 [compatibility transition](storage-architecture-spec.md#compatibility-transition)
@@ -188,11 +186,18 @@ allocation; enforce the output cap during decoding and exact length at finish.
 The proposed writer uses **Zstandard level 1** with these explicit settings.
 Level alone does not establish window, checksum, or content-size behavior.
 
-Encode a selected group once. Keep compressed bytes only when they are at least
-**16 bytes smaller** than its raw form; otherwise store RAW and count the trial
-compression CPU. The directory entry has the same size in either case. Delta
-selection follows the architecture policy, not repeated trials of all group
-representation combinations.
+Encode each group alternative at most once. For each alternative keep compressed
+bytes only when the complete frame is at least **16 bytes smaller** than RAW;
+otherwise store RAW and count the trial CPU. The directory entry has equal size.
+
+M4 prospectively compares at most two alternatives with common membership:
+A all-FULL versus B one selected FULL/DELTA assignment. Select B only if complete
+encoded-group savings are at least `max(64 bytes, ceil(A_bytes / 8))`; otherwise
+select A. Only the winning representation is persisted. No eligible delta means
+one alternative. This supersedes raw-record-only acceptance, not the wire layout.
+See [selection and memory ownership](implementation-milestone-4-plan.md#encoded-alternative-policy).
+The threshold is an engineering policy, not a measured storage guarantee. M3's
+historical single-trial evidence is unchanged.
 
 ### Oversized FULL route and canonical limits
 

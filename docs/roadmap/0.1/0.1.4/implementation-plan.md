@@ -1,6 +1,6 @@
 # Storage architecture v3: implementation and rollout plan
 
-Status: **draft implementation plan**, 2026-09-08. Based on the specification at
+Status: **M0–M3 checkpointed; M4 plan finalized, not implemented**, 2026-09-08. Based on the specification at
 `555d91f0cd74148364331e24acf0ba14408d7c78` and source baseline
 `28177560c8f049c02192e18c263cdc5543c1ab52`. This document plans work; it does not
 implement product code, create a Store, run a smoke or authorize a migration.
@@ -19,6 +19,11 @@ Authority: [architecture v3](storage-architecture-spec.md), [physical format](sq
 The [agreed smoke plan in PR #80](https://github.com/Ephemeral-AI-Lab/layerfs/blob/d9ec9c6714ca31adb7a337d2ac0f40976513908c/docs/roadmap/0.1/0.1.4/storage-smoke-test-plan.md)
 owns fixture/lifecycle/topology decisions and its remaining prerequisites. Full
 benchmark family and numerical qualification gates remain separate.
+
+Current M4 execution scope and stop condition are in the
+[finalized M4 plan](implementation-milestone-4-plan.md). It supersedes older raw-size
+selection/single-group-trial wording and full-milestone continuation instructions.
+M3 evidence remains unchanged; M5 and stronger-codec experiments are deferred.
 
 ## 1. Mental model and invariants
 
@@ -221,7 +226,7 @@ intermediate limitations explicit.
 | 1. Reusable ownership and spill preparation | Move real private owners, batch seen/offset scratch paths and ID I/O, carry location facts. Preserve current placement/publication until the complete replacement is ready. No new codec trait or temporary shared raw engine. | Small-file Init/readback and first-five replay for affected construction/spill paths; localized-edit smoke only if its handoff changes |
 | 2. Complete FULL/RAW packed vertical slice | Schema dispatch and explicit fresh packed creation; FULL framing and bounded reads; shared admission and bulk SQL; all Init/candidate publishers; canonical accounting and required finalization. Switch ownership/gates and delete unsafe cleanup together. | All three smokes: Init, changed/no-change Commit, current/historical mounted readback and truthful intermediate allocation |
 | 3. Group compression | Add both Zstandard write/read support with specified framing/window/output and scratch rules. Coalesce group waves and count bytes/copies. | Small-file/readback and first-five replay; edit smoke when its capture/Commit/read path is affected |
-| 4. Whole-file correspondence and shallow deltas | Carry prior-file/span context through complete and captured paths; implement one old cursor and bounded matcher. Enable delta emission only when FULL-base selection, reads and physical closure handling are complete. | Frequent-edit smoke and first-five ordinary import replay; use their declared representation observations, never forced SDK substitutions |
+| 4. Bounded deltas and encoded-group selection | Follow the dedicated M4 plan: physical ordering before read drains, counters, prior-file/span handoff, forward cursor, bounded depth-one matcher and two encoded alternatives. Keep level 1, schema/wire and all memory limits; store only the winner. Stop at M4 with retain/revise/remove disposition. | All three approved smokes, 33 historical mappings/no-change/cleanup, physical DELTA coverage where available and incremental M3 comparison; no new samples or M5 qualification |
 | 5. Final cleanup and integrated candidate | Finish checkpoint fact reuse, trusted read-copy/hash removal, invocation-local reconciliation view and named deletion ledger. Remove intermediate raw-only policy/dead paths. | Affected smoke while fixing; all three on the final source/binary/image candidate before calling this implementation iteration complete |
 
 Milestone 2 is the indivisible switch for: every object writer using the new final
@@ -265,9 +270,9 @@ required by existing infrastructure. Start each history with independent mutable
 state; the DeepSeek smoke starts empty and uses the first **FIVE manifest entries**,
 not five arbitrary Git commits, the full 157-history, or an already-completed Store.
 
-The implementation agent must first finalize the still-open Smoke 2/3 fixtures and
-execution prerequisites within that existing plan, before collecting baseline or
-candidate observations. Keep SDK range edits and ordinary Exec/FUSE replacement
+Smoke fixtures and execution prerequisites were resolved for M0–M3. M4 reuses
+the current frozen definitions and recorded controls; do not reopen populations or
+collect a replacement baseline merely because the older plan called them pending. Keep SDK range edits and ordinary Exec/FUSE replacement
 surfaces separate. Include the relevant ordinary replacement routes within that
 agreed smoke scope; do not change the DeepSeek importer to manufacture better hints.
 This plan assigns no new fixture population, thresholds, matrix or scenario IDs.
@@ -296,10 +301,10 @@ reference needs its own matched five-state scope under PR #80, not a 157-state d
 
 ## 7. Rollout, rollback and completion boundary
 
-1. **Compatibility first.** The owner must choose the new-Store-only transition,
-   narrow 0.1 exception versus 0.2 placement, and any required legacy support. Keep
-   current Store files unchanged. Implementation begins only under that explicit
-   disposition; this plan does not grant an exception or conversion authority.
+1. **Compatibility preserved.** The narrow v0.1.4 schema-6/wire-1 new-Store-only
+   exception is approved. Keep existing Store files unchanged, reject unsupported
+   legacy formats explicitly and preserve retained DELTA readability. No converter
+   or additional format change is authorized.
 2. **Development isolation.** Keep milestone commits and fresh smoke Stores separate
    from user Stores. Restore code by selecting a known commit if a milestone fails;
    do not reset unrelated edits or attempt a reverse/in-place database conversion.

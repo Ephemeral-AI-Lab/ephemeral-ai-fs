@@ -315,6 +315,25 @@ population is established. Small-file final COW-population variation and histori
 timing comparability caveats remain as recorded above; no historical evidence is
 rewritten by this review.
 
+## Finalized M4 plan update (2026-09-08; documentation only)
+
+The owner finalized [M4 scope and handoff](implementation-milestone-4-plan.md).
+M3 remains closed and all preceding observations, JSON and review findings are
+preserved. No M4 code, trials or smoke runs were performed for this update.
+
+M4 includes physical read ordering before bounded drains, focused counters,
+predecessor/first-span handoff, depth-one matching and two encoded group alternatives.
+The prospective selection threshold is max(64 bytes, ceil(FULL alternative encoded
+size / 8)); only the winner is stored. Keep level 1 and current memory/schema/wire
+limits. Stop at M4 with evidence and retain/revise/remove disposition.
+
+This update supersedes earlier suggestions to place stronger compression or SQLite
+layout work ahead of/in M4: stronger-level R1 remains a separate later decision;
+SQLite tuning R3/R5/R6 is deferred by the owner. R2/R4 are not automatic M4 scope.
+FileState deletion, construction-reuse redesign, new caches and cloud implementation
+are also deferred. Future SQLite/S3 hybrid is #82. Historical review text above
+records its original proposals, not current implementation instructions.
+
 ## Remaining scope
 
 M4 owns predecessor/first-span handoff, forward correspondence, shallow physical
