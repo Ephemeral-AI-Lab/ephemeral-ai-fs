@@ -65,3 +65,30 @@ End each successful read-only Workspace with EndWorkspaceMode::Clean; verify zer
 ## Limits of this result
 
 This supplement answers the public cost of these two fixed small-range/full-file reads under fresh application contexts. It does not prove OS-cold cost, arbitrary random-read throughput, mmap behavior, deep-history tail latency, maximum depth4 product selection, or general file-size scaling. Compile-time reader tests already cover valid depth4/corrupt depth5; measured smoke reads report whichever depths the actual frozen workload produced. If process/IPC dominates the small range, report the absolute Exec latency and physical read amplification without asserting a pure decoder speed ratio. This is a useful cost check for the approved optimization path, not another open-ended diagnostic loop.
+
+## Pre-observation API scope correction — frozen before probe builds/samples
+
+Independent source review established that public FUSE read receipts are collected
+only at Workspace end (layerfs-workspace/src/lifecycle.rs970), and write receipts
+only during Commit. Monitor snapshots during Exec cannot supply per-action kernel
+read/write counts. The earlier per-phase counter/zero-write requirements above are
+superseded by this precise available API scope; no probe observations existed.
+
+Per-action kernel FUSE fields are null with a reason, never fabricated zero. After
+successful Clean end, require a present public WorkspaceEnd read receipt and report
+its count/bytes across the whole setup+read+digest+end session. Kernel write counts
+remain null because no Commit is performed. Source-fixed read-only commands, byte
+count/digest correctness, no Commit, successful Clean end and unchanged fork head
+provide the functional nonmutation proof. Clean end pauses/quiesces and rejects
+unpublished state or projection dirtiness at lifecycle.rs922–954. This is not a
+claim that unavailable write-request metrics measured zero. Per-action Store
+physical counters remain actual sampled interval deltas; asynchronous read-ahead
+can cross boundaries, so they are not exclusive kernel attribution.
+
+Require the actual mountinfo filesystem type fuse/fuse.* using Bash builtins, not
+only a matching mount path. Require equality of utility hashes across both arms
+and every row, and enforce observed lifetime host RSS peak as well as current
+RSS≤8GiB. Attempt owned-container removal independently of staging/log/host
+observation errors; any incomplete cleanup remains a failed row. All fixed input
+selection,24-row order, timer/limits, oracle, source/copy and no-migration rules
+remain. This correction adds no product API, Commit, fixture or benchmark mode.
