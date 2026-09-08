@@ -1,21 +1,29 @@
-# Combined experiment completed
+# Issue88 research generation finalized
 
-Frozen C+S1 control and C+S1+native payload candidate each passed all157 public
-performance checkpoints, normal historical verification and cleanup. Both verify
-904143entries and4936693030bytes; one pre-verification logical snapshot and one
-authenticated census per arm,158-row cohort/graph validation, physical equations
-and resource reporting all pass.
+Issue88 is CLOSED as completed research. The combined implementation and its
+single authorized depth-stratified public-read diagnostic are complete. No further
+measurement, optimization or diagnostic is pending under this issue.
 
-Control218116096B allocated/205524992B logical; candidate184598528B allocated/
-181710848B logical/155353550B complete pack BLOBs. The159163199B offline reference
-was encoded components, not complete allocation. Current result is retained as
-a research checkpoint; no merge, rollout or release qualification. Baseline
-test failures and all read regressions/outliers remain preserved.
+The retained research checkpoint is184598528B complete allocated Store and
+155353550B complete pack BLOBs. Both frozen full157 histories passed verification
+and cleanup, one census per arm and158-row cohort/graph validation. The unchanged
+read diagnostic passed all60 planned observations, intended depth coverage, byte
+counts/digests, resource checks, cleanup and unchanged original seals.
 
-Report directory: layerfs-storage-v3-runs/issue88-SP-report-1. Frozen producer
-control2753453933c55ed7f93eb21619c235668a01ef4c, candidate
-d4f26f0d16f0f91c1f75767cf699012b8794ac01. Analysis commits are reporter revisions.
+Read evidence is limited to five selected single-extent files of4320–17819B at
+depths0–4, three repetitions per arm/operation. Preserve the depth3/full25.70ms
+observation (+13.32ms paired), aggregate extra decode work, prior full-history
+verification slowdown and existing read outliers. No general tail/cold-cache,
+8MiB/multi-chunk or maximum-closure qualification is claimed.
 
-One separately authorized next action: unchanged-format public-read qualification
-on actual full157 depth0–4 records and matched control ranges. No next encoding
-change or replay is launched. Detailed prospective contract accompanies report.
+Final report commit:5db4207b9694876eb5b33e71c2135ccc31d205a5.
+Final manifest:c25074c0056dd0d6b52944b077b9b1bdf3915274acff3549a6046f9d1752f011.
+Report: ../issue88-native-analysis/depth-read/published/findings-and-disposition.md
+Closure: https://github.com/Ephemeral-AI-Lab/layerfs/issues/88#issuecomment-5588334366
+
+Disposition: RETAIN AS AN ISOLATED RESEARCH CHECKPOINT. All nine baseline Store
+failures remain unresolved; the ledger preserves their exact qualifications.
+Directory Init provenance, old-writer/downgrade safety, broader read suitability
+and release/fault qualification remain adoption obligations. No product source,
+codec or representation changed during finalization. No merge, migration, rollout,
+M5/cloud work or related release/allocation issue closure occurred.
