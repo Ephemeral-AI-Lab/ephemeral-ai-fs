@@ -27,6 +27,22 @@ FULL/pack bytes, real worker/publication overlap, bounded fallback, final-batch
 ownership, and joined-worker cleanup after publication failure. Report eligible,
 computed, consumed/discarded frames, overlap and worker overhead, and actual peak
 ownership. A worker existing is not evidence of useful overlap.
+The additive native_lookahead receipt fields and reporter mapping are new R16
+diagnostic instrumentation versus G8. Seal that changed source contract explicitly;
+fixtures, public timers and all existing raw fields remain unchanged. The reserved
+physical peak includes conservative publication-vector capacity allowances; the
+frame peak reports actual owned frame/association capacities, neither is RSS.
+Initialization exposes the same counters in an additive nonce-controlled
+layerfs-initialization-diagnostic-lookahead-v1 line, collected by the existing
+generic initialization debug-text handler. Counter deltas cover initialization;
+max-merged peaks are Store high-water marks and are not subtracted as counters.
+The canonical driver's existing producer-plus-consumer thread peak remains scoped
+to that driver. Report the additional joined lookahead worker peak separately
+(at most one); do not present the old driver peak as a whole-process thread cap.
+The native workspace comes from the same aggregate physical allowance, not a new
+per-worker allowance. The OS-created thread stack is not an encoded-buffer bound
+and remains visible in process resource observations. Reject the treatment if an
+applicable overall thread/stack bound cannot accommodate it unchanged.
 
 Reject this treatment if unchanged live bounds leave no useful eligible tail,
 codec/layout/storage choices change, authentication/rollback proof fails, CPU
