@@ -432,3 +432,55 @@ fn failed_cleanup_quarantines_writes_and_keeps_preexisting_reads() {
     ));
     assert_eq!(f.db.read_object_row(base.id).unwrap(), base.bytes);
 }
+
+#[test]
+fn admission_watermark_preserves_preexisting_counts_and_dependency_authentication() {
+    for missing_dependency in [false, true] {
+        let f = Fixture::new();
+        let base = object(b"preexisting witness", None);
+        f.publish(f.prepare(vec![base.clone()]));
+        let fresh = object(b"new owned payload", None);
+        let mut owner = CheckedOutputAdmission::new(&f.db).unwrap();
+        for _ in 0..3 {
+            owner.admit_page(vec![base.clone(), fresh.clone()]).unwrap();
+            owner.flush().unwrap();
+        }
+        assert_eq!(owner.seen.count, 1);
+        assert_eq!(
+            (
+                owner.checked.candidate_objects,
+                owner.checked.inserted_objects,
+                owner.checked.reused_objects
+            ),
+            (2, 1, 1)
+        );
+        assert_eq!(owner.receipt.preexisting_reused_objects, 1);
+        let invalid = if missing_dependency {
+            use layerfs_content::file::{extent::FileStateV3, extent_codec};
+            AuthenticatedCanonicalObject::new(
+                extent_codec::encode_file_state(FileStateV3 {
+                    logical_len: 1,
+                    extent_count: 1,
+                    tree_level: 0,
+                    profile_id: extent_codec::profile_id(),
+                    mapping_root: ObjectId::for_bytes(b"missing dependency"),
+                })
+                .unwrap(),
+                None,
+            )
+            .unwrap()
+        } else {
+            let mut corrupt = fresh.clone();
+            *corrupt.0.bytes.last_mut().unwrap() ^= 1;
+            corrupt
+        };
+        let result = owner
+            .admit_page(vec![invalid])
+            .and_then(|_| owner.finish().map(|_| ()));
+        assert!(
+            matches!(result, Err(StoreError::Integrity(message)) if message == if missing_dependency { "new object dependency missing" } else { "object collision" })
+        );
+        assert_eq!(f.db.read_object_row(base.id).unwrap(), base.bytes);
+        assert!(f.db.read_object_row(fresh.id).is_err());
+    }
+}

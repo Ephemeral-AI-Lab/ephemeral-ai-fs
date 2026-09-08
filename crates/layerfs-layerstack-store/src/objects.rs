@@ -1956,7 +1956,6 @@ pub(crate) struct CheckedOutputAdmission {
     incoming_index: HashMap<ObjectId, usize>,
     incoming_bytes: usize,
     batch: Vec<AuthenticatedCanonicalObject>,
-    available: SpillableObjectSet,
     seen: SpillableObjectSet,
     pending: HashMap<ObjectId, usize>,
     batch_bytes: usize,
@@ -3097,11 +3096,9 @@ impl CheckedOutputAdmission {
             incoming_index: HashMap::new(),
             incoming_bytes: 0,
             batch: Vec::with_capacity(INITIALIZATION_SLAB_OBJECTS),
-            // Two independent facts share the existing index allowance: seen
-            // input IDs and closed, available dependencies. Leave half for
-            // bounded logical-reference decoding and temporary lookup pages.
+            // Only preexisting occurrences need a separate uniqueness index.
+            // This session's published packs already identify its fresh output.
             seen: SpillableObjectSet::bounded(CANDIDATE_INDEX_BYTES / 4)?,
-            available: SpillableObjectSet::bounded(CANDIDATE_INDEX_BYTES / 4)?,
             pending: HashMap::new(),
             batch_bytes: 0,
             statement_number: 0,
@@ -3208,16 +3205,9 @@ impl CheckedOutputAdmission {
         }
         let dependencies = dependencies.into_iter().collect::<Vec<_>>();
         for page in dependencies.chunks(OBJECT_PAGE_COUNT) {
-            let known = self.available.membership(page)?;
-            let missing = page
-                .iter()
-                .copied()
-                .filter(|id| !known.contains(id))
-                .collect::<Vec<_>>();
-            if !self.db.objects_exist(&missing)? {
+            if !self.db.objects_exist(page)? {
                 return Err(StoreError::Integrity("new object dependency missing"));
             }
-            self.available.insert_page(&missing)?;
         }
         Ok(())
     }
@@ -3230,73 +3220,58 @@ impl CheckedOutputAdmission {
         self.incoming_index.clear();
         self.incoming_bytes = 0;
         let ids = page.iter().map(|object| object.id).collect::<Vec<_>>();
-        let first = self
-            .seen
-            .insert_page(&ids)?
-            .into_iter()
-            .collect::<BTreeSet<_>>();
-        let (fresh, repeated): (Vec<_>, Vec<_>) = page
-            .into_iter()
-            .partition(|object| first.contains(&object.id));
-        if !repeated.is_empty() {
-            // Supplied duplicate occurrences still compare their actual bytes;
-            // they are not new admission candidates or new initial probes.
-            let ids = repeated.iter().map(|object| object.id).collect::<Vec<_>>();
-            let known = self.db.object_locations(&ids)?;
-            if known.len() != ids.len() {
-                return Err(StoreError::Integrity("flushed duplicate missing"));
-            }
-            drop(ids);
-            let mut supplied = repeated
-                .iter()
-                .map(|object| (object.id, object.bytes.as_slice()))
-                .collect::<Vec<_>>();
-            let mut metrics = ObjectInsertMetrics::default();
-            admission::compare(&self.db, &known, &mut supplied, &mut metrics, 0)?;
-            self.note_collision_reads(metrics);
-            self.diagnostics.cross_batch_skipped_objects += repeated.len() as u64;
-            self.diagnostics.cross_batch_skipped_bytes += metrics.skipped_bytes;
-        }
-        let mut diagnostic_stats = crate::PhysicalStorageReceipt::default();
-        for mut object in repeated {
-            diagnostic::occurrence(&mut object, 2, &mut diagnostic_stats);
-        }
-        self.db.note_physical(diagnostic_stats);
-        let ids = fresh.iter().map(|object| object.id).collect::<Vec<_>>();
         let known = self.db.object_locations(&ids)?;
         drop(ids);
-        let mut supplied = fresh
+        let preexisting = known
+            .iter()
+            .filter_map(|(&id, location)| {
+                (location.pack <= self.session.baseline_pack).then_some(id)
+            })
+            .collect::<Vec<_>>();
+        let first = self
+            .seen
+            .insert_page(&preexisting)?
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        drop(preexisting);
+        let mut supplied = page
             .iter()
             .map(|object| (object.id, object.bytes.as_slice()))
             .collect::<Vec<_>>();
-        let mut reused = ObjectInsertMetrics::default();
-        admission::compare(&self.db, &known, &mut supplied, &mut reused, 0)?;
-        self.note_collision_reads(reused);
-        self.available
-            .insert_page(&known.keys().copied().collect::<Vec<_>>())?;
-        self.checked.candidate_objects += reused.skipped_ids;
-        self.checked.candidate_bytes += reused.skipped_bytes;
-        self.checked.reused_objects += reused.skipped_ids;
-        self.checked.reused_bytes += reused.skipped_bytes;
-        self.receipt.candidate_objects += reused.skipped_ids;
-        self.receipt.candidate_bytes += reused.skipped_bytes;
-        self.receipt.reused_objects += reused.skipped_ids;
-        self.receipt.reused_bytes += reused.skipped_bytes;
-        self.receipt.preexisting_reused_objects += reused.skipped_ids;
-        self.receipt.preexisting_reused_bytes += reused.skipped_bytes;
+        let mut metrics = ObjectInsertMetrics::default();
+        // The watermark supplies occurrence provenance, never authentication.
+        // Every found object still compares its canonical length and actual bytes.
+        admission::compare(&self.db, &known, &mut supplied, &mut metrics, 0)?;
+        self.note_collision_reads(metrics);
         drop(supplied);
-        let mut diagnostic_stats = crate::PhysicalStorageReceipt::default();
-        for mut object in fresh {
-            let missing = !known.contains_key(&object.id);
-            diagnostic::occurrence(&mut object, u8::from(missing), &mut diagnostic_stats);
-            if missing {
-                diagnostic::eligible(&object, &mut diagnostic_stats);
-            }
-            if missing {
+        let mut stats = crate::PhysicalStorageReceipt::default();
+        for mut object in page {
+            if let Some(location) = known.get(&object.id) {
+                if location.pack <= self.session.baseline_pack && first.contains(&object.id) {
+                    let bytes = object.bytes.len() as u64;
+                    self.checked.candidate_objects += 1;
+                    self.checked.candidate_bytes += bytes;
+                    self.checked.reused_objects += 1;
+                    self.checked.reused_bytes += bytes;
+                    self.receipt.candidate_objects += 1;
+                    self.receipt.candidate_bytes += bytes;
+                    self.receipt.reused_objects += 1;
+                    self.receipt.reused_bytes += bytes;
+                    self.receipt.preexisting_reused_objects += 1;
+                    self.receipt.preexisting_reused_bytes += bytes;
+                    diagnostic::occurrence(&mut object, 0, &mut stats);
+                } else {
+                    self.diagnostics.cross_batch_skipped_objects += 1;
+                    self.diagnostics.cross_batch_skipped_bytes += object.bytes.len() as u64;
+                    diagnostic::occurrence(&mut object, 2, &mut stats);
+                }
+            } else {
+                diagnostic::occurrence(&mut object, 1, &mut stats);
+                diagnostic::eligible(&object, &mut stats);
                 self.push_pending(object)?;
             }
         }
-        self.db.note_physical(diagnostic_stats);
+        self.db.note_physical(stats);
         self.incoming = Vec::with_capacity(INITIALIZATION_SLAB_OBJECTS);
         Ok(())
     }
@@ -3432,9 +3407,7 @@ impl CheckedOutputAdmission {
         if batch.is_empty() {
             return Ok(());
         }
-        let ids = batch.iter().map(|object| object.id).collect::<Vec<_>>();
         let metrics = consume_checked_owned_page(&self.db, batch, &mut self.statement_number)?;
-        self.available.insert_page(&ids)?;
         self.checked.record(&metrics);
         self.batch = Vec::with_capacity(capacity);
         self.diagnostics.record_sql_batch(
@@ -3942,6 +3915,10 @@ mod tests {
             .collect::<Vec<_>>();
         admission.admit_page(objects.clone()).unwrap();
         admission.flush().unwrap();
+        assert_eq!(
+            admission.seen.count, 0,
+            "published fresh objects use the session watermark, not a second index"
+        );
         #[cfg(feature = "test-instrumentation")]
         crate::schema::reset_sql_trace();
         admission
