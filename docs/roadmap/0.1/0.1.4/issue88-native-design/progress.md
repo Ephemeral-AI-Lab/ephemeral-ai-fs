@@ -1,30 +1,21 @@
-# Combined experiment progress
+# Combined experiment completed
 
-Frozen comparison contract: full157-contract-v1.md. Current issue88 owner guidance
-prioritizes a correct shared implementation and reproducible public evidence;
-159163199 bytes is an encoded-component reference, not an allocation requirement.
-No further optimization is authorized by missing a planning number.
+Frozen C+S1 control and C+S1+native payload candidate each passed all157 public
+performance checkpoints, normal historical verification and cleanup. Both verify
+904143entries and4936693030bytes; one pre-verification logical snapshot and one
+authenticated census per arm,158-row cohort/graph validation, physical equations
+and resource reporting all pass.
 
-Completed: both normal producer builds and images, focused native/diagnostic/S1
-checks, preserved full Store-suite baseline failures, all six paired public smokes
-and normal historical verification/cleanup, native-aware smoke counter validation,
-and the frozen24-row public read campaign (all correctness/cleanup checks passed;
-read regressions, native-FULL-only coverage and first-row outlier remain).
+Control218116096B allocated/205524992B logical; candidate184598528B allocated/
+181710848B logical/155353550B complete pack BLOBs. The159163199B offline reference
+was encoded components, not complete allocation. Current result is retained as
+a research checkpoint; no merge, rollout or release qualification. Baseline
+test failures and all read regressions/outliers remain preserved.
 
-In progress: exactly one fresh full157 pair, control first. Frozen command, binary,
-image, source and analysis census identity are in the new runs directory
-issue88-SP-full157-custody-1/schedule.json. Control normal producer is2753453933c55ed7f93eb21619c235668a01ef4c;
-candidate normal producer isd4f26f0d16f0f91c1f75767cf699012b8794ac01.
-Later analysis commits are reporter revisions, not measured binary revisions.
+Report directory: layerfs-storage-v3-runs/issue88-SP-report-1. Frozen producer
+control2753453933c55ed7f93eb21619c235668a01ef4c, candidate
+d4f26f0d16f0f91c1f75767cf699012b8794ac01. Analysis commits are reporter revisions.
 
-Required sequence per arm: performance and cleanup; authenticate original
-acknowledgement and manifests; one closed pre-verification logical copy; one
-native-aware census;158-row graph/admission validation; normal all157 historical
-verification and cleanup. Only then advance to candidate. Original allocation
-remains primary; copies have no allocation-equivalence claim.
-
-Root owns serialized measurement and snapshot custody. Physical agent owns only
-account_combined.py, correspondence agent owns only prepare_combined_validation.py,
-review agent owns an independent provisional checklist in /tmp. No agent runs
-another census or opens a Store during measurements. Final reports, independent
-review, seals, relevant commit/push and additive issue summary remain pending.
+One separately authorized next action: unchanged-format public-read qualification
+on actual full157 depth0–4 records and matched control ranges. No next encoding
+change or replay is launched. Detailed prospective contract accompanies report.

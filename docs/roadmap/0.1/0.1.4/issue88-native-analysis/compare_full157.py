@@ -17,6 +17,10 @@ def main():
     assert frozen['schema'] == 'issue88-SP-full157-frozen-v1'
     assert [a['arm'] for a in frozen['order']] == ['control','candidate']
     root = args.schedule.parent.parent
+    workload_path=pathlib.Path('/Users/yifanxu/Ephemeral-AI-Lab/deepseek-history-data/checkpoint-manifest.json')
+    assert sha(workload_path)==frozen['workload_manifest_sha256']
+    workload=json.loads(workload_path.read_text())['checkpoints']
+    assert len(workload)==157
     validator = runpy.run_path(str(HERE.parent / 'issue88-delivery/validate_run.py'))
     result = dict(schema='issue88-SP-comparison-v1', status='PASS', units='integer bytes/ns/counts',
                   scope='one frozen fresh full157 pair; not release statistics', arms={},
@@ -38,7 +42,9 @@ def main():
         assert len(rows) == len(verified) == 157 and set(verified) == set(range(1, 158))
         mapping = []
         for row in rows:
-            assert row['manifest_sha256'] == frozen['workload_manifest_sha256']
+            entry=workload[row['index']-1]
+            for key in ['sha','tree','manifest_sha256']:
+                assert row[key]==entry[key]
             assert verified[row['index']]['status'] == 'PASS'
             assert verified[row['index']]['identity'] == row['identity']
             mapping.append({key: row[key] for key in ['index', 'sha', 'tree', 'oracle_sha256', 'manifest_sha256', 'files', 'logical_bytes', 'created']})
