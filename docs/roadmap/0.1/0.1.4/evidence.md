@@ -135,3 +135,14 @@ open. No replay, optimization, M5/S3 work, release claim or PR merge occurred.
 Historical Git/LayerFS controls remain historical and retain metadata/timing
 qualifications. Full inventories remain in the external runs-root directory
 named in the sealed index; compact reports and hashes are committed.
+
+### Issue87 deeper diagnosis addendum (2026-09-08)
+
+[Independent source probes and stronger metadata proof](issue87-deep-diagnosis/README.md)
+establish shared correspondence-reservation saturation at all152 affected Commits.
+Per-checkpoint prefix equality now derives admission checkpoints and bounds
+nohint payload at585,473,955–598,419,082 canonical bytes, including at least
+298,550,682 bytes with predecessor present. These are not compressed savings.
+The earlier sealed report remains untouched; this addendum narrows its unknowns
+and corrects prospective unique-target/race accounting. One unchanged-policy
+coverage diagnostic remains, #87 stays open, and no replay/product change ran.
