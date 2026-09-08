@@ -1,12 +1,169 @@
-# M4.5 authorized — plan only, execution pending
+# M4.5 complete as an unqualified development checkpoint
 
-2026-09-08. Follow [M4.5 plan](implementation-milestone-4.5-plan.md) and
-[issue #86](https://github.com/Ephemeral-AI-Lab/layerfs/issues/86). Create one 4-KiB
-candidate while preserving supported 64-KiB access, use the three approved smokes
-and separate compatibility receipts, and retain allocation-amplification limits.
-Small-file storage acceptance remains open. No M4.5 code or measurements were
-performed by this documentation update. Stop before M5. The prior ledger is
-preserved verbatim below.
+2026-09-08. Owner-authorized [single-candidate plan](implementation-milestone-4.5-plan.md)
+implemented after clean custody at `897de8254bf7f20b8afcee50fd5e04af23106934`.
+Product/harness commit: `70955bc25` on `codex/storage-v3-implementation`, draft
+[PR #81](https://github.com/Ephemeral-AI-Lab/layerfs/pull/81), tracking #86.
+[Full machine-readable evidence](implementation-milestone-4.5.json).
+
+**Recommendation: retain 4-KiB creation as the development default, retaining both
+layout readers.** Small-Store total-allocation reductions are substantial and
+backward readability passed. **Storage acceptance remains unqualified:** binary
+post-Init growth misses, additional foreground/read costs, and unexplained allocation
+amplification remain explicit. No M5 or release qualification ran.
+
+## Scope and completion
+
+- [x] Creation policy separated from supported existing layouts: Create uses 4096;
+      Connect accepts exactly 4096/65536 for otherwise valid schema 6.
+- [x] Page policy occurs before schema/cache configuration; cache remains-32768 KiB.
+      Application ID, schema objects/FKs, unsupported-schema/WAL rejection unchanged.
+- [x] No conversion, VACUUM or page rewriting on Connect; old M4 binaries reject
+      new 4-KiB Stores. Schema 6/wire 1/canonical/CDC/COW/codec and all bounds unchanged.
+- [x] Three fresh candidate smokes:33 historical mappings, no-change and cleanup passed.
+- [x] Separate compatibility:33 historical mappings on disposable 64-KiB corrected-M4
+      copies passed; original Stores/manifests unchanged; every copy remains 65536.
+- [x] Allocation layers, logical sizes/pages, physical records, overflow/page census,
+      CPU/RSS/I/O, reads and spools reported with historical-control limitations.
+- [x] Prior allocation diagnosis retained; administrator tracing unavailable, no bypass.
+- [x] Existing evidence preserved; no workload change, seed selection or page-size sweep.
+- [x] Diff reviewed and evidence checkpointed on existing draft branch; no merge/M5.
+
+Only Store `schema.rs` changes product behavior. `layerstack.rs` has two test-only
+constant references renamed. Existing smoke observation now adds page/count/freelist,
+logical DB/allocation and sidecar fields outside public timers. The Python smoke
+owner adds explicit compatibility custody and independent copying; Rust compatibility
+mode uses `compat-*` verifier branches because retained Stores already contain
+`verify-*`. The ordinary same-binary verifier checks remain unchanged. One bounded
+subagent implemented compatibility scaffolding; root reviewed and corrected branch
+name collision before execution. No unrelated stale tests were repaired or run.
+
+## Allocation and elapsed
+
+One fresh candidate observation per case versus historical corrected M4 and original
+baseline. Synthetic input cache paths changed with the Python harness hash; every
+fixture/oracle file seal matches the original. DeepSeek frozen inputs are identical.
+No fresh matched timing controls, cache purge or final three-pair qualification.
+
+| Case | Baseline / corrected M4 / M4.5 final allocated B | Reduction vs M4 | Mutation + Commit ms: M4 / M4.5 |
+| --- | --- | ---: | --- |
+| fuse-binary-8m | 11,206,656 / 10,289,152 / 9,650,176 | 6.21% | 234.130 / 293.038 |
+| fuse-text-32k | 1,179,648 / 983,040 / 69,632 | 92.92% | 47.847 / 51.745 |
+| sdk-binary-8m | 11,141,120 / 10,354,688 / 9,658,368 | 6.72% | 34.499 / 37.609 |
+| sdk-text-32k | 983,040 / 983,040 / 135,168 | 86.25% | 32.473 / 36.468 |
+| small-files | 1,441,792 / 2,162,688 / 212,992 | 90.15% | 34.236 / 29.956 |
+| deepseek-five | 12,320,768 / 4,849,664 / 4,202,496 | 13.34% | 1365.948 / 1312.935 |
+
+Small-file allocation trajectory is 196608→200704→208896→212992 B (48→49→51→52
+pages), with logical size equal to allocated size at every observation. This is
+90.15% below regressed corrected M4 and 80.88% below the earlier 1,114,112-B M4 result;
+the latter comparison prevents the regression alone from making the benefit look
+larger. Canonical final counts differ slightly:461/395891 versus M4 461/395507;
+this 384-byte difference is not a page-size saving. DeepSeek final 5558/8980175 versus
+5557/8980067 similarly reflects canonical variation. All edit-case canonical totals
+match corrected M4 exactly. Packing/DELTA algorithms and sizes are unchanged.
+
+### Allocation amplification persists
+
+Four-KiB pages mitigate the small-file outcome but do not eliminate the phenomenon:
+
+| Case | Final logical DB B | Allocated DB B | Excess allocation B |
+| --- | ---: | ---: | ---: |
+| fuse-binary-8m | 8,605,696 | 9,650,176 | 1,044,480 |
+| sdk-binary-8m | 8,630,272 | 9,658,368 | 1,028,096 |
+| sdk-text-32k | 77,824 | 135,168 | 57,344 |
+| deepseek-five | 3,166,208 | 4,202,496 | 1,036,288 |
+
+Ordinary binary post-Init growth is 1,077,248 B and SDK binary 1,085,440 B, exceeding
+original allowances 196,608/131,072 B. SDK text grows 65,536 B; ordinary text 0; small
+files 16,384 B; DeepSeek 4,132,864 B after Empty Init. Total allocation remains the
+primary denominator; growth does not replace it. No sidecar allocation was observed
+in these final receipts. Do not call excess allocated bytes proven physical extents
+past EOF, or claim future reuse/general boundedness from this finite history.
+
+Read-only prior investigation proved a legitimate COW inode-leaf version, followed
+by a new rightmost 64-KiB B-tree leaf. It did not prove why filesystem allocation grew
+by 1 MiB. Apple system SQLite is dynamically linked. Preallocation remains a hypothesis;
+privileged kernel tracing requires administrator access unavailable here, with SIP
+enabled. No instrumented run, permission bypass, dependency patch, truncation or
+VACUUM was performed. A favorable 4-KiB small-file result does not close this issue.
+
+### Foreground/read/resource costs and original misses
+
+Ordinary binary mutation+Commit rises 25.16% versus historical M4 (234.130→293.038 ms),
+for 6.21% lower final allocation. This is an explicit unfavorable cost alongside the
+larger small-Store gains, not hidden in an average. Binary Init takes 35.105 ms SDK /
+35.129 ms ordinary, versus 18.394/19.481 ms M4. Small-file Init 9.729 ms versus 8.037;
+first/repeated reads 27.924/11.182 ms versus 26.775/7.071. These are short total public
+operations; no added internal-lookup allowance is inferred. DeepSeek replay improves
+3.88% in this historical comparison (1365.948→1312.935 ms); this is not a matched
+speedup attribution. All exact per-step, wall and verification times remain in JSON.
+
+Original diagnostic misses: both binary post-Init growth limits; ordinary text
+step 2; SDK binary steps 2/4; small-file Init, first read and step 1. Earlier M4 misses
+remain preserved separately. All original total-allocation checks and comparative/
+absolute resource checks pass in this observation, but growth/timing misses do not.
+
+Performance host lifetime RSS peaks 9,125,888–26,132,480 B, container lifetime peaks
+4,874,240–15,409,152 B and sampled spool peaks 4,096–24,576 B. No swap/OOM. Ordinary
+binary public-phase CPU 247.415 ms versus 200.733 M4; SDK binary 68.733 versus 49.510;
+DeepSeek 390.915 versus 438.480. These are lifetime/sampled or summed phase scopes,
+not exact codec/operation memory maxima or aggregate-load qualification.
+
+SQLite overflow pages are observed explicitly:ordinary binary 2032, SDK binary 2039,
+DeepSeek 646, small files 25, text 0. More pages are not themselves more bytes or actual
+disk read calls. Existing BLOB/group counters do not measure physical pager I/O.
+The report includes every table/index page type, payload and unused-byte total.
+Fresh candidate Stores retain 266 DeepSeek DELTAs and 3 ordinary-binary DELTAs with
+selected FULL anchors; historical reads pass. No codec changes explain these results.
+
+## Compatibility and custody
+
+Normal candidate verification and cross-version compatibility are separate modes.
+Compatibility authenticates the original final verification manifest, independently
+copies closed 64-KiB Stores, records original producer and actual new-reader identities,
+uses original history mappings/oracles, and checks original seals afterward. The
+copies may receive normal verifier Branches; none becomes an allocation control.
+All 33 copy mappings passed, including selected DELTA content, and every final copy
+has 65536-byte pages. Original sources remain byte-identical. Old-reader rejection of
+new 4-KiB Stores is established from the original verifier source; no old binary was
+executed as an extra test. The candidate empirically reads both supported layouts.
+
+Artifact root: `/Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs`.
+Fresh directories:`m45-{small,edits,deepseek}-1`; compatibility directories:
+`m45-compat-{small,edits,deepseek}-1`. Candidate and compatibility each verify
+114,620,274 bytes across 33 mappings, for 66 mappings overall. Every cleanup passed.
+One host build, one image build and all nine invocations succeeded; no failed or
+slow observation was discarded or rerun. No new workload or broader suite ran.
+
+- Host/source seal:`dad36e72455e2bcdbfd3f391d79321c1bf7086050a7e73e9c012972231224bf7`.
+- Product seal:`5407203d4fe7adba5c4aa4c8222e825b24192a17ac3b726adce3d97d769f270f`.
+- Retained host:`builds/m45-host`; SHA-256
+  `ef69f3754fe6ab9f6607dc3483ed5929a9f715c3d34631acc9b08694834b0b28`.
+- Image:`layerfs-bench-infra:dad36e72455e2bcd`, exact ID in evidence.
+- Logs:`builds/m45-host-1.log`, `m45-image-1.log`, `m45-command-{1..9}.log`.
+- Patch/reporter:`builds/m45-source.patch`, `m45-report.py`, with hashes in JSON.
+
+Exact commands (serial, existing measurement lock):
+
+```sh
+python3 benchmark/fs-bench-pro/shared/runner.py --build-host
+python3 benchmark/fs-bench-pro/shared/runner.py --build-storage-smoke-image
+python3 benchmark/fs-bench-pro/shared/runner.py --storage-smoke small-files --source-arm candidate --repetition 1 --image layerfs-bench-infra:dad36e72455e2bcd --output /Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/m45-small-1
+python3 benchmark/fs-bench-pro/shared/runner.py --storage-smoke small-files --source-arm candidate --repetition 1 --image layerfs-bench-infra:dad36e72455e2bcd --storage-verify-run /Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/m45-small-1
+python3 benchmark/fs-bench-pro/shared/runner.py --storage-smoke small-files --image layerfs-bench-infra:dad36e72455e2bcd --storage-compat-run /Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/m4-review-small-1 --output /Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/m45-compat-small-1
+python3 benchmark/fs-bench-pro/shared/runner.py --storage-smoke frequent-edits --source-arm candidate --repetition 1 --image layerfs-bench-infra:dad36e72455e2bcd --output /Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/m45-edits-1
+python3 benchmark/fs-bench-pro/shared/runner.py --storage-smoke frequent-edits --source-arm candidate --repetition 1 --image layerfs-bench-infra:dad36e72455e2bcd --storage-verify-run /Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/m45-edits-1
+python3 benchmark/fs-bench-pro/shared/runner.py --storage-smoke frequent-edits --image layerfs-bench-infra:dad36e72455e2bcd --storage-compat-run /Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/m4-review-edits-1 --output /Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/m45-compat-edits-1
+python3 benchmark/fs-bench-pro/shared/runner.py --storage-smoke deepseek-five --source-arm candidate --repetition 1 --image layerfs-bench-infra:dad36e72455e2bcd --output /Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/m45-deepseek-1
+python3 benchmark/fs-bench-pro/shared/runner.py --storage-smoke deepseek-five --source-arm candidate --repetition 1 --image layerfs-bench-infra:dad36e72455e2bcd --storage-verify-run /Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/m45-deepseek-1
+python3 benchmark/fs-bench-pro/shared/runner.py --storage-smoke deepseek-five --image layerfs-bench-infra:dad36e72455e2bcd --storage-compat-run /Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/m4-review-deepseek-1 --output /Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/m45-compat-deepseek-1
+```
+
+No remaining implementation or compatibility-check item is missing. Allocation
+amplification cause/general bounds and full storage-performance acceptance remain
+explicitly unresolved. M5 cleanup, final qualification, S3, migration tooling,
+stronger codecs and other page sizes remain deferred. Stop at M4.5; do not merge.
 
 ---
 

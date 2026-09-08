@@ -404,3 +404,14 @@ For architecture decisions, tradeoff policy, Git comparison, and broader boundar
 checklists, use the [architecture specification](storage-architecture-spec.md).
 For current implementation behavior, consult the released manual and source;
 this walkthrough must not be presented as an already supported SQLite format.
+
+## M4.5 page-layout reader direction
+
+The owner-authorized [M4.5 experiment](implementation-milestone-4.5-plan.md)
+separates SQLite creation policy from supported layouts. The candidate creates
+4096-byte-page Stores and explicitly accepts both 4096 and 65536-byte pages for
+otherwise valid schema 6 / pack wire 1 Stores. Canonical bytes and pack wire fields
+are unchanged. Connect does not convert or rewrite page size. Older M4 binaries
+require 65536-byte pages and reject new 4096-byte Stores; access requires the M4.5
+reader capability. Existing 64-KiB evidence Stores remain untouched. Reverting
+creation policy must preserve readability of both supported layouts.

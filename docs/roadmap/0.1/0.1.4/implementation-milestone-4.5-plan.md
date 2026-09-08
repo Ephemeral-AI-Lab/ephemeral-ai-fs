@@ -1,6 +1,8 @@
 # M4.5: 4-KiB SQLite creation and allocation evaluation
 
-Status: **owner-authorized experiment; not yet implemented or measured**, 2026-09-08.
+Status: **implemented and smoke/compatibility verified; unqualified development checkpoint**, 2026-09-08.
+Evidence: [M4.5 JSON](implementation-milestone-4.5.json) and [progress](implementation-progress.md).
+Allocation amplification and full acceptance remain unresolved.
 Tracking: [issue #86](https://github.com/Ephemeral-AI-Lab/layerfs/issues/86).
 Complete this isolated iteration after M4 and stop before M5. This supersedes the
 prior blanket SQLite-tuning deferral only for the scope below. S3 remains future
@@ -154,17 +156,17 @@ Fix demonstrated errors within scope; no indefinite search for a favorable run.
 
 ## Completion checklist
 
-- [ ] Actual source custody and prospective single-candidate policy recorded.
-- [ ] Creation/accepted-layout separation implemented; all other settings unchanged.
-- [ ] Existing constant assumptions reviewed; minimum-reader direction documented.
-- [ ] Three candidate smokes, historical reads/no-change/cleanup completed.
-- [ ] Candidate reader verifies disposable 64-KiB M4 copies under separate custody.
-- [ ] Allocation layers, canonical variation and performance/resource costs reported.
-- [ ] Allocation diagnosis has a proven result or precise unresolved limitation.
-- [ ] No old evidence, original Store, workload or accounting boundary altered.
-- [ ] Actual results written to new `implementation-milestone-4.5.json`; progress
+- [x] Actual source custody and prospective single-candidate policy recorded.
+- [x] Creation/accepted-layout separation implemented; all other settings unchanged.
+- [x] Existing constant assumptions reviewed; minimum-reader direction documented.
+- [x] Three candidate smokes, historical reads/no-change/cleanup completed.
+- [x] Candidate reader verifies disposable 64-KiB M4 copies under separate custody.
+- [x] Allocation layers, canonical variation and performance/resource costs reported.
+- [x] Allocation diagnosis has a proven result or precise unresolved limitation.
+- [x] No old evidence, original Store, workload or accounting boundary altered.
+- [x] Actual results written to new `implementation-milestone-4.5.json`; progress
       records retain/reject/unresolved disposition and remaining M5 work.
-- [ ] Diff reviewed, commit/push existing draft PR, no merge. Stop at M4.5.
+- [x] Diff reviewed, commit/push existing draft PR, no merge. Stop at M4.5.
 
 A task may report a genuine external blocker or unqualified result, but must not
 mark missing empirical compatibility or unresolved acceptance as passed. No M5,
