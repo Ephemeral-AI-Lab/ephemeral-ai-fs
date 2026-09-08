@@ -1,15 +1,14 @@
 use crate::statements;
 use crate::{BranchId, Result, StoreError};
 use rusqlite::{Connection, OpenFlags, TransactionBehavior};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 use std::fs::OpenOptions;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 
 pub const APPLICATION_ID: i64 = 0x4c46_534c;
-pub const SCHEMA_VERSION: i64 = 5;
-const PREVIOUS_SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 6;
 pub const SQLITE_PAGE_SIZE_BYTES: i64 = 64 * 1024;
 pub const SQLITE_PAGE_CACHE_KIB: i64 = 32 * 1024;
 
@@ -89,14 +88,13 @@ impl Drop for CreatedStoreFile {
 
 #[derive(Default)]
 struct TicketState {
-    next: u64,
-    serving: u64,
+    occupied: bool,
+    waiters: VecDeque<mpsc::SyncSender<()>>,
 }
 
 #[derive(Default)]
 struct TicketGate {
     state: Mutex<TicketState>,
-    ready: Condvar,
 }
 
 pub(crate) struct OperationPermit<'a> {
@@ -105,10 +103,23 @@ pub(crate) struct OperationPermit<'a> {
 
 impl Drop for OperationPermit<'_> {
     fn drop(&mut self) {
-        if let Ok(mut state) = self.gate.state.lock() {
-            state.serving += 1;
-            self.gate.ready.notify_all();
+        let mut state = match self.gate.state.lock() {
+            Ok(state) => state,
+            Err(poisoned) => {
+                // Disconnect every queued receiver on failure; no waiter can be
+                // left asleep behind a gate that future entrants will reject.
+                poisoned.into_inner().waiters.clear();
+                return;
+            }
+        };
+        while let Some(successor) = state.waiters.pop_front() {
+            // A one-slot channel is empty until this single grant. A cancelled
+            // receiver is skipped, without waking or rescanning other waiters.
+            if successor.send(()).is_ok() {
+                return;
+            }
         }
+        state.occupied = false;
     }
 }
 
@@ -118,14 +129,16 @@ impl TicketGate {
             .state
             .lock()
             .map_err(|_| StoreError::Integrity("operation gate"))?;
-        let ticket = state.next;
-        state.next += 1;
-        while state.serving != ticket {
-            state = self
-                .ready
-                .wait(state)
-                .map_err(|_| StoreError::Integrity("operation gate"))?;
+        if !state.occupied {
+            state.occupied = true;
+            return Ok(OperationPermit { gate: self });
         }
+        let (grant, ready) = mpsc::sync_channel(1);
+        state.waiters.push_back(grant);
+        drop(state);
+        ready
+            .recv()
+            .map_err(|_| StoreError::Integrity("operation gate"))?;
         Ok(OperationPermit { gate: self })
     }
 }
@@ -185,7 +198,7 @@ impl StoreDb {
             path: path.clone(),
             remove: true,
         });
-        let existing_version = (mode == OpenMode::Connect)
+        let _existing_version = (mode == OpenMode::Connect)
             .then(|| preflight_connect(&path))
             .transpose()?;
         let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
@@ -195,12 +208,9 @@ impl StoreDb {
         }
         configure_connection(&connection)?;
         if mode == OpenMode::Create {
-            connection.execute_batch(statements::schema::V5)?;
+            connection.execute_batch(statements::schema::V6)?;
         }
         acquire_exclusive_lock(&mut connection)?;
-        if existing_version == Some(PREVIOUS_SCHEMA_VERSION) {
-            migrate_v4_to_v5(&mut connection)?;
-        }
         verify_schema(&connection, SCHEMA_VERSION)?;
         prepare_manifest(&connection)?;
         #[cfg(feature = "test-instrumentation")]
@@ -285,7 +295,7 @@ fn preflight_connect(path: &Path) -> Result<i64> {
         return Err(StoreError::WrongStoreSchema);
     }
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if !matches!(version, PREVIOUS_SCHEMA_VERSION | SCHEMA_VERSION) {
+    if version != SCHEMA_VERSION {
         return Err(StoreError::WrongStoreSchema);
     }
     verify_schema(&connection, version)?;
@@ -350,7 +360,7 @@ fn prepare_manifest(connection: &Connection) -> Result<()> {
     for (name, sql) in statements::ALL {
         if matches!(
             *name,
-            "schema/v4.sql" | "schema/v5.sql" | "schema/migrate_v4_to_v5.sql"
+            "schema/v4.sql" | "schema/v5.sql" | "schema/v6.sql" | "schema/migrate_v4_to_v5.sql"
         ) {
             continue;
         }
@@ -373,18 +383,10 @@ fn schema_objects(connection: &Connection) -> Result<Vec<SchemaObject>> {
 fn expected_schema_objects(version: i64) -> Result<Vec<SchemaObject>> {
     let expected = Connection::open_in_memory()?;
     expected.execute_batch(match version {
-        PREVIOUS_SCHEMA_VERSION => statements::schema::V4,
-        SCHEMA_VERSION => statements::schema::V5,
+        SCHEMA_VERSION => statements::schema::V6,
         _ => return Err(StoreError::WrongStoreSchema),
     })?;
     schema_objects(&expected)
-}
-
-fn migrate_v4_to_v5(connection: &mut Connection) -> Result<()> {
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    transaction.execute_batch(statements::schema::MIGRATE_V4_TO_V5)?;
-    transaction.commit()?;
-    verify_schema(connection, SCHEMA_VERSION)
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]

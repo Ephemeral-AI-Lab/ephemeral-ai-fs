@@ -8,16 +8,19 @@ use crate::tree::metadata::codec::{decode_metadata_node, MetadataNodeV1};
 use crate::{CoreResult, Object, ObjectId};
 
 pub fn referenced_objects(canonical: &[u8]) -> CoreResult<Vec<ObjectId>> {
-    let object = crate::decode_object(canonical)?;
-    let Object::Bytes(value) = object else {
-        let Object::Directory(entries) = object else {
+    if canonical.get(4) == Some(&(crate::ObjectKind::Directory as u8)) {
+        let Object::Directory(entries) = crate::decode_object(canonical)? else {
             unreachable!()
         };
         return Ok(entries
             .into_iter()
             .map(|entry| entry.reference().id())
             .collect());
-    };
+    }
+    // Inspect Bytes framing by reference; payload leaves need no owned copy to
+    // establish that they have no graph edges. Exact role decoders still validate
+    // every structured value below.
+    let value = crate::decode_bytes_object(canonical)?;
     let magic = value.get(..8).unwrap_or_default();
     Ok(match magic {
         b"LFS4FSR\0" => vec![decode_namespace_root(canonical)?.inode_table_root],

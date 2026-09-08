@@ -1,8 +1,8 @@
 # Storage architecture v3 implementation progress
 
-Status: **milestone 0 complete; milestone 1 in progress; implementation incomplete**.
+Status: **milestones 0–1 implemented; milestone 2 in progress; implementation incomplete**.
 Updated 2026-09-08. Unchanged-product baseline built; all three smokes and their
-independent mounted historical verification passed. No v3 product switch yet.
+independent mounted historical verification passed. The FULL/RAW schema-6 switch has an intermediate small-file correctness observation; integrated v3 is not complete.
 This ledger is the single disposition of this implementation task, not a copy
 of the historical release matrix.
 
@@ -119,18 +119,18 @@ not exercise it.
 | 0: fixture/budget/comparison decision | DONE-PREP | Owner approved draft before observations |
 | 0: three entrypoints, protected input/oracle custody | DONE-PREP + EXERCISED | storage_smoke host/workload/shared runner; exact Git inputs and synthetic manifests |
 | 0: unchanged baseline all three smokes | PASS | implementation-baseline.json; full FUSE historical oracles and owned cleanup |
-| 1: reusable canonical/finalized ownership, selected ID/location transfer | PENDING | objects.rs + all Init/Workspace callers |
-| 1: page seen insert/membership/order/duplicate semantics | PENDING | objects.rs spill owner; streaming scalar callers included |
-| 1: page offset flush/location lookup, pending visibility and failed-owner handling | PENDING | Existing spool and pending/absolute union |
-| 1: sealed buffered IdOrder; delete tiny read/seek index reconstruction | PENDING | Preserve EOF/truncation and memory accounting |
-| 2: exact schema 6/new creation/legacy rejection and SQL/FKs | PENDING | schema.rs, statements, v6.sql and all SQL assumptions |
-| 2: FULL/RAW pack framing, bounded reader and integrity/authentication | PENDING | objects/{pack,read}.rs, SnapshotReader and generic sources |
-| 2: shared <=2U admission, closed reservation, connection-unlocked late validation | PENDING | objects/admission.rs and every writer |
-| 2: byte/parameter bounded pack/locator INSERTs, incremental counters | PENDING | Shared transaction owner and effective SQLite limits |
-| 2: all Init routes move finalized outputs, no parent payload clone | PENDING | layerstack.rs serial/parallel/empty/nonempty/fallback |
-| 2: delete whole-Init/nested permits and all four unsafe cleanup calls | PENDING | Indivisible all-writer switch; metadata siblings retained |
-| 2: targeted FIFO handoff and poison/abandonment behavior | PENDING | Existing schema gate, no new scheduler |
-| 2: stage/head/base/no-change/publication/finalization semantics | PENDING | workspace/staging/branch/lifecycle/live backing |
+| 1: reusable canonical/finalized ownership, selected ID/location transfer | IMPLEMENTED / SOURCE-REVIEWED | 86d04b95e; M1 observations below; all-Init switch remains M2 |
+| 1: page seen insert/membership/order/duplicate semantics | IMPLEMENTED / SOURCE-REVIEWED | objects.rs spill owner; streaming scalar callers included |
+| 1: page offset flush/location lookup, pending visibility and failed-owner handling | IMPLEMENTED / SOURCE-REVIEWED | Existing spool and pending/absolute union |
+| 1: sealed buffered IdOrder; delete tiny read/seek index reconstruction | IMPLEMENTED / SOURCE-REVIEWED | Preserve EOF/truncation and memory accounting |
+| 2: exact schema 6/new creation/legacy rejection and SQL/FKs | IN PROGRESS / PARTIAL SMOKE | schema.rs, statements, v6.sql and all SQL assumptions |
+| 2: FULL/RAW pack framing, bounded reader and integrity/authentication | IN PROGRESS / PARTIAL SMOKE | objects/{pack,read}.rs, SnapshotReader and generic sources |
+| 2: shared <=2U admission, closed reservation, connection-unlocked late validation | IN PROGRESS / PARTIAL SMOKE | objects/admission.rs and every writer |
+| 2: byte/parameter bounded pack/locator INSERTs, incremental counters | IN PROGRESS / PARTIAL SMOKE | Shared transaction owner and effective SQLite limits |
+| 2: all Init routes move finalized outputs, no parent payload clone | IN PROGRESS / PARTIAL SMOKE | layerstack.rs serial/parallel/empty/nonempty/fallback |
+| 2: delete whole-Init/nested permits and all four unsafe cleanup calls | IN PROGRESS / PARTIAL SMOKE | Indivisible all-writer switch; metadata siblings retained |
+| 2: targeted FIFO handoff and poison/abandonment behavior | IN PROGRESS / PARTIAL SMOKE | Existing schema gate, no new scheduler |
+| 2: stage/head/base/no-change/publication/finalization semantics | IN PROGRESS / PARTIAL SMOKE | workspace/staging/branch/lifecycle/live backing |
 | 2: canonical/query/accounting preservation and physical receipts | PENDING | query/records/telemetry/SQL |
 | 3: Zstandard exact framing/window/checksum/output and actual scratch bound | PENDING | One codec binding, no silent RAW fallback |
 | 3: target/base internal group waves, slot/order/duplicate/output accounting | PENDING | Shared reader and duplicate validation |
@@ -141,23 +141,22 @@ not exercise it.
 | 5: root-bound checkpoint facts, remove redundant trusted rehash/cache clone | PENDING | workspace SnapshotReader + live backing |
 | 5: lazy reconciliation view and indexed exact/ancestor/prefix scopes | PENDING | changes/reconcile; overlapping fingerprint work remains |
 | 5: obsolete encoder/SQL/helper deletion and final module ledger | PENDING | Implementation plan KEEP/MERGE/REPLACE/DELETE |
-| Each slice: matching builds and smallest affected agreed smoke | NOT-RUN | No binaries/images built |
-| Final integrated candidate: all three repeated comparisons | NOT-RUN | No baseline/candidate metrics |
+| Each slice: matching builds and smallest affected agreed smoke | M0/M1 PASS; M2 NOT-RUN | Source-specific M1 evidence below; no packed writer enabled |
+| Final integrated candidate: all three repeated comparisons | NOT-RUN | Diagnostic baseline exists; final three pairs remain open |
 | Final correctness/history/routes/resources/cleanup | NOT-RUN | Source review cannot tick these |
 | Final evidence/report/source agreement and implementation PR | PENDING | No completed implementation PR claim |
 
 Eight review follow-ups map respectively to admission; reconciliation view;
 all-Init ownership; Store/scratch batching; spill I/O/location transfer; FIFO;
-grouped reads; whole-file handoff. **All eight remain unimplemented** in this
-worktree. The reviewed design's “resolved” labels are not implementation status.
+grouped reads; whole-file handoff. **All eight remain open as complete integrated obligations**; spill/page components are implemented and the gate/reader/admission switch is in progress. The reviewed design's “resolved” labels are not implementation status.
 
 ## Current result table and coverage
 
 | Smoke | Baseline allocated bytes / elapsed / resources | Final candidate | Correctness/history/route/cleanup |
 | --- | --- | --- | --- |
-| DeepSeek first five | Not run | Not built/run | Not exercised |
-| Frequent edits, SDK and ordinary separately | Not run | Not built/run | Not exercised |
-| Small-file Init/readback | Not run | Not built/run | Not exercised |
+| DeepSeek first five | 12,320,768 allocated bytes; 1,095,992,417 ns foreground; resource receipt in implementation-baseline.json | Not built/run | Baseline and M1 PASS |
+| Frequent edits, SDK and ordinary separately | Four separate histories in implementation-baseline.json | Not built/run | Baseline and M1 PASS |
+| Small-file Init/readback | 1,441,792 final allocated bytes; Init 7,028,667 ns; separate read timings in implementation-baseline.json | Not built/run | Baseline and M1 PASS |
 
 No material-storage, latency, Git-proximity, universal correctness or capacity
 claim exists. Broad parser/race/conflict, oversized-record and failure matrices,
@@ -230,7 +229,7 @@ recorded external runs root. These are intermediate source-specific observations
 not the required final integrated candidate comparisons.
 
 The subsequent fallible ID seal propagation is a source-reviewed error-handling
-completion; its matching build and next affected smoke remain pending. No oversized
+completion; its matching host build m1-host-4.log passed. Its next matching runtime/smoke remains pending the coherent M2 switch. No oversized
 ID/seen-index population was injected: disk-seen thresholds, truncated ID failures
 and OFF-journal failure schedules are not exercised by these smokes. Their code
 and callers were reviewed; no unit or extra fault suite was run. Single-sample
@@ -243,3 +242,111 @@ Draft implementation PR: https://github.com/Ephemeral-AI-Lab/layerfs/pull/81.
 It remains unmerged and explicitly incomplete. All eight review obligations that
 require packed admission, hints, grouped reads, gate replacement or reconciliation
 remain open; only the milestone-1 spill/page portions are implemented.
+
+
+## Milestone 2 preparation — no format switch or smoke claim yet
+
+Work in progress adds the prescribed private pack/read/admission modules. Wire
+framing and bound checks, FULL/RAW construction, grouped target/FULL-base reads,
+streamed oversized comparisons, one-probe/one-recheck prepared admission and bulk
+pack/locator insertion are being connected to existing writers. These are not
+reported as complete or exercised while callers still use schema 5. Compression
+is not enabled; its required codec is milestone 3. FIFO successor channels replace
+broadcast wakeups; complete permit scope changes remain open with the writer switch.
+
+Source review found a payload-sized copy in referenced_objects; the Bytes branch
+now borrows the existing decoder's slice while retaining exact structured-role
+parsing. All production callers were traced. Oversized comparison reuses
+ObjectId::from_reader and its existing domain-separated hash; no external hash or
+SQLite dependency source was patched.
+
+Build preparation observations (not smoke verification): m2-host-preparation-1
+compiled the pack/read code before later gate/admission edits and is not a
+matching final artifact. m2-host-preparation-2 failed; the host builder swallowed
+Cargo diagnostics. The existing host build error branch now prints captured
+stderr, matching its image-build behavior. m2-host-preparation-3 retained the
+actual compiler error: rusqlite ValueRef does not implement ToSql. The correction
+uses borrowed ToSql parameters, avoiding a pack-BLOB copy or dependency patch.
+All failed build logs remain under the declared runs root. No smoke was executed
+against any of these intermediate sources.
+
+Owner steering: implementation patches stay within this isolated repository;
+external library/dependency sources are not modified. Existing declared evidence
+and fresh smoke-state locations retain their original custody and accounting.
+
+
+### M2 first FULL/RAW small-file observation and correction
+
+`m2-small-1` performance and all four independent historical mounted oracles
+passed, with authenticated runtime/FUSE route and owned cleanup PASS. This is a
+raw-only checkpoint, not v3 qualification. Identity: source commit
+`86d04b95ed360835f1a861fd7104218794deb142` plus the retained implementation diff;
+source seal `c2a8646c3f52bdc50b711a262a22ed4e58eeedc64aceec66c94c4a03fcac2972`;
+product seal `8630a6a28ed5cbf3b6c8257336fe36ea366b544899985f17b09c490883582d93`;
+host SHA-256 `b135c4d8c0cb4b236c817b392b05ed2d375d2a675255fec73e70bf5309be342f`;
+image tag `layerfs-bench-infra:c2a8646c3f52bdc5` (immutable image ID in the run's
+identity.json). The exact schema-6 DDL hash is
+`53bda8792a601683038af508b183986e1f880a3c0f2158dc3cc9f6bbf1fced50`.
+
+| Diagnostic small-file case | Unchanged baseline | First FULL/RAW | Disposition |
+| --- | ---: | ---: | --- |
+| Initial/final allocated bytes | 1,441,792 / 1,441,792 | 1,441,792 / 1,441,792 | No storage improvement; compression still required |
+| Init ns | 7,028,667 | 7,842,750 | +11.6% single observation |
+| First read ns | 19,658,084 | 29,530,000 | Meaningful regression; exceeds prospective read allowance |
+| Repeated read ns | 7,439,041 | 7,722,917 | +3.8% single observation |
+| Step 1 Exec+Commit ns | 8,016,916 | 8,917,084 | +11.2% single observation |
+| Step 2 Exec+Commit ns | 6,796,542 | 9,803,666 | +44.2%; unresolved |
+| Step 3 Exec+Commit ns | 7,294,833 | 10,962,250 | +50.3%; unresolved |
+
+These valid samples are retained. They do not satisfy the final frozen gates and
+are not statistical baseline/candidate pairs. Host first-read CPU rose from
+4,891,416 to 7,242,500 ns. Source trace found redundant singleton batch-slot
+planning, SnapshotReader's temporary cache-argument copy, and ObjectBuffer's
+rehash of an already-authenticated base source. The correction keeps real spill
+reauthentication, uses the existing trusted source boundary, restores scalar
+request handling, and retains the existing demanded-object cache. The affected
+smoke will be rerun on matching artifacts; no acceptance gate changes.
+
+Additional build failure `m2-host-1.log`: an overly broad textual edit changed
+both direct-sink and producer-only get methods. The producer-only implementation
+was restored; only the coordinator sink can resolve pending/database objects.
+`m2-host-2.log`, `m2-host-3.log`, and `m2-host-4.log` passed after the respective
+recorded source corrections. No failed smoke has been discarded.
+
+Named scope still open: complete codec/delta/hint handoffs, fallback source-pass
+work receipts, remaining obsolete construction helper removal, physical/group
+receipts, reconciliation cleanup, and final three paired smokes. Further source
+reading completed changes.rs production through line 2352 and workspace-core
+file_edit.rs production through 912, lib.rs production including its post-test
+LiveWorkspace body, and namespace.rs production including rename. It found the
+existing FrontierInodes growing-prefix merge; this remains an explicit correction
+item, not an accepted finite-cap exception. No new verification suite was run.
+
+
+M2 correction observation `m2-small-2`: performance and all four historical FUSE
+oracles passed; cleanup passed. Source seal `2d092b67688af77c` (full identity in
+receipt), immutable image `sha256:1595d1979fe58d966903b7a1efea1f1d0b116a3547341ab4e1bbefd8e4bfe4ac`.
+First/repeated read: 23,176,834 / 7,348,500 ns. Exec+Commit steps:
+8,986,333 / 7,422,917 / 8,621,459 ns. These diagnostic values are inside the
+prospective read/step allowances versus the initial baseline. Init was 9,228,167 ns,
+above the 8,785,834-ns prospective limit; this valid result remains retained and
+qualification stays open. Initial/final allocation remains 1,441,792 bytes.
+No numerical gate or repetition policy changed.
+
+Subsequent M2 source cleanup records attempted fallback file reads before errors
+escape, merges worker source counters once, and reports source construction passes
+in the existing Init receipt. The stopped parallel attempt plus one serial fallback
+retains admitted records; the final receipt includes attempted file/byte work.
+The former parent-collection Init constructors now compile only as existing test
+reference helpers, not production routes. The small smoke's host prints the
+existing Init receipt outside operation timing; the same harness change will be
+used for final baseline pairs. No external library/dependency source was edited.
+An Init name conflict is classified only after the name INSERT fails, preserving
+admission/integrity errors from earlier phases.
+
+`m2-host-6.log` retained a compile failure from mistakenly applying `?` to the
+existing infallible JSON emitter. Its actual body was read and the call corrected;
+`m2-host-7.log` passed. The later name-error classification fix still needs its
+matching build. These are preparation observations, not executed verification.
+
+Full second-observation host custody: `a936569f25425d493ee7a47ef77ec4e9c14103ef2226be674d3d0bae49caa645`; source `2d092b67688af77ccfee5920b8c314af454d82d1a211556fd9e3d6f75f6263a1`.

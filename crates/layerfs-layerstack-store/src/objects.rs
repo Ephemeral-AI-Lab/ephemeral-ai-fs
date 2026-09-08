@@ -1,3 +1,7 @@
+mod admission;
+pub(crate) use admission::PreparedAdmission;
+mod pack;
+mod read;
 mod spill;
 #[cfg(test)]
 use spill::SeenStorage;
@@ -9,7 +13,9 @@ use layerfs_content::filesystem::{self, ContentChange, ReconcileConflict};
 use layerfs_content::object::access::{ObjectRead, ObjectStore};
 use layerfs_content::object::references::referenced_objects;
 use layerfs_content::{CoreError, CoreResult, ObjectId};
-use rusqlite::{params_from_iter, types::Value, Connection, OptionalExtension};
+#[cfg(test)]
+use rusqlite::OptionalExtension;
+use rusqlite::{params_from_iter, types::Value, Connection};
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -503,15 +509,15 @@ pub struct FinalizedOutputWriter {
     metrics: OutputWriterMetrics,
 }
 
-pub(crate) struct InitializationDirectAdmissionWriter<'admission, 'db> {
-    admission: &'admission mut CheckedOutputAdmission<'db>,
+pub(crate) struct InitializationDirectAdmissionWriter<'admission> {
+    admission: &'admission mut CheckedOutputAdmission,
     error: Option<StoreError>,
     transient_owned_bytes: u64,
     pub metrics: OutputWriterMetrics,
 }
 
-impl<'admission, 'db> InitializationDirectAdmissionWriter<'admission, 'db> {
-    pub(crate) fn new(admission: &'admission mut CheckedOutputAdmission<'db>) -> Self {
+impl<'admission> InitializationDirectAdmissionWriter<'admission> {
+    pub(crate) fn new(admission: &'admission mut CheckedOutputAdmission) -> Self {
         Self {
             admission,
             error: None,
@@ -551,9 +557,15 @@ impl<'admission, 'db> InitializationDirectAdmissionWriter<'admission, 'db> {
     }
 }
 
-impl ObjectStore for InitializationDirectAdmissionWriter<'_, '_> {
-    fn get(&self, _id: ObjectId) -> CoreResult<Vec<u8>> {
-        Err(CoreError::InvalidRecord("direct initialization get"))
+impl ObjectStore for InitializationDirectAdmissionWriter<'_> {
+    fn get(&self, id: ObjectId) -> CoreResult<Vec<u8>> {
+        if let Some(index) = self.admission.pending.get(&id) {
+            return Ok(self.admission.batch[*index].bytes.clone());
+        }
+        self.admission
+            .db
+            .read_object_row(id)
+            .map_err(core_read_error)
     }
 
     fn put(&mut self, canonical: &[u8]) -> CoreResult<ObjectId> {
@@ -1601,18 +1613,6 @@ impl Iterator for CompactInodePairStream {
     }
 }
 
-pub(crate) struct CandidatePlan {
-    missing: SpillableObjectSet,
-    missing_order: IdOrder,
-    all_missing: bool,
-    pub candidate_objects: u64,
-    pub candidate_bytes: u64,
-    pub inserted_objects: u64,
-    pub inserted_bytes: u64,
-    pub reused_objects: u64,
-    pub reused_bytes: u64,
-}
-
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ObjectInsertMetrics {
     pub payload_ns: u64,
@@ -1753,18 +1753,6 @@ impl InitializationAdmissionDiagnostics {
     }
 }
 
-pub(crate) struct PlannedAdmission {
-    pub final_batch: Vec<CanonicalObject>,
-    pub batch_inserted_objects: u64,
-    pub batch_inserted_bytes: u64,
-    pub transactions: u64,
-    pub max_transaction_objects: u64,
-    pub max_transaction_bytes: u64,
-    pub begin_ns: u64,
-    pub insert_ns: u64,
-    pub commit_ns: u64,
-}
-
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct CheckedAdmission {
     pub candidate_objects: u64,
@@ -1806,17 +1794,19 @@ impl CheckedAdmission {
     }
 }
 
-struct AdmissionBatchMetrics {
-    insert: ObjectInsertMetrics,
-    begin_ns: u64,
-    commit_ns: u64,
+pub(crate) struct AdmissionBatchMetrics {
+    pub(crate) insert: ObjectInsertMetrics,
+    pub(crate) begin_ns: u64,
+    pub(crate) commit_ns: u64,
 }
 
-pub(crate) struct CheckedOutputAdmission<'a> {
-    db: &'a crate::schema::StoreDb,
+pub(crate) struct CheckedOutputAdmission {
+    db: crate::schema::StoreDb,
     batch: Vec<AuthenticatedCanonicalObject>,
+    seen: SpillableObjectSet,
     pending: HashMap<ObjectId, usize>,
     batch_bytes: usize,
+    validation_reserve: usize,
     statement_number: u64,
     receipt: crate::CandidateReceipt,
     checked: CheckedAdmission,
@@ -1856,7 +1846,7 @@ impl DeferredObjectStore {
             first_store_write_bytes: 0,
             spill_peak_bytes: 0,
             spill_count: 0,
-            memory_limit: CANDIDATE_MEMORY_BYTES,
+            memory_limit: CANDIDATE_MEMORY_BYTES - 2 * 1024 * 1024,
             index_limit: CANDIDATE_INDEX_BYTES,
             spill_buffer_bytes: CANDIDATE_SPILL_BUFFER_BYTES - 2 * spill::ID_BUFFER_BYTES,
             order_memory_bytes: CANDIDATE_MEMORY_BYTES,
@@ -1979,22 +1969,16 @@ impl DeferredObjectStore {
         mut visitor: impl FnMut(Vec<AuthenticatedCanonicalObject>) -> Result<()>,
     ) -> Result<u64> {
         self.reachable.seal()?;
-        // Admission publishes only after every selected object is durable; its
-        // delivery order need not be the graph traversal's child-first order.
-        if matches!(self.storage, DeferredObjects::Spill(_)) {
-            let mut selected = SpillableObjectSet::bounded(self.index_limit)?;
-            self.reachable
-                .visit_pages(|ids| selected.insert_page(ids).map(|_| ()))?;
-            self.reachable = self.order_missing(&selected)?;
-        }
+        // Preserve the checked graph's child-first order through spill delivery;
+        // each bounded admission can carry closed dependency facts forward.
         let mut memory_owned_bytes = 0_u64;
         let mut spill_readback_bytes = 0_u64;
         let mut storage_authentication_ns = 0_u64;
         let capacity = usize::try_from(self.count)
             .unwrap_or(INITIALIZATION_ADMISSION_BATCH_COUNT)
-            .min(INITIALIZATION_ADMISSION_BATCH_COUNT)
+            .min(INITIALIZATION_SLAB_OBJECTS)
             .min((self.memory_limit / std::mem::size_of::<AuthenticatedCanonicalObject>()).max(1));
-        let page_limit = self.memory_limit.min(ADMISSION_BATCH_BYTES);
+        let page_limit = self.memory_limit.min(INITIALIZATION_SLAB_BYTES);
         let mut page = Vec::with_capacity(capacity);
         let mut page_bytes = 0_usize;
         let mut push = |object: AuthenticatedCanonicalObject| {
@@ -2550,15 +2534,21 @@ impl ObjectStore for ObjectBuffer<'_> {
     where
         F: FnOnce(&[u8]) -> CoreResult<T>,
     {
-        if let DeferredObjects::Memory { rows, .. } = &self.objects.storage {
-            if let Some(object) = rows.get(&id) {
-                return callback(&object.bytes);
+        match &self.objects.storage {
+            DeferredObjects::Memory { rows, .. } => {
+                if let Some(object) = rows.get(&id) {
+                    return callback(&object.bytes);
+                }
+            }
+            DeferredObjects::Spill(_) => {
+                if let Some(bytes) = self.objects.get(id).map_err(core_read_error)? {
+                    layerfs_content::authenticate_identity(&bytes, id)?;
+                    return callback(&bytes);
+                }
             }
         }
-        // Storage/base reads have no retained owned proof at this boundary.
-        let bytes = ObjectStore::get(self, id)?;
-        layerfs_content::authenticate_identity(&bytes, id)?;
-        callback(&bytes)
+        CoreReader(self.source.ok_or(CoreError::MissingObject)?)
+            .with_authenticated_canonical(id, callback)
     }
 
     fn put(&mut self, canonical: &[u8]) -> CoreResult<ObjectId> {
@@ -2623,224 +2613,86 @@ fn elapsed_ns(started: Instant) -> u64 {
 
 impl crate::schema::StoreDb {
     pub fn read_object_row(&self, id: ObjectId) -> Result<Vec<u8>> {
-        let connection = self.reader()?;
-        read_object_row_from_connection(&connection, id)?
-            .ok_or(StoreError::Integrity("visible object missing"))
+        let location = self
+            .object_locations(&[id])?
+            .remove(&id)
+            .ok_or(StoreError::Integrity("visible object missing"))?;
+        let mut bytes = None;
+        self.visit_locations(&[(id, location)], |object| {
+            bytes = Some(object.bytes);
+            Ok(())
+        })?;
+        bytes.ok_or(StoreError::Integrity("visible object missing"))
     }
 
     pub fn read_object_rows(&self, ids: &[ObjectId]) -> Result<Vec<CanonicalObject>> {
-        let connection = self.reader()?;
-        read_object_rows_from_connection(&connection, ids)
+        if let [id] = ids {
+            return Ok(vec![CanonicalObject {
+                id: *id,
+                bytes: self.read_object_row(*id)?,
+            }]);
+        }
+        if ids.len() > OBJECT_PAGE_COUNT {
+            return Err(StoreError::InvalidInput("object read page"));
+        }
+        let mut remaining = BTreeMap::<ObjectId, usize>::new();
+        for id in ids {
+            *remaining.entry(*id).or_default() += 1;
+        }
+        let distinct = remaining.keys().copied().collect::<Vec<_>>();
+        let locations = self.object_locations(&distinct)?;
+        if locations.len() != distinct.len() {
+            return Err(StoreError::Integrity("visible object cardinality"));
+        }
+        let locations = locations.into_iter().collect::<Vec<_>>();
+        let mut rows = BTreeMap::new();
+        self.visit_locations(&locations, |object| {
+            rows.insert(object.id, object.bytes);
+            Ok(())
+        })?;
+        let mut output = Vec::with_capacity(ids.len());
+        for id in ids {
+            let count = remaining
+                .get_mut(id)
+                .ok_or(StoreError::Integrity("visible object order"))?;
+            *count -= 1;
+            let bytes = if *count == 0 {
+                rows.remove(id)
+                    .ok_or(StoreError::Integrity("visible object missing"))?
+            } else {
+                let bytes = rows
+                    .get(id)
+                    .ok_or(StoreError::Integrity("visible object missing"))?
+                    .clone();
+                note_read_batch_clone(bytes.len());
+                bytes
+            };
+            output.push(CanonicalObject { id: *id, bytes });
+        }
+        Ok(output)
     }
 
     pub fn object_membership(&self, ids: &[ObjectId]) -> Result<BTreeMap<ObjectId, u64>> {
         if ids.len() > OBJECT_PAGE_COUNT {
             return Err(StoreError::InvalidInput("object membership page"));
         }
-        if ids.is_empty() {
-            return Ok(BTreeMap::new());
-        }
-        let mut values = ids
-            .iter()
-            .map(|id| Value::Blob(id.as_bytes().to_vec()))
-            .collect::<Vec<_>>();
-        values.resize(OBJECT_PAGE_COUNT, Value::Null);
-        let connection = self.reader()?;
-        let mut statement =
-            connection.prepare_cached(crate::statements::objects::MEMBERSHIP_128)?;
-        let membership = statement
-            .query_map(params_from_iter(values), |row| {
-                Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, i64>(1)?))
-            })?
-            .map(|row| {
-                let (id, length) = row?;
-                Ok((
-                    ObjectId::from_bytes(&id)?,
-                    length
-                        .try_into()
-                        .map_err(|_| StoreError::Integrity("object length"))?,
-                ))
-            })
-            .collect();
-        membership
-    }
-
-    pub(crate) fn plan_candidate(&self, objects: &DeferredObjectStore) -> Result<CandidatePlan> {
-        let mut plan = CandidatePlan {
-            missing: SpillableObjectSet::empty()?,
-            missing_order: IdOrder::empty(),
-            all_missing: false,
-            candidate_objects: 0,
-            candidate_bytes: 0,
-            inserted_objects: 0,
-            inserted_bytes: 0,
-            reused_objects: 0,
-            reused_bytes: 0,
-        };
-        objects.visit_membership_batches(|batch| {
-            let ids = batch.iter().map(|(id, _)| *id).collect::<Vec<_>>();
-            let known = self.object_membership(&ids)?;
-            let mut missing = Vec::new();
-            let mut reused = Vec::new();
-            for (id, bytes) in batch {
-                plan.candidate_objects += 1;
-                plan.candidate_bytes = plan.candidate_bytes.saturating_add(*bytes);
-                match known.get(id) {
-                    Some(known) if known != bytes => {
-                        return Err(StoreError::Integrity("object length collision"));
-                    }
-                    Some(_) => {
-                        reused.push((*id, *bytes));
-                    }
-                    None => {
-                        missing.push(*id);
-                        plan.inserted_objects += 1;
-                        plan.inserted_bytes = plan.inserted_bytes.saturating_add(*bytes);
-                    }
-                }
-            }
-            plan.reused_objects += reused.len() as u64;
-            plan.reused_bytes = plan
-                .reused_bytes
-                .saturating_add(reused.iter().map(|(_, bytes)| *bytes).sum::<u64>());
-            plan.missing.insert_page(&missing)?;
-            Ok(())
-        })?;
-        if plan.candidate_objects != plan.inserted_objects + plan.reused_objects
-            || plan.candidate_bytes != plan.inserted_bytes + plan.reused_bytes
-        {
-            return Err(StoreError::Integrity("candidate equation"));
-        }
-        plan.missing_order = objects.order_missing(&plan.missing)?;
-        Ok(plan)
-    }
-
-    pub(crate) fn plan_initialization_candidate(
-        &self,
-        objects: &DeferredObjectStore,
-    ) -> Result<CandidatePlan> {
-        if !self.initialization_store_is_empty()? {
-            return self.plan_candidate(objects);
-        }
-        Ok(CandidatePlan {
-            missing: SpillableObjectSet::empty()?,
-            missing_order: IdOrder::empty(),
-            all_missing: true,
-            candidate_objects: objects.len(),
-            candidate_bytes: objects.encoded_bytes(),
-            inserted_objects: objects.len(),
-            inserted_bytes: objects.encoded_bytes(),
-            reused_objects: 0,
-            reused_bytes: 0,
-        })
-    }
-
-    pub(crate) fn initialization_store_is_empty(&self) -> Result<bool> {
-        Ok(self.reader()?.query_row(
-            "SELECT NOT EXISTS(SELECT 1 FROM objects LIMIT 1)",
-            [],
-            |row| row.get::<_, bool>(0),
-        )?)
-    }
-
-    pub(crate) fn clear_failed_direct_initialization(&self) -> Result<()> {
-        let mut connection = self.writer()?;
-        let transaction =
-            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        transaction.execute("DELETE FROM objects", [])?;
-        transaction.commit()?;
-        Ok(())
+        Ok(self
+            .object_locations(ids)?
+            .into_iter()
+            .map(|(id, location)| (id, location.canonical_length as u64))
+            .collect())
     }
 }
 
-fn read_object_row_from_connection(
-    connection: &Connection,
-    id: ObjectId,
-) -> Result<Option<Vec<u8>>> {
-    let mut statement = connection.prepare_cached(crate::statements::objects::GET)?;
-    let bytes = statement
-        .query_row([id.as_bytes().as_slice()], |row| row.get::<_, Vec<u8>>(0))
-        .optional()?;
-    if let Some(bytes) = &bytes {
-        layerfs_content::authenticate_identity(bytes, id)?;
-    }
-    Ok(bytes)
-}
-
-fn read_object_rows_from_connection(
-    connection: &Connection,
-    ids: &[ObjectId],
-) -> Result<Vec<CanonicalObject>> {
-    if ids.len() > OBJECT_PAGE_COUNT {
-        return Err(StoreError::InvalidInput("object read page"));
-    }
-    if ids.is_empty() {
-        return Ok(Vec::new());
-    }
-    if let [id] = ids {
-        let bytes = read_object_row_from_connection(connection, *id)?
-            .ok_or(StoreError::Integrity("visible object cardinality"))?;
-        note_read_batch_hash();
-        return Ok(vec![CanonicalObject { id: *id, bytes }]);
-    }
-    let mut values = ids
-        .iter()
-        .map(|id| Value::Blob(id.as_bytes().to_vec()))
-        .collect::<Vec<_>>();
-    values.resize(OBJECT_PAGE_COUNT, Value::Null);
-    let mut statement = connection.prepare_cached(crate::statements::objects::GET_MANY_128)?;
-    let mut rows = BTreeMap::new();
-    for row in statement.query_map(params_from_iter(values), |row| {
-        Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
-    })? {
-        let (id, bytes) = row?;
-        let id = ObjectId::from_bytes(&id)?;
-        layerfs_content::authenticate_identity(&bytes, id)?;
-        note_read_batch_hash();
-        if rows.insert(id, bytes).is_some() {
-            return Err(StoreError::Integrity("duplicate visible object"));
-        }
-    }
-    let mut remaining = BTreeMap::<ObjectId, usize>::new();
-    for id in ids {
-        *remaining.entry(*id).or_default() += 1;
-    }
-    if rows.len() != remaining.len() || rows.keys().any(|id| !remaining.contains_key(id)) {
-        return Err(StoreError::Integrity("visible object cardinality"));
-    }
-    let mut output = Vec::with_capacity(ids.len());
-    for id in ids {
-        let count = *remaining
-            .get(id)
-            .ok_or(StoreError::Integrity("visible object order"))?;
-        let bytes = if count == 1 {
-            remaining.remove(id);
-            rows.remove(id)
-                .ok_or(StoreError::Integrity("visible object missing"))?
-        } else {
-            remaining.insert(*id, count - 1);
-            let bytes = rows
-                .get(id)
-                .ok_or(StoreError::Integrity("visible object missing"))?
-                .clone();
-            note_read_batch_clone(bytes.len());
-            bytes
-        };
-        output.push(CanonicalObject { id: *id, bytes });
-    }
-    if !rows.is_empty() || !remaining.is_empty() {
-        return Err(StoreError::Integrity("visible object order"));
-    }
-    Ok(output)
-}
-
-impl<'a> CheckedOutputAdmission<'a> {
-    pub(crate) fn new(db: &'a crate::schema::StoreDb) -> Result<Self> {
+impl CheckedOutputAdmission {
+    pub(crate) fn new(db: &crate::schema::StoreDb) -> Result<Self> {
         Ok(Self {
-            db,
-            batch: Vec::with_capacity(INITIALIZATION_ADMISSION_BATCH_COUNT),
+            db: db.clone(),
+            batch: Vec::with_capacity(INITIALIZATION_SLAB_OBJECTS),
+            seen: SpillableObjectSet::empty()?,
             pending: HashMap::new(),
             batch_bytes: 0,
+            validation_reserve: 0,
             statement_number: 0,
             receipt: crate::CandidateReceipt::default(),
             checked: CheckedAdmission::default(),
@@ -2854,9 +2706,10 @@ impl<'a> CheckedOutputAdmission<'a> {
         self.admit(objects)
     }
 
-    pub(crate) fn finish(self) -> Result<FinishedOutputAdmission> {
+    pub(crate) fn finish(mut self) -> Result<FinishedOutputAdmission> {
+        let final_batch = self.take_batch()?;
         Ok(FinishedOutputAdmission {
-            final_batch: self.batch,
+            final_batch,
             statement_number: self.statement_number,
             receipt: self.receipt,
             checked: self.checked,
@@ -2865,9 +2718,6 @@ impl<'a> CheckedOutputAdmission<'a> {
     }
 
     pub(crate) fn prepare_final_phase(&mut self) -> Result<()> {
-        self.flush_batch()?;
-        self.batch = Vec::with_capacity(INITIALIZATION_SLAB_OBJECTS);
-        self.pending = HashMap::with_capacity(INITIALIZATION_SLAB_OBJECTS);
         self.final_phase = true;
         Ok(())
     }
@@ -2887,8 +2737,7 @@ impl<'a> CheckedOutputAdmission<'a> {
             .max(owned);
     }
 
-    #[cfg(test)]
-    fn admit(&mut self, objects: DeferredObjectStore) -> Result<()> {
+    pub(crate) fn admit(&mut self, objects: DeferredObjectStore) -> Result<()> {
         objects
             .consume_prevalidated_pages(|page| self.admit_page(page))
             .map(|_| ())
@@ -2901,54 +2750,40 @@ impl<'a> CheckedOutputAdmission<'a> {
         Ok(())
     }
 
-    fn admit_unique_page(
-        &mut self,
-        page: Vec<AuthenticatedCanonicalObject>,
-        seen: &mut SpillableObjectSet,
-    ) -> Result<()> {
-        let mut duplicates = Vec::new();
-        let mut duplicate_bytes = 0;
-        let ids = page.iter().map(|object| object.id).collect::<Vec<_>>();
-        let mut newly_seen = seen.insert_page(&ids)?.into_iter().collect::<BTreeSet<_>>();
-        for object in page {
-            let first = newly_seen.remove(&object.id);
-            if let Some(&index) = self.pending.get(&object.id) {
-                self.admit_duplicate(index, &object.bytes)?;
-            } else if first {
-                self.push_pending(object)?;
-            } else {
-                if !duplicates.is_empty()
-                    && (duplicates.len() == OBJECT_PAGE_COUNT
-                        || duplicate_bytes + object.bytes.len() > INITIALIZATION_SLAB_BYTES)
-                {
-                    self.check_flushed_duplicates(&duplicates)?;
-                    duplicates.clear();
-                    duplicate_bytes = 0;
-                }
-                duplicate_bytes += object.bytes.len();
-                duplicates.push(object);
+    fn take_batch(&mut self) -> Result<Vec<AuthenticatedCanonicalObject>> {
+        let batch = std::mem::take(&mut self.batch);
+        self.pending.clear();
+        self.batch_bytes = 0;
+        self.validation_reserve = 0;
+        let ids = batch.iter().map(|object| object.id).collect::<Vec<_>>();
+        let first = self
+            .seen
+            .insert_page(&ids)?
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let (fresh, repeated): (Vec<_>, Vec<_>) = batch
+            .into_iter()
+            .partition(|object| first.contains(&object.id));
+        if !repeated.is_empty() {
+            let ids = repeated.iter().map(|object| object.id).collect::<Vec<_>>();
+            let known = self.db.object_locations(&ids)?;
+            if known.len() != ids.len() {
+                return Err(StoreError::Integrity("flushed duplicate missing"));
             }
+            let supplied = repeated
+                .iter()
+                .map(|object| (object.id, object.bytes.as_slice()))
+                .collect();
+            let mut metrics = ObjectInsertMetrics::default();
+            admission::compare(&self.db, &known, &supplied, &mut metrics)?;
+            self.diagnostics.collision_checks += repeated.len() as u64;
+            self.diagnostics.cross_batch_skipped_objects += repeated.len() as u64;
+            self.diagnostics.cross_batch_skipped_bytes += repeated
+                .iter()
+                .map(|object| object.bytes.len() as u64)
+                .sum::<u64>();
         }
-        self.check_flushed_duplicates(&duplicates)
-    }
-
-    fn check_flushed_duplicates(&self, duplicates: &[AuthenticatedCanonicalObject]) -> Result<()> {
-        if duplicates.is_empty() {
-            return Ok(());
-        }
-        let ids = duplicates
-            .iter()
-            .map(|object| object.id)
-            .collect::<Vec<_>>();
-        let durable = self.db.read_object_rows(&ids)?;
-        if durable
-            .iter()
-            .zip(duplicates)
-            .any(|(stored, supplied)| stored.bytes != supplied.bytes)
-        {
-            return Err(StoreError::Integrity("object collision"));
-        }
-        Ok(())
+        Ok(fresh)
     }
 
     pub(crate) fn admit_object(&mut self, object: AuthenticatedCanonicalObject) -> Result<()> {
@@ -2975,12 +2810,15 @@ impl<'a> CheckedOutputAdmission<'a> {
         if object.bytes.len() > ADMISSION_BATCH_BYTES {
             return Err(StoreError::Integrity("canonical object admission size"));
         }
+        let reserve = read::validation_reserve(object.bytes.len());
         if !self.batch.is_empty()
             && (self.batch.len() == INITIALIZATION_ADMISSION_BATCH_COUNT
-                || self.batch_bytes.saturating_add(object.bytes.len()) > ADMISSION_BATCH_BYTES)
+                || self.batch_bytes.saturating_add(object.bytes.len()) > ADMISSION_BATCH_BYTES
+                || self.validation_reserve + reserve > read::VALIDATION_RESERVE)
         {
             self.flush_batch()?;
         }
+        self.validation_reserve += reserve;
         self.batch_bytes = self.batch_bytes.saturating_add(object.bytes.len());
         self.pending.insert(object.id, self.batch.len());
         self.batch.push(object);
@@ -3026,8 +2864,11 @@ impl<'a> CheckedOutputAdmission<'a> {
             return Ok(());
         }
         let capacity = self.batch.capacity();
-        let batch = std::mem::take(&mut self.batch);
-        let metrics = consume_checked_owned_page(self.db, batch, &mut self.statement_number)?;
+        let batch = self.take_batch()?;
+        if batch.is_empty() {
+            return Ok(());
+        }
+        let metrics = consume_checked_owned_page(&self.db, batch, &mut self.statement_number)?;
         self.checked.record(&metrics);
         self.batch = Vec::with_capacity(capacity);
         self.diagnostics.record_sql_batch(
@@ -3041,42 +2882,43 @@ impl<'a> CheckedOutputAdmission<'a> {
             },
         );
         self.batch_bytes = 0;
+        self.validation_reserve = 0;
         self.pending.clear();
-        self.receipt.candidate_objects += metrics.insert.objects;
-        self.receipt.candidate_bytes = self
-            .receipt
-            .candidate_bytes
-            .saturating_add(metrics.insert.bytes);
-        self.receipt.inserted_objects += metrics.insert.objects;
-        self.receipt.inserted_bytes = self
-            .receipt
-            .inserted_bytes
-            .saturating_add(metrics.insert.bytes);
-        self.receipt.batch_inserted_objects = self
-            .receipt
-            .batch_inserted_objects
-            .saturating_add(metrics.insert.objects);
-        self.receipt.batch_inserted_bytes = self
-            .receipt
-            .batch_inserted_bytes
-            .saturating_add(metrics.insert.bytes);
-        self.receipt.admission_transactions += 1;
-        self.receipt.max_transaction_objects = self
-            .receipt
-            .max_transaction_objects
-            .max(metrics.insert.objects);
-        self.receipt.max_transaction_bytes =
-            self.receipt.max_transaction_bytes.max(metrics.insert.bytes);
+        record_admission_receipt(&mut self.receipt, metrics.insert, false);
         Ok(())
+    }
+}
+
+pub(crate) fn record_admission_receipt(
+    receipt: &mut crate::CandidateReceipt,
+    metrics: ObjectInsertMetrics,
+    final_batch: bool,
+) {
+    let bytes = metrics.bytes + metrics.skipped_bytes;
+    receipt.candidate_objects += metrics.submitted_rows;
+    receipt.candidate_bytes += bytes;
+    receipt.inserted_objects += metrics.objects;
+    receipt.inserted_bytes += metrics.bytes;
+    receipt.reused_objects += metrics.skipped_ids;
+    receipt.reused_bytes += metrics.skipped_bytes;
+    receipt.preexisting_reused_objects += metrics.skipped_ids;
+    receipt.preexisting_reused_bytes += metrics.skipped_bytes;
+    receipt.max_transaction_objects = receipt.max_transaction_objects.max(metrics.submitted_rows);
+    receipt.max_transaction_bytes = receipt.max_transaction_bytes.max(bytes);
+    if final_batch {
+        receipt.final_inserted_objects += metrics.objects;
+        receipt.final_inserted_bytes += metrics.bytes;
+    } else {
+        receipt.batch_inserted_objects += metrics.objects;
+        receipt.batch_inserted_bytes += metrics.bytes;
+        receipt.admission_transactions += 1;
     }
 }
 
 pub struct WorkspaceAdmission {
     pub(crate) db: crate::schema::StoreDb,
     pub(crate) workspace_id: [u8; 16],
-    pub(crate) checked: CheckedAdmission,
-    pub(crate) statement_number: u64,
-    seen: SpillableObjectSet,
+    admission: CheckedOutputAdmission,
 }
 
 impl crate::LayerStackStore {
@@ -3084,9 +2926,7 @@ impl crate::LayerStackStore {
         Ok(WorkspaceAdmission {
             db: self.db.clone(),
             workspace_id,
-            checked: Default::default(),
-            statement_number: 0,
-            seen: SpillableObjectSet::empty()?,
+            admission: CheckedOutputAdmission::new(&self.db)?,
         })
     }
 
@@ -3107,7 +2947,6 @@ impl crate::LayerStackStore {
         I::Item: Send,
     {
         let mut token = self.workspace_admission(workspace_id)?;
-        let mut admission = CheckedOutputAdmission::new(&self.db)?;
         let cancelled = std::sync::atomic::AtomicBool::new(false);
         let mut admission_ns = 0_u64;
         let (output, pipeline) = run_finalized_output(
@@ -3120,23 +2959,13 @@ impl crate::LayerStackStore {
             finish,
             |page| {
                 let started = Instant::now();
-                let result = (|| {
-                    let _operation = self.db.enter_operation()?;
-                    admission.admit_unique_page(page, &mut token.seen)
-                })();
+                let result = token.admission.admit_page(page);
                 admission_ns = admission_ns.saturating_add(elapsed_ns(started));
                 result
             },
         )?;
-        let started = Instant::now();
-        {
-            let _operation = self.db.enter_operation()?;
-            admission.flush_batch()?;
-        }
-        admission_ns = admission_ns.saturating_add(elapsed_ns(started));
-        let finished = admission.finish()?;
-        token.checked = finished.checked;
-        token.statement_number = finished.statement_number;
+        // Keep the final file batch owned by the Workspace token. Namespace
+        // construction may add to it before staging closes the operation.
         let mut writer = OutputWriterMetrics::default();
         let output = output
             .into_iter()
@@ -3169,17 +2998,9 @@ impl WorkspaceAdmission {
         mut self,
         objects: DeferredObjectStore,
     ) -> Result<(CheckedAdmission, u64)> {
-        let mut admission = CheckedOutputAdmission::new(&self.db)?;
-        admission.checked = self.checked;
-        admission.statement_number = self.statement_number;
-        objects.consume_prevalidated_pages(|page| {
-            admission.admit_unique_page(page, &mut self.seen)?;
-            // The input page's owned bytes move into this batch; drain before
-            // requesting the next private page to bound simultaneous ownership.
-            admission.flush_batch()
-        })?;
-        admission.flush_batch()?;
-        let finished = admission.finish()?;
+        objects.consume_prevalidated_pages(|page| self.admission.admit_page(page))?;
+        self.admission.flush_batch()?;
+        let finished = self.admission.finish()?;
         let admission = finished.checked;
         if admission.candidate_objects != admission.inserted_objects + admission.reused_objects
             || admission.candidate_bytes != admission.inserted_bytes + admission.reused_bytes
@@ -3192,371 +3013,22 @@ impl WorkspaceAdmission {
     }
 }
 
-pub(crate) fn admit_planned_objects(
+fn consume_checked_owned_page(
     db: &crate::schema::StoreDb,
-    objects: &DeferredObjectStore,
-    plan: &CandidatePlan,
+    batch: Vec<AuthenticatedCanonicalObject>,
     statement_number: &mut u64,
-) -> Result<PlannedAdmission> {
-    admit_planned_objects_with_limits(
-        db,
-        objects,
-        plan,
-        statement_number,
-        ADMISSION_BATCH_COUNT,
-        ADMISSION_BATCH_BYTES,
-        false,
-    )
-}
-
-pub(crate) fn admit_initialization_objects(
-    db: &crate::schema::StoreDb,
-    objects: &DeferredObjectStore,
-    plan: &CandidatePlan,
-    statement_number: &mut u64,
-) -> Result<PlannedAdmission> {
-    admit_planned_objects_with_limits(
-        db,
-        objects,
-        plan,
-        statement_number,
-        INITIALIZATION_ADMISSION_BATCH_COUNT,
-        ADMISSION_BATCH_BYTES,
-        true,
-    )
-}
-
-fn admit_planned_objects_with_limits(
-    db: &crate::schema::StoreDb,
-    objects: &DeferredObjectStore,
-    plan: &CandidatePlan,
-    statement_number: &mut u64,
-    batch_count: usize,
-    batch_bytes_limit: usize,
-    bulk_insert: bool,
-) -> Result<PlannedAdmission> {
-    let mut batch = Vec::with_capacity(batch_count);
-    let mut batch_bytes = 0_usize;
-    let mut admission = PlannedAdmission {
-        final_batch: Vec::new(),
-        batch_inserted_objects: 0,
-        batch_inserted_bytes: 0,
-        transactions: 0,
-        max_transaction_objects: 0,
-        max_transaction_bytes: 0,
-        begin_ns: 0,
-        insert_ns: 0,
-        commit_ns: 0,
-    };
-    let order = if plan.all_missing {
-        &objects.reachable
-    } else {
-        &plan.missing_order
-    };
-    objects.visit_prevalidated_order(order, &mut |id, bytes| {
-        if bytes.len() > batch_bytes_limit {
-            return Err(StoreError::Integrity("canonical object admission size"));
-        }
-        if !batch.is_empty()
-            && (batch.len() == batch_count
-                || batch_bytes.saturating_add(bytes.len()) > batch_bytes_limit)
-        {
-            let metrics = insert_admission_batch(db, &batch, statement_number, bulk_insert)?;
-            admission.batch_inserted_objects = admission
-                .batch_inserted_objects
-                .saturating_add(metrics.insert.objects);
-            admission.batch_inserted_bytes = admission
-                .batch_inserted_bytes
-                .saturating_add(metrics.insert.bytes);
-            admission.transactions += 1;
-            admission.max_transaction_objects = admission
-                .max_transaction_objects
-                .max(metrics.insert.objects);
-            admission.max_transaction_bytes =
-                admission.max_transaction_bytes.max(metrics.insert.bytes);
-            admission.begin_ns = admission.begin_ns.saturating_add(metrics.begin_ns);
-            admission.insert_ns = admission.insert_ns.saturating_add(metrics.insert.insert_ns);
-            admission.commit_ns = admission.commit_ns.saturating_add(metrics.commit_ns);
-            batch.clear();
-            batch_bytes = 0;
-        }
-        batch_bytes = batch_bytes.saturating_add(bytes.len());
-        batch.push(CanonicalObject {
-            id,
-            bytes: bytes.to_vec(),
-        });
-        Ok(())
-    })?;
-    admission.final_batch = batch;
-    let final_objects = admission.final_batch.len() as u64;
-    let final_bytes = admission
-        .final_batch
-        .iter()
-        .map(|object| object.bytes.len() as u64)
-        .sum::<u64>();
-    admission.max_transaction_objects = admission.max_transaction_objects.max(final_objects);
-    admission.max_transaction_bytes = admission.max_transaction_bytes.max(final_bytes);
-    if admission.batch_inserted_objects + final_objects != plan.inserted_objects
-        || admission.batch_inserted_bytes + final_bytes != plan.inserted_bytes
-        || admission.max_transaction_objects > batch_count as u64
-        || admission.max_transaction_bytes > batch_bytes_limit as u64
-    {
-        return Err(StoreError::Integrity(
-            "bounded candidate admission equation",
-        ));
-    }
-    Ok(admission)
-}
-
-fn insert_admission_batch(
-    db: &crate::schema::StoreDb,
-    batch: &[CanonicalObject],
-    statement_number: &mut u64,
-    bulk_insert: bool,
 ) -> Result<AdmissionBatchMetrics> {
-    let begin_started = Instant::now();
-    let mut connection = db.writer()?;
-    let transaction =
-        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    let begin_ns = elapsed_ns(begin_started);
-    #[cfg(feature = "test-instrumentation")]
-    if !bulk_insert {
+    let prepared = admission::PreparedAdmission::prepare(db, batch)?;
+    let (_, metrics) = prepared.publish(db, statement_number, |_, _, _| {
+        #[cfg(feature = "test-instrumentation")]
         crate::schema::verification_store_checkpoint(
             crate::schema::VerificationStoreFault::LaterAdmissionBatch,
         )?;
-    }
-    let insert = if bulk_insert {
-        insert_initialization_object_batch(&transaction, batch, statement_number)?
-    } else {
-        insert_object_batch(&transaction, batch, statement_number)?
-    };
-    let commit_started = Instant::now();
-    transaction.commit()?;
-    #[cfg(feature = "test-instrumentation")]
-    if !bulk_insert {
-        crate::schema::verification_early_committed();
-    }
-    Ok(AdmissionBatchMetrics {
-        insert,
-        begin_ns,
-        commit_ns: elapsed_ns(commit_started),
-    })
-}
-
-fn consume_checked_owned_page(
-    db: &crate::schema::StoreDb,
-    mut batch: Vec<AuthenticatedCanonicalObject>,
-    statement_number: &mut u64,
-) -> Result<AdmissionBatchMetrics> {
-    if batch.len() > ADMISSION_BATCH_COUNT
-        || batch.iter().map(|object| object.bytes.len()).sum::<usize>() > ADMISSION_BATCH_BYTES
-    {
-        return Err(StoreError::Integrity("checked admission page limit"));
-    }
-    let sort_started = Instant::now();
-    batch.sort_unstable_by_key(|object| object.id);
-    let sort_ns = elapsed_ns(sort_started);
-    // Fresh storage reads create a new checked owner; immutable memory retains it.
-    crate::telemetry::note_workspace_admission_validation(0, sort_ns);
-    let begin_started = Instant::now();
-    let mut connection = db.writer()?;
-    let transaction =
-        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    let begin_ns = elapsed_ns(begin_started);
-    #[cfg(feature = "test-instrumentation")]
-    crate::schema::verification_store_checkpoint(
-        crate::schema::VerificationStoreFault::LaterAdmissionBatch,
-    )?;
-    let insert = insert_checked_object_batch(&transaction, &batch, statement_number, &mut |_| {})?;
-    let commit_started = Instant::now();
-    transaction.commit()?;
+        Ok(())
+    })?;
     #[cfg(feature = "test-instrumentation")]
     crate::schema::verification_early_committed();
-    Ok(AdmissionBatchMetrics {
-        insert,
-        begin_ns,
-        commit_ns: elapsed_ns(commit_started),
-    })
-}
-
-pub(crate) fn insert_object_batch(
-    transaction: &rusqlite::Transaction<'_>,
-    objects: &[CanonicalObject],
-    statement_number: &mut u64,
-) -> Result<ObjectInsertMetrics> {
-    let prepare_started = Instant::now();
-    let mut insert = transaction.prepare_cached(crate::statements::objects::INSERT)?;
-    let mut equal = transaction.prepare_cached(crate::statements::objects::EQUAL)?;
-    let mut metrics = ObjectInsertMetrics {
-        insert_ns: elapsed_ns(prepare_started),
-        ..ObjectInsertMetrics::default()
-    };
-    let mut payload_started = Instant::now();
-    for object in objects {
-        metrics.payload_ns = metrics
-            .payload_ns
-            .saturating_add(elapsed_ns(payload_started));
-        *statement_number += 1;
-        crate::schema::fail_transaction_statement(*statement_number)?;
-        let insert_started = Instant::now();
-        let inserted = insert.execute(rusqlite::params![
-            object.id.as_bytes().as_slice(),
-            object.bytes.as_slice()
-        ])?;
-        if inserted == 0 {
-            let same = equal.exists(rusqlite::params![
-                object.id.as_bytes().as_slice(),
-                object.bytes.as_slice()
-            ])?;
-            return Err(StoreError::Integrity(if same {
-                "unexpected existing object"
-            } else {
-                "object collision"
-            }));
-        }
-        metrics.insert_ns = metrics.insert_ns.saturating_add(elapsed_ns(insert_started));
-        metrics.objects += 1;
-        metrics.bytes = metrics.bytes.saturating_add(object.bytes.len() as u64);
-        payload_started = Instant::now();
-    }
     Ok(metrics)
-}
-
-pub(crate) fn insert_initialization_object_batch(
-    transaction: &rusqlite::Transaction<'_>,
-    objects: &[CanonicalObject],
-    statement_number: &mut u64,
-) -> Result<ObjectInsertMetrics> {
-    if objects.is_empty() {
-        return Ok(ObjectInsertMetrics::default());
-    }
-    for _ in objects {
-        *statement_number += 1;
-        crate::schema::fail_transaction_statement(*statement_number)?;
-    }
-    let mut sql = String::with_capacity(80 + objects.len() * 6);
-    sql.push_str("INSERT INTO objects(object_id, bytes) VALUES ");
-    for index in 0..objects.len() {
-        if index != 0 {
-            sql.push(',');
-        }
-        sql.push_str("(?,?)");
-    }
-    sql.push_str(" ON CONFLICT(object_id) DO NOTHING");
-    let started = Instant::now();
-    let inserted = transaction.execute(
-        &sql,
-        params_from_iter(
-            objects
-                .iter()
-                .flat_map(|object| [object.id.as_bytes().as_slice(), object.bytes.as_slice()]),
-        ),
-    )?;
-    if inserted != objects.len() {
-        return Err(StoreError::Integrity("unexpected existing object"));
-    }
-    Ok(ObjectInsertMetrics {
-        insert_ns: elapsed_ns(started),
-        objects: objects.len() as u64,
-        bytes: objects.iter().map(|object| object.bytes.len() as u64).sum(),
-        ..ObjectInsertMetrics::default()
-    })
-}
-
-pub(crate) fn insert_initialization_segment_batch<T: AsRef<CanonicalObject>>(
-    transaction: &rusqlite::Transaction<'_>,
-    objects: &[T],
-    statement_number: &mut u64,
-) -> Result<ObjectInsertMetrics> {
-    insert_checked_object_batch(transaction, objects, statement_number, &mut |_| {})
-}
-
-// Outcomes are provisional until the caller commits its transaction.
-pub(crate) fn insert_checked_object_batch<T: AsRef<CanonicalObject>>(
-    transaction: &rusqlite::Transaction<'_>,
-    objects: &[T],
-    statement_number: &mut u64,
-    outcome: &mut dyn FnMut(bool),
-) -> Result<ObjectInsertMetrics> {
-    if objects.is_empty() {
-        return Ok(ObjectInsertMetrics::default());
-    }
-    for _ in objects {
-        *statement_number += 1;
-        crate::schema::fail_transaction_statement(*statement_number)?;
-    }
-    let started = Instant::now();
-    let prepare_started = Instant::now();
-    let mut statement = transaction.prepare_cached(crate::statements::objects::INSERT)?;
-    let sql_prepare_ns = elapsed_ns(prepare_started);
-    let step_started = Instant::now();
-    let mut inserted_objects = 0_u64;
-    let mut inserted_bytes = 0_u64;
-    let mut skipped = Vec::new();
-    for object in objects {
-        let object = object.as_ref();
-        if statement.execute(rusqlite::params![
-            object.id.as_bytes().as_slice(),
-            object.bytes.as_slice()
-        ])? == 0
-        {
-            skipped.push(object);
-            outcome(false);
-        } else {
-            outcome(true);
-            inserted_objects += 1;
-            inserted_bytes = inserted_bytes.saturating_add(object.bytes.len() as u64);
-        }
-    }
-    let sql_bind_step_returning_ns = elapsed_ns(step_started);
-    drop(statement);
-    let skipped_bytes = skipped
-        .iter()
-        .map(|object| object.bytes.len() as u64)
-        .sum::<u64>();
-    let mut conflict_read_calls = 0_u64;
-    let mut conflict_read_rows = 0_u64;
-    let mut conflict_read_bytes = 0_u64;
-    let mut conflict_read_ns = 0_u64;
-    for page in skipped.chunks(OBJECT_PAGE_COUNT) {
-        let ids = page.iter().map(|object| object.id).collect::<Vec<_>>();
-        let conflict_started = Instant::now();
-        let durable = read_object_rows_from_connection(transaction, &ids)?;
-        conflict_read_ns = conflict_read_ns.saturating_add(elapsed_ns(conflict_started));
-        conflict_read_calls += 1;
-        conflict_read_rows = conflict_read_rows.saturating_add(durable.len() as u64);
-        conflict_read_bytes = conflict_read_bytes.saturating_add(
-            durable
-                .iter()
-                .map(|object| object.bytes.len() as u64)
-                .sum::<u64>(),
-        );
-        if durable
-            .iter()
-            .zip(page)
-            .any(|(durable, object)| durable.bytes != object.bytes)
-        {
-            return Err(StoreError::Integrity("object collision"));
-        }
-    }
-    Ok(ObjectInsertMetrics {
-        insert_ns: elapsed_ns(started),
-        objects: inserted_objects,
-        bytes: inserted_bytes,
-        submitted_rows: objects.len() as u64,
-        returned_ids: inserted_objects,
-        skipped_ids: skipped.len() as u64,
-        skipped_bytes,
-        collision_checks: skipped.len() as u64,
-        sql_string_build_ns: 0,
-        sql_prepare_ns,
-        sql_bind_step_returning_ns,
-        conflict_read_calls,
-        conflict_read_rows,
-        conflict_read_bytes,
-        conflict_read_ns,
-        ..ObjectInsertMetrics::default()
-    })
 }
 
 impl ObjectSource for crate::schema::StoreDb {
@@ -4176,7 +3648,7 @@ mod tests {
 
     fn finish_segment_admission(
         db: &crate::schema::StoreDb,
-        admission: CheckedOutputAdmission<'_>,
+        admission: CheckedOutputAdmission,
     ) -> (crate::CandidateReceipt, Vec<ObjectId>) {
         let finished = admission.finish().unwrap();
         let ids = finished
@@ -4185,26 +3657,12 @@ mod tests {
             .map(|object| object.id)
             .collect::<Vec<_>>();
         let mut statement_number = finished.statement_number;
-        let mut connection = db.writer().unwrap();
-        let transaction = connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        let (_, metrics) = PreparedAdmission::prepare(db, finished.final_batch)
+            .unwrap()
+            .publish(db, &mut statement_number, |_, _, _| Ok(()))
             .unwrap();
-        let metrics = insert_initialization_segment_batch(
-            &transaction,
-            &finished.final_batch,
-            &mut statement_number,
-        )
-        .unwrap();
-        transaction.commit().unwrap();
         let mut receipt = finished.receipt;
-        receipt.candidate_objects += metrics.objects;
-        receipt.candidate_bytes = receipt.candidate_bytes.saturating_add(metrics.bytes);
-        receipt.inserted_objects += metrics.objects;
-        receipt.inserted_bytes = receipt.inserted_bytes.saturating_add(metrics.bytes);
-        receipt.final_inserted_objects = metrics.objects;
-        receipt.final_inserted_bytes = metrics.bytes;
-        receipt.max_transaction_objects = receipt.max_transaction_objects.max(metrics.objects);
-        receipt.max_transaction_bytes = receipt.max_transaction_bytes.max(metrics.bytes);
+        record_admission_receipt(&mut receipt, metrics.insert, true);
         assert_eq!(receipt.candidate_objects, receipt.inserted_objects);
         assert_eq!(receipt.candidate_bytes, receipt.inserted_bytes);
         assert_eq!(
@@ -4823,62 +4281,27 @@ mod tests {
             .admit_worker_segment(sealed_segment(vec![duplicate]))
             .unwrap();
         let finished = admission.finish().unwrap();
-        let retained_objects = finished.final_batch.len() as u64;
         let mut statement_number = finished.statement_number;
-        let mut connection = db.writer().unwrap();
-        let transaction = connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        let (_, metrics) = PreparedAdmission::prepare(&db, finished.final_batch)
+            .unwrap()
+            .publish(&db, &mut statement_number, |_, _, _| Ok(()))
             .unwrap();
-        let final_metrics = insert_initialization_segment_batch(
-            &transaction,
-            &finished.final_batch,
-            &mut statement_number,
-        )
-        .unwrap();
-        transaction.commit().unwrap();
-        let mut diagnostics = finished.diagnostics;
-        diagnostics.record_sql_batch(final_metrics, 0, 0, InitializationSqlPhase::Publication);
-        assert!(final_metrics.objects < retained_objects);
-        assert_eq!(diagnostics.cross_batch_skipped_objects, 1);
-        assert_eq!(diagnostics.sql_submitted_rows, expected_objects + 1);
+        assert_eq!(finished.diagnostics.cross_batch_skipped_objects, 1);
         assert_eq!(
-            diagnostics.sql_returned_ids + diagnostics.sql_skipped_ids,
-            diagnostics.sql_submitted_rows
-        );
-        assert_eq!(diagnostics.conflict_read_rows, 1);
-        assert_eq!(
-            finished.receipt.batch_inserted_objects + final_metrics.objects,
+            finished.receipt.batch_inserted_objects + metrics.insert.objects,
             expected_objects
         );
-
-        let forged = layerfs_content::file::extent_codec::encode_chunk_object(&vec![
-            255;
-            layerfs_content::file::cdc::MAXIMUM_CHUNK_BYTES
-        ])
+        let forged = layerfs_content::file::extent_codec::encode_chunk_object(
+            &vec![255; layerfs_content::file::cdc::MAXIMUM_CHUNK_BYTES],
+        )
         .unwrap();
-        let transaction = connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .unwrap();
-        assert!(matches!(
-            insert_initialization_segment_batch(
-                &transaction,
-                &[CanonicalObject {
-                    id: duplicate_id,
-                    bytes: forged,
-                }],
-                &mut statement_number,
-            ),
-            Err(StoreError::Integrity("object collision"))
-        ));
-        drop(transaction);
-
-        drop(connection);
+        assert!(AuthenticatedCanonicalObject::new(forged, Some(duplicate_id)).is_err());
         drop(db);
         std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn planned_admission_keeps_every_object_transaction_below_the_frozen_bounds() {
+    fn shared_admission_keeps_every_object_transaction_below_the_frozen_bounds() {
         let root = std::env::temp_dir().join(format!(
             "layerfs-bounded-admission-{}-{}",
             std::process::id(),
@@ -4889,120 +4312,19 @@ mod tests {
         ));
         std::fs::create_dir_all(&root).unwrap();
         let db = crate::schema::StoreDb::create(root.join("store.sqlite")).unwrap();
-        let mut objects = DeferredObjectStore::new().unwrap();
-        for index in 0_u64..300 {
-            let canonical = layerfs_content::encode_bytes_object(&index.to_le_bytes()).unwrap();
-            let id = ObjectId::for_bytes(&canonical);
-            objects.put(id, &canonical).unwrap();
-        }
-        let plan = db.plan_initialization_candidate(&objects).unwrap();
-        assert!(plan.all_missing);
-        let mut initialization_statement_number = 0;
-        let initialization = admit_initialization_objects(
-            &db,
-            &objects,
-            &plan,
-            &mut initialization_statement_number,
-        )
-        .unwrap();
-        assert_eq!(initialization.transactions, 0);
-        assert_eq!(initialization.final_batch.len(), 300);
-        assert_eq!(initialization.max_transaction_objects, 300);
-        let bulk_db = crate::schema::StoreDb::create(root.join("bulk.sqlite")).unwrap();
-        {
-            let mut connection = bulk_db.writer().unwrap();
-            let transaction = connection
-                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-                .unwrap();
-            let metrics = insert_initialization_object_batch(
-                &transaction,
-                &initialization.final_batch,
-                &mut initialization_statement_number,
-            )
-            .unwrap();
-            assert_eq!(metrics.objects, 300);
-            transaction.commit().unwrap();
-        }
-        assert_eq!(
-            bulk_db
-                .plan_initialization_candidate(&objects)
-                .unwrap()
-                .reused_objects,
-            300
-        );
-
-        let object_count = 2 * ADMISSION_BATCH_COUNT as u64 + 46;
-        for index in 300..object_count {
-            let canonical = layerfs_content::encode_bytes_object(&index.to_le_bytes()).unwrap();
-            objects
-                .put(ObjectId::for_bytes(&canonical), &canonical)
+        let count = 2 * ADMISSION_BATCH_COUNT as u64 + 46;
+        let mut admission = CheckedOutputAdmission::new(&db).unwrap();
+        for index in 0..count {
+            let bytes = layerfs_content::encode_bytes_object(&index.to_le_bytes()).unwrap();
+            admission
+                .admit_object(AuthenticatedCanonicalObject::new(bytes, None).unwrap())
                 .unwrap();
         }
-        let plan = db.plan_candidate(&objects).unwrap();
-        let mut statement_number = 0;
-        let admission = admit_planned_objects(&db, &objects, &plan, &mut statement_number).unwrap();
-        assert_eq!(admission.transactions, 2);
-        assert_eq!(
-            admission.batch_inserted_objects,
-            2 * ADMISSION_BATCH_COUNT as u64
-        );
-        assert_eq!(admission.final_batch.len(), 46);
-        assert_eq!(
-            admission.max_transaction_objects,
-            ADMISSION_BATCH_COUNT as u64
-        );
-        assert!(admission.max_transaction_bytes < OBJECT_PAGE_BYTES as u64);
-        {
-            let mut connection = db.writer().unwrap();
-            let transaction = connection
-                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-                .unwrap();
-            let final_metrics =
-                insert_object_batch(&transaction, &admission.final_batch, &mut statement_number)
-                    .unwrap();
-            assert_eq!(final_metrics.objects, 46);
-            transaction.commit().unwrap();
-        }
-        assert_eq!(
-            db.plan_candidate(&objects).unwrap().reused_objects,
-            object_count
-        );
-        let existing = admission.final_batch[0].clone();
-        let mut forged = DeferredObjectStore::new_all_reachable().unwrap();
-        let forged_bytes = layerfs_content::encode_bytes_object(&u64::MAX.to_le_bytes()).unwrap();
-        assert_eq!(forged_bytes.len(), existing.bytes.len());
-        assert!(matches!(
-            forged.put(existing.id, &forged_bytes),
-            Err(StoreError::Integrity("object identity"))
-        ));
-        {
-            let mut connection = db.writer().unwrap();
-            let transaction = connection
-                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-                .unwrap();
-            assert!(matches!(
-                insert_object_batch(
-                    &transaction,
-                    std::slice::from_ref(&existing),
-                    &mut statement_number,
-                ),
-                Err(StoreError::Integrity("unexpected existing object"))
-            ));
-        }
-        let collision = CanonicalObject {
-            id: existing.id,
-            bytes: forged_bytes,
-        };
-        let mut connection = db.writer().unwrap();
-        let transaction = connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .unwrap();
-        assert!(matches!(
-            insert_object_batch(&transaction, &[collision], &mut statement_number),
-            Err(StoreError::Integrity("object collision"))
-        ));
-        drop(transaction);
-        drop(connection);
+        let (receipt, _) = finish_segment_admission(&db, admission);
+        assert_eq!(receipt.candidate_objects, count);
+        assert_eq!(receipt.inserted_objects, count);
+        assert!(receipt.max_transaction_objects <= ADMISSION_BATCH_COUNT as u64);
+        assert!(receipt.max_transaction_bytes < OBJECT_PAGE_BYTES as u64);
         drop(db);
         std::fs::remove_dir_all(root).unwrap();
     }

@@ -263,6 +263,16 @@ pub fn dispatch(args: &[OsString]) -> AnyResult<()> {
             let initialized = timed("init", || {
                 Ok(client.initialize_layerstack(EntityName::new("storage-smoke")?, source)?)
             })?;
+            emit(
+                "storage-smoke-init-receipt",
+                &[(
+                    "receipt",
+                    quote(&format!(
+                        "{:?}",
+                        store.take_layerstack_initialization_receipts()
+                    )),
+                )],
+            );
             storage(&store, "after-init")?;
             let branch = timed("fork", || {
                 Ok(client.fork_branch(

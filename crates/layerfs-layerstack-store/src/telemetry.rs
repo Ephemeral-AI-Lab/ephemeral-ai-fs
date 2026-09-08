@@ -31,8 +31,11 @@ pub struct CandidateReceipt {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LayerStackInitializationReceipt {
     pub layer_stack_id: LayerStackId,
+    /// Includes attempted native input work before a construction fallback.
     pub scanned_files: u64,
     pub scanned_bytes: u64,
+    /// Zero for Empty; one source construction, or a stopped attempt plus one fallback.
+    pub source_passes: u64,
 }
 
 impl CandidateReceipt {

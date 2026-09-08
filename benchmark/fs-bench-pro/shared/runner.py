@@ -9,6 +9,7 @@ import json
 import math
 import os
 import platform
+import re
 import shutil
 from pathlib import Path
 import statistics
@@ -618,9 +619,18 @@ def main(argv=None):
             values = source_build_args()
             if argv == ["--build-host"]:
                 binary = REPO / "target/release/fs-benchmark-pro"
-                result = runtime.run(["cargo", "+1.85.1", "build", "--locked", "--release", "-j2", "-p", "fs-benchmark-pro"],
-                    deadline=runtime.Deadline.after(900), cwd=REPO, output_limit=1024**2)
-                identity = {**values, "binary_sha256": runtime.file_sha256(binary), "platform": platform.platform(), "rust_toolchain": "1.85.1", "schema_sha256": runtime.file_sha256(REPO / "crates/layerfs-layerstack-store/sql/schema/v5.sql")}
+                try:
+                    result = runtime.run(["cargo", "+1.85.1", "build", "--locked", "--release", "-j2", "-p", "fs-benchmark-pro"],
+                        deadline=runtime.Deadline.after(900), cwd=REPO, output_limit=1024**2)
+                except runtime.CommandFailure as error:
+                    print(_text(error.result.stderr), file=sys.stderr)
+                    return error.result.returncode or 1
+                version = re.search(r"pub const SCHEMA_VERSION:\s*i64\s*=\s*(\d+)",
+                    (REPO / "crates/layerfs-layerstack-store/src/schema.rs").read_text())
+                if version is None:
+                    raise ValueError("active Store schema version missing")
+                schema_path = REPO / f"crates/layerfs-layerstack-store/sql/schema/v{version.group(1)}.sql"
+                identity = {**values, "binary_sha256": runtime.file_sha256(binary), "platform": platform.platform(), "rust_toolchain": "1.85.1", "schema_sha256": runtime.file_sha256(schema_path)}
                 Path(str(binary) + ".identity.json").write_text(json.dumps(identity, sort_keys=True))
                 print(binary)
                 return 0

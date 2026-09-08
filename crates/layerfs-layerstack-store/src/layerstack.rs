@@ -1,9 +1,8 @@
 use crate::ids::TypedId;
 use crate::objects::{
-    admit_initialization_objects, empty_root, insert_initialization_object_batch,
-    insert_initialization_segment_batch, BuiltRoot, CheckedOutputAdmission, DeferredObjectStore,
+    empty_root, BuiltRoot, CheckedOutputAdmission, DeferredObjectStore,
     InitializationDirectAdmissionWriter, InitializationSqlPhase, InitializationTaskObjectBuffer,
-    ObjectBuffer, OutputWriterMetrics,
+    ObjectBuffer, OutputWriterMetrics, PreparedAdmission,
 };
 #[cfg(test)]
 use crate::objects::{
@@ -24,33 +23,32 @@ impl LayerStackStore {
         name: EntityName,
         source: LayerStackInitialization,
     ) -> Result<InitializeLayerStackResult> {
-        let _operation = self.db.enter_operation()?;
         let mut initialization_diagnostic = InitializationDiagnostic::from_env();
-        let mut cleanup_failed_empty_initialization = false;
         let layer_stack_id = LayerStackId::new();
         let seed = initialization_seed(&layer_stack_id, initialization_diagnostic.is_some())?;
         let (
             root_id,
             scanned_files,
             scanned_bytes,
+            source_passes,
             final_batch,
             mut candidate_receipt,
             mut statement_number,
-            direct_segments,
             mut fast_diagnostics,
         ) = match source {
             LayerStackInitialization::Empty => {
                 let built = empty_root(seed)?;
-                let (final_batch, receipt, statement_number) =
-                    plan_single_initialization(&self.db, &built.objects)?;
+                let mut admission = CheckedOutputAdmission::new(&self.db)?;
+                admission.admit(built.objects)?;
+                let finished = admission.finish()?;
                 (
                     built.root_id,
                     0,
                     0,
-                    final_batch,
-                    receipt,
-                    statement_number,
-                    false,
+                    0,
+                    finished.final_batch,
+                    finished.receipt,
+                    finished.statement_number,
                     None,
                 )
             }
@@ -58,61 +56,47 @@ impl LayerStackStore {
                 if !path.is_dir() {
                     return Err(StoreError::InvalidInput("Layer initialization directory"));
                 }
-                let direct_segments = self.db.initialization_store_is_empty()?;
-                cleanup_failed_empty_initialization = direct_segments;
-                if direct_segments {
-                    let prepare_started = initialization_diagnostic
-                        .as_ref()
-                        .map(|_| std::time::Instant::now());
-                    let prepared = direct_initialize_root_directories(&self.db, &path, seed)?;
-                    if let (Some(diagnostic), Some(started)) =
-                        (initialization_diagnostic.as_mut(), prepare_started)
-                    {
-                        diagnostic.prepare_import_wall_ns =
-                            started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
-                    }
-                    match prepared {
-                        Some(finished) => (
-                            finished.root_id,
-                            finished.scanned_files,
-                            finished.scanned_bytes,
-                            InitializationFinalBatch::Checked(finished.final_batch),
+                let started = std::time::Instant::now();
+                let mut attempted = SourceImportMetrics::default();
+                let prepared = direct_initialize_root_directories_inner(
+                    &self.db,
+                    &path,
+                    seed,
+                    &mut attempted,
+                )?;
+                if let Some(diagnostic) = initialization_diagnostic.as_mut() {
+                    diagnostic.prepare_import_wall_ns =
+                        started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+                }
+                match prepared {
+                    Some(finished) => (
+                        finished.root_id,
+                        finished.scanned_files,
+                        finished.scanned_bytes,
+                        1,
+                        finished.final_batch,
+                        finished.receipt,
+                        finished.statement_number,
+                        Some(finished.diagnostics),
+                    ),
+                    None => {
+                        let (root, files, bytes, finished) =
+                            serial_initialize(&self.db, &path, seed)?;
+                        (
+                            root,
+                            files.saturating_add(attempted.file_open_calls),
+                            bytes.saturating_add(attempted.file_read_bytes),
+                            1 + u64::from(
+                                attempted.file_open_calls != 0
+                                    || attempted.read_dir_calls != 0
+                                    || attempted.symlink_metadata_calls != 0,
+                            ),
+                            finished.final_batch,
                             finished.receipt,
                             finished.statement_number,
-                            true,
-                            Some(finished.diagnostics),
-                        ),
-                        None => {
-                            let (built, scanned_files, scanned_bytes) =
-                                directory_root(&path, seed)?;
-                            let (final_batch, receipt, statement_number) =
-                                plan_single_initialization(&self.db, &built.objects)?;
-                            (
-                                built.root_id,
-                                scanned_files,
-                                scanned_bytes,
-                                final_batch,
-                                receipt,
-                                statement_number,
-                                false,
-                                None,
-                            )
-                        }
+                            None,
+                        )
                     }
-                } else {
-                    let (built, scanned_files, scanned_bytes) = directory_root(&path, seed)?;
-                    let (final_batch, receipt, statement_number) =
-                        plan_single_initialization(&self.db, &built.objects)?;
-                    (
-                        built.root_id,
-                        scanned_files,
-                        scanned_bytes,
-                        final_batch,
-                        receipt,
-                        statement_number,
-                        false,
-                        None,
-                    )
                 }
             }
         };
@@ -129,74 +113,63 @@ impl LayerStackStore {
             name: name.clone(),
             head_layer_id: layer.id,
         };
-        let final_begin_started = fast_diagnostics.as_ref().map(|_| std::time::Instant::now());
-        let publication = (|| -> Result<_> {
-            let mut connection = self.db.writer()?;
-            let transaction =
-                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let final_begin_ns = final_begin_started
-                .map(|started| started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64)
-                .unwrap_or(0);
-            let final_metrics = match &final_batch {
-                InitializationFinalBatch::Checked(batch) => {
-                    insert_initialization_segment_batch(&transaction, batch, &mut statement_number)?
+        let prepared = PreparedAdmission::prepare(&self.db, final_batch)?;
+        let mut name_insert_failed = false;
+        let publication = prepared.publish(
+            &self.db,
+            &mut statement_number,
+            |transaction, _, statement_number| {
+                #[cfg(debug_assertions)]
+                crate::schema::fail_transaction_statement(u64::MAX)?;
+                *statement_number += 1;
+                crate::schema::fail_transaction_statement(*statement_number)?;
+                transaction.execute(
+                    crate::statements::layerstack::INSERT_LAYER,
+                    rusqlite::params![
+                        layer.id.as_slice(),
+                        layer.layer_stack_id.as_slice(),
+                        Option::<&[u8]>::None,
+                        layer.root_id.as_bytes().as_slice(),
+                        Option::<&[u8]>::None,
+                        Option::<&[u8]>::None,
+                    ],
+                )?;
+                *statement_number += 1;
+                crate::schema::fail_transaction_statement(*statement_number)?;
+                if let Err(error) = transaction.execute(
+                    crate::statements::layerstack::INSERT,
+                    rusqlite::params![
+                        stack.id.as_slice(),
+                        stack.name.as_str(),
+                        stack.head_layer_id.as_slice()
+                    ],
+                ) {
+                    name_insert_failed = true;
+                    return Err(error.into());
                 }
-                InitializationFinalBatch::Planned(batch) => {
-                    insert_initialization_object_batch(&transaction, batch, &mut statement_number)?
-                }
-            };
-            #[cfg(debug_assertions)]
-            crate::schema::fail_transaction_statement(u64::MAX)?;
-            statement_number += 1;
-            crate::schema::fail_transaction_statement(statement_number)?;
-            transaction.execute(
-                crate::statements::layerstack::INSERT_LAYER,
-                rusqlite::params![
-                    layer.id.as_slice(),
-                    layer.layer_stack_id.as_slice(),
-                    Option::<&[u8]>::None,
-                    layer.root_id.as_bytes().as_slice(),
-                    Option::<&[u8]>::None,
-                    Option::<&[u8]>::None,
-                ],
-            )?;
-            statement_number += 1;
-            crate::schema::fail_transaction_statement(statement_number)?;
-            if let Err(error) = transaction.execute(
-                crate::statements::layerstack::INSERT,
-                rusqlite::params![
-                    stack.id.as_slice(),
-                    stack.name.as_str(),
-                    stack.head_layer_id.as_slice()
-                ],
-            ) {
-                drop(transaction);
-                drop(connection);
-                if let Some(existing) = self.layer_stack_by_name(&name)? {
+                Ok(())
+            },
+        );
+        let (_, publication_metrics) = match publication {
+            Ok(value) => value,
+            Err(error) => {
+                if let Some(existing) = name_insert_failed
+                    .then(|| self.layer_stack_by_name(&name))
+                    .transpose()?
+                    .flatten()
+                {
                     return Err(StoreError::LayerStackNameConflict {
                         name,
                         existing_id: existing.id,
                         incoming_id: layer_stack_id,
                     });
                 }
-                return Err(error.into());
-            }
-            let final_commit_started = fast_diagnostics.as_ref().map(|_| std::time::Instant::now());
-            transaction.commit()?;
-            let final_commit_ns = final_commit_started
-                .map(|started| started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64)
-                .unwrap_or(0);
-            Ok((final_metrics, final_begin_ns, final_commit_ns))
-        })();
-        let (final_metrics, final_begin_ns, final_commit_ns) = match publication {
-            Ok(publication) => publication,
-            Err(error) => {
-                if cleanup_failed_empty_initialization {
-                    self.db.clear_failed_direct_initialization()?;
-                }
                 return Err(error);
             }
         };
+        let final_metrics = publication_metrics.insert;
+        let final_begin_ns = publication_metrics.begin_ns;
+        let final_commit_ns = publication_metrics.commit_ns;
         if let Some(diagnostics) = fast_diagnostics.as_mut() {
             diagnostics.admission.record_sql_batch(
                 final_metrics,
@@ -205,30 +178,14 @@ impl LayerStackStore {
                 InitializationSqlPhase::Publication,
             );
         }
-        if direct_segments {
-            candidate_receipt.candidate_objects += final_metrics.objects;
-            candidate_receipt.candidate_bytes = candidate_receipt
-                .candidate_bytes
-                .saturating_add(final_metrics.bytes);
-            candidate_receipt.inserted_objects += final_metrics.objects;
-            candidate_receipt.inserted_bytes = candidate_receipt
-                .inserted_bytes
-                .saturating_add(final_metrics.bytes);
-            candidate_receipt.max_transaction_objects = candidate_receipt
-                .max_transaction_objects
-                .max(final_metrics.objects);
-            candidate_receipt.max_transaction_bytes = candidate_receipt
-                .max_transaction_bytes
-                .max(final_metrics.bytes);
-        }
-        candidate_receipt.final_inserted_objects = final_metrics.objects;
-        candidate_receipt.final_inserted_bytes = final_metrics.bytes;
+        crate::objects::record_admission_receipt(&mut candidate_receipt, final_metrics, true);
         crate::telemetry::record_initialization_candidate(candidate_receipt)?;
         crate::telemetry::record_layerstack_initialization(
             crate::LayerStackInitializationReceipt {
                 layer_stack_id,
                 scanned_files,
                 scanned_bytes,
+                source_passes,
             },
         );
         if let Some(mut diagnostic) = initialization_diagnostic {
@@ -373,41 +330,34 @@ struct AddSnapshot {
     existing_layer_id: Option<LayerId>,
 }
 
-enum InitializationFinalBatch {
-    Checked(Vec<crate::objects::AuthenticatedCanonicalObject>),
-    Planned(Vec<crate::CanonicalObject>),
-}
-
-fn plan_single_initialization(
+fn serial_initialize(
     db: &crate::schema::StoreDb,
-    objects: &DeferredObjectStore,
-) -> Result<(InitializationFinalBatch, crate::CandidateReceipt, u64)> {
-    let plan = db.plan_initialization_candidate(objects)?;
-    let mut statement_number = 0;
-    let admission = admit_initialization_objects(db, objects, &plan, &mut statement_number)?;
+    path: &std::path::Path,
+    seed: [u8; 32],
+) -> Result<(
+    layerfs_content::ObjectId,
+    u64,
+    u64,
+    crate::objects::FinishedOutputAdmission,
+)> {
+    let mut admission = CheckedOutputAdmission::new(db)?;
+    let mut output = InitializationDirectAdmissionWriter::new(&mut admission);
+    let mut import = NativeImport::new(seed, &mut output);
+    import.directory(path, &layerfs_content::CanonicalPath::root(), true)?;
+    let imported = import.finish()?;
+    let root =
+        layerfs_content::filesystem::build_initial_namespace(&mut output, seed, imported.mutations)
+            .map_err(|error| output.error(error))?;
+    drop(output);
     Ok((
-        InitializationFinalBatch::Planned(admission.final_batch),
-        crate::CandidateReceipt {
-            candidate_objects: plan.candidate_objects,
-            candidate_bytes: plan.candidate_bytes,
-            inserted_objects: plan.inserted_objects,
-            inserted_bytes: plan.inserted_bytes,
-            reused_objects: plan.reused_objects,
-            reused_bytes: plan.reused_bytes,
-            batch_inserted_objects: admission.batch_inserted_objects,
-            batch_inserted_bytes: admission.batch_inserted_bytes,
-            final_inserted_objects: 0,
-            final_inserted_bytes: 0,
-            preexisting_reused_objects: plan.reused_objects,
-            preexisting_reused_bytes: plan.reused_bytes,
-            admission_transactions: admission.transactions,
-            max_transaction_objects: admission.max_transaction_objects,
-            max_transaction_bytes: admission.max_transaction_bytes,
-        },
-        statement_number,
+        root,
+        imported.scanned_files,
+        imported.scanned_bytes,
+        admission.finish()?,
     ))
 }
 
+#[cfg(test)]
 fn directory_root(path: &std::path::Path, seed: [u8; 32]) -> Result<(BuiltRoot, u64, u64)> {
     match prepare_parallel_root_directories(path, seed)? {
         Some(prepared) => finish_parallel_candidate(prepared, seed),
@@ -415,6 +365,7 @@ fn directory_root(path: &std::path::Path, seed: [u8; 32]) -> Result<(BuiltRoot, 
     }
 }
 
+#[cfg(test)]
 fn finish_parallel_candidate(
     mut prepared: PreparedParallelRoot,
     seed: [u8; 32],
@@ -436,6 +387,7 @@ fn finish_parallel_candidate(
     ))
 }
 
+#[cfg(test)]
 fn serial_directory_root(path: &std::path::Path, seed: [u8; 32]) -> Result<(BuiltRoot, u64, u64)> {
     let cancelled = std::sync::atomic::AtomicBool::new(false);
     let (output, _) = crate::objects::run_finalized_output(
@@ -847,6 +799,7 @@ impl InitializationDiagnostic {
     }
 }
 
+#[cfg(test)]
 struct PreparedDirectory {
     index: usize,
     name: layerfs_content::CanonicalName,
@@ -860,11 +813,13 @@ struct PreparedCompactDirectory {
     imported: CompactImportedTree,
 }
 
+#[cfg(test)]
 struct PreparedWorker {
     directories: Vec<PreparedDirectory>,
     objects: DeferredObjectStore,
 }
 
+#[cfg(test)]
 struct PreparedParallelRoot {
     metadata: std::fs::Metadata,
     directories: Vec<PreparedDirectory>,
@@ -887,6 +842,7 @@ struct DirectWorkerState {
     pairs: crate::objects::CompactInodePairWriter,
     metadata_cache: layerfs_content::filesystem::PortableMetadataCache,
     structural_peak_bytes: u64,
+    source: SourceImportMetrics,
 }
 
 struct PreparedDirectWorker {
@@ -895,6 +851,7 @@ struct PreparedDirectWorker {
     pair_blocks: Vec<crate::objects::CompactInodePairBlock>,
     pairs: crate::objects::CompactInodePairSegment,
     slab: OutputWriterMetrics,
+    source: SourceImportMetrics,
 }
 
 struct PreparedDirectTask {
@@ -939,22 +896,20 @@ struct FlatRootDirectory {
     files: Vec<layerfs_content::CanonicalName>,
 }
 
+#[cfg(test)]
 fn direct_initialize_root_directories(
     db: &crate::schema::StoreDb,
     native: &std::path::Path,
     seed: [u8; 32],
 ) -> Result<Option<FinishedAppendOnlyInitialization>> {
-    let result = direct_initialize_root_directories_inner(db, native, seed);
-    if result.is_err() {
-        db.clear_failed_direct_initialization()?;
-    }
-    result
+    direct_initialize_root_directories_inner(db, native, seed, &mut SourceImportMetrics::default())
 }
 
 fn direct_initialize_root_directories_inner(
     db: &crate::schema::StoreDb,
     native: &std::path::Path,
     seed: [u8; 32],
+    attempted: &mut SourceImportMetrics,
 ) -> Result<Option<FinishedAppendOnlyInitialization>> {
     use std::os::unix::ffi::OsStrExt;
 
@@ -1078,11 +1033,6 @@ fn direct_initialize_root_directories_inner(
     let workers = worker_limit.min(tasks.len());
     let pair_pending_bytes = INITIALIZATION_PAIR_PENDING_BYTES.div_ceil(workers).max(64);
     let fallback = std::sync::atomic::AtomicBool::new(false);
-    if !db.initialization_store_is_empty()? {
-        return Err(StoreError::Integrity(
-            "direct initialization requires empty Store",
-        ));
-    }
     let mut admission = CheckedOutputAdmission::new(db)?;
     let pipeline_started = std::time::Instant::now();
     let (prepared, pipeline) = crate::objects::run_finalized_output(
@@ -1098,6 +1048,7 @@ fn direct_initialize_root_directories_inner(
                 pairs: crate::objects::CompactInodePairWriter::new(pair_pending_bytes)?,
                 metadata_cache: Default::default(),
                 structural_peak_bytes: 0,
+                source: SourceImportMetrics::default(),
             })
         },
         |worker, index, task, objects| {
@@ -1109,7 +1060,7 @@ fn direct_initialize_root_directories_inner(
                 &mut structure,
                 std::mem::take(&mut worker.metadata_cache),
             );
-            let children = match task {
+            let children = (|| match task {
                 DirectInitializationTask::Directory(task) => import
                     .directory(&task.native, &task.logical, false)
                     .map(|inode| vec![(task.name.clone(), inode)]),
@@ -1130,7 +1081,9 @@ fn direct_initialize_root_directories_inner(
                     }
                     Ok(children)
                 }
-            };
+            })();
+            worker.source.merge(import.source);
+
             let children = match children {
                 Ok(children) => children,
                 Err(StoreError::Core(layerfs_content::CoreError::ObjectLimitExceeded)) => {
@@ -1192,6 +1145,7 @@ fn direct_initialize_root_directories_inner(
                 pair_blocks: worker.pair_blocks,
                 pairs: worker.pairs.seal()?,
                 slab,
+                source: worker.source,
             })
         },
         |page| admission.admit_page(page),
@@ -1206,6 +1160,9 @@ fn direct_initialize_root_directories_inner(
             worker
         })
         .collect::<Vec<_>>();
+    for worker in &prepared {
+        attempted.merge(worker.source);
+    }
     let consumer_idle_ns = pipeline.consumer_idle_ns;
     let last_slab_receive_offset_ns = pipeline.last_receive_ns;
     let pipeline_wall_ns = pipeline_started
@@ -1249,7 +1206,6 @@ fn direct_initialize_root_directories_inner(
 
     if fallback.load(std::sync::atomic::Ordering::Acquire) {
         drop(admission);
-        db.clear_failed_direct_initialization()?;
         return Ok(None);
     }
 
@@ -1261,7 +1217,6 @@ fn direct_initialize_root_directories_inner(
         .any(|identity| !identities.insert(*identity))
     {
         drop(admission);
-        db.clear_failed_direct_initialization()?;
         return Ok(None);
     }
 
@@ -1651,6 +1606,7 @@ fn prepare_append_only_root_directories(
     }))
 }
 
+#[cfg(test)]
 fn prepare_parallel_root_directories(
     native: &std::path::Path,
     seed: [u8; 32],
@@ -1746,6 +1702,7 @@ fn prepare_parallel_root_directories(
     }))
 }
 
+#[cfg(test)]
 fn finish_parallel_root(
     prepared: PreparedParallelRoot,
     seed: [u8; 32],
@@ -2019,9 +1976,10 @@ impl<'objects, 'structure, S: ObjectStore, T: ObjectStore>
             bytes: 0,
         };
         let completed =
-            crate::objects::build_checked_file(self.objects, &mut source, metadata.len())?;
+            crate::objects::build_checked_file(self.objects, &mut source, metadata.len());
         self.source.file_read_calls = self.source.file_read_calls.saturating_add(source.calls);
         self.source.file_read_bytes = self.source.file_read_bytes.saturating_add(source.bytes);
+        let completed = completed?;
         self.source.streaming_files += 1;
         self.source.cdc_scratch_peak_bytes = self
             .source

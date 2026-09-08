@@ -201,6 +201,7 @@ fn directory_initialization_receipt_counts_scanned_files_and_bytes() {
             layer_stack_id: initialized.layer_stack_id,
             scanned_files: 2,
             scanned_bytes: 9,
+            source_passes: 1,
         }]
     );
 

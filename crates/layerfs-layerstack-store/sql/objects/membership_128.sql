@@ -1,8 +1,8 @@
 -- family: objects
 -- name: membership_128
 -- parameters: ?1..?128 ObjectIds, unused positions NULL
--- results: object_id, encoded_length ordered by object_id
-SELECT object_id, length(bytes)
+-- results: object_id, canonical_length ordered by object_id
+SELECT object_id, canonical_length
 FROM objects
 WHERE object_id IN (
     ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,
