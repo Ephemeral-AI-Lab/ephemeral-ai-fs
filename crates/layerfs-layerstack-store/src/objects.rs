@@ -635,6 +635,25 @@ impl FinalizedOutputWriter {
         Ok(())
     }
 
+    /// Build a new complete file using the owner's unpublished admission session.
+    /// The caller must discard the operation on any error, including a late EOF check.
+    pub fn build_complete_file(
+        &mut self,
+        source: impl Read,
+        expected_len: u64,
+    ) -> Result<(ObjectId, BuildCounters)> {
+        let before = self.metrics.canonical_hash_calls;
+        let completed = build_checked_file(self, source, expected_len)?;
+        Ok((
+            completed.root.0,
+            BuildCounters {
+                cdc_bytes_scanned: completed.counters.cdc_bytes_scanned,
+                encode_hash_invocations: self.metrics.canonical_hash_calls - before,
+                ..BuildCounters::default()
+            },
+        ))
+    }
+
     pub(crate) fn finish(mut self) -> Result<OutputWriterMetrics> {
         self.flush()?;
         Ok(self.metrics)
@@ -3795,6 +3814,19 @@ mod tests {
             .into_iter()
             .collect::<BTreeSet<_>>();
         let mut direct_ids = BTreeSet::new();
+        let consumed = AtomicU64::new(0);
+        struct ObservedEof<'a> {
+            bytes: &'a [u8],
+            consumed: &'a AtomicU64,
+        }
+        impl Read for ObservedEof<'_> {
+            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                if self.bytes.is_empty() && self.consumed.load(Ordering::Acquire) == 0 {
+                    return Err(std::io::Error::other("no output before EOF"));
+                }
+                self.bytes.read(output)
+            }
+        }
         let cancelled = std::sync::atomic::AtomicBool::new(false);
         let (direct, _) = run_finalized_output(
             1,
@@ -3803,26 +3835,32 @@ mod tests {
             &cancelled,
             |_| Ok(None),
             |result, _, _, writer| {
-                *result = Some(build_checked_file(
-                    writer,
-                    data.as_slice(),
+                *result = Some(writer.build_complete_file(
+                    ObservedEof {
+                        bytes: &data,
+                        consumed: &consumed,
+                    },
                     data.len() as u64,
                 )?);
                 Ok(())
             },
             |result| result.ok_or(StoreError::Integrity("missing completion")),
             |page| {
+                consumed.fetch_add(page.len() as u64, Ordering::Release);
                 direct_ids.extend(page.into_iter().map(|object| object.id));
                 Ok(())
             },
         )
         .unwrap();
-        assert_eq!(direct[0].0.root.0, private.root_id);
-        assert_eq!(direct[0].0.logical_len, data.len() as u64);
+        assert_eq!(direct[0].0 .0, private.root_id);
         assert_eq!(
-            direct[0].0.counters.cdc_bytes_scanned,
+            direct[0].0 .1.cdc_bytes_scanned,
             private.counters.cdc_bytes_scanned
         );
+        assert_eq!(direct[0].0 .1.spill_count, 0);
+        assert_eq!(direct[0].0 .1.first_store_write_bytes, 0);
+        assert_eq!(direct[0].1.selected_spill_bytes, 0);
+        assert!(direct[0].1.partial_peak_payload_bytes <= INITIALIZATION_SLAB_BYTES as u64);
         assert_eq!(direct_ids, expected_ids);
         let mut buffer = ObjectBuffer::bounded_output(None).unwrap();
         buffer.partition_output(4).unwrap();
@@ -3840,6 +3878,7 @@ mod tests {
 
         struct Broken {
             remaining: usize,
+            random: u64,
         }
         impl Read for Broken {
             fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
@@ -3847,7 +3886,12 @@ mod tests {
                     return Err(std::io::ErrorKind::Other.into());
                 }
                 let size = bytes.len().min(self.remaining);
-                bytes[..size].fill(7);
+                for byte in &mut bytes[..size] {
+                    self.random ^= self.random << 13;
+                    self.random ^= self.random >> 7;
+                    self.random ^= self.random << 17;
+                    *byte = self.random as u8;
+                }
                 self.remaining -= size;
                 Ok(size)
             }
@@ -3862,6 +3906,7 @@ mod tests {
         ));
         let store = crate::LayerStackStore::create(&path).unwrap();
         let before = store.store_counts().unwrap();
+        let published = std::sync::atomic::AtomicBool::new(false);
         let failed = store.construct_workspace_files(
             [5; 16],
             4,
@@ -3869,18 +3914,20 @@ mod tests {
             std::iter::once(()),
             |_| Ok(()),
             |_, _, _, writer| {
-                let built = ObjectBuffer::build_complete_file_partition(
+                let result = writer.build_complete_file(
                     Broken {
                         remaining: 2 * 1024 * 1024,
+                        random: 31,
                     },
                     2 * 1024 * 1024 + 1,
-                    4,
-                )?;
-                writer.send_selected(built.objects)
+                );
+                published.store(store.store_counts()? != before, Ordering::Release);
+                result.map(|_| ())
             },
             |_| Ok(()),
         );
         assert!(failed.is_err());
+        assert!(published.load(Ordering::Acquire));
         assert_eq!(store.store_counts().unwrap(), before);
         assert!(ObjectBuffer::build_complete_file_partition(
             data.as_slice(),
