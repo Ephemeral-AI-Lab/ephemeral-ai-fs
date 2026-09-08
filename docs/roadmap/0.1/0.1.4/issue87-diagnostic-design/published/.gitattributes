@@ -1,0 +1,3 @@
+* -text
+*.csv whitespace=cr-at-eol
+*.md whitespace=-blank-at-eof

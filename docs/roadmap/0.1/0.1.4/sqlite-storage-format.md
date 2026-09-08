@@ -1,366 +1,388 @@
-# SQLite packed-object storage: format walkthrough
+# SQLite packed-object storage: proposed format v3
 
-**Status: proposed format walkthrough, 2026-09-08.** This is a visual companion
-to the [architecture specification](storage-architecture-spec.md), not the current
-on-disk format or an executable migration. SQL and binary layouts below are
-illustrative. Field widths, framing, codec settings, compatibility, benchmark
-family, and test environment remain to be agreed.
+**Status: M3 format implemented; M4 writer policy finalized but not implemented,
+2026-09-08.** Pack wire version **1** and SQLite schema **6** are approved for the
+new-Store-only development scope. No migration, canonical-format change or final
+release qualification is implied. M4 revises alternative selection and preserves
+the existing FULL/DELTA layout, codec settings and hard limits. Numerical policy
+choices are engineering defaults, not measured optima. The three agreed smokes
+remain the executable verification scope; this documentation runs nothing.
 
-The [research boundary](storage-efficiency-boundary.md) controls scope: one shared
-synchronous namespace Init/Workspace Commit pipeline, all authoritative storage
-inside SQLite, and no new durability or crash-recovery work.
+The [research boundary](storage-efficiency-boundary.md) controls scope. The
+[compatibility transition](storage-architecture-spec.md#compatibility-transition)
+is authoritative for existing Stores, reader/schema version handling, and the
+replacement boundary. This document specifies the proposed bytes and locators;
+it does not implement or independently authorize a migration. Revision v3 changes
+admission/hint/batching policy, not the proposed wire version 1 field layout.
 
 ## 1. One database, two layers of identity
 
-```text
-store.sqlite
-│
-├── Existing filesystem and history records
-│   ├── LayerStacks and Layers
-│   ├── Branches and Commits
-│   └── Workspace staging
-│
-├── Object locations
-│   └── ObjectId → pack ID, group number, record number
-│
-└── Packs
-    ├── pack 101 → immutable BLOB
-    ├── pack 102 → immutable BLOB
-    └── pack 103 → immutable BLOB
-```
-
 ```mermaid
 flowchart LR
-    ROOT["Filesystem root"] --> OBJ["Canonical ObjectId"]
-    OBJ --> LOC["Object-location index"]
-    LOC --> PACK["SQLite pack BLOB"]
-    PACK --> GROUP["Encoded group"]
-    GROUP --> RECORD["Full or delta record"]
-    RECORD --> BYTES["Reconstructed canonical bytes"]
-    BYTES --> CHECK["Authenticate against ObjectId"]
+    ROOT["Filesystem/history root"] --> OBJ["objects: ObjectId + canonical length + locator"]
+    OBJ --> PACK["object_packs: immutable SQLite BLOB"]
+    PACK --> GROUP["Independent raw or compressed group"]
+    GROUP --> RECORD["FULL or DELTA record"]
+    RECORD --> CHECK["Reconstruct and authenticate canonical bytes"]
 ```
 
-An ObjectId identifies canonical bytes. A pack ID identifies a physical SQLite
-row. Group and record numbers locate data inside that row. Filesystem trees
-reference ObjectIds, never SQLite offsets. Repacking, if separately implemented
-later, could change locations without changing logical identities.
+ObjectId identifies canonical bytes. A pack ID identifies a local SQLite row;
+group and record numbers locate a representation in that row. Logical trees
+never reference rowids or offsets. One selected representation serves all paths
+and Branches referring to an ObjectId. Unselected physical records may remain
+inside admitted packs after a race; their bytes still count.
 
-A Commit is not a pack. One Commit can reference many old packs and add several
-new packs; a small operation can add one small pack. Shared content has one
-selected stored representation, regardless of the number of paths or Branches
-that reference it.
+A Commit is not a pack. It may reference old packs and admit multiple new ones.
+A small operation flushes its partial packs before returning, without padding,
+waiting for later calls, or relying on later compaction for its footprint.
 
-## 2. Conceptual SQL structures
+## 2. Proposed SQLite structures
 
-The existing history tables remain responsible for their existing semantics.
-The following shows only the proposed physical-object structures. It is not a
-replacement schema or migration script. SQLite schema compatibility must be
-resolved before implementation.
+These are final-shape DDL proposals, not migration statements. Existing history
+and staging foreign keys continue to target the logical index named `objects`.
+Replacing its old `bytes` column requires the agreed schema transition.
 
 ```sql
--- Illustrative only: names and fields are not frozen.
 CREATE TABLE object_packs (
-    pack_id INTEGER PRIMARY KEY,
-    data    BLOB NOT NULL
-);
+    pack_id INTEGER PRIMARY KEY CHECK (pack_id > 0),
+    data BLOB NOT NULL
+) STRICT;
 
-CREATE TABLE object_locations (
-    object_id     BLOB NOT NULL PRIMARY KEY
-                  CHECK (length(object_id) = 32),
-    pack_id       INTEGER NOT NULL REFERENCES object_packs(pack_id),
-    group_number  INTEGER NOT NULL CHECK (group_number >= 0),
-    record_number INTEGER NOT NULL CHECK (record_number >= 0)
-) WITHOUT ROWID;
+CREATE TABLE objects (
+    object_id BLOB NOT NULL PRIMARY KEY CHECK (length(object_id) = 32),
+    canonical_length INTEGER NOT NULL
+        CHECK (canonical_length > 0 AND canonical_length <= 16777216),
+    pack_id INTEGER NOT NULL REFERENCES object_packs(pack_id),
+    group_number INTEGER NOT NULL CHECK (group_number >= 0 AND group_number < 256),
+    record_number INTEGER NOT NULL CHECK (record_number >= 0 AND record_number < 8191)
+) STRICT, WITHOUT ROWID;
 ```
 
-`object_packs` deliberately has an integer rowid alias in this illustration so
-SQLite incremental BLOB access is possible. That API cannot open a BLOB in a
-`WITHOUT ROWID` table. The location table contains no pack BLOB and can have a
-different layout. See [SQLite's BLOB API](https://sqlite.org/c3ref/blob_open.html).
-
-The lookup is small:
+`object_packs.pack_id` is an integer rowid alias so incremental BLOB access can
+open `data`; the locator index needs no rowid. The current schema's root foreign
+keys reference `objects(object_id)` in
+[`sql/schema/v5.sql`](../../../../crates/layerfs-layerstack-store/sql/schema/v5.sql).
+The exact schema verifier must change through the agreed version transition.
+Under the batch permit, one indexed MAX query allocates checked positive local
+pack IDs for a bounded multirow INSERT; locators use bounded multirow INSERTs too.
+Two parameters per pack and five per locator are limited by effective SQLite
+parameter, statement-byte and resident-memory bounds. See the [SQL/batching contract](storage-architecture-spec.md#authoritative-bulk-sql);
+one transaction does not justify a statement execution per object.
+See [SQLite's BLOB API](https://sqlite.org/c3ref/blob_open.html).
 
 ```sql
-SELECT pack_id, group_number, record_number
-FROM object_locations
-WHERE object_id = ?1;
+SELECT canonical_length, pack_id, group_number, record_number
+FROM objects WHERE object_id = ?1;
 ```
 
-The next step reads the relevant pack header/directory and encoded group range;
-it must not silently fetch the complete BLOB for every small object. Cache and
-batch directory lookups through bounded existing mechanisms where useful.
-SQL foreign keys do not validate internal group/record numbers; the format
-reader must check all offsets, counts, and lengths.
+Batched membership returns ObjectId and canonical length without decoding any
+group. That replaces the current `length(bytes)` query while retaining its
+canonical-byte receipts and length validation. Pack or record encoded length
+cannot substitute for canonical length. Foreign keys validate pack existence;
+they do not authenticate locator fields or internal directories.
 
-The index still costs space per object. Packing reduces physical payload-row
-cost; it does not remove logical object IDs, canonical metadata, or every index.
-Avoid adding redundant IDs and length fields to every layer without a reason.
+The locator carries no duplicate base ID or record kind. Group directories
+carry physical ranges; record directories carry record boundaries; DELTA headers
+carry reconstruction dependencies. Each has a distinct access or validation
+responsibility. Packing still pays an index entry and ObjectId per logical
+object, plus SQLite allocation and partial-pack overhead.
 
-## 3. Pack BLOB layout
+## 3. Exact proposed pack framing
+
+All integers are unsigned, fixed-width, **little-endian**. ObjectIds retain their
+existing 32-byte encoding. There is no implicit alignment or padding. Readers
+reject unknown versions, flags, codecs, kinds, opcodes, and nonzero reserved
+bytes. All additions, multiplications, conversions, and range endpoints use
+checked arithmetic before slicing or allocation.
 
 ```text
-                    One immutable SQLite BLOB
-┌─────────────────────────────────────────────────────────┐
-│ Header                                                  │
-│   format discriminator/version                         │
-│   group count and directory framing                     │
-├─────────────────────────────────────────────────────────┤
-│ Group directory                                         │
-│   group 0 → encoded offset, encoded length,              │
-│             decoded length, codec                       │
-│   group 1 → ...                                         │
-│   group 2 → ...                                         │
-├─────────────────────────────────────────────────────────┤
-│ Group 0 bytes: compressed metadata records               │
-├─────────────────────────────────────────────────────────┤
-│ Group 1 bytes: compressed content records                │
-├─────────────────────────────────────────────────────────┤
-│ Group 2 bytes: raw records when compression did not pay   │
-└─────────────────────────────────────────────────────────┘
+Pack BLOB
+  16-byte header
+    magic[8]       = 4c 46 50 41 43 4b 00 00  (LFPACK\0\0)
+    version: u16   = 1
+    flags: u16     = 0
+    group_count:u32 = 1..256
+  group_count consecutive 16-byte directory entries
+    encoded_offset: u32  (absolute from BLOB byte zero)
+    encoded_length: u32
+    decoded_length: u32
+    codec: u8            (0 RAW; 1 Zstandard)
+    reserved[3]          (all zero)
+  consecutive encoded group bytes in directory order
 ```
 
-The pack is a container of encoded groups, not one giant compression stream.
-A raw group still lives in the same pack format; it is not another backend.
-Pack offsets use a defined origin, such as the beginning of the BLOB, which the
-final codec must specify. Numeric encoding, directory representation, integrity
-framing, and alignment are not frozen by this drawing.
+The first encoded offset equals `16 + 16 * group_count`; each subsequent offset
+equals the preceding range's end; the last end equals the BLOB length. Lengths
+are positive. Admission and export validate the whole directory, contiguity,
+aggregate limits, and every group/record. For admission of internally constructed
+packs, carry checked framing/canonical construction facts instead of decoding and
+rehashing freshly encoded objects again. Reread private prepared-pack spools must
+verify their operation-held exact-byte digest before insertion, as specified by
+the admission protocol. Import/export of untrusted stored representations uses the
+bounded decoder and canonical authentication; no unchecked producer bypass exists. Before allocating or fetching any encoded group, obtain the BLOB length from its
+handle and reject lengths above **16 MiB + 41**. RAW requires encoded length equal
+to decoded length; Zstandard requires `0 < encoded_length <= decoded_length <= 65,536`.
+The writer's 16-byte savings threshold is policy, not a reader rejection rule.
+For any group decoded length above 64 KiB, or BLOB length above 256 KiB, require
+before extraction: exactly one group, RAW, offset 32, encoded range ending exactly
+at BLOB end, decoded length <=16 MiB + 9. After extraction enforce exactly one
+FULL record, canonical length >65,527, and BLOB length = canonical length +41.
+Thus even an oversized group inside a BLOB smaller than 256 KiB uses the singleton
+rule; it cannot hide in a multi-group pack. Ordinary groups use the 64-KiB hard
+read bound; 16/32-KiB role targets are writer grouping policy.
+
+A point read also validates the header and
+selected entry's reserved bytes, codec, declared lengths, and range within the
+BLOB beyond its directory, then validates the selected group and requested
+object. It does not read every directory entry merely to prove contiguity again.
+Authentication of the requested canonical object remains authoritative.
+
+The normal pack cap is **256 KiB**, calculated as the header, complete group
+directory, and sum of **decoded** group lengths, including their record framing.
+Independently, each pack has at most **256 groups** and **8,191 records**. Group
+compression never relaxes canonical-byte or operation-memory admission bounds.
+The raw oversized singleton exception is defined below, with no unbounded route.
+
+## 4. Groups, records, and codec
 
 ```text
-Physical placement unit:  pack BLOB
-Compression unit:        independently decoded group
-Logical identity unit:   canonical object
-Reuse unit:              existing objects and COW extent slices
+Decoded group
+  record_count: u32            (1..8191; pack aggregate also <=8191)
+  record_end: u32[record_count] (cumulative from record-area byte zero)
+  record area
+    FULL:  kind:u8=0 | canonical bytes
+    DELTA: kind:u8=1 | base:ObjectId | output_length:u32
+           | instruction_count:u32 | instructions
 ```
 
-The proposed initial pack cap is 256 KiB of uncompressed representation data and
-framing, with independent record-count and canonical-byte bounds. It is not a
-fixed allocation or a promise of the compressed size. Partial packs are not
-padded to capacity and do not wait for future operations.
+The first record starts at record-area offset zero; each next record starts at
+the preceding end. Ends strictly increase, every record contains its kind and
+required fields, and the last end exactly equals the record-area length. There
+are no gaps or trailing bytes. FULL canonical length is record length minus one;
+DELTA output length is explicit to bound reconstruction before allocation.
+Both must equal the requested object's indexed canonical length after decoding.
 
-## 4. Compression groups and records
+A COPY instruction is `opcode:u8=0 | base_offset:u32 | length:u32`.
+An INSERT instruction is `opcode:u8=1 | length:u32 | literal bytes[length]`.
+Instruction lengths are positive. Instruction count is `1..8191`; parsing
+consumes the record exactly. Every COPY range fits the authenticated full base;
+output accumulation must never exceed the declared length and must end exactly
+there. DELTA target and base canonical lengths are each positive and at most
+**64 KiB**. No instruction can use already reconstructed target bytes as a base.
 
-```text
-Decode one selected group
-              │
-              ▼
-┌───────────────────────────────────────────────────────┐
-│ Record count and record directory                     │
-│   record number → record offset and length            │
-├───────────────────────────────────────────────────────┤
-│ Record 0: FULL  | canonical bytes                      │
-│ Record 1: FULL  | canonical bytes                      │
-│ Record 2: DELTA | base ID | output length | program    │
-└───────────────────────────────────────────────────────┘
-```
+Normal metadata groups target at most **16 KiB**, content groups at most
+**32 KiB**, including decoded framing. An individually larger record uses a
+single-record group up to **64 KiB decoded**, subject to the normal pack cap.
+The constructor's authenticated role selects grouping; role is not another wire
+field. FULL/DELTA and RAW/compressed remain independent choices.
 
-Record offsets refer to the decoded group, not compressed byte positions. A
-record directory might use offsets, lengths, or compact cumulative lengths;
-choose one representation after accounting for lookup and space costs.
+Codec 0 stores the exact decoded group, so encoded and decoded lengths match.
+Codec 1 stores exactly one ordinary [Zstandard frame (RFC 8878)](https://www.rfc-editor.org/rfc/rfc8878.html): content size is required
+and equals directory decoded length, frame checksum is present and verified,
+window is at most **64 KiB**, and decoded size is at most **64 KiB**. Dictionaries,
+skippable frames, concatenated frames, and trailing bytes are forbidden. Reject
+unsupported framing or excessive window/output declarations before decoder
+allocation; enforce the output cap during decoding and exact length at finish.
+The proposed writer uses **Zstandard level 1** with these explicit settings.
+Level alone does not establish window, checksum, or content-size behavior.
 
-Pseudotypes describe meaning, not Rust structs or a fixed wire encoding:
+Encode each group alternative at most once. For each alternative keep compressed
+bytes only when the complete frame is at least **16 bytes smaller** than RAW;
+otherwise store RAW and count the trial CPU. The directory entry has equal size.
 
-```text
-FullRecord {
-    kind: FULL
-    canonical_bytes: bytes
-}
+M4 prospectively compares at most two alternatives with common membership:
+A all-FULL versus B one selected FULL/DELTA assignment. Select B only if complete
+encoded-group savings are at least `max(64 bytes, ceil(A_bytes / 8))`; otherwise
+select A. Only the winning representation is persisted. No eligible delta means
+one alternative. This supersedes raw-record-only acceptance, not the wire layout.
+See [selection and memory ownership](implementation-milestone-4-plan.md#encoded-alternative-policy).
+The threshold is an engineering policy, not a measured storage guarantee. M3's
+historical single-trial evidence is unchanged.
 
-DeltaRecord {
-    kind: DELTA
-    base_object_id: ObjectId
-    reconstructed_length: integer
-    instructions: [COPY(base_offset, length) | INSERT(bytes)]
-}
-```
+### Oversized FULL route and canonical limits
 
-A full record can be compressed because the surrounding group is compressed.
-A delta program can also be compressed. Full/delta selection and raw/compressed
-group selection are separate decisions.
+A FULL record that cannot fit a 64-KiB decoded single-record group uses a **RAW,
+FULL, single-record, single-group, singleton pack**. Its canonical bytes may be
+at most **16 MiB** on the read route. Its decoded group is exactly canonical
+length plus 9 bytes (count, one end, kind), and its pack exactly canonical length
+plus **41 bytes** (16-byte header, 16-byte directory, 9-byte group framing).
+No DELTA or compressed oversized exception exists. A canonical object of exactly
+64 KiB is delta-eligible, but its FULL record plus group framing exceeds the
+64-KiB singleton decoded cap and therefore takes this raw route when stored FULL.
+This is the same pack format.
 
-Proposed starting groups are up to 16 KiB for metadata and 32 KiB for content,
-measured before compression. A valid canonical object slightly larger than a
-nominal group cap needs an explicit bounded single-record rule: a 32-KiB payload
-also has canonical headers. All supported object roles must fit a declared
-bounded route. No unbounded group or unexplained fallback is permitted.
+Ordinary new admission still permits at most **4 MiB minus one byte** of canonical
+content per object and admission transaction, and **8,191 objects** per admission
+transaction. Physical framing/encoded buffers are separately charged. The wider
+16-MiB read route preserves a representation for the existing canonical codec's
+limit; it does not enlarge normal write admission or authorize a migration.
+
+The distinct existing limits are documented in
+[`limits.rs`](../../../../crates/layerfs-content/src/limits.rs) and
+[`objects.rs`](../../../../crates/layerfs-layerstack-store/src/objects.rs).
+Modern payload chunks are at most **32,789 canonical bytes**: 32,768 payload +
+9-byte outer header + 4-byte Bytes-field length + 8-byte chunk magic, as encoded
+by [`extent_codec.rs`](../../../../crates/layerfs-content/src/file/extent_codec.rs).
+FileState is 106 canonical bytes; extent/directory/inode-table/metadata-tree
+nodes are bounded at 8,192 bytes. These common sizes do not replace the general
+canonical limit. A valid chunk therefore need not be rejected or forced raw
+merely because its framing crosses the nominal 32-KiB group target.
 
 ## 5. Shallow deltas: one reconstruction dependency
 
 ```mermaid
 flowchart LR
-    A["A: full object, possibly compressed"] --> B["B: delta against A"]
-    A --> C["C: delta against A"]
-    A --> D["D: delta against A"]
+    A["A: selected FULL, raw or compressed"] --> B["B: DELTA against A"]
+    A --> C["C: DELTA against A"]
 ```
 
-Arrows above mean “used to reconstruct.” The first proposal permits a delta base
-that has a full representation only. It does not permit delta chains.
-
-An illustrative 6-KiB content edit, ignoring canonical headers for readability:
-
-```text
-A = prefix(2048 B) + old(32 B) + suffix(4064 B)
-B = prefix(2048 B) + new(32 B) + suffix(4064 B)
-
-B's illustrative delta against A:
-    COPY   source_offset=0,    length=2048
-    INSERT new_bytes[32]
-    COPY   source_offset=2080, length=4064
-
-Reconstructed length = 6144 bytes
-```
-
-The actual object encoder reconstructs the complete canonical object, including
-its framing, and authenticates it to B's ObjectId. This example is not a storage
-size prediction. Base references, instructions, groups, index entries and SQLite
-allocation all cost bytes.
-
-A base can be in another pack. Do not duplicate it into every dependent pack.
-Keep it available while stored delta records depend on it, even if no filesystem
-root references that base directly. If a full anchor stops being a good match,
-store a newer full representation rather than silently increasing chain depth.
+The selected base representation must actually be FULL. The reader rejects a
+DELTA base, self-reference, cycles, and excessive lengths instead of recursively
+following another delta. Authenticate the base before copying; reconstruct and
+authenticate the complete target canonical bytes before role decoding/use.
+A full anchor can live in another pack. Its physical dependency remains even
+when no retained logical root directly references it. No per-pack base copy or
+local dependency index is added. Base selection and admission rechecks belong to
+the [shared admission protocol](storage-architecture-spec.md#admission-protocol).
 
 ## 6. Small and large files use the same format
 
 ```text
-6-KiB file                           100-MiB file
-    │                                   │
-    ▼                                   ▼
-one payload object                  many payload objects
-    │                                   │
-    └───────────────┬───────────────────┘
-                    ▼
-          exact CAS reuse check
-                    ▼
-       new FULL or DELTA records
-                    ▼
-       bounded compression groups
-                    ▼
-           SQLite pack BLOBs
+6-KiB file                         100-MiB file
+  one initial payload object       many payload objects
+              \                    /
+           shared CAS/CDC/COW construction
+             FULL or DELTA -> groups -> SQLite packs
 ```
 
-With the current 8/16/32-KiB CDC profile, a nonempty file below 8 KiB becomes one
-initial payload chunk. Larger files may produce several chunks. The minimum is
-not padding and does not select another storage backend.
+The current 8/16/32-KiB CDC profile discovers construction boundaries; its minimum
+is not allocation padding. Exact captured ranges preserve old extent slices;
+whole-file replacements need discovery of reusable bytes. Crossing 8 KiB creates
+new file state without relocating historical objects. Metadata-only edits still
+benefit from structural reuse and metadata compression.
 
-A large file also produces small metadata and chunk objects. Physical encoding
-uses object characteristics, not a per-file “small row / large pack” switch.
-Growing a file produces a new extent/file state; old objects and historical
-states remain unchanged. Precise captured ranges can preserve old slices.
+The unchanged logical graph is namespace/inode → FileState → extent nodes →
+payload ObjectIds with offsets and lengths. Packing does not remove those
+objects or indexes. Tiny-content inlining remains a separate logical-format
+proposal, not a second small-file storage backend.
 
-The existing logical structure remains:
-
-```text
-namespace/inode object
-    → FileState ObjectId
-        → extent-tree ObjectIds
-            → payload ObjectIds with offsets and lengths
-```
-
-Inlining tiny file contents or removing an extent node is a separate logical
-format proposal; it is not necessary to understand or prototype this physical
-pack format.
-
-## 7. Read sequence
+## 7. Read sequence and ownership
 
 ```mermaid
 sequenceDiagram
     participant FS as Workspace/FUSE reader
-    participant S as Shared object reader
-    participant DB as SQLite
-    participant D as Decoder
-    FS->>S: Request ObjectId
-    alt Available authenticated object
-        S-->>FS: Canonical object
-    else Object miss
-        S->>DB: Look up pack/group/record
-        DB-->>S: Location
-        S->>DB: Read directory and required group range
-        DB-->>S: Encoded group bytes
-        S->>D: Decode group and select record
-        opt Delta record
-            D->>S: Request full base ObjectId
-            S-->>D: Authenticated full base bytes
-            D->>D: Apply bounded COPY/INSERT program
+    participant S as Existing shared object reader
+    participant DB as StoreDb connection
+    FS->>S: ObjectId or bounded batch
+    alt Authenticated object available
+        S-->>FS: Existing canonical bytes
+    else Miss
+        S->>DB: Acquire connection; locator query
+        S->>DB: Header 16B; selected directory entry 16B; encoded group
+        DB-->>S: Bounded owned encoded buffers
+        S->>S: Close Blob/statements; release connection
+        S->>S: Decode group; select and validate record
+        opt DELTA
+            S->>DB: New bounded acquisition for missing full base
+            DB-->>S: Encoded base group; close handles and release
+            S->>S: Decode and authenticate FULL base; apply delta
         end
-        D-->>S: Reconstructed canonical object
-        S->>S: Authenticate requested ObjectId
-        S-->>FS: Canonical object
+        S->>S: Authenticate target; pass canonical bytes to role decoder
+        S-->>FS: Filesystem bytes through existing read path
     end
 ```
 
-The base request follows the same indexed/group read path but cannot recurse
-through another delta. A file read can require multiple objects and metadata
-nodes; depth one bounds delta dependencies, not the whole file-read cost.
+For one ordinary cold object using one encoded-group range fetch, the locator
+is one SQL query and incremental BLOB access performs **three range reads**: header at offset 0 for 16 bytes,
+selected entry at `16 + 16 * group_number` for 16 bytes, then its encoded group.
+Oversized RAW singleton streaming uses additional bounded range calls, all counted;
+three is not a universal count for that path.
+BLOB length comes from the open BLOB handle. These local SQLite operations are
+not three network round trips. No explicit read transaction commit or whole-pack
+`SELECT data` is required. A singleton pack's only group can naturally contain
+nearly all its bytes; this is the declared oversized-object cost, not a hidden
+whole-pack fallback for ordinary partial reads.
 
-Batch requests for the same group and reuse existing bounded cache mechanisms.
-A group decode can process more bytes than requested, so report amplification
-and miss behavior. No correctness dependency on a warm cache, no unlimited
-memory, and no extraction of whole packs into filesystem files on ordinary reads.
+Plan requested slots once and drain forward through bounded internal extraction
+batches. Parse/decode each distinct target group once per internal batch/wave.
+Collect distinct full-base IDs for a second grouped wave; a group used
+in both waves may be decoded twice, not once per object. Preserve requested result
+slots/order independently of SQL order and reserve pending-program/association
+memory as specified by the [batching contract](storage-architecture-spec.md#groupread-batching-and-single-pass-byte-work).
+Groups repeated across later drains or dependent tree levels count again; no
+claim of one decode across the entire public request or one query for unknown traversal.
+Keep all Blob handles, statements, and connection guards inside extraction;
+release them before decompression, canonical hashing, base requests, or delta
+application. This matters because current `StoreDb.reader()` and `writer()` share
+one connection mutex. A separate-pack base miss can repeat the three range reads
+and one locator query after target decoding. Metadata traversal can require
+further dependent object reads; depth one does not bound an entire file read.
+
+Encoded buffers, decoded backing groups, reconstructed targets/bases, cache
+entries, and output copies all consume memory. Charge complete retained backing
+allocations, not just slice lengths. Avoid automatic duplicate object/group
+caches, preserve role validation, and carry trusted authentication facts through
+the existing read boundary rather than hashing scalar metadata twice. Miss
+correctness and bounds never depend on a warm cache.
 
 ## 8. Shared Init/Commit write sequence
 
 ```mermaid
-sequenceDiagram
-    participant O as Init or Workspace Commit
-    participant C as Shared constructor
-    participant E as Physical encoder
-    participant DB as SQLite
-    O->>C: Source state or captured changes
-    C->>C: CAS identities, CDC, COW reuse
-    C->>DB: Batched exact membership checks
-    DB-->>C: Existing/missing identities
-    C->>E: Missing canonical objects and bounded prior context
-    E->>E: Full/delta choice, group compression, pack assembly
-    loop Bounded admission batches
-        E->>DB: Begin admission transaction
-        E->>DB: Admit packs and object locations consistently
-        E->>DB: Commit admission transaction
-    end
-    O->>DB: Existing staging and final publication checks
-    O->>DB: Publish complete root and applicable history/head
-    O->>O: Finish required runtime finalization
-    O-->>O: Return public operation result
+flowchart LR
+    I["Init source discovery"] --> C["Shared canonical construction"]
+    W["Workspace captured changes"] --> C
+    C --> E["Exact reuse and bounded physical preparation outside DB lock"]
+    E --> A["Bounded shared admission protocol"]
+    A --> P["Existing operation-specific staging/publication/finalization"]
 ```
 
-This is conceptual ordering, not a requirement to finish all encoding before
-admitting the first batch. Large Init can stream bounded batches. Compression,
-base preparation, and source reads stay outside SQLite writer ownership.
+The [architecture admission protocol](storage-architecture-spec.md#admission-protocol)
+is the sole algorithm for prepared-batch ownership, duplicate/base rechecks,
+transaction boundaries, and publication closure. There is one initial membership
+probe and at most one final recheck per candidate, with the batch permit retained
+through late-duplicate validation. The connection and BLOB handles are released
+before decode/hash/base use, so ordinary reads retain access while writers wait.
+No shrinking-set retry or re-encoding on races remains. New representation encoding
+and source construction stay outside the permit. Init streams bounded batches;
+Commit retains staging, no-change and head-check semantics. No transaction per
+record or per pack is implied. Required encoding completes before the operation
+returns. Earlier admitted/unselected records after failures or races remain in
+allocation accounting. No crash-recovery or later compaction requirement is
+introduced here.
 
-The final publication must reference a complete logical and physical dependency
-closure. Existing Init and Workspace staging/no-change semantics remain distinct.
-Do not add a transaction per object or pack unnecessarily. Canonical-byte and
-object-count admission limits remain enforced independently of compressed size.
-Concurrent admission rechecks and ordinary conflict handling must be specified
-before implementation. Earlier admitted objects may remain if publication fails;
-that allocation remains counted. This document adds no crash-recovery work.
-
-## 9. Worked location example
-
-The IDs below are labels, not literal hashes or measured offsets:
+## 9. Portable export and physical closure
 
 ```text
-object_locations
-    ID_A → pack 101, group 0, record 0
-    ID_B → pack 102, group 1, record 2
-    ID_C → pack 102, group 1, record 3
+Local selected-object index       Future portable manifest
+A -> local pack 101, group0, rec0  A -> portable pack key X, group0, rec0
+B -> local pack 102, group1, rec2  B -> portable pack key Y, group1, rec2
 
-pack 101 / group 0 / record 0
-    FULL(A)
-
-pack 102 / group 1 / record 2
-    DELTA(base=ID_A, reconstruct=B)
-
-pack 102 / group 1 / record 3
-    FULL(C)
-
-old file state → ID_A
-new file state → ID_B
-another file   → ID_C
+X / group0 / rec0 = FULL(A)
+Y / group1 / rec2 = DELTA(base=A, reconstruct=B)
 ```
 
-Reading B obtains the relevant group from pack 102 and the full base from pack
-101 as needed. Reading C needs no delta base. Reading A still returns its old
-content. No old pack is rewritten just because B was added.
+Numeric local pack IDs have no global identity. A future exporter can keep these
+BLOB bytes and translate locators through a portable manifest containing
+ObjectId, canonical length, portable pack reference, group number and record
+number. Pack bytes do not embed every target ObjectId, so export/reindex requires
+that mapping. Reframing or recompression is not inherently required; exporting
+whole packs may transfer unrelated/unselected records, while selected-record
+extraction can require repacking. That is a documented migration/granularity cost.
+
+Starting from a selected root, enumerate its logical objects **and** each selected
+DELTA's full-base dependency, with its required pack/group, even if the logical
+graph omits the base. Dependency discovery parses the existing records; no new
+local persistent dependency index is required. Admission/export validate complete
+framing; remote readers still bound/decode/authenticate without trusting the
+manifest. A cold target and cross-pack base can require multiple directory and
+group requests, and a raw singleton can require up to 16 MiB plus framing.
+Bounded decoding therefore does not guarantee low remote latency.
+
+Export/transport, tenant authorization, replication, remote publication services,
+and reclamation remain future cloud work. CAS identity grants no authorization;
+export of unrelated records needs its own access/granularity policy. SQLite
+replication and object-storage export have different migration costs; SQLite is
+not made concurrently writable by placing its file on object storage.
 
 ## 10. Format review checklist
 
@@ -382,3 +404,14 @@ For architecture decisions, tradeoff policy, Git comparison, and broader boundar
 checklists, use the [architecture specification](storage-architecture-spec.md).
 For current implementation behavior, consult the released manual and source;
 this walkthrough must not be presented as an already supported SQLite format.
+
+## M4.5 page-layout reader direction
+
+The owner-accepted [M4.5 policy](implementation-milestone-4.5-plan.md)
+separates SQLite creation policy from supported layouts. New Stores use
+4096-byte pages; the upgraded reader explicitly accepts both 4096 and 65536-byte pages for
+otherwise valid schema 6 / pack wire 1 Stores. Canonical bytes and pack wire fields
+are unchanged. Connect does not convert or rewrite page size. Older M4 binaries
+require 65536-byte pages and reject new 4096-byte Stores; access requires the M4.5
+reader capability. Existing 64-KiB evidence Stores remain untouched. Reverting
+creation policy must preserve readability of both supported layouts.

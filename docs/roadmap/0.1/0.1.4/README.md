@@ -1,13 +1,20 @@
 # LayerFS 0.1.4 — Storage efficiency
 
-> **Status (2026-09-08):** Planned storage-efficiency phase following the
-> completed v0.1.3 benchmark checkpoint. Optimization design, numerical targets,
-> implementation scope, and new benchmark admission remain open. The proposed
-> architecture is recorded below; no implementation has started.
+> **Current owner direction (2026-09-08):** corrected M4 is checkpointed; small-file
+> storage acceptance remains unresolved. Proceed with the isolated
+> [M4.5 plan](implementation-milestone-4.5-plan.md), tracked in
+> [#86](https://github.com/Ephemeral-AI-Lab/layerfs/issues/86), then stop before M5.
+> This supersedes earlier stop-at-M4/SQLite-tuning deferral instructions only for
+> that scoped experiment. Historical milestone instructions below remain context.
+
+
+> **Status (2026-09-08):** M3 is complete as a development checkpoint in
+> draft PR #81. The [M4 plan](implementation-milestone-4-plan.md) is finalized:
+> bounded depth-one deltas, two encoded group alternatives, read batching and
+> diagnostics. M4 is not implemented; M5 and full release qualification remain open.
 >
-> **Compatibility:** Existing compatibility and acknowledgement requirements
-> remain in force. This roadmap decision authorizes no Store-format or public
-> semantic change.
+> **Compatibility:** Schema 6 / wire 1 is approved for explicitly new Stores.
+> No conversion, canonical-format change or new acknowledgement policy is authorized.
 
 ## Problem statement
 
@@ -27,8 +34,11 @@ checks remain obligations in v0.1.4; only the broader benchmark expansion moves.
 Reduce storage cost through the shared filesystem capture/construction and
 SQLite publication path used by namespace initialization and Workspace Commit.
 Preserve correctness, ordinary and historical reads, and demonstrated operation
-performance. Workspaces per tool call are an expected agent usage flow. The direction is an outcome, not a selected storage design.
-No speedup, storage ratio, or universal advantage over Git is promised.
+performance. Workspaces per tool call are an expected agent usage flow. The
+proposal targets that outcome without claiming measured qualification.
+The storage objective is to get sufficiently close to matched Git allocation
+with a worthwhile storage/latency tradeoff; exact parity is not required or ruled
+out. No speedup, storage ratio, or universal advantage over Git is promised.
 
 ## Research boundary
 
@@ -36,9 +46,9 @@ The [storage-efficiency boundary](storage-efficiency-boundary.md) records the
 SQLite-only storage constraint, synchronous shared Init/Commit scope,
 read/write cost concerns, exclusion of new durability/crash-recovery work,
 conditional speed/storage tradeoffs,
-and preference for a new benchmark family. The benchmark definition and test
-environment are placeholders for a separate discussion. No optimization
-implementation is selected.
+and preference for a new benchmark family. Full-family benchmark and evaluation
+details remain open. The separately agreed development
+smokes and topology are linked below; no implementation or execution begins here.
 
 ## Proposed architecture
 
@@ -47,18 +57,46 @@ the proposed shared Init/Commit design: exact CAS/COW reuse, current CDC,
 shallow delta records, bounded compression groups, and immutable SQLite pack
 BLOBs. Small and large files use one pipeline. It includes read/write costs,
 multiple-transaction publication, Git-comparison limits, and boundary checklists.
-Prototype parameters are proposals; binary format, compatibility, benchmark and
-environment decisions remain open.
+Exact proposed wire framing and engineering bounds are specified; they are not
+measured settings. The [compatibility transition](storage-architecture-spec.md#compatibility-transition)
+records the new-Store-only development scope with no conversion on open; final
+release qualification remains separate. Full qualification remains open; the development-smoke plan
+owns its confirmed scope/topology and remaining execution prerequisites.
 
 The [SQLite storage-format walkthrough](sqlite-storage-format.md) illustrates
 the proposed database, pack/group/record layouts, shallow deltas, and shared
-read/write flows with SQL examples and diagrams. Its schema is conceptual.
+read/write flows with SQL examples and diagrams. Its proposed schema and wire
+format are precise but not an executable migration.
+
+The [development-smoke scope and topology](storage-efficiency-boundary.md#development-smokes-and-qualification)
+link PR #80's first-five-checkpoint replay, edit and small-file cases. This is
+separate from the still-open full benchmark family and numerical gates.
+
+The [review disposition](review-disposition.md) records each original finding,
+its correction, the subsequent linear-work/batching audit and remaining
+policy/measurement limitations. Design confidence
+does not qualify storage ratios or speed.
+
+The [implementation plan](implementation-plan.md) lists required source reading,
+the proposed final module tree, change/deletion ownership and staged rollout. Its
+only executable verification is the three agreed development smokes; this planning
+change runs nothing and does not authorize migration or full release qualification.
+
+Use the [implementation handoff prompt](implementation-handoff-prompt.md) to assign
+the implementation with persistent milestone/smoke/fix iteration, a joint storage/
+speed completion contract and explicit evidence limits. Creating the prompt does
+not start that work. The handoff now targets only M4 and stops before M5.
 
 Use the [design-review prompt](design-review-prompt.md) for an independent
 review of clarity, storage/speed tradeoffs, aggregate multi-project load, future
 cloud compatibility, and minimal final components and operation paths.
 
 ## Supporting evidence and tracking
+
+- [M4 issue #84](https://github.com/Ephemeral-AI-Lab/layerfs/issues/84) and
+  [finalized M4 plan](implementation-milestone-4-plan.md): scope, files, selection,
+  iteration and stop checklist. SQLite tuning is deferred; S3 hybrid is
+  [future #82](https://github.com/Ephemeral-AI-Lab/layerfs/issues/82).
 
 - [Issue #18 — v0.1.4 storage-efficiency planning](https://github.com/Ephemeral-AI-Lab/layerfs/issues/18)
   carries the reprioritized storage discussion and its historical research.
@@ -82,15 +120,18 @@ cloud compatibility, and minimal final components and operation paths.
 - Discuss optimization approaches, format compatibility, numerical budgets, and
   implementation/release gates separately before implementation begins.
 
-The durable storage boundary is SQLite-only; packs inside SQLite are permitted
-as research candidates. No encoding, packing layout, compaction policy, chunk
-profile, or small-file representation is selected. It starts no implementation or
-benchmark campaign and does not import historical footprint targets as new gates.
+The durable storage boundary remains SQLite-only; M3 already stores compressed
+packs in SQLite. The revised encoding/layout is a concrete recommendation,
+not implementation authorization. It changes no canonical chunk profile or
+small-file representation. It starts no implementation or benchmark campaign and
+does not import historical footprint targets as new gates.
 
 ## Follow-up planning
 
-- [ ] Agree the optimization proposal and compatibility scope.
-- [ ] Freeze evaluation populations, accounting, budgets, and acceptance gates.
+- [x] Agree the development format scope; M3 checkpoint complete.
+- [ ] Implement the finalized M4 plan and report its incremental value.
+- [x] Resolve development-smoke prerequisites for M0–M3.
+- [ ] Keep full-family/environment and final qualification decisions separate.
 - [ ] Implement and validate only the agreed scope.
 - [ ] Publish candidate-specific storage and operation results, limitations, and
   required regression evidence before release closure.

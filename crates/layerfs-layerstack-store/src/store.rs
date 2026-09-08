@@ -19,6 +19,12 @@ impl LayerStackStore {
         })
     }
 
+    /// Cumulative diagnostics shared by clones, including host read/admission threads.
+    #[doc(hidden)]
+    pub fn physical_storage_receipt(&self) -> crate::PhysicalStorageReceipt {
+        self.db.physical_storage_receipt()
+    }
+
     pub fn path(&self) -> &Path {
         self.db.path()
     }

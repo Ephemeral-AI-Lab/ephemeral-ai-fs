@@ -52,6 +52,33 @@ pub trait ObjectStore {
         self.put(&canonical)
     }
 
+    /// Optional physical origin; the default preserves ordinary publication.
+    #[doc(hidden)]
+    fn put_tree_origin(
+        &mut self,
+        canonical: Vec<u8>,
+        _origin: Option<ObjectId>,
+    ) -> CoreResult<ObjectId> {
+        self.put_owned(canonical)
+    }
+
+    /// Scope physical FILE provenance to a regular-file producer. Generic ropes
+    /// also store metadata values; their payload chunks must remain unmarked.
+    #[doc(hidden)]
+    fn set_file_payload_context(&mut self, _enabled: bool) -> bool {
+        false
+    }
+
+    #[doc(hidden)]
+    fn put_file_payload(
+        &mut self,
+        canonical: Vec<u8>,
+        _start: u64,
+        _len: u32,
+    ) -> CoreResult<ObjectId> {
+        self.put_owned(canonical)
+    }
+
     #[doc(hidden)]
     fn note_transient_owned_bytes(&mut self, _bytes: u64) -> CoreResult<()> {
         Ok(())

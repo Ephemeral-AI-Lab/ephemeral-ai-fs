@@ -23,5 +23,5 @@ license = "MIT"
 
 [workspace.dependencies]
 blake3 = { version = "=1.8.5", default-features = false }
-rusqlite = { version = "=0.40.2", features = ["cache", "hooks", "trace"] }
+rusqlite = { version = "=0.40.2", features = ["cache", "hooks", "trace", "limits", "blob"] }
 clap = { version = "=4.5.48", features = ["derive"] }

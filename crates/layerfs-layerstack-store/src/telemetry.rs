@@ -2,6 +2,270 @@ use crate::{LayerStackId, Result, StoreError, WorkspaceReadReceipt};
 use std::cell::RefCell;
 use std::time::Instant;
 
+// Store-local counters include admission workers and mounted host reads. Snapshots
+// describe the shared Store interval, not exclusive attribution under concurrency.
+// group_fetches includes header/directory extraction rejected by an optional budget.
+// encoded_read_bytes counts group payload (including record framing), excluding
+// outer pack headers/directories; blob_ranges includes those outer SQL ranges.
+// decoded_read_bytes counts full decoded groups including framing. base_fetches
+// counts distinct anchors per reader wave plus predecessor-search base fetches.
+// full_selected/delta_selected count finally admitted representations; alternative
+// byte/call/time counters also include work whose prepared output loses a race.
+// Matching counters describe optional work, and *_ns costs are nested in existing
+// operation/phase times. These counters must not be added to attributed_ns.
+macro_rules! physical_storage_receipt {
+    ($($field:ident),+ $(,)?) => {
+        #[doc(hidden)]
+        #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+        pub struct PhysicalStorageReceipt { $(pub $field: u64,)+ }
+
+        impl PhysicalStorageReceipt {
+            pub fn since(self, before: Self) -> Self {
+                Self { $($field: if matches!(stringify!($field), "diag_selected_pack_last_id" | "diag_invalid") { self.$field } else { self.$field.saturating_sub(before.$field) },)+ }
+            }
+        }
+
+        #[derive(Default)]
+        pub(crate) struct PhysicalStorageCounters {
+            $($field: std::sync::atomic::AtomicU64,)+
+        }
+
+        impl PhysicalStorageCounters {
+            pub(crate) fn note(&self, receipt: PhysicalStorageReceipt) {
+                $(if receipt.$field != 0 {
+                    if stringify!($field) == "diag_selected_pack_last_id" {
+                        self.$field.fetch_max(receipt.$field, std::sync::atomic::Ordering::Relaxed);
+                    } else if stringify!($field).starts_with("diag_") {
+                        if self.$field.fetch_update(std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed,
+                            |old| old.checked_add(receipt.$field)).is_err() {
+                            self.diag_invalid.store(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    } else {
+                        self.$field.fetch_add(receipt.$field, std::sync::atomic::Ordering::Relaxed);
+                    }
+                })+
+            }
+            pub(crate) fn snapshot(&self) -> PhysicalStorageReceipt {
+                PhysicalStorageReceipt {
+                    $($field: self.$field.load(std::sync::atomic::Ordering::Relaxed),)+
+                }
+            }
+        }
+    };
+}
+
+physical_storage_receipt!(
+    diag_invalid,
+    diag_limit_memory_first_empty_count,
+    diag_limit_memory_first_empty_bytes,
+    diag_limit_memory_inherited_empty_count,
+    diag_limit_memory_inherited_empty_bytes,
+    diag_limit_file_first_empty_count,
+    diag_limit_file_first_empty_bytes,
+    diag_limit_file_inherited_empty_count,
+    diag_limit_file_inherited_empty_bytes,
+    diag_limit_operation_first_empty_count,
+    diag_limit_operation_first_empty_bytes,
+    diag_limit_operation_inherited_empty_count,
+    diag_limit_operation_inherited_empty_bytes,
+    diag_limit_descriptor_first_empty_count,
+    diag_limit_descriptor_first_empty_bytes,
+    diag_limit_descriptor_inherited_empty_count,
+    diag_limit_descriptor_inherited_empty_bytes,
+    diag_limit_memory_first_count,
+    diag_limit_memory_first_bytes,
+    diag_limit_memory_inherited_count,
+    diag_limit_memory_inherited_bytes,
+    diag_limit_file_first_count,
+    diag_limit_file_first_bytes,
+    diag_limit_file_inherited_count,
+    diag_limit_file_inherited_bytes,
+    diag_limit_operation_first_count,
+    diag_limit_operation_first_bytes,
+    diag_limit_operation_inherited_count,
+    diag_limit_operation_inherited_bytes,
+    diag_limit_descriptor_first_count,
+    diag_limit_descriptor_first_bytes,
+    diag_limit_descriptor_inherited_count,
+    diag_limit_descriptor_inherited_bytes,
+    diag_hints_0_count,
+    diag_hints_0_bytes,
+    diag_hints_1_count,
+    diag_hints_1_bytes,
+    diag_hints_2_count,
+    diag_hints_2_bytes,
+    diag_hints_3_count,
+    diag_hints_3_bytes,
+    diag_hints_4_count,
+    diag_hints_4_bytes,
+    diag_event_base_bytes,
+    diag_event_budget_bytes,
+    diag_event_candidate_bytes,
+    diag_event_mixed_rejection_bytes,
+    diag_event_fetch_budget_count,
+    diag_event_fetch_budget_bytes,
+    diag_event_match_budget_count,
+    diag_event_match_budget_bytes,
+    diag_event_instruction_budget_count,
+    diag_event_instruction_budget_bytes,
+    diag_event_memory_budget_count,
+    diag_event_memory_budget_bytes,
+    diag_cursor_attached,
+    diag_cursor_queries,
+    diag_cursor_inherited,
+    diag_cursor_memory_limit,
+    diag_cursor_file_limit,
+    diag_cursor_operation_limit,
+    diag_cursor_descriptor_limit,
+    diag_cursor_grants,
+    diag_cursor_query_bytes,
+    diag_selected_pack_count,
+    diag_selected_pack_last_id,
+    diag_selected_pack_bytes,
+    diag_selected_pack_groups,
+    diag_selected_pack_records,
+    diag_selected_unlocated_records,
+    diag_occurrence_preexisting_count,
+    diag_occurrence_preexisting_bytes,
+    diag_occurrence_preexisting_grants,
+    diag_occurrence_missing_count,
+    diag_occurrence_missing_bytes,
+    diag_occurrence_missing_grants,
+    diag_occurrence_duplicate_count,
+    diag_occurrence_duplicate_bytes,
+    diag_occurrence_duplicate_grants,
+    diag_eligible_count,
+    diag_eligible_bytes,
+    diag_no_predecessor_count,
+    diag_no_predecessor_bytes,
+    diag_missing_span_count,
+    diag_missing_span_bytes,
+    diag_complete_empty_count,
+    diag_complete_empty_bytes,
+    diag_limited_empty_count,
+    diag_limited_empty_bytes,
+    diag_complete_hints_count,
+    diag_complete_hints_bytes,
+    diag_limited_hints_count,
+    diag_limited_hints_bytes,
+    diag_new_full_count,
+    diag_new_full_bytes,
+    diag_new_delta_count,
+    diag_new_delta_bytes,
+    diag_race_count,
+    diag_race_bytes,
+    diag_terminal_no_predecessor_count,
+    diag_terminal_no_predecessor_bytes,
+    diag_terminal_missing_span_count,
+    diag_terminal_missing_span_bytes,
+    diag_terminal_no_overlap_count,
+    diag_terminal_no_overlap_bytes,
+    diag_terminal_correspondence_limit_count,
+    diag_terminal_correspondence_limit_bytes,
+    diag_terminal_base_count,
+    diag_terminal_base_bytes,
+    diag_terminal_budget_count,
+    diag_terminal_budget_bytes,
+    diag_terminal_no_delta_count,
+    diag_terminal_no_delta_bytes,
+    diag_terminal_mixed_rejection_count,
+    diag_terminal_mixed_rejection_bytes,
+    diag_terminal_delta_count,
+    diag_terminal_delta_bytes,
+    diag_terminal_unknown_count,
+    diag_terminal_unknown_bytes,
+    diag_size_lt64_count,
+    diag_size_lt64_bytes,
+    diag_size_lt256_count,
+    diag_size_lt256_bytes,
+    diag_size_lt1024_count,
+    diag_size_lt1024_bytes,
+    diag_size_lt4096_count,
+    diag_size_lt4096_bytes,
+    diag_size_lt16384_count,
+    diag_size_lt16384_bytes,
+    diag_size_lt65536_count,
+    diag_size_lt65536_bytes,
+    diag_size_ge65536_count,
+    diag_size_ge65536_bytes,
+    diag_event_base,
+    diag_event_budget,
+    diag_event_candidate,
+    diag_event_mixed_rejection,
+    diag_file_source_without_chunk,
+    diag_nonfile_chunk_count,
+    diag_nonfile_chunk_bytes,
+    group_fetches,
+    encoded_read_bytes,
+    decoded_read_bytes,
+    decompression_calls,
+    base_fetches,
+    blob_ranges,
+    eligible_targets,
+    absent_predecessors,
+    targets_without_hints,
+    usable_bases,
+    predecessor_hints,
+    candidate_trials,
+    correspondence_reserved_bytes,
+    correspondence_descriptors,
+    correspondence_budget_skips,
+    budget_skips,
+    fetch_budget_skips,
+    match_budget_skips,
+    instruction_budget_skips,
+    memory_budget_skips,
+    match_comparisons,
+    seed_hash_bytes,
+    matching_ns,
+    full_selected,
+    delta_selected,
+    rejected_mixed_groups,
+    full_alternative_bytes,
+    mixed_alternative_bytes,
+    selected_encoded_bytes,
+    encoding_calls,
+    encoding_ns,
+    native_record_fetches,
+    native_request_bytes,
+    native_parser_bytes,
+    native_raw_decoded_bytes,
+    native_decode_calls,
+    native_decode_ns,
+    native_dependency_edges,
+    native_depth_0,
+    native_depth_1,
+    native_depth_2,
+    native_depth_3,
+    native_depth_4,
+    native_full_encode_calls,
+    native_full_encode_ns,
+    native_full_frame_count,
+    native_full_frame_bytes,
+    native_prefix_encode_calls,
+    native_prefix_encode_ns,
+    native_prefix_frame_count,
+    native_prefix_frame_bytes,
+    native_fallback_no_hint_count,
+    native_fallback_no_hint_bytes,
+    native_fallback_unavailable_count,
+    native_fallback_unavailable_bytes,
+    native_fallback_legacy_delta_count,
+    native_fallback_legacy_delta_bytes,
+    native_fallback_role_count,
+    native_fallback_role_bytes,
+    native_fallback_depth_count,
+    native_fallback_depth_bytes,
+    native_fallback_budget_count,
+    native_fallback_budget_bytes,
+    native_fallback_full_wins_count,
+    native_fallback_full_wins_bytes,
+    native_admitted_full_count,
+    native_admitted_full_bytes,
+    native_admitted_prefix_count,
+    native_admitted_prefix_bytes,
+);
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CaptureMode {
     Live,
@@ -31,8 +295,11 @@ pub struct CandidateReceipt {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LayerStackInitializationReceipt {
     pub layer_stack_id: LayerStackId,
+    /// Includes attempted native input work before a construction fallback.
     pub scanned_files: u64,
     pub scanned_bytes: u64,
+    /// Zero for Empty; one source construction, or a stopped attempt plus one fallback.
+    pub source_passes: u64,
 }
 
 impl CandidateReceipt {
@@ -283,6 +550,7 @@ pub enum StorageReceipt {
     WorkspaceLifecycle(WorkspaceLifecycleReceipt),
     FuseWrite(FuseWriteReceipt),
     WorkspaceRead(WorkspaceReadReceipt),
+    PhysicalStorage(PhysicalStorageReceipt),
 }
 
 thread_local! {
@@ -459,18 +727,6 @@ pub fn note_workspace_commit_phase(phase: WorkspaceCommitPhase, elapsed_ns: u64)
             WorkspaceCommitPhase::Resume => &mut receipt.resume_ns,
         };
         *target = target.saturating_add(elapsed_ns);
-    });
-}
-
-pub(crate) fn note_workspace_admission_validation(authentication_ns: u64, sort_ns: u64) {
-    WORKSPACE_COMMIT.with(|current| {
-        if let Some(receipt) = current.borrow_mut().as_mut() {
-            receipt.object_admission_authentication_ns = receipt
-                .object_admission_authentication_ns
-                .saturating_add(authentication_ns);
-            receipt.object_admission_sort_ns =
-                receipt.object_admission_sort_ns.saturating_add(sort_ns);
-        }
     });
 }
 

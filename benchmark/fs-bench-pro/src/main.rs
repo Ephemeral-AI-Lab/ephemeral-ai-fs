@@ -16,6 +16,7 @@ mod dedup_verify;
 mod infra;
 mod sdk_edit_verify;
 mod sdk_file_edit;
+mod storage_smoke;
 mod workspace_bench;
 mod workspace_reliability;
 mod workspace_verify;
@@ -679,6 +680,12 @@ fn run() -> AnyResult<()> {
         .is_some_and(|arg| arg.to_string_lossy().starts_with("workspace-"))
     {
         return workspace_bench::dispatch(&args);
+    }
+    if args
+        .first()
+        .is_some_and(|arg| arg == "storage-smoke-session")
+    {
+        return storage_smoke::dispatch(&args);
     }
     match args.as_slice() {
         [command] if command == "self-check" => self_check(),

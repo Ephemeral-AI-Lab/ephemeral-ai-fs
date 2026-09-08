@@ -1,6 +1,8 @@
 pub const ALL: &[(&str, &str)] = &[
     ("schema/v4.sql", schema::V4),
     ("schema/v5.sql", schema::V5),
+    ("schema/v6.sql", schema::V6),
+    ("schema/v7.sql", schema::V7),
     ("schema/migrate_v4_to_v5.sql", schema::MIGRATE_V4_TO_V5),
     ("schema/schema_objects.sql", schema::SCHEMA_OBJECTS),
     ("schema/table_columns.sql", schema::TABLE_COLUMNS),
@@ -9,7 +11,6 @@ pub const ALL: &[(&str, &str)] = &[
     ("objects/get_many_128.sql", objects::GET_MANY_128),
     ("objects/membership_128.sql", objects::MEMBERSHIP_128),
     ("objects/insert.sql", objects::INSERT),
-    ("objects/equal.sql", objects::EQUAL),
     ("objects/page.sql", objects::PAGE),
     ("layerstack/get.sql", layerstack::GET),
     ("layerstack/get_by_name.sql", layerstack::GET_BY_NAME),
@@ -54,6 +55,8 @@ pub const ALL: &[(&str, &str)] = &[
 pub mod schema {
     pub const V4: &str = include_str!("../sql/schema/v4.sql");
     pub const V5: &str = include_str!("../sql/schema/v5.sql");
+    pub const V6: &str = include_str!("../sql/schema/v6.sql");
+    pub const V7: &str = include_str!("../sql/schema/v7.sql");
     pub const MIGRATE_V4_TO_V5: &str = include_str!("../sql/schema/migrate_v4_to_v5.sql");
     pub const SCHEMA_OBJECTS: &str = include_str!("../sql/schema/schema_objects.sql");
     pub const TABLE_COLUMNS: &str = include_str!("../sql/schema/table_columns.sql");
@@ -65,7 +68,6 @@ pub mod objects {
     pub const GET_MANY_128: &str = include_str!("../sql/objects/get_many_128.sql");
     pub const MEMBERSHIP_128: &str = include_str!("../sql/objects/membership_128.sql");
     pub const INSERT: &str = include_str!("../sql/objects/insert.sql");
-    pub const EQUAL: &str = include_str!("../sql/objects/equal.sql");
     pub const PAGE: &str = include_str!("../sql/objects/page.sql");
 }
 
@@ -121,7 +123,7 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
-    fn exact_manifest_prepares_against_exact_v5_schema() {
+    fn exact_manifest_prepares_against_exact_v6_schema() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sql");
         let mut files = Vec::new();
         collect_sql(&root, &root, &mut files);
@@ -132,13 +134,13 @@ mod tests {
             .collect::<Vec<_>>();
         registered.sort();
         assert_eq!(files, registered);
-        assert_eq!(ALL.len(), 44);
+        assert_eq!(ALL.len(), 45);
 
         let connection = Connection::open_in_memory().unwrap();
         connection
             .pragma_update(None, "foreign_keys", true)
             .unwrap();
-        connection.execute_batch(schema::V5).unwrap();
+        connection.execute_batch(schema::V6).unwrap();
 
         let expected_parameters = BTreeMap::from([
             ("schema/schema_objects.sql", 0),
@@ -147,8 +149,7 @@ mod tests {
             ("objects/get.sql", 1),
             ("objects/get_many_128.sql", 128),
             ("objects/membership_128.sql", 128),
-            ("objects/insert.sql", 2),
-            ("objects/equal.sql", 2),
+            ("objects/insert.sql", 5),
             ("objects/page.sql", 2),
             ("layerstack/get.sql", 1),
             ("layerstack/get_by_name.sql", 1),
@@ -187,7 +188,11 @@ mod tests {
         for (name, sql) in ALL.iter().filter(|(name, _)| {
             !matches!(
                 *name,
-                "schema/v4.sql" | "schema/v5.sql" | "schema/migrate_v4_to_v5.sql"
+                "schema/v4.sql"
+                    | "schema/v5.sql"
+                    | "schema/v6.sql"
+                    | "schema/v7.sql"
+                    | "schema/migrate_v4_to_v5.sql"
             )
         }) {
             assert!(sql.starts_with("-- family:"), "missing header: {name}");
@@ -196,7 +201,12 @@ mod tests {
                 sql.contains("\n-- parameters:"),
                 "missing parameter header: {name}"
             );
-            assert_eq!(sql.matches(';').count(), 1, "not one statement: {name}");
+            use rusqlite::fallible_iterator::FallibleIterator;
+            assert_eq!(
+                rusqlite::Batch::new(&connection, sql).count().unwrap(),
+                1,
+                "not one statement: {name}"
+            );
             let statement = connection
                 .prepare(sql)
                 .unwrap_or_else(|error| panic!("failed to prepare {name}: {error}"));
@@ -214,7 +224,7 @@ mod tests {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
         assert_eq!(application_id, 0x4c46_534c);
-        assert_eq!(user_version, 5);
+        assert_eq!(user_version, 6);
 
         let tables = connection
             .prepare(
@@ -240,11 +250,12 @@ mod tests {
                 ("commits".to_owned(), 4, 1, 1),
                 ("layer_stacks".to_owned(), 3, 1, 1),
                 ("layers".to_owned(), 6, 1, 1),
-                ("objects".to_owned(), 2, 0, 1),
+                ("object_packs".to_owned(), 2, 0, 1),
+                ("objects".to_owned(), 5, 1, 1),
                 ("workspace_stages".to_owned(), 3, 1, 1),
             ]
         );
-        assert_eq!(tables.iter().map(|table| table.1).sum::<i64>(), 23);
+        assert_eq!(tables.iter().map(|table| table.1).sum::<i64>(), 28);
 
         let indexes = connection
             .prepare(
@@ -273,7 +284,7 @@ mod tests {
     #[test]
     fn point_name_and_keyset_queries_use_indexed_search_plans() {
         let connection = Connection::open_in_memory().unwrap();
-        connection.execute_batch(schema::V4).unwrap();
+        connection.execute_batch(schema::V6).unwrap();
         let id17 = Value::Blob(vec![0; 17]);
         let id32 = Value::Blob(vec![0; 32]);
         let id33 = Value::Blob(vec![0; 33]);

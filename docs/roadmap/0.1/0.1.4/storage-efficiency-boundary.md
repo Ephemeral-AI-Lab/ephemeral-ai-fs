@@ -2,16 +2,32 @@
 
 Status: owner-directed planning boundary, 2026-09-08. This records storage scope
 and tradeoff guidance. It is not a benchmark contract, selected implementation,
-or permission to collect qualification samples. Benchmark and test-environment
-sections are deliberately placeholders for the next discussion.
+or permission to collect qualification samples. The full benchmark family and
+qualification gates remain open. The owner subsequently confirmed the three
+[development smokes and their topology](#development-smokes-and-qualification)
+in PR #80. This supersedes blanket smoke/environment-planning deferral; this
+documentation revision still implements/runs no product code, tests or benchmarks.
 
 Related: [v0.1.4 scope](README.md), [supporting evidence](evidence.md),
 [issue #18](https://github.com/Ephemeral-AI-Lab/layerfs/issues/18), and
 [issue #72](https://github.com/Ephemeral-AI-Lab/layerfs/issues/72).
 
 The [proposed architecture](storage-architecture-spec.md) develops this boundary
-into a shared packed-object design. It does not freeze the benchmark/environment
-placeholders or override compatibility requirements.
+into a concrete proposed shared packed-object design. Its revised ownership,
+framing and engineering bounds resolve design ambiguities without qualifying
+performance. It does not freeze evaluation/verification placeholders or override
+compatibility requirements.
+
+## Finalized M4 scope (2026-09-08)
+
+The [M4 plan](implementation-milestone-4-plan.md) specifies bounded depth-one
+physical deltas and at most two encoded alternatives per eligible group, with
+only the winner stored synchronously. Keep M3's level-1 codec, schema/wire and
+memory limits. Raw record savings alone do not select a DELTA group. This is a
+prospective writer-policy revision, not changed M3 evidence or benchmark gates.
+SQLite allocation tuning is deferred; SQLite/S3 hybrid work is future #82.
+M4 stops before M5 and uses only the three approved smokes. Its incremental gain
+is unknown; no minimum storage percentage or Git-parity claim is introduced.
 
 ## Objective
 
@@ -101,8 +117,9 @@ not assume every read decompresses or every write recompresses an entire file.
 
 Research should consider avoiding re-encoding reused objects, excessive decode
 size for small reads, repeated decoding of shared metadata, and unnecessary
-compression of tiny or incompressible values. These are questions for a shared
-implementation, not selected cache, codec, threshold, or layout policies.
+compression of tiny or incompressible values. This boundary poses questions for the shared implementation; the architecture
+companion now recommends concrete cache, codec, threshold and layout policies
+without treating them as approved implementation or measured conclusions.
 Any cache benefit must include its memory cost and behavior on misses. Read and
 write amplification and any delta-base reconstruction must remain visible.
 
@@ -118,8 +135,10 @@ write amplification and any delta-base reconstruction must remain visible.
 These are possible investigations, not four required implementations or a frozen
 execution order. External-pack comparison is excluded by the SQLite-only
 boundary. Algorithm, codec, thresholds, schema, and implementation choices remain
-open. Representation changes require explicit compatibility review rather than
-being treated as physical encoding changes automatically.
+open. The architecture and format companion now recommend concrete choices for these
+mechanisms, subject to the proposed compatibility transition. Representation
+changes require explicit compatibility review rather than being treated as
+compatible merely because logical identities are preserved.
 
 ## Performance versus storage tradeoff
 
@@ -183,6 +202,44 @@ historical absolute MB target is adopted as a v0.1.4 gate.
 - Preserve historical evidence and failed outcomes. Existing exploratory reports
   do not qualify a future candidate and must not be relabeled as new samples.
 
+## Development smokes and qualification
+
+Planning has advanced beyond the original blanket deferral. The owner confirmed
+[PR #80](https://github.com/Ephemeral-AI-Lab/layerfs/pull/80)'s
+[development smoke plan at d9ec9c6714ca31adb7a337d2ac0f40976513908c](https://github.com/Ephemeral-AI-Lab/layerfs/blob/d9ec9c6714ca31adb7a337d2ac0f40976513908c/docs/roadmap/0.1/0.1.4/storage-smoke-test-plan.md).
+That separate plan owns the three-smoke scope and its remaining prerequisites:
+
+- The **first FIVE entries** of #72's frozen DeepSeek checkpoint manifest, not
+  the first five source Git commits or a new selected population. Preserve ordinary
+  whole-file import through Exec/FUSE and repeated Commit from an empty history.
+- Frequent edits/Commit, with SDK range edits and ordinary Exec/FUSE writes reported
+  separately.
+- Small-file Init and mounted readback.
+
+Confirmed smoke topology: **macOS-host SQLite/SDK/coordinator and physical spool +
+managed Docker daemon/live core + real FUSE**, following existing benchmark rules.
+The pinned plan specifies details; no host-materialization or container-Store
+substitute is authorized. Its synthetic fixture choices, entrypoints, execution
+budgets and other listed prerequisites remain to be completed in that workstream.
+
+These development smokes are not the full new benchmark family or numerical
+qualification contract. The placeholders below concern that full family and its
+remaining evaluation details; they do not reopen the confirmed smoke population
+prefix or topology. This specification PR links the plan without copying/changing
+it, implementing its entrypoints, running smokes or collecting candidate samples.
+
+## Complexity and batching boundary
+
+Admission/recheck must have linear candidate visits and byte processing, excluding
+explicit indexed-access and required canonical-ordering costs. No shrinking-set
+retry, per-appended-record whole-batch rescan, or history-wide localized-edit scan
+is acceptable even behind a finite cap or low individual QPS. Use bounded multirow
+Store SQL, page-oriented scratch membership/insertion, buffered ID-order I/O, and
+coalesced requested groups/bases. The [complexity contract](storage-architecture-spec.md#complexity-and-batching-contract)
+defines N, bytes B, groups G, Store/scratch index sizes, touched nodes and history H.
+SQLite/B-tree access is indexed/logarithmic, not constant-time. Queueing and actual
+throughput remain unmeasured and separate from algorithmic work bounds.
+
 ## New benchmark family — placeholder
 
 **Owner preference: create a new benchmark family for this research.** Existing
@@ -205,19 +262,35 @@ No earlier proposed family list, tier sequence, repeat count, or latency result
 is adopted here as the new family's specification. Freeze the new contract
 before benchmark implementation or qualification sampling.
 
-## Test environment — placeholder
+## Full-family environment details — placeholder
 
-The environment will be discussed separately. This document specifies no new
-topology, hardware profile, container limits, timeout, or preparation policy.
-Existing repository rules remain in force until explicitly amended; leaving
-this section open does not authorize a conflicting environment.
+The development-smoke topology is confirmed above and is not TBD. Remaining
+full-family environment/evaluation details will be discussed separately. This
+boundary does not replace PR #80's smoke resource/preparation rules. Existing
+repository instructions remain in force; open full-family details authorize no
+conflicting run.
 
-- Host/container ownership and hardware/runtime identities: **TBD**.
+- Full-family hardware/runtime identities and remaining environment scope: **TBD**;
+  smoke host/container ownership is confirmed above.
 - Resources, timeouts, measurement coordination, and background activity: **TBD**.
 - Input preparation, transfer, build reuse, cache policy, and sample isolation: **TBD**.
 - Resource sampling, Store/temporary allocation measurement, and cleanup: **TBD**.
 
-## Next decision
+## Specification correction and next discussion
 
-Define the new benchmark family and its consistent test environment, then agree
-numerical tradeoff gates before implementing or measuring storage candidates.
+First correct and review the specification. The [architecture v2](storage-architecture-spec.md)
+now owns the proposed format transition, admission protocol, operation/connection/
+transaction boundaries, bounded hint/codec work, flush/read ownership and cloud
+portability descriptions. [Finding disposition](review-disposition.md) records closure.
+
+The remaining owner policy decision is whether to accept the new-Store-only
+compatibility transition and place the incompatible format under a narrow 0.1
+exception or in 0.2; any required legacy support must be agreed explicitly. The
+current contract is not amended by this recommendation. No in-place or automatic
+migration is authorized.
+
+The full new family, remaining population/environment details and numerical
+qualification criteria stay open for owner discussion. PR #80 already owns the
+confirmed development-smoke direction/topology and its remaining fixture/execution
+prerequisites. Do not treat it as absent, fill unrelated full-family placeholders,
+or run any product tests, smokes or candidate collection in this docs revision.

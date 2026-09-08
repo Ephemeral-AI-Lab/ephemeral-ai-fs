@@ -9,6 +9,7 @@ import json
 import math
 import os
 import platform
+import re
 import shutil
 from pathlib import Path
 import statistics
@@ -149,7 +150,7 @@ def source_build_args():
             product.update(part)
     return {"LAYERFS_SOURCE_COMMIT": git("rev-parse", "HEAD"),
             "LAYERFS_SOURCE_TREE": git("rev-parse", "HEAD^{tree}"),
-            "LAYERFS_SOURCE_DIRTY": "true", "LAYERFS_SOURCE_SEAL": source.hexdigest(),
+            "LAYERFS_SOURCE_DIRTY": "true" if git("status", "--porcelain") else "false", "LAYERFS_SOURCE_SEAL": source.hexdigest(),
             "LAYERFS_PRODUCT_SEAL": product.hexdigest(),
             "WORKLOAD_SOURCE_SHA256": hashlib.sha256((BENCH / "workload/main.rs").read_bytes()).hexdigest()}
 
@@ -605,7 +606,13 @@ def _timer(row):
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
-    if argv in (["--build-image"], ["--build-host"]):
+    if "--deepseek-full" in argv:
+        import storage_smoke
+        return storage_smoke.main(["--storage-smoke", "deepseek-full", *[arg for arg in argv if arg != "--deepseek-full"]])
+    if "--storage-smoke" in argv:
+        import storage_smoke
+        return storage_smoke.main(argv)
+    if argv in (["--build-image"], ["--build-host"], ["--build-storage-smoke-image"]):
         lock_path = Path(os.environ.get("TMPDIR", "/tmp")) / "layerfs-infra-measurement.lock"
         with lock_path.open("a") as lock:
             try:
@@ -615,13 +622,25 @@ def main(argv=None):
             values = source_build_args()
             if argv == ["--build-host"]:
                 binary = REPO / "target/release/fs-benchmark-pro"
-                result = runtime.run(["cargo", "+1.85.1", "build", "--locked", "--release", "-j2", "-p", "fs-benchmark-pro"],
-                    deadline=runtime.Deadline.after(900), cwd=REPO, output_limit=1024**2)
-                identity = {**values, "binary_sha256": runtime.file_sha256(binary), "platform": platform.platform(), "rust_toolchain": "1.85.1", "schema_sha256": runtime.file_sha256(REPO / "crates/layerfs-layerstack-store/sql/schema/v5.sql")}
+                try:
+                    result = runtime.run(["cargo", "+1.85.1", "build", "--locked", "--release", "-j2", "-p", "fs-benchmark-pro"],
+                        deadline=runtime.Deadline.after(900), cwd=REPO, output_limit=1024**2)
+                except runtime.CommandFailure as error:
+                    print(_text(error.result.stderr), file=sys.stderr)
+                    return error.result.returncode or 1
+                version = re.search(r"pub const SCHEMA_VERSION:\s*i64\s*=\s*(\d+)",
+                    (REPO / "crates/layerfs-layerstack-store/src/schema.rs").read_text())
+                if version is None:
+                    raise ValueError("active Store schema version missing")
+                schema_path = REPO / f"crates/layerfs-layerstack-store/sql/schema/v{version.group(1)}.sql"
+                identity = {**values, "binary_sha256": runtime.file_sha256(binary), "platform": platform.platform(), "rust_toolchain": "1.85.1", "schema_sha256": runtime.file_sha256(schema_path)}
                 Path(str(binary) + ".identity.json").write_text(json.dumps(identity, sort_keys=True))
                 print(binary)
                 return 0
             tag = "layerfs-bench-infra:" + values["LAYERFS_SOURCE_SEAL"][:16]
+            if argv == ["--build-storage-smoke-image"]:
+                # The owner limits executable verification to three mounted smokes.
+                values["LAYERFS_BUILD_SELF_CHECK"] = "0"
             try:
                 result = runtime.build_image(REPO, tag, values, deadline=runtime.Deadline.after(900), jobs=2)
             except runtime.CommandFailure as error:

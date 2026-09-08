@@ -1,9 +1,20 @@
+mod admission;
+mod diagnostic;
+pub(crate) use admission::PreparedAdmission;
+mod pack;
+mod read;
+mod spill;
+#[cfg(test)]
+use spill::SeenStorage;
+pub use spill::SpillableObjectSet;
+use spill::{temporary_file, IdOrder, SpillObjects, TempPath};
+
 use crate::{Result, StoreError};
 use layerfs_content::filesystem::{self, ContentChange, ReconcileConflict};
 use layerfs_content::object::access::{ObjectRead, ObjectStore};
 use layerfs_content::object::references::referenced_objects;
 use layerfs_content::{CoreError, CoreResult, ObjectId};
-use rusqlite::{params_from_iter, types::Value, Connection, OptionalExtension};
+use rusqlite::{params_from_iter, types::Value, Connection};
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -17,13 +28,18 @@ pub const OBJECT_PAGE_COUNT: usize = 128;
 pub const OBJECT_PAGE_BYTES: usize = 4 * 1024 * 1024;
 pub const ADMISSION_BATCH_COUNT: usize = 8191;
 pub const ADMISSION_BATCH_BYTES: usize = OBJECT_PAGE_BYTES - 1;
+// The public count is a ceiling, not a target. FILE provenance adds live
+// associations beside the codec's 1 MiB context and retained pack buffers.
+const PHYSICAL_ADMISSION_BATCH_COUNT: usize = INITIALIZATION_SLAB_OBJECTS;
 pub(crate) const INITIALIZATION_ADMISSION_BATCH_COUNT: usize = ADMISSION_BATCH_COUNT;
 pub(crate) const INITIALIZATION_SLAB_BYTES: usize = 256 * 1024;
 pub(crate) const INITIALIZATION_SLAB_OBJECTS: usize = 512;
 pub(crate) const INITIALIZATION_SLAB_QUEUE_SLOTS: usize = 4;
-pub(crate) const INITIALIZATION_TASK_STRUCTURAL_BYTES: usize = 256 * 1024;
 const CANDIDATE_MEMORY_BYTES: usize = 8 * 1024 * 1024;
 const CANDIDATE_INDEX_BYTES: usize = 64 * 1024 * 1024;
+// C: cumulative metadata-lookup allowance, not resident memory. The frozen
+// full157 bound is 3763 attached flat-root cursors * 2 grants * 131136 bytes.
+const CORRESPONDENCE_OPERATION_RESERVATION_BYTES: u64 = 1024 * 1024 * 1024;
 const CANDIDATE_SPILL_BUFFER_BYTES: usize = 1024 * 1024;
 
 #[cfg(feature = "test-instrumentation")]
@@ -129,8 +145,32 @@ pub(crate) struct FinalizedObjectSlab {
 
 /// Immutable ownership of bytes whose identity and complete outer framing were checked.
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[repr(transparent)]
-pub(crate) struct AuthenticatedCanonicalObject(CanonicalObject);
+pub(crate) struct AuthenticatedCanonicalObject(CanonicalObject, PhysicalHints);
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct PhysicalHints {
+    prior_ids: [Option<ObjectId>; 4],
+    first_span: Option<(u64, u32)>,
+    has_predecessor: bool,
+    diagnostic: u8,
+    diagnostic_grants: u8,
+}
+
+// Diagnostic bytes must not alter canonical batching or association reservations.
+#[allow(dead_code)]
+struct UndiagnosedHints {
+    prior_ids: [Option<ObjectId>; 4],
+    first_span: Option<(u64, u32)>,
+    has_predecessor: bool,
+}
+const _: () = {
+    assert!(std::mem::size_of::<PhysicalHints>() == std::mem::size_of::<UndiagnosedHints>());
+    assert!(std::mem::align_of::<PhysicalHints>() == std::mem::align_of::<UndiagnosedHints>());
+    assert!(
+        std::mem::size_of::<AuthenticatedCanonicalObject>()
+            == std::mem::size_of::<(CanonicalObject, UndiagnosedHints)>()
+    );
+};
 
 impl std::ops::Deref for AuthenticatedCanonicalObject {
     type Target = CanonicalObject;
@@ -149,6 +189,16 @@ impl AsRef<CanonicalObject> for CanonicalObject {
     }
 }
 impl AuthenticatedCanonicalObject {
+    /// Real file-owner provenance, independent of diagnostic outcome counters.
+    fn is_file_payload(&self) -> bool {
+        self.1.diagnostic & diagnostic::FILE != 0
+            && diagnostic::chunk(&self.bytes)
+            && self.bytes.len() + 9 <= pack::GROUP_LIMIT
+    }
+
+    pub(crate) fn prior_ids(&self) -> &[Option<ObjectId>; 4] {
+        &self.1.prior_ids
+    }
     fn new(bytes: Vec<u8>, expected: Option<ObjectId>) -> CoreResult<Self> {
         let id = match expected {
             Some(id) => {
@@ -157,79 +207,22 @@ impl AuthenticatedCanonicalObject {
             }
             None => layerfs_content::identify_canonical(&bytes)?.0,
         };
-        Ok(Self(CanonicalObject { id, bytes }))
+        Ok(Self(
+            CanonicalObject { id, bytes },
+            PhysicalHints::default(),
+        ))
     }
 }
 
-pub(crate) struct InitializationTaskObjectBuffer {
-    objects: Vec<AuthenticatedCanonicalObject>,
-    payload_bytes: usize,
-}
-
-impl InitializationTaskObjectBuffer {
-    pub(crate) fn new() -> Self {
-        Self {
-            objects: Vec::with_capacity(128),
-            payload_bytes: 0,
-        }
+fn is_inode_table_leaf(canonical: &[u8]) -> CoreResult<bool> {
+    let value = layerfs_content::decode_bytes_object(canonical)?;
+    if !value.starts_with(b"LFS4INT\0") {
+        return Ok(false);
     }
-
-    pub(crate) fn explicit_owned_bytes(&self) -> u64 {
-        self.payload_bytes as u64
-            + (self.objects.capacity() * std::mem::size_of::<AuthenticatedCanonicalObject>()) as u64
-    }
-
-    pub(crate) fn hash_invocations(&self) -> u64 {
-        self.objects.len() as u64
-    }
-
-    pub(crate) fn move_into(self, store: &mut FinalizedOutputWriter) -> CoreResult<()> {
-        for object in self.objects {
-            store.push_authenticated(object)?;
-        }
-        Ok(())
-    }
-
-    fn push_owned(&mut self, canonical: Vec<u8>) -> CoreResult<ObjectId> {
-        let owned = self
-            .payload_bytes
-            .checked_add(canonical.len())
-            .and_then(|payload| {
-                payload.checked_add(
-                    self.objects
-                        .len()
-                        .checked_add(1)?
-                        .checked_mul(std::mem::size_of::<AuthenticatedCanonicalObject>())?,
-                )
-            })
-            .ok_or(CoreError::LengthOverflow)?;
-        if owned > INITIALIZATION_TASK_STRUCTURAL_BYTES {
-            return Err(CoreError::ObjectLimitExceeded);
-        }
-        let canonical_len = canonical.len();
-        let object = AuthenticatedCanonicalObject::new(canonical, None)?;
-        let id = object.id;
-        self.payload_bytes = self
-            .payload_bytes
-            .checked_add(canonical_len)
-            .ok_or(CoreError::LengthOverflow)?;
-        self.objects.push(object);
-        Ok(id)
-    }
-}
-
-impl ObjectStore for InitializationTaskObjectBuffer {
-    fn get(&self, _id: ObjectId) -> CoreResult<Vec<u8>> {
-        Err(CoreError::InvalidRecord("direct structural get"))
-    }
-
-    fn put(&mut self, canonical: &[u8]) -> CoreResult<ObjectId> {
-        self.push_owned(canonical.to_vec())
-    }
-
-    fn put_owned(&mut self, canonical: Vec<u8>) -> CoreResult<ObjectId> {
-        self.push_owned(canonical)
-    }
+    Ok(matches!(
+        layerfs_content::tree::inode::codec::decode_inode_table_node(canonical)?,
+        layerfs_content::tree::inode::codec::InodeTableNodeV1::Leaf(_)
+    ))
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -490,6 +483,7 @@ where
 }
 
 pub struct FinalizedOutputWriter {
+    file_payload_context: bool,
     sender: std::sync::mpsc::SyncSender<FinalizedObjectSlab>,
     queue: std::sync::Arc<OutputQueueMetrics>,
     objects: Vec<AuthenticatedCanonicalObject>,
@@ -497,16 +491,18 @@ pub struct FinalizedOutputWriter {
     metrics: OutputWriterMetrics,
 }
 
-pub(crate) struct InitializationDirectAdmissionWriter<'admission, 'db> {
-    admission: &'admission mut CheckedOutputAdmission<'db>,
+pub(crate) struct InitializationDirectAdmissionWriter<'admission> {
+    file_payload_context: bool,
+    admission: &'admission mut CheckedOutputAdmission,
     error: Option<StoreError>,
     transient_owned_bytes: u64,
     pub metrics: OutputWriterMetrics,
 }
 
-impl<'admission, 'db> InitializationDirectAdmissionWriter<'admission, 'db> {
-    pub(crate) fn new(admission: &'admission mut CheckedOutputAdmission<'db>) -> Self {
+impl<'admission> InitializationDirectAdmissionWriter<'admission> {
+    pub(crate) fn new(admission: &'admission mut CheckedOutputAdmission) -> Self {
         Self {
+            file_payload_context: false,
             admission,
             error: None,
             transient_owned_bytes: 0,
@@ -520,6 +516,14 @@ impl<'admission, 'db> InitializationDirectAdmissionWriter<'admission, 'db> {
 
     fn push_owned(&mut self, canonical: Vec<u8>, copied: bool) -> CoreResult<ObjectId> {
         let object = AuthenticatedCanonicalObject::new(canonical, None)?;
+        self.push_object(object, copied)
+    }
+
+    fn push_object(
+        &mut self,
+        object: AuthenticatedCanonicalObject,
+        copied: bool,
+    ) -> CoreResult<ObjectId> {
         let id = object.id;
         self.metrics.canonical_hash_calls += 1;
         let bytes = object.bytes.len() as u64;
@@ -545,9 +549,36 @@ impl<'admission, 'db> InitializationDirectAdmissionWriter<'admission, 'db> {
     }
 }
 
-impl ObjectStore for InitializationDirectAdmissionWriter<'_, '_> {
-    fn get(&self, _id: ObjectId) -> CoreResult<Vec<u8>> {
-        Err(CoreError::InvalidRecord("direct initialization get"))
+impl ObjectStore for InitializationDirectAdmissionWriter<'_> {
+    fn set_file_payload_context(&mut self, enabled: bool) -> bool {
+        std::mem::replace(&mut self.file_payload_context, enabled)
+    }
+
+    fn put_file_payload(
+        &mut self,
+        canonical: Vec<u8>,
+        start: u64,
+        len: u32,
+    ) -> CoreResult<ObjectId> {
+        let mut object = AuthenticatedCanonicalObject::new(canonical, None)?;
+        object.1.first_span = Some((start, len));
+        if self.file_payload_context {
+            object.1.diagnostic = diagnostic::FILE;
+        }
+        self.push_object(object, false)
+    }
+
+    fn get(&self, id: ObjectId) -> CoreResult<Vec<u8>> {
+        if let Some(index) = self.admission.incoming_index.get(&id) {
+            return Ok(self.admission.incoming[*index].bytes.clone());
+        }
+        if let Some(index) = self.admission.pending.get(&id) {
+            return Ok(self.admission.batch[*index].bytes.clone());
+        }
+        self.admission
+            .db
+            .read_object_row(id)
+            .map_err(core_read_error)
     }
 
     fn put(&mut self, canonical: &[u8]) -> CoreResult<ObjectId> {
@@ -571,6 +602,7 @@ impl FinalizedOutputWriter {
         queue: std::sync::Arc<OutputQueueMetrics>,
     ) -> Self {
         Self {
+            file_payload_context: false,
             sender,
             queue,
             objects: Vec::with_capacity(INITIALIZATION_SLAB_OBJECTS),
@@ -606,10 +638,6 @@ impl FinalizedOutputWriter {
     pub(crate) fn finish(mut self) -> Result<OutputWriterMetrics> {
         self.flush()?;
         Ok(self.metrics)
-    }
-
-    pub(crate) fn note_hash_invocations(&mut self, calls: u64) {
-        self.metrics.canonical_hash_calls = self.metrics.canonical_hash_calls.saturating_add(calls);
     }
 
     fn flush(&mut self) -> Result<()> {
@@ -648,10 +676,6 @@ impl FinalizedOutputWriter {
         self.metrics.canonical_hash_calls += 1;
         self.push_object(object, copied)?;
         Ok(id)
-    }
-
-    fn push_authenticated(&mut self, object: AuthenticatedCanonicalObject) -> CoreResult<()> {
-        self.push_object(object, false)
     }
 
     fn push_object(
@@ -699,6 +723,27 @@ impl FinalizedOutputWriter {
 }
 
 impl ObjectStore for FinalizedOutputWriter {
+    fn set_file_payload_context(&mut self, enabled: bool) -> bool {
+        std::mem::replace(&mut self.file_payload_context, enabled)
+    }
+
+    fn put_file_payload(
+        &mut self,
+        canonical: Vec<u8>,
+        start: u64,
+        len: u32,
+    ) -> CoreResult<ObjectId> {
+        let mut object = AuthenticatedCanonicalObject::new(canonical, None)?;
+        object.1.first_span = Some((start, len));
+        if self.file_payload_context {
+            object.1.diagnostic = diagnostic::FILE;
+        }
+        let id = object.id;
+        self.metrics.canonical_hash_calls += 1;
+        self.push_object(object, false)?;
+        Ok(id)
+    }
+
     fn get(&self, _id: ObjectId) -> CoreResult<Vec<u8>> {
         Err(CoreError::InvalidRecord("direct initialization get"))
     }
@@ -898,6 +943,13 @@ pub struct DeferredObjectStore {
     index_limit: usize,
     spill_buffer_bytes: usize,
     order_memory_bytes: usize,
+    diagnostic_file_context: bool,
+    predecessor: Option<(
+        crate::SnapshotReader,
+        layerfs_content::file::rope::FileStateRoot,
+        std::sync::Arc<std::sync::atomic::AtomicU64>,
+        bool,
+    )>,
 }
 
 #[cfg(test)]
@@ -1017,46 +1069,6 @@ enum DeferredObjects {
         bytes: usize,
     },
     Spill(SpillObjects),
-}
-
-struct SpillObjects {
-    writer: Option<std::fs::File>,
-    reader: Mutex<std::fs::File>,
-    path: PathBuf,
-    pending: Vec<u8>,
-    pending_index: BTreeMap<ObjectId, (usize, usize)>,
-    end: u64,
-    index: Option<BTreeMap<ObjectId, (u64, u64)>>,
-    index_bytes: usize,
-    disk_index: Option<Box<SpillDiskIndex>>,
-    index_limit: usize,
-    buffer_bytes: usize,
-    order_memory_bytes: usize,
-}
-
-struct SpillDiskIndex {
-    // Drop the connection before its owned temporary path.
-    connection: Mutex<Connection>,
-    _path: TempPath,
-}
-
-impl Drop for SpillObjects {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
-enum IdOrder {
-    Memory(Vec<ObjectId>),
-    Spill { file: std::fs::File, path: TempPath },
-}
-
-struct TempPath(PathBuf);
-
-impl Drop for TempPath {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
 }
 
 #[cfg(test)]
@@ -1635,73 +1647,6 @@ impl Iterator for CompactInodePairStream {
     }
 }
 
-impl IdOrder {
-    fn empty() -> Self {
-        Self::Memory(Vec::new())
-    }
-
-    fn push_bounded(&mut self, id: ObjectId, limit: usize) -> Result<()> {
-        if matches!(self, Self::Memory(ids) if (ids.len() + 1) * 32 > limit) {
-            let Self::Memory(ids) = std::mem::replace(self, Self::Memory(Vec::new())) else {
-                unreachable!()
-            };
-            let (mut file, path) = temporary_file("candidate-order")?;
-            for id in ids {
-                file.write_all(id.as_bytes())?;
-            }
-            *self = Self::Spill {
-                file,
-                path: TempPath(path),
-            };
-        }
-        match self {
-            Self::Memory(ids) => ids.push(id),
-            Self::Spill { file, .. } => file.write_all(id.as_bytes())?,
-        }
-        Ok(())
-    }
-
-    fn visit(&self, mut visitor: impl FnMut(ObjectId) -> Result<()>) -> Result<()> {
-        match self {
-            Self::Memory(ids) => {
-                for id in ids {
-                    visitor(*id)?;
-                }
-            }
-            Self::Spill { path, .. } => {
-                let mut file = std::fs::File::open(&path.0)?;
-                let mut bytes = [0; 32];
-                loop {
-                    match file.read_exact(&mut bytes) {
-                        Ok(()) => visitor(ObjectId::from_bytes(&bytes)?)?,
-                        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => break,
-                        Err(error) => return Err(error.into()),
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-pub struct SpillableObjectSet {
-    storage: SeenStorage,
-    count: usize,
-    memory_limit: usize,
-}
-
-pub(crate) struct CandidatePlan {
-    missing: SpillableObjectSet,
-    missing_order: IdOrder,
-    all_missing: bool,
-    pub candidate_objects: u64,
-    pub candidate_bytes: u64,
-    pub inserted_objects: u64,
-    pub inserted_bytes: u64,
-    pub reused_objects: u64,
-    pub reused_bytes: u64,
-}
-
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ObjectInsertMetrics {
     pub payload_ns: u64,
@@ -1842,18 +1787,6 @@ impl InitializationAdmissionDiagnostics {
     }
 }
 
-pub(crate) struct PlannedAdmission {
-    pub final_batch: Vec<CanonicalObject>,
-    pub batch_inserted_objects: u64,
-    pub batch_inserted_bytes: u64,
-    pub transactions: u64,
-    pub max_transaction_objects: u64,
-    pub max_transaction_bytes: u64,
-    pub begin_ns: u64,
-    pub insert_ns: u64,
-    pub commit_ns: u64,
-}
-
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct CheckedAdmission {
     pub candidate_objects: u64,
@@ -1895,17 +1828,139 @@ impl CheckedAdmission {
     }
 }
 
-struct AdmissionBatchMetrics {
-    insert: ObjectInsertMetrics,
-    begin_ns: u64,
-    commit_ns: u64,
+pub(crate) struct AdmissionBatchMetrics {
+    pub(crate) insert: ObjectInsertMetrics,
+    pub(crate) begin_ns: u64,
+    pub(crate) commit_ns: u64,
 }
 
-pub(crate) struct CheckedOutputAdmission<'a> {
-    db: &'a crate::schema::StoreDb,
+/// One admission owns publication until it either retains its output or removes it.
+/// Existing pack IDs never change, so the held writer gate makes this high-water
+/// mark an exact ownership boundary, including every physical dependency.
+pub(crate) struct AdmissionSession {
+    db: crate::schema::StoreDb,
+    baseline_pack: i64,
+    state: std::sync::atomic::AtomicU8,
+    _permit: crate::schema::OperationPermit,
+}
+
+impl AdmissionSession {
+    fn new(db: &crate::schema::StoreDb) -> Result<std::sync::Arc<Self>> {
+        let permit = db.enter_operation()?;
+        let baseline_pack = db.reader()?.query_row(
+            "SELECT COALESCE(MAX(pack_id),0) FROM object_packs",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(std::sync::Arc::new(Self {
+            db: db.clone(),
+            baseline_pack,
+            state: std::sync::atomic::AtomicU8::new(0),
+            _permit: permit,
+        }))
+    }
+
+    pub(crate) fn retain(&self) {
+        let _ = self.state.compare_exchange(
+            0,
+            1,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        );
+    }
+
+    pub(crate) fn resolve<T>(&self, result: Result<T>) -> Result<T> {
+        match result {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                self.rollback().map_err(|cleanup| {
+                    self.db.quarantine_writes();
+                    StoreError::Io(std::io::Error::other(format!(
+                        "{error}; admission cleanup failed: {cleanup}"
+                    )))
+                })?;
+                Err(error)
+            }
+        }
+    }
+
+    fn rollback(&self) -> Result<()> {
+        if self.state.load(std::sync::atomic::Ordering::Acquire) != 0 {
+            return Ok(());
+        }
+        let mut connection = self.db.writer()?;
+        let mut after = Vec::<u8>::new();
+        loop {
+            let ids = {
+                let mut statement = connection.prepare(
+                    "SELECT object_id FROM objects WHERE object_id > ?1 AND pack_id > ?2 ORDER BY object_id LIMIT 512",
+                )?;
+                let rows = statement
+                    .query_map(rusqlite::params![after, self.baseline_pack], |row| {
+                        row.get::<_, Vec<u8>>(0)
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                rows
+            };
+            let Some(last) = ids.last() else {
+                break;
+            };
+            after.clone_from(last);
+            let transaction =
+                connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            for id in ids {
+                transaction.execute("DELETE FROM objects WHERE object_id = ?1", [id])?;
+            }
+            transaction.commit()?;
+        }
+        loop {
+            let transaction =
+                connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let removed = transaction.execute(
+                "DELETE FROM object_packs WHERE pack_id IN (SELECT pack_id FROM object_packs WHERE pack_id > ?1 ORDER BY pack_id LIMIT 512)",
+                [self.baseline_pack],
+            )?;
+            transaction.commit()?;
+            if removed == 0 {
+                break;
+            }
+        }
+        self.state.store(2, std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+
+    fn ensure_active(&self) -> Result<()> {
+        if self.state.load(std::sync::atomic::Ordering::Acquire) == 0 {
+            Ok(())
+        } else {
+            Err(StoreError::Integrity("admission session closed"))
+        }
+    }
+}
+
+impl Drop for AdmissionSession {
+    fn drop(&mut self) {
+        // Abandoned tokens and unwinding still release their independently
+        // committed batches. Fallible public paths call resolve explicitly.
+        if let Err(error) = self.rollback() {
+            self.db.quarantine_writes();
+            eprintln!("LayerFS admission cleanup failed: {error}");
+        }
+    }
+}
+
+pub(crate) struct CheckedOutputAdmission {
+    session: std::sync::Arc<AdmissionSession>,
+    db: crate::schema::StoreDb,
+    incoming: Vec<AuthenticatedCanonicalObject>,
+    incoming_index: HashMap<ObjectId, usize>,
+    incoming_bytes: usize,
     batch: Vec<AuthenticatedCanonicalObject>,
+    available: SpillableObjectSet,
+    seen: SpillableObjectSet,
     pending: HashMap<ObjectId, usize>,
     batch_bytes: usize,
+    validation_reserve: usize,
     statement_number: u64,
     receipt: crate::CandidateReceipt,
     checked: CheckedAdmission,
@@ -1913,114 +1968,27 @@ pub(crate) struct CheckedOutputAdmission<'a> {
     final_phase: bool,
 }
 
+/// Owned initially missing canonical output with closed external dependencies.
+/// Only the accumulator creates this handoff; final publishers cannot reprobe it.
+pub(crate) struct MissingBatch(
+    Vec<AuthenticatedCanonicalObject>,
+    std::sync::Arc<AdmissionSession>,
+    bool,
+);
+
+impl std::ops::Deref for MissingBatch {
+    type Target = [AuthenticatedCanonicalObject];
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 pub(crate) struct FinishedOutputAdmission {
-    pub final_batch: Vec<AuthenticatedCanonicalObject>,
+    pub final_batch: MissingBatch,
     pub statement_number: u64,
     pub receipt: crate::CandidateReceipt,
     pub checked: CheckedAdmission,
     pub diagnostics: InitializationAdmissionDiagnostics,
-}
-
-// Preserve inline spill ownership; Connection/Mutex layout varies by platform.
-#[allow(clippy::large_enum_variant)]
-enum SeenStorage {
-    Memory(BTreeSet<ObjectId>),
-    Spill {
-        connection: Mutex<Connection>,
-        _path: TempPath,
-    },
-}
-
-impl SpillableObjectSet {
-    pub fn empty() -> Result<Self> {
-        Self::bounded(CANDIDATE_INDEX_BYTES)
-    }
-    fn bounded(memory_limit: usize) -> Result<Self> {
-        Ok(Self {
-            storage: SeenStorage::Memory(BTreeSet::new()),
-            count: 0,
-            memory_limit,
-        })
-    }
-
-    pub fn contains(&self, id: ObjectId) -> Result<bool> {
-        match &self.storage {
-            SeenStorage::Memory(ids) => Ok(ids.contains(&id)),
-            SeenStorage::Spill { connection, .. } => {
-                let connection = connection
-                    .lock()
-                    .map_err(|_| StoreError::Integrity("candidate seen index"))?;
-                let found = connection
-                    .prepare_cached("SELECT 1 FROM seen WHERE id=?1")?
-                    .exists([id.as_bytes().as_slice()])?;
-                Ok(found)
-            }
-        }
-    }
-
-    fn spill(&mut self) -> Result<()> {
-        let SeenStorage::Memory(known) = &self.storage else {
-            return Ok(());
-        };
-        let (mut connection, path) = scratch_index(
-            "candidate-seen",
-            "CREATE TABLE seen (id BLOB PRIMARY KEY CHECK(length(id)=32)) WITHOUT ROWID;",
-        )?;
-        let mut ids = known.iter();
-        loop {
-            let transaction = connection.transaction()?;
-            let mut count = 0;
-            {
-                let mut insert = transaction.prepare_cached("INSERT INTO seen VALUES (?1)")?;
-                for id in ids.by_ref().take(ADMISSION_BATCH_COUNT) {
-                    insert.execute([id.as_bytes().as_slice()])?;
-                    count += 1;
-                }
-            }
-            transaction.commit()?;
-            if count < ADMISSION_BATCH_COUNT {
-                break;
-            }
-        }
-        // Publish only after the derived index is complete; errors retain the old set.
-        self.storage = SeenStorage::Spill {
-            connection: Mutex::new(connection),
-            _path: path,
-        };
-        Ok(())
-    }
-
-    fn insert(&mut self, id: ObjectId) -> Result<bool> {
-        // Reserve the existing 4 MiB SQLite cache during the memory-to-index transfer.
-        if matches!(&self.storage, SeenStorage::Memory(_) if (self.count + 1) * 48 > self.memory_limit.saturating_sub(4 * 1024 * 1024))
-            && !self.contains(id)?
-        {
-            self.spill()?;
-        }
-        let inserted = match &mut self.storage {
-            SeenStorage::Memory(ids) => ids.insert(id),
-            SeenStorage::Spill { connection, .. } => {
-                connection
-                    .get_mut()
-                    .map_err(|_| StoreError::Integrity("candidate seen index"))?
-                    .prepare_cached("INSERT OR IGNORE INTO seen VALUES (?1)")?
-                    .execute([id.as_bytes().as_slice()])?
-                    != 0
-            }
-        };
-        self.count += usize::from(inserted);
-        Ok(inserted)
-    }
-
-    pub fn insert_page(&mut self, ids: &[ObjectId]) -> Result<Vec<ObjectId>> {
-        let mut inserted = Vec::new();
-        for &id in ids {
-            if self.insert(id)? {
-                inserted.push(id);
-            }
-        }
-        Ok(inserted)
-    }
 }
 
 impl DeferredObjectStore {
@@ -2028,6 +1996,7 @@ impl DeferredObjectStore {
         Self::with_reference_index(true)
     }
 
+    #[cfg(test)]
     pub(crate) fn new_all_reachable() -> Result<Self> {
         Self::with_reference_index(false)
     }
@@ -2047,10 +2016,12 @@ impl DeferredObjectStore {
             first_store_write_bytes: 0,
             spill_peak_bytes: 0,
             spill_count: 0,
-            memory_limit: CANDIDATE_MEMORY_BYTES,
+            memory_limit: CANDIDATE_MEMORY_BYTES - 2 * 1024 * 1024,
             index_limit: CANDIDATE_INDEX_BYTES,
-            spill_buffer_bytes: CANDIDATE_SPILL_BUFFER_BYTES,
+            spill_buffer_bytes: CANDIDATE_SPILL_BUFFER_BYTES - 2 * spill::ID_BUFFER_BYTES,
             order_memory_bytes: CANDIDATE_MEMORY_BYTES,
+            diagnostic_file_context: false,
+            predecessor: None,
         })
     }
 
@@ -2088,30 +2059,47 @@ impl DeferredObjectStore {
         Ok(Some(ids))
     }
 
-    fn order_missing(&self, missing: &SpillableObjectSet) -> Result<IdOrder> {
+    fn order_missing(&self, missing: &SpillableObjectSet, expected: usize) -> Result<IdOrder> {
         let mut output = IdOrder::empty();
         let mut count = 0_usize;
-        let mut push = |id| {
-            if missing.contains(id)? {
-                output.push_bounded(id, self.index_limit)?;
-                count += 1;
+        let mut page = Vec::with_capacity(OBJECT_PAGE_COUNT);
+        let mut consume = |page: &[ObjectId]| -> Result<()> {
+            let known = missing.membership(page)?;
+            for &id in page {
+                if known.contains(&id) {
+                    output.push_bounded(id, self.index_limit)?;
+                    count += 1;
+                }
+            }
+            Ok(())
+        };
+        let mut push = |id| -> Result<()> {
+            page.push(id);
+            if page.len() == OBJECT_PAGE_COUNT {
+                consume(&page)?;
+                page.clear();
             }
             Ok(())
         };
         match &self.storage {
             DeferredObjects::Memory { order, .. } => {
-                for id in order {
-                    push(*id)?;
+                for &id in order {
+                    push(id)?;
                 }
             }
             DeferredObjects::Spill(spill) => spill.visit_ids(&mut push)?,
         }
-        if count != missing.count {
+        if !page.is_empty() {
+            consume(&page)?;
+        }
+        if count != expected {
             return Err(StoreError::Integrity("candidate publication order"));
         }
+        output.seal()?;
         Ok(output)
     }
 
+    #[cfg(test)]
     fn visit_prevalidated_order(
         &self,
         order: &IdOrder,
@@ -2125,7 +2113,7 @@ impl DeferredObjectStore {
                 )
             }),
             DeferredObjects::Spill(spill) => {
-                spill.visit_ordered(order, &mut |id, bytes| visitor(id, bytes))
+                spill.visit_ordered(order, &mut |id, bytes, _| visitor(id, bytes))
             }
         }
     }
@@ -2139,8 +2127,10 @@ impl DeferredObjectStore {
             DeferredObjects::Memory { rows, .. } => {
                 order.visit(|id| visitor(rows.get(&id).ok_or(StoreError::MissingObject(id))?))
             }
-            DeferredObjects::Spill(spill) => spill.visit_ordered(order, &mut |id, bytes| {
-                let checked = AuthenticatedCanonicalObject::new(std::mem::take(bytes), Some(id))?;
+            DeferredObjects::Spill(spill) => spill.visit_ordered(order, &mut |id, bytes, hints| {
+                let mut checked =
+                    AuthenticatedCanonicalObject::new(std::mem::take(bytes), Some(id))?;
+                checked.1 = hints;
                 let result = visitor(&checked);
                 *bytes = checked.0.bytes;
                 result
@@ -2153,25 +2143,108 @@ impl DeferredObjectStore {
         mut self,
         mut visitor: impl FnMut(Vec<AuthenticatedCanonicalObject>) -> Result<()>,
     ) -> Result<u64> {
-        // Admission publishes only after every selected object is durable; its
-        // delivery order need not be the graph traversal's child-first order.
-        if matches!(self.storage, DeferredObjects::Spill(_)) {
-            let mut selected = SpillableObjectSet::bounded(self.index_limit)?;
-            self.reachable
-                .visit(|id| selected.insert_page(&[id]).map(|_| ()))?;
-            self.reachable = self.order_missing(&selected)?;
-        }
+        self.reachable.seal()?;
+        // Preserve the checked graph's child-first order through spill delivery;
+        // each bounded admission can carry closed dependency facts forward.
         let mut memory_owned_bytes = 0_u64;
         let mut spill_readback_bytes = 0_u64;
         let mut storage_authentication_ns = 0_u64;
         let capacity = usize::try_from(self.count)
             .unwrap_or(INITIALIZATION_ADMISSION_BATCH_COUNT)
-            .min(INITIALIZATION_ADMISSION_BATCH_COUNT)
+            .min(INITIALIZATION_SLAB_OBJECTS)
             .min((self.memory_limit / std::mem::size_of::<AuthenticatedCanonicalObject>()).max(1));
-        let page_limit = self.memory_limit.min(ADMISSION_BATCH_BYTES);
+        let page_limit = self.memory_limit.min(INITIALIZATION_SLAB_BYTES);
         let mut page = Vec::with_capacity(capacity);
         let mut page_bytes = 0_usize;
-        let mut push = |object: AuthenticatedCanonicalObject| {
+        let mut predecessor = self
+            .predecessor
+            .take()
+            .map(|(reader, root, budget, available)| {
+                (
+                    reader,
+                    layerfs_content::file::rope::PredecessorCursor::new(root),
+                    budget,
+                    available,
+                )
+            });
+        let mut file_reserved = 0u64;
+        let mut diagnostic_stop = 0u8;
+        let mut diagnostic_stats = crate::PhysicalStorageReceipt {
+            diag_cursor_attached: u64::from(predecessor.is_some()),
+            ..Default::default()
+        };
+        let mut push = |mut object: AuthenticatedCanonicalObject| {
+            object.1.has_predecessor |= predecessor.is_some();
+            if let (Some((reader, cursor, operation_reserved, available)), Some((start, len))) =
+                (&mut predecessor, object.1.first_span)
+            {
+                // Each optional metadata object can require a target group and a FULL
+                // anchor group. Reserve the larger encoded bound for both counters.
+                const FETCH_RESERVATION: u64 = 131136;
+                diagnostic_stats.diag_invalid +=
+                    u64::from(object.1.diagnostic & 15 != 0 || object.1.diagnostic_grants != 0);
+                let inherited = cursor.counters().1 != 0;
+                let reserved_before = file_reserved;
+                let mut denied = 0;
+                diagnostic_stats.diag_cursor_queries += 1;
+                diagnostic_stats.diag_cursor_query_bytes += object.bytes.len() as u64;
+                diagnostic_stats.diag_cursor_inherited += u64::from(inherited);
+                object.1.prior_ids = cursor.hints(&CoreReader(reader), start, len, || {
+                    if !*available {
+                        denied = diagnostic::MEMORY;
+                        return false;
+                    }
+                    if file_reserved + FETCH_RESERVATION > 1024 * 1024 {
+                        denied = diagnostic::FILE_LIMIT;
+                        return false;
+                    }
+                    if operation_reserved
+                        .fetch_update(
+                            std::sync::atomic::Ordering::Relaxed,
+                            std::sync::atomic::Ordering::Relaxed,
+                            |used| {
+                                used.checked_add(FETCH_RESERVATION).filter(|sum| {
+                                    *sum <= CORRESPONDENCE_OPERATION_RESERVATION_BYTES
+                                })
+                            },
+                        )
+                        .is_err()
+                    {
+                        denied = diagnostic::OPERATION;
+                        return false;
+                    }
+                    file_reserved += FETCH_RESERVATION;
+                    true
+                })?;
+                let grants = (file_reserved - reserved_before) / FETCH_RESERVATION;
+                diagnostic_stats.diag_cursor_grants += grants;
+                object.1.diagnostic_grants = grants as u8;
+                if !inherited && cursor.counters().1 != 0 {
+                    diagnostic_stop = if denied != 0 {
+                        denied
+                    } else {
+                        diagnostic::DESCRIPTOR
+                    };
+                    match diagnostic_stop {
+                        diagnostic::MEMORY => diagnostic_stats.diag_cursor_memory_limit += 1,
+                        diagnostic::FILE_LIMIT => diagnostic_stats.diag_cursor_file_limit += 1,
+                        diagnostic::OPERATION => diagnostic_stats.diag_cursor_operation_limit += 1,
+                        _ => diagnostic_stats.diag_cursor_descriptor_limit += 1,
+                    }
+                }
+                object.1.diagnostic = (object.1.diagnostic & diagnostic::FILE)
+                    | if cursor.counters().1 != 0 {
+                        diagnostic_stop
+                    } else {
+                        diagnostic::COMPLETE
+                    }
+                    | if inherited { diagnostic::INHERITED } else { 0 };
+                diagnostic_stats.diag_invalid += u64::from(!diagnostic::valid(
+                    object.1.diagnostic,
+                    object.1.diagnostic_grants,
+                ));
+            }
+
             if object.bytes.len() > ADMISSION_BATCH_BYTES {
                 return Err(StoreError::Integrity("canonical object admission size"));
             }
@@ -2186,23 +2259,39 @@ impl DeferredObjectStore {
             page.push(object);
             Ok(())
         };
-        match &mut self.storage {
+        let delivery_result: Result<()> = match &mut self.storage {
             DeferredObjects::Memory { rows, .. } => self.reachable.visit(|id| {
                 let object = rows.remove(&id).ok_or(StoreError::MissingObject(id))?;
                 memory_owned_bytes = memory_owned_bytes.saturating_add(object.bytes.len() as u64);
                 push(object)
-            })?,
+            }),
             DeferredObjects::Spill(spill) => {
-                spill.visit_ordered(&self.reachable, &mut |id, bytes| {
+                spill.visit_ordered(&self.reachable, &mut |id, bytes, hints| {
                     spill_readback_bytes = spill_readback_bytes.saturating_add(bytes.len() as u64);
                     let started = Instant::now();
-                    let object =
+                    let mut object =
                         AuthenticatedCanonicalObject::new(std::mem::take(bytes), Some(id))?;
+                    object.1 = hints;
                     storage_authentication_ns =
                         storage_authentication_ns.saturating_add(elapsed_ns(started));
                     push(object)
-                })?;
+                })
             }
+        };
+        if let Err(error) = delivery_result {
+            if let Some((reader, _, _, _)) = &predecessor {
+                diagnostic_stats.diag_invalid += 1;
+                // Include a successful reservation whose metadata read failed
+                // before its occurrence could reach admission.
+                diagnostic_stats.diag_cursor_grants = file_reserved / 131136;
+                reader.note_delivery_diagnostic(diagnostic_stats);
+            }
+            return Err(error);
+        }
+        if let Some((reader, cursor, _, available)) = predecessor {
+            let (descriptors, skips) = cursor.counters();
+            reader.note_predecessor_correspondence(file_reserved, descriptors, skips, !available);
+            reader.note_delivery_diagnostic(diagnostic_stats);
         }
         if !page.is_empty() {
             visitor(page)?;
@@ -2221,11 +2310,7 @@ impl DeferredObjectStore {
     ) -> Result<()> {
         let mut batch = Vec::with_capacity(OBJECT_PAGE_COUNT);
         let mut bytes = 0_usize;
-        self.reachable.visit(|id| {
-            let object = CanonicalObject {
-                id,
-                bytes: self.get(id)?.ok_or(StoreError::MissingObject(id))?,
-            };
+        let mut push = |object: CanonicalObject| -> Result<()> {
             if !batch.is_empty()
                 && (batch.len() == OBJECT_PAGE_COUNT
                     || bytes + object.bytes.len() > OBJECT_PAGE_BYTES)
@@ -2237,28 +2322,27 @@ impl DeferredObjectStore {
             bytes += object.bytes.len();
             batch.push(object);
             Ok(())
-        })?;
+        };
+        match &self.storage {
+            DeferredObjects::Memory { rows, .. } => self.reachable.visit(|id| {
+                push(
+                    rows.get(&id)
+                        .ok_or(StoreError::MissingObject(id))?
+                        .as_ref()
+                        .clone(),
+                )
+            })?,
+            DeferredObjects::Spill(spill) => {
+                spill.visit_ordered(&self.reachable, &mut |id, bytes, _| {
+                    push(CanonicalObject {
+                        id,
+                        bytes: std::mem::take(bytes),
+                    })
+                })?
+            }
+        }
         if !batch.is_empty() {
             visitor(&batch, true)?;
-        }
-        Ok(())
-    }
-
-    fn visit_membership_batches(
-        &self,
-        mut visitor: impl FnMut(&[(ObjectId, u64)]) -> Result<()>,
-    ) -> Result<()> {
-        let mut batch = Vec::with_capacity(OBJECT_PAGE_COUNT);
-        self.reachable.visit(|id| {
-            batch.push((id, self.encoded_length(id)?));
-            if batch.len() == OBJECT_PAGE_COUNT {
-                visitor(&batch)?;
-                batch.clear();
-            }
-            Ok(())
-        })?;
-        if !batch.is_empty() {
-            visitor(&batch)?;
         }
         Ok(())
     }
@@ -2271,7 +2355,7 @@ impl DeferredObjectStore {
         seen.insert_page(&[root])?;
         let mut active = BTreeSet::new();
         let mut stack = vec![(root, false)];
-        let mut order = IdOrder::empty();
+        let mut order = self.predecessor.is_none().then(IdOrder::empty);
         let mut count = 0_u64;
         let mut encoded_bytes = 0_u64;
         while let Some((id, expanded)) = stack.pop() {
@@ -2282,7 +2366,9 @@ impl DeferredObjectStore {
             };
             if expanded {
                 active.remove(&id);
-                order.push_bounded(id, self.index_limit)?;
+                if let Some(order) = &mut order {
+                    order.push_bounded(id, self.index_limit)?;
+                }
                 count += 1;
                 encoded_bytes = encoded_bytes
                     .checked_add(length)
@@ -2313,7 +2399,14 @@ impl DeferredObjectStore {
             stack.push((id, true));
             stack.extend(inserted.into_iter().rev().map(|child| (child, false)));
         }
-        self.reachable = order;
+        // File constructors emit children before parents. Preserve first payload
+        // spans through their existing selection; generic callers retain DFS order.
+        self.reachable = if let Some(mut order) = order {
+            order.seal()?;
+            order
+        } else {
+            self.order_missing(&seen, count as usize)?
+        };
         self.count = count;
         self.encoded_bytes = encoded_bytes;
         if let DeferredObjects::Spill(spill) = &mut self.storage {
@@ -2382,7 +2475,10 @@ impl DeferredObjectStore {
             None
         };
         // The checked owner retains its identity alongside the existing index key.
-        let charge = length.saturating_add(64 + std::mem::size_of::<ObjectId>());
+        let charge = object
+            .bytes
+            .capacity()
+            .saturating_add(64 + std::mem::size_of::<AuthenticatedCanonicalObject>());
         if matches!(&self.storage, DeferredObjects::Memory { bytes, .. } if bytes.saturating_add(charge) > self.memory_limit)
         {
             self.spill()?;
@@ -2393,7 +2489,7 @@ impl DeferredObjectStore {
                 rows.insert(id, object);
                 *bytes += charge;
             }
-            DeferredObjects::Spill(spill) => spill.put(id, &object.bytes)?,
+            DeferredObjects::Spill(spill) => spill.put(&object)?,
         }
         self.reachable.push_bounded(id, self.index_limit)?;
         self.count += 1;
@@ -2440,14 +2536,12 @@ impl DeferredObjectStore {
             index_limit: self.index_limit,
             buffer_bytes: self.spill_buffer_bytes,
             order_memory_bytes: self.order_memory_bytes,
+            failed: false,
         };
         for id in order {
             spill.put(
-                id,
-                &rows
-                    .get(&id)
-                    .ok_or(StoreError::Integrity("candidate object"))?
-                    .bytes,
+                rows.get(&id)
+                    .ok_or(StoreError::Integrity("candidate object"))?,
             )?;
         }
         self.storage = DeferredObjects::Spill(spill);
@@ -2457,302 +2551,11 @@ impl DeferredObjectStore {
     }
 
     fn all_reachable(mut self) -> Result<Self> {
+        self.reachable.seal()?;
         if let DeferredObjects::Spill(spill) = &mut self.storage {
             spill.seal()?;
         }
         Ok(self)
-    }
-}
-
-impl SpillObjects {
-    fn spill_index(&mut self) -> Result<()> {
-        self.index = None;
-        self.index_bytes = 0;
-        self.flush()?;
-        let mut reader = self
-            .reader
-            .lock()
-            .map_err(|_| StoreError::Integrity("candidate spool lock"))?;
-        self.disk_index = Some(Box::new(SpillDiskIndex::from_spill(&mut reader, self.end)?));
-        Ok(())
-    }
-
-    fn seal(&mut self) -> Result<()> {
-        self.flush()?;
-        self.writer = None;
-        #[cfg(unix)]
-        std::fs::remove_file(&self.path)?;
-        Ok(())
-    }
-
-    fn flush(&mut self) -> Result<()> {
-        if self.pending.is_empty() {
-            return Ok(());
-        }
-        self.writer
-            .as_mut()
-            .ok_or(StoreError::Integrity("sealed candidate spool"))?
-            .write_all(&self.pending)?;
-        self.pending.clear();
-        self.pending_index.clear();
-        Ok(())
-    }
-
-    fn put(&mut self, id: ObjectId, canonical: &[u8]) -> Result<()> {
-        let row_len = canonical
-            .len()
-            .checked_add(40)
-            .ok_or(StoreError::Integrity("candidate object length"))?;
-        if !self.pending.is_empty()
-            && self.pending.len().saturating_add(row_len) > self.buffer_bytes
-        {
-            self.flush()?;
-        }
-        let start = self.end;
-        let pending_offset = self.pending.len() + 40;
-        self.pending.extend_from_slice(id.as_bytes());
-        self.pending
-            .extend_from_slice(&(canonical.len() as u64).to_le_bytes());
-        self.pending.extend_from_slice(canonical);
-        self.pending_index
-            .insert(id, (pending_offset, canonical.len()));
-        self.end = self
-            .end
-            .checked_add(row_len as u64)
-            .ok_or(StoreError::Integrity("candidate object length"))?;
-        let index_limit = self.index_limit;
-        if let Some(index) = &mut self.index {
-            if self.index_bytes.saturating_add(64) > index_limit {
-                self.spill_index()?;
-            } else {
-                index.insert(id, (start + 40, canonical.len() as u64));
-                self.index_bytes += 64;
-            }
-        } else {
-            self.disk_index
-                .as_ref()
-                .ok_or(StoreError::Integrity("candidate spill index unavailable"))?
-                .insert(id, start + 40, canonical.len() as u64)?;
-        }
-        if self.pending.len() >= self.buffer_bytes {
-            self.flush()?;
-        }
-        Ok(())
-    }
-
-    fn visit_ids(&self, visitor: &mut dyn FnMut(ObjectId) -> Result<()>) -> Result<()> {
-        if let Some(index) = &self.index {
-            if index.len() <= self.order_memory_bytes / std::mem::size_of::<(u64, ObjectId)>() {
-                let mut order = index
-                    .iter()
-                    .map(|(id, (offset, _))| (*offset, *id))
-                    .collect::<Vec<_>>();
-                order.sort_unstable_by_key(|(offset, _)| *offset);
-                for (_, id) in order {
-                    visitor(id)?;
-                }
-                return Ok(());
-            }
-        }
-        let mut file = self
-            .reader
-            .lock()
-            .map_err(|_| StoreError::Integrity("candidate spool lock"))?;
-        file.seek(SeekFrom::Start(0))?;
-        let mut file = BufReader::with_capacity(self.buffer_bytes, &mut *file);
-        loop {
-            let mut object_id = [0; 32];
-            match file.read_exact(&mut object_id) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
-                Err(error) => return Err(error.into()),
-            }
-            let mut length = [0; 8];
-            file.read_exact(&mut length)?;
-            visitor(ObjectId::from_bytes(&object_id)?)?;
-            file.seek_relative(
-                i64::try_from(u64::from_le_bytes(length))
-                    .map_err(|_| StoreError::Integrity("candidate object length"))?,
-            )?;
-        }
-    }
-
-    fn visit_ordered(
-        &self,
-        order: &IdOrder,
-        visitor: &mut dyn FnMut(ObjectId, &mut Vec<u8>) -> Result<()>,
-    ) -> Result<()> {
-        let mut file = self
-            .reader
-            .lock()
-            .map_err(|_| StoreError::Integrity("candidate spool lock"))?;
-        file.seek(SeekFrom::Start(0))?;
-        let mut file = BufReader::with_capacity(self.buffer_bytes, &mut *file);
-        let mut position = 0_u64;
-        let mut canonical = Vec::new();
-        order.visit(|expected| {
-            let (offset, length) = self
-                .location(expected)?
-                .ok_or(StoreError::MissingObject(expected))?;
-            let length = usize::try_from(length)
-                .map_err(|_| StoreError::Integrity("candidate object length"))?;
-            if length > OBJECT_PAGE_BYTES {
-                return Err(StoreError::InvalidInput("candidate object page"));
-            }
-            let distance = i64::try_from(i128::from(offset) - i128::from(position))
-                .map_err(|_| StoreError::Integrity("candidate object offset"))?;
-            // Retain buffered sequential read-ahead, while still supporting
-            // arbitrary graph orders for borrowed visitors.
-            file.seek_relative(distance)?;
-            canonical.resize(length, 0);
-            file.read_exact(&mut canonical)?;
-            position = offset
-                .checked_add(length as u64)
-                .ok_or(StoreError::Integrity("candidate object length"))?;
-            visitor(expected, &mut canonical)
-        })
-    }
-
-    fn location(&self, id: ObjectId) -> Result<Option<(u64, u64)>> {
-        if let Some(index) = &self.index {
-            return Ok(index.get(&id).copied());
-        }
-        self.disk_index
-            .as_ref()
-            .ok_or(StoreError::Integrity("candidate spill index unavailable"))?
-            .location(id)
-    }
-
-    fn get(&self, id: ObjectId) -> Result<Option<Vec<u8>>> {
-        if let Some((offset, length)) = self.pending_index.get(&id) {
-            return Ok(Some(self.pending[*offset..*offset + *length].to_vec()));
-        }
-        let Some((offset, length)) = self.location(id)? else {
-            return Ok(None);
-        };
-        let mut file = self
-            .reader
-            .lock()
-            .map_err(|_| StoreError::Integrity("candidate spool lock"))?;
-        file.seek(SeekFrom::Start(offset))?;
-        let mut bytes = vec![
-            0;
-            usize::try_from(length)
-                .map_err(|_| StoreError::Integrity("candidate object length"))?
-        ];
-        file.read_exact(&mut bytes)?;
-        Ok(Some(bytes))
-    }
-
-    fn encoded_length(&self, id: ObjectId) -> Result<u64> {
-        self.location(id)?
-            .map(|(_, length)| length)
-            .ok_or(StoreError::MissingObject(id))
-    }
-}
-
-fn scratch_index(label: &str, schema: &str) -> Result<(Connection, TempPath)> {
-    let (temporary, path) = temporary_file(label)?;
-    let path = TempPath(path);
-    drop(temporary);
-    let connection = Connection::open(&path.0)?;
-    // Derived private scratch, with the same bounded cache and no Store policy changes.
-    connection.execute_batch(
-        "PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;
-        PRAGMA temp_store=FILE; PRAGMA cache_size=-4096; PRAGMA cache_spill=ON;
-        PRAGMA mmap_size=0; PRAGMA locking_mode=EXCLUSIVE;",
-    )?;
-    connection.execute_batch(schema)?;
-    Ok((connection, path))
-}
-
-impl SpillDiskIndex {
-    fn from_spill(file: &mut std::fs::File, end: u64) -> Result<Self> {
-        let (mut connection, path) = scratch_index(
-            "candidate-index",
-            "CREATE TABLE offsets (id BLOB PRIMARY KEY CHECK(length(id)=32),
-                offset INTEGER NOT NULL CHECK(offset>=0),
-                length INTEGER NOT NULL CHECK(length>=0)) WITHOUT ROWID;",
-        )?;
-        file.seek(SeekFrom::Start(0))?;
-        let mut offset = 0_u64;
-        while offset < end {
-            let transaction = connection.transaction()?;
-            {
-                let mut insert =
-                    transaction.prepare_cached("INSERT INTO offsets VALUES (?1,?2,?3)")?;
-                for _ in 0..INITIALIZATION_ADMISSION_BATCH_COUNT {
-                    if offset == end {
-                        break;
-                    }
-                    let mut id = [0; 32];
-                    let mut length = [0; 8];
-                    file.read_exact(&mut id)?;
-                    file.read_exact(&mut length)?;
-                    let length = u64::from_le_bytes(length);
-                    let payload = offset
-                        .checked_add(40)
-                        .ok_or(StoreError::Integrity("candidate index offset"))?;
-                    offset = payload
-                        .checked_add(length)
-                        .filter(|offset| *offset <= end)
-                        .ok_or(StoreError::Integrity("candidate index frame bounds"))?;
-                    insert.execute(rusqlite::params![
-                        id.as_slice(),
-                        i64::try_from(payload)
-                            .map_err(|_| StoreError::Integrity("candidate index offset"))?,
-                        i64::try_from(length)
-                            .map_err(|_| StoreError::Integrity("candidate object length"))?
-                    ])?;
-                    file.seek(SeekFrom::Start(offset))?;
-                }
-            }
-            transaction.commit()?;
-        }
-        Ok(Self {
-            connection: Mutex::new(connection),
-            _path: path,
-        })
-    }
-
-    fn insert(&self, id: ObjectId, offset: u64, length: u64) -> Result<()> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| StoreError::Integrity("candidate index lock"))?;
-        connection
-            .prepare_cached("INSERT INTO offsets VALUES (?1,?2,?3)")?
-            .execute(rusqlite::params![
-                id.as_bytes().as_slice(),
-                i64::try_from(offset)
-                    .map_err(|_| StoreError::Integrity("candidate index offset"))?,
-                i64::try_from(length)
-                    .map_err(|_| StoreError::Integrity("candidate object length"))?
-            ])?;
-        Ok(())
-    }
-
-    fn location(&self, id: ObjectId) -> Result<Option<(u64, u64)>> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| StoreError::Integrity("candidate index lock"))?;
-        let location: Option<(i64, i64)> = connection
-            .prepare_cached("SELECT offset,length FROM offsets WHERE id=?1")?
-            .query_row([id.as_bytes().as_slice()], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
-            .optional()?;
-        location
-            .map(|(offset, length)| {
-                Ok((
-                    u64::try_from(offset)
-                        .map_err(|_| StoreError::Integrity("candidate index offset"))?,
-                    u64::try_from(length)
-                        .map_err(|_| StoreError::Integrity("candidate object length"))?,
-                ))
-            })
-            .transpose()
     }
 }
 
@@ -2763,6 +2566,45 @@ pub(crate) fn build_checked_file(
     source: impl Read,
     expected_len: u64,
 ) -> Result<layerfs_content::file::rope::CompletedFile> {
+    let previous = objects.set_file_payload_context(true);
+    let result = build_checked_file_inner(objects, source, expected_len);
+    objects.set_file_payload_context(previous);
+    result
+}
+
+fn build_checked_file_inner(
+    objects: &mut impl ObjectStore,
+    mut source: impl Read,
+    expected_len: u64,
+) -> Result<layerfs_content::file::rope::CompletedFile> {
+    if expected_len < layerfs_content::file::cdc::MINIMUM_CHUNK_BYTES as u64 {
+        // One extra byte detects growth; no canonical output precedes the EOF check.
+        let mut bytes = vec![0; expected_len as usize + 1];
+        let mut length = 0;
+        loop {
+            let read = match source.read(&mut bytes[length..]) {
+                Ok(read) => read,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error.into()),
+            };
+            if read == 0 {
+                break;
+            }
+            length += read;
+            if length > expected_len as usize {
+                return Err(StoreError::Integrity("completed file length"));
+            }
+        }
+        if length != expected_len as usize {
+            return Err(StoreError::Integrity("completed file length"));
+        }
+        let (root, counters) = layerfs_content::file::rope::build_bytes(objects, &bytes[..length])?;
+        return Ok(layerfs_content::file::rope::CompletedFile {
+            root,
+            logical_len: expected_len,
+            counters,
+        });
+    }
     let completed = layerfs_content::file::rope::build_complete(objects, source)?;
     if completed.logical_len != expected_len {
         return Err(StoreError::Integrity("completed file length"));
@@ -2776,6 +2618,62 @@ pub struct ObjectBuffer<'a> {
 }
 
 impl<'a> ObjectBuffer<'a> {
+    /// Diagnostic source marker: actual regular-file owners only. Generic rope
+    /// construction also serves mode/mtime metadata and must leave this unset.
+    #[doc(hidden)]
+    pub fn diagnostic_file_payloads(&mut self) {
+        self.objects.diagnostic_file_context = true;
+    }
+
+    #[doc(hidden)]
+    pub fn set_physical_predecessor(
+        &mut self,
+        reader: crate::SnapshotReader,
+        root: layerfs_content::file::rope::FileStateRoot,
+        operation_reserved: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    ) -> Result<()> {
+        // Producer correspondence may overlap admission and other producers.
+        // Reserve its cursor (64 KiB) plus one bounded physical metadata read
+        // (512 KiB) from this producer's existing partition, never the encoder's
+        // 2-MiB scratch. Small partitions preserve context but skip optional work.
+        const CORRESPONDENCE_MEMORY: usize = 576 * 1024;
+        let available = self.objects.memory_limit >= CORRESPONDENCE_MEMORY + 32 * 1024;
+        if available {
+            self.objects.memory_limit -= CORRESPONDENCE_MEMORY;
+            // Spilled output retains its pending Vec capacity while ordered
+            // delivery allocates read-ahead. Shrink both owners prospectively;
+            // changing only the canonical spill threshold does not release them.
+            self.objects.spill_buffer_bytes = self
+                .objects
+                .spill_buffer_bytes
+                .saturating_sub(CORRESPONDENCE_MEMORY)
+                .max(spill::ID_BUFFER_BYTES);
+            if let DeferredObjects::Spill(spill) = &mut self.objects.storage {
+                spill.flush()?;
+                spill.pending = Vec::with_capacity(self.objects.spill_buffer_bytes);
+                spill.buffer_bytes = self.objects.spill_buffer_bytes;
+            }
+            if matches!(&self.objects.storage, DeferredObjects::Memory { bytes, .. } if *bytes > self.objects.memory_limit)
+            {
+                self.objects.spill()?;
+            }
+        }
+        self.objects.predecessor = Some((reader, root, operation_reserved, available));
+        Ok(())
+    }
+
+    #[doc(hidden)]
+    pub fn build_complete_with_predecessor(
+        mut self,
+        source: impl Read,
+        expected_len: u64,
+    ) -> Result<BuiltRoot> {
+        self.diagnostic_file_payloads();
+        self.objects.references = None;
+        let completed = build_checked_file(&mut self, source, expected_len)?;
+        self.finish_all_reachable(completed.root.0, completed.counters.cdc_bytes_scanned)
+    }
+
     pub fn new(source: &'a dyn ObjectSource) -> Result<Self> {
         Ok(Self {
             source: Some(source),
@@ -2790,6 +2688,7 @@ impl<'a> ObjectBuffer<'a> {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn empty_all_reachable() -> Result<Self> {
         Ok(Self {
             source: None,
@@ -2806,8 +2705,10 @@ impl<'a> ObjectBuffer<'a> {
     }
 
     #[doc(hidden)]
-    pub fn into_resumable(self) -> DeferredObjectStore {
-        self.objects
+    pub fn into_resumable(mut self) -> Result<DeferredObjectStore> {
+        // The canonical spool remains resumable; the ID reader sees only a sealed order.
+        self.objects.reachable.seal()?;
+        Ok(self.objects)
     }
 
     #[doc(hidden)]
@@ -2837,7 +2738,9 @@ impl<'a> ObjectBuffer<'a> {
         }
         self.objects.memory_limit = CANDIDATE_SPILL_BUFFER_BYTES / partitions;
         self.objects.index_limit = CANDIDATE_INDEX_BYTES / partitions;
-        self.objects.spill_buffer_bytes = CANDIDATE_SPILL_BUFFER_BYTES / partitions;
+        self.objects.spill_buffer_bytes = (CANDIDATE_SPILL_BUFFER_BYTES - spill::ID_BUFFER_BYTES)
+            / partitions
+            - spill::ID_BUFFER_BYTES;
         self.objects.order_memory_bytes = CANDIDATE_MEMORY_BYTES / partitions;
         if matches!(&self.objects.storage, DeferredObjects::Memory { bytes, .. } if *bytes > self.objects.memory_limit)
         {
@@ -2856,9 +2759,11 @@ impl<'a> ObjectBuffer<'a> {
         if matches!(&self.objects.reachable, IdOrder::Memory(ids) if ids.len().saturating_mul(32) > self.objects.index_limit)
         {
             let mut order = IdOrder::empty();
+            self.objects.reachable.seal()?;
             self.objects
                 .reachable
                 .visit(|id| order.push_bounded(id, self.objects.index_limit))?;
+            order.seal()?;
             self.objects.reachable = order;
         }
         if self.objects.reference_bytes > self.objects.index_limit {
@@ -2882,6 +2787,7 @@ impl<'a> ObjectBuffer<'a> {
         partitions: usize,
     ) -> Result<BuiltRoot> {
         let mut objects = Self::bounded_output(None)?;
+        objects.diagnostic_file_payloads();
         objects.partition_output(partitions)?;
         objects.objects.references = None;
         let completed = build_checked_file(&mut objects, source, expected_len)?;
@@ -2960,13 +2866,22 @@ impl<'a> ObjectBuffer<'a> {
     }
 
     pub fn merge_prevalidated(&mut self, objects: DeferredObjectStore) -> Result<()> {
-        objects.visit_authenticated_order(&objects.reachable, &mut |object| {
-            self.objects.put_authenticated(object.clone())
-        })
+        objects
+            .consume_prevalidated_pages(|page| {
+                for object in page {
+                    self.objects.put_authenticated(object)?;
+                }
+                Ok(())
+            })
+            .map(|_| ())
     }
 }
 
 impl ObjectStore for ObjectBuffer<'_> {
+    fn set_file_payload_context(&mut self, enabled: bool) -> bool {
+        std::mem::replace(&mut self.objects.diagnostic_file_context, enabled)
+    }
+
     fn get(&self, id: ObjectId) -> CoreResult<Vec<u8>> {
         if let Some(bytes) = self.objects.get(id).map_err(|_| CoreError::Io)? {
             return Ok(bytes);
@@ -2981,15 +2896,56 @@ impl ObjectStore for ObjectBuffer<'_> {
     where
         F: FnOnce(&[u8]) -> CoreResult<T>,
     {
-        if let DeferredObjects::Memory { rows, .. } = &self.objects.storage {
-            if let Some(object) = rows.get(&id) {
-                return callback(&object.bytes);
+        match &self.objects.storage {
+            DeferredObjects::Memory { rows, .. } => {
+                if let Some(object) = rows.get(&id) {
+                    return callback(&object.bytes);
+                }
+            }
+            DeferredObjects::Spill(_) => {
+                if let Some(bytes) = self.objects.get(id).map_err(core_read_error)? {
+                    layerfs_content::authenticate_identity(&bytes, id)?;
+                    return callback(&bytes);
+                }
             }
         }
-        // Storage/base reads have no retained owned proof at this boundary.
-        let bytes = ObjectStore::get(self, id)?;
-        layerfs_content::authenticate_identity(&bytes, id)?;
-        callback(&bytes)
+        CoreReader(self.source.ok_or(CoreError::MissingObject)?)
+            .with_authenticated_canonical(id, callback)
+    }
+
+    fn put_file_payload(
+        &mut self,
+        canonical: Vec<u8>,
+        start: u64,
+        len: u32,
+    ) -> CoreResult<ObjectId> {
+        let mut object = AuthenticatedCanonicalObject::new(canonical, None)?;
+        object.1.first_span = Some((start, len));
+        if self.objects.diagnostic_file_context {
+            object.1.diagnostic = diagnostic::FILE;
+        }
+        let id = object.id;
+        self.objects
+            .put_authenticated(object)
+            .map_err(|_| CoreError::Io)?;
+        Ok(id)
+    }
+
+    fn put_tree_origin(
+        &mut self,
+        canonical: Vec<u8>,
+        origin: Option<ObjectId>,
+    ) -> CoreResult<ObjectId> {
+        let mut object = AuthenticatedCanonicalObject::new(canonical, None)?;
+        if is_inode_table_leaf(&object.bytes)? {
+            object.1.prior_ids[0] = origin;
+            object.1.has_predecessor = origin.is_some();
+        }
+        let id = object.id;
+        self.objects
+            .put_authenticated(object)
+            .map_err(|_| CoreError::Io)?;
+        Ok(id)
     }
 
     fn put(&mut self, canonical: &[u8]) -> CoreResult<ObjectId> {
@@ -3048,255 +3004,108 @@ pub(crate) fn combine_candidates(
     combined.reachable_from(root_id)
 }
 
-fn temporary_file(label: &str) -> Result<(std::fs::File, PathBuf)> {
-    static SERIAL: AtomicU64 = AtomicU64::new(0);
-    let directory = std::env::temp_dir();
-    for _ in 0..32 {
-        let path = directory.join(format!(
-            "layerfs-{label}-{}-{}",
-            std::process::id(),
-            SERIAL.fetch_add(1, Ordering::Relaxed)
-        ));
-        let mut options = std::fs::OpenOptions::new();
-        options.create_new(true).read(true).write(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        match options.open(&path) {
-            Ok(file) => return Ok((file, path)),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Err(StoreError::Integrity("candidate temporary file"))
-}
-
 fn elapsed_ns(started: Instant) -> u64 {
     started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64
 }
 
 impl crate::schema::StoreDb {
     pub fn read_object_row(&self, id: ObjectId) -> Result<Vec<u8>> {
-        let connection = self.reader()?;
-        read_object_row_from_connection(&connection, id)?
-            .ok_or(StoreError::Integrity("visible object missing"))
+        let location = self
+            .object_locations(&[id])?
+            .remove(&id)
+            .ok_or(StoreError::Integrity("visible object missing"))?;
+        let mut bytes = None;
+        self.visit_locations(&mut [(id, location)], |object| {
+            bytes = Some(object.bytes);
+            Ok(())
+        })?;
+        bytes.ok_or(StoreError::Integrity("visible object missing"))
     }
 
     pub fn read_object_rows(&self, ids: &[ObjectId]) -> Result<Vec<CanonicalObject>> {
-        let connection = self.reader()?;
-        read_object_rows_from_connection(&connection, ids)
+        if let [id] = ids {
+            return Ok(vec![CanonicalObject {
+                id: *id,
+                bytes: self.read_object_row(*id)?,
+            }]);
+        }
+        if ids.len() > OBJECT_PAGE_COUNT {
+            return Err(StoreError::InvalidInput("object read page"));
+        }
+        let mut remaining = BTreeMap::<ObjectId, usize>::new();
+        for id in ids {
+            *remaining.entry(*id).or_default() += 1;
+        }
+        let distinct = remaining.keys().copied().collect::<Vec<_>>();
+        let locations = self.object_locations(&distinct)?;
+        if locations.len() != distinct.len() {
+            return Err(StoreError::Integrity("visible object cardinality"));
+        }
+        let mut locations = locations.into_iter().collect::<Vec<_>>();
+        let mut rows = BTreeMap::new();
+        self.visit_locations(&mut locations, |object| {
+            rows.insert(object.id, object.bytes);
+            Ok(())
+        })?;
+        let mut output = Vec::with_capacity(ids.len());
+        for id in ids {
+            let count = remaining
+                .get_mut(id)
+                .ok_or(StoreError::Integrity("visible object order"))?;
+            *count -= 1;
+            let bytes = if *count == 0 {
+                rows.remove(id)
+                    .ok_or(StoreError::Integrity("visible object missing"))?
+            } else {
+                let bytes = rows
+                    .get(id)
+                    .ok_or(StoreError::Integrity("visible object missing"))?
+                    .clone();
+                note_read_batch_clone(bytes.len());
+                bytes
+            };
+            output.push(CanonicalObject { id: *id, bytes });
+        }
+        Ok(output)
     }
 
+    #[cfg(test)]
     pub fn object_membership(&self, ids: &[ObjectId]) -> Result<BTreeMap<ObjectId, u64>> {
         if ids.len() > OBJECT_PAGE_COUNT {
             return Err(StoreError::InvalidInput("object membership page"));
         }
-        if ids.is_empty() {
-            return Ok(BTreeMap::new());
-        }
-        let mut values = ids
-            .iter()
-            .map(|id| Value::Blob(id.as_bytes().to_vec()))
-            .collect::<Vec<_>>();
-        values.resize(OBJECT_PAGE_COUNT, Value::Null);
-        let connection = self.reader()?;
-        let mut statement =
-            connection.prepare_cached(crate::statements::objects::MEMBERSHIP_128)?;
-        let membership = statement
-            .query_map(params_from_iter(values), |row| {
-                Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, i64>(1)?))
-            })?
-            .map(|row| {
-                let (id, length) = row?;
-                Ok((
-                    ObjectId::from_bytes(&id)?,
-                    length
-                        .try_into()
-                        .map_err(|_| StoreError::Integrity("object length"))?,
-                ))
-            })
-            .collect();
-        membership
-    }
-
-    pub(crate) fn plan_candidate(&self, objects: &DeferredObjectStore) -> Result<CandidatePlan> {
-        let mut plan = CandidatePlan {
-            missing: SpillableObjectSet::empty()?,
-            missing_order: IdOrder::empty(),
-            all_missing: false,
-            candidate_objects: 0,
-            candidate_bytes: 0,
-            inserted_objects: 0,
-            inserted_bytes: 0,
-            reused_objects: 0,
-            reused_bytes: 0,
-        };
-        objects.visit_membership_batches(|batch| {
-            let ids = batch.iter().map(|(id, _)| *id).collect::<Vec<_>>();
-            let known = self.object_membership(&ids)?;
-            let mut missing = Vec::new();
-            let mut reused = Vec::new();
-            for (id, bytes) in batch {
-                plan.candidate_objects += 1;
-                plan.candidate_bytes = plan.candidate_bytes.saturating_add(*bytes);
-                match known.get(id) {
-                    Some(known) if known != bytes => {
-                        return Err(StoreError::Integrity("object length collision"));
-                    }
-                    Some(_) => {
-                        reused.push((*id, *bytes));
-                    }
-                    None => {
-                        missing.push(*id);
-                        plan.inserted_objects += 1;
-                        plan.inserted_bytes = plan.inserted_bytes.saturating_add(*bytes);
-                    }
-                }
-            }
-            plan.reused_objects += reused.len() as u64;
-            plan.reused_bytes = plan
-                .reused_bytes
-                .saturating_add(reused.iter().map(|(_, bytes)| *bytes).sum::<u64>());
-            plan.missing.insert_page(&missing)?;
-            Ok(())
-        })?;
-        if plan.candidate_objects != plan.inserted_objects + plan.reused_objects
-            || plan.candidate_bytes != plan.inserted_bytes + plan.reused_bytes
-        {
-            return Err(StoreError::Integrity("candidate equation"));
-        }
-        plan.missing_order = objects.order_missing(&plan.missing)?;
-        Ok(plan)
-    }
-
-    pub(crate) fn plan_initialization_candidate(
-        &self,
-        objects: &DeferredObjectStore,
-    ) -> Result<CandidatePlan> {
-        if !self.initialization_store_is_empty()? {
-            return self.plan_candidate(objects);
-        }
-        Ok(CandidatePlan {
-            missing: SpillableObjectSet::empty()?,
-            missing_order: IdOrder::empty(),
-            all_missing: true,
-            candidate_objects: objects.len(),
-            candidate_bytes: objects.encoded_bytes(),
-            inserted_objects: objects.len(),
-            inserted_bytes: objects.encoded_bytes(),
-            reused_objects: 0,
-            reused_bytes: 0,
-        })
-    }
-
-    pub(crate) fn initialization_store_is_empty(&self) -> Result<bool> {
-        Ok(self.reader()?.query_row(
-            "SELECT NOT EXISTS(SELECT 1 FROM objects LIMIT 1)",
-            [],
-            |row| row.get::<_, bool>(0),
-        )?)
-    }
-
-    pub(crate) fn clear_failed_direct_initialization(&self) -> Result<()> {
-        let mut connection = self.writer()?;
-        let transaction =
-            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        transaction.execute("DELETE FROM objects", [])?;
-        transaction.commit()?;
-        Ok(())
+        Ok(self
+            .object_locations(ids)?
+            .into_iter()
+            .map(|(id, location)| (id, location.canonical_length as u64))
+            .collect())
     }
 }
 
-fn read_object_row_from_connection(
-    connection: &Connection,
-    id: ObjectId,
-) -> Result<Option<Vec<u8>>> {
-    let mut statement = connection.prepare_cached(crate::statements::objects::GET)?;
-    let bytes = statement
-        .query_row([id.as_bytes().as_slice()], |row| row.get::<_, Vec<u8>>(0))
-        .optional()?;
-    if let Some(bytes) = &bytes {
-        layerfs_content::authenticate_identity(bytes, id)?;
+impl CheckedOutputAdmission {
+    pub(crate) fn new(db: &crate::schema::StoreDb) -> Result<Self> {
+        Self::with_session(db, AdmissionSession::new(db)?)
     }
-    Ok(bytes)
-}
 
-fn read_object_rows_from_connection(
-    connection: &Connection,
-    ids: &[ObjectId],
-) -> Result<Vec<CanonicalObject>> {
-    if ids.len() > OBJECT_PAGE_COUNT {
-        return Err(StoreError::InvalidInput("object read page"));
-    }
-    if ids.is_empty() {
-        return Ok(Vec::new());
-    }
-    if let [id] = ids {
-        let bytes = read_object_row_from_connection(connection, *id)?
-            .ok_or(StoreError::Integrity("visible object cardinality"))?;
-        note_read_batch_hash();
-        return Ok(vec![CanonicalObject { id: *id, bytes }]);
-    }
-    let mut values = ids
-        .iter()
-        .map(|id| Value::Blob(id.as_bytes().to_vec()))
-        .collect::<Vec<_>>();
-    values.resize(OBJECT_PAGE_COUNT, Value::Null);
-    let mut statement = connection.prepare_cached(crate::statements::objects::GET_MANY_128)?;
-    let mut rows = BTreeMap::new();
-    for row in statement.query_map(params_from_iter(values), |row| {
-        Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
-    })? {
-        let (id, bytes) = row?;
-        let id = ObjectId::from_bytes(&id)?;
-        layerfs_content::authenticate_identity(&bytes, id)?;
-        note_read_batch_hash();
-        if rows.insert(id, bytes).is_some() {
-            return Err(StoreError::Integrity("duplicate visible object"));
-        }
-    }
-    let mut remaining = BTreeMap::<ObjectId, usize>::new();
-    for id in ids {
-        *remaining.entry(*id).or_default() += 1;
-    }
-    if rows.len() != remaining.len() || rows.keys().any(|id| !remaining.contains_key(id)) {
-        return Err(StoreError::Integrity("visible object cardinality"));
-    }
-    let mut output = Vec::with_capacity(ids.len());
-    for id in ids {
-        let count = *remaining
-            .get(id)
-            .ok_or(StoreError::Integrity("visible object order"))?;
-        let bytes = if count == 1 {
-            remaining.remove(id);
-            rows.remove(id)
-                .ok_or(StoreError::Integrity("visible object missing"))?
-        } else {
-            remaining.insert(*id, count - 1);
-            let bytes = rows
-                .get(id)
-                .ok_or(StoreError::Integrity("visible object missing"))?
-                .clone();
-            note_read_batch_clone(bytes.len());
-            bytes
-        };
-        output.push(CanonicalObject { id: *id, bytes });
-    }
-    if !rows.is_empty() || !remaining.is_empty() {
-        return Err(StoreError::Integrity("visible object order"));
-    }
-    Ok(output)
-}
-
-impl<'a> CheckedOutputAdmission<'a> {
-    pub(crate) fn new(db: &'a crate::schema::StoreDb) -> Result<Self> {
+    fn with_session(
+        db: &crate::schema::StoreDb,
+        session: std::sync::Arc<AdmissionSession>,
+    ) -> Result<Self> {
         Ok(Self {
-            db,
-            batch: Vec::with_capacity(INITIALIZATION_ADMISSION_BATCH_COUNT),
+            session,
+            db: db.clone(),
+            incoming: Vec::with_capacity(INITIALIZATION_SLAB_OBJECTS),
+            incoming_index: HashMap::new(),
+            incoming_bytes: 0,
+            batch: Vec::with_capacity(INITIALIZATION_SLAB_OBJECTS),
+            // Two independent facts share the existing index allowance: seen
+            // input IDs and closed, available dependencies. Leave half for
+            // bounded logical-reference decoding and temporary lookup pages.
+            seen: SpillableObjectSet::bounded(CANDIDATE_INDEX_BYTES / 4)?,
+            available: SpillableObjectSet::bounded(CANDIDATE_INDEX_BYTES / 4)?,
             pending: HashMap::new(),
             batch_bytes: 0,
+            validation_reserve: 0,
             statement_number: 0,
             receipt: crate::CandidateReceipt::default(),
             checked: CheckedAdmission::default(),
@@ -3310,9 +3119,29 @@ impl<'a> CheckedOutputAdmission<'a> {
         self.admit(objects)
     }
 
+    pub(crate) fn session(&self) -> std::sync::Arc<AdmissionSession> {
+        self.session.clone()
+    }
+
+    pub(crate) fn resolve<T>(&self, result: Result<T>) -> Result<T> {
+        self.session.resolve(result)
+    }
+
+    pub(crate) fn abort(self) -> Result<()> {
+        self.session.rollback()
+    }
+
     pub(crate) fn finish(self) -> Result<FinishedOutputAdmission> {
+        let session = self.session.clone();
+        session.resolve(self.finish_inner())
+    }
+
+    fn finish_inner(mut self) -> Result<FinishedOutputAdmission> {
+        self.probe_incoming()?;
+        let mut final_batch = self.take_batch()?;
+        final_batch.2 = true;
         Ok(FinishedOutputAdmission {
-            final_batch: self.batch,
+            final_batch,
             statement_number: self.statement_number,
             receipt: self.receipt,
             checked: self.checked,
@@ -3321,9 +3150,6 @@ impl<'a> CheckedOutputAdmission<'a> {
     }
 
     pub(crate) fn prepare_final_phase(&mut self) -> Result<()> {
-        self.flush_batch()?;
-        self.batch = Vec::with_capacity(INITIALIZATION_SLAB_OBJECTS);
-        self.pending = HashMap::with_capacity(INITIALIZATION_SLAB_OBJECTS);
         self.final_phase = true;
         Ok(())
     }
@@ -3334,6 +3160,11 @@ impl<'a> CheckedOutputAdmission<'a> {
         }
         let owned = transient
             .saturating_add(incoming)
+            .saturating_add(self.incoming_bytes as u64)
+            .saturating_add(
+                (self.incoming.capacity() * std::mem::size_of::<CanonicalObject>()) as u64,
+            )
+            .saturating_add((self.incoming_index.capacity() * 64) as u64)
             .saturating_add(self.batch_bytes as u64)
             .saturating_add((self.batch.capacity() * std::mem::size_of::<CanonicalObject>()) as u64)
             .saturating_add((self.pending.capacity() * 64) as u64);
@@ -3343,72 +3174,190 @@ impl<'a> CheckedOutputAdmission<'a> {
             .max(owned);
     }
 
-    #[cfg(test)]
-    fn admit(&mut self, objects: DeferredObjectStore) -> Result<()> {
-        objects
+    pub(crate) fn admit(&mut self, objects: DeferredObjectStore) -> Result<()> {
+        let session = self.session.clone();
+        let result = objects
             .consume_prevalidated_pages(|page| self.admit_page(page))
-            .map(|_| ())
+            .map(|_| ());
+        session.resolve(result)
     }
 
     pub(crate) fn admit_page(&mut self, page: Vec<AuthenticatedCanonicalObject>) -> Result<()> {
-        for object in page {
-            self.admit_object(object)?;
-        }
-        Ok(())
+        let session = self.session.clone();
+        session.resolve(
+            page.into_iter()
+                .try_for_each(|object| self.admit_object(object)),
+        )
     }
 
-    fn admit_unique_page(
-        &mut self,
-        page: Vec<AuthenticatedCanonicalObject>,
-        seen: &mut SpillableObjectSet,
-    ) -> Result<()> {
-        let mut duplicates = Vec::new();
-        let mut duplicate_bytes = 0;
-        for object in page {
-            if let Some(&index) = self.pending.get(&object.id) {
-                self.admit_duplicate(index, &object.bytes)?;
-            } else if seen.insert(object.id)? {
-                self.push_pending(object)?;
-            } else {
-                if !duplicates.is_empty()
-                    && (duplicates.len() == OBJECT_PAGE_COUNT
-                        || duplicate_bytes + object.bytes.len() > INITIALIZATION_SLAB_BYTES)
-                {
-                    self.check_flushed_duplicates(&duplicates)?;
-                    duplicates.clear();
-                    duplicate_bytes = 0;
+    fn take_batch(&mut self) -> Result<MissingBatch> {
+        self.session.ensure_active()?;
+        self.close_dependencies()?;
+        let batch = std::mem::take(&mut self.batch);
+        self.pending.clear();
+        self.batch_bytes = 0;
+        self.validation_reserve = 0;
+        Ok(MissingBatch(batch, self.session.clone(), false))
+    }
+
+    fn close_dependencies(&mut self) -> Result<()> {
+        let mut dependencies = BTreeSet::new();
+        for object in &self.batch {
+            for id in referenced_objects(&object.bytes)? {
+                if !self.pending.contains_key(&id) {
+                    dependencies.insert(id);
                 }
-                duplicate_bytes += object.bytes.len();
-                duplicates.push(object);
             }
         }
-        self.check_flushed_duplicates(&duplicates)
-    }
-
-    fn check_flushed_duplicates(&self, duplicates: &[AuthenticatedCanonicalObject]) -> Result<()> {
-        if duplicates.is_empty() {
-            return Ok(());
-        }
-        let ids = duplicates
-            .iter()
-            .map(|object| object.id)
-            .collect::<Vec<_>>();
-        let durable = self.db.read_object_rows(&ids)?;
-        if durable
-            .iter()
-            .zip(duplicates)
-            .any(|(stored, supplied)| stored.bytes != supplied.bytes)
-        {
-            return Err(StoreError::Integrity("object collision"));
+        let dependencies = dependencies.into_iter().collect::<Vec<_>>();
+        for page in dependencies.chunks(OBJECT_PAGE_COUNT) {
+            let known = self.available.membership(page)?;
+            let missing = page
+                .iter()
+                .copied()
+                .filter(|id| !known.contains(id))
+                .collect::<Vec<_>>();
+            if !self.db.objects_exist(&missing)? {
+                return Err(StoreError::Integrity("new object dependency missing"));
+            }
+            self.available.insert_page(&missing)?;
         }
         Ok(())
     }
 
-    pub(crate) fn admit_object(&mut self, object: AuthenticatedCanonicalObject) -> Result<()> {
+    fn probe_incoming(&mut self) -> Result<()> {
+        if self.incoming.is_empty() {
+            return Ok(());
+        }
+        let page = std::mem::take(&mut self.incoming);
+        self.incoming_index.clear();
+        self.incoming_bytes = 0;
+        let ids = page.iter().map(|object| object.id).collect::<Vec<_>>();
+        let first = self
+            .seen
+            .insert_page(&ids)?
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let (fresh, repeated): (Vec<_>, Vec<_>) = page
+            .into_iter()
+            .partition(|object| first.contains(&object.id));
+        if !repeated.is_empty() {
+            // Supplied duplicate occurrences still compare their actual bytes;
+            // they are not new admission candidates or new initial probes.
+            let ids = repeated.iter().map(|object| object.id).collect::<Vec<_>>();
+            let known = self.db.object_locations(&ids)?;
+            if known.len() != ids.len() {
+                return Err(StoreError::Integrity("flushed duplicate missing"));
+            }
+            let supplied = repeated
+                .iter()
+                .map(|object| (object.id, object.bytes.as_slice()))
+                .collect();
+            let mut metrics = ObjectInsertMetrics::default();
+            admission::compare(&self.db, &known, &supplied, &mut metrics)?;
+            self.note_collision_reads(metrics);
+            self.diagnostics.cross_batch_skipped_objects += repeated.len() as u64;
+            self.diagnostics.cross_batch_skipped_bytes += metrics.skipped_bytes;
+        }
+        let mut diagnostic_stats = crate::PhysicalStorageReceipt::default();
+        for mut object in repeated {
+            diagnostic::occurrence(&mut object, 2, &mut diagnostic_stats);
+        }
+        self.db.note_physical(diagnostic_stats);
+        let ids = fresh.iter().map(|object| object.id).collect::<Vec<_>>();
+        let known = self.db.object_locations(&ids)?;
+        let supplied = fresh
+            .iter()
+            .map(|object| (object.id, object.bytes.as_slice()))
+            .collect();
+        let mut reused = ObjectInsertMetrics::default();
+        admission::compare(&self.db, &known, &supplied, &mut reused)?;
+        self.note_collision_reads(reused);
+        self.available
+            .insert_page(&known.keys().copied().collect::<Vec<_>>())?;
+        self.checked.candidate_objects += reused.skipped_ids;
+        self.checked.candidate_bytes += reused.skipped_bytes;
+        self.checked.reused_objects += reused.skipped_ids;
+        self.checked.reused_bytes += reused.skipped_bytes;
+        self.receipt.candidate_objects += reused.skipped_ids;
+        self.receipt.candidate_bytes += reused.skipped_bytes;
+        self.receipt.reused_objects += reused.skipped_ids;
+        self.receipt.reused_bytes += reused.skipped_bytes;
+        self.receipt.preexisting_reused_objects += reused.skipped_ids;
+        self.receipt.preexisting_reused_bytes += reused.skipped_bytes;
+        drop(supplied);
+        let mut diagnostic_stats = crate::PhysicalStorageReceipt::default();
+        for mut object in fresh {
+            let missing = !known.contains_key(&object.id);
+            diagnostic::occurrence(&mut object, u8::from(missing), &mut diagnostic_stats);
+            if missing {
+                diagnostic::eligible(&object, &mut diagnostic_stats);
+            }
+            if missing {
+                self.push_pending(object)?;
+            }
+        }
+        self.db.note_physical(diagnostic_stats);
+        self.incoming = Vec::with_capacity(INITIALIZATION_SLAB_OBJECTS);
+        Ok(())
+    }
+
+    fn note_collision_reads(&mut self, metrics: ObjectInsertMetrics) {
+        self.diagnostics.collision_checks += metrics.collision_checks;
+        self.diagnostics.conflict_read_calls += metrics.conflict_read_calls;
+        self.diagnostics.conflict_read_rows += metrics.conflict_read_rows;
+        self.diagnostics.conflict_read_bytes += metrics.conflict_read_bytes;
+        self.diagnostics.conflict_read_ns += metrics.conflict_read_ns;
+    }
+
+    pub(crate) fn admit_object(&mut self, mut object: AuthenticatedCanonicalObject) -> Result<()> {
+        self.session.ensure_active()?;
+        if object.bytes.len() > ADMISSION_BATCH_BYTES {
+            return Err(StoreError::Integrity("canonical object admission size"));
+        }
         if let Some(&index) = self.pending.get(&object.id) {
+            let mut stats = crate::PhysicalStorageReceipt::default();
+            diagnostic::occurrence(&mut object, 2, &mut stats);
+            self.db.note_physical(stats);
             return self.admit_duplicate(index, &object.bytes);
         }
-        self.push_pending(object)
+        if let Some(&index) = self.incoming_index.get(&object.id) {
+            let mut stats = crate::PhysicalStorageReceipt::default();
+            diagnostic::occurrence(&mut object, 2, &mut stats);
+            self.db.note_physical(stats);
+            self.diagnostics.collision_checks += 1;
+            if self.incoming[index].bytes != object.bytes {
+                return Err(StoreError::Integrity("object collision"));
+            }
+            self.diagnostics.pending_duplicate_objects += 1;
+            self.diagnostics.pending_duplicate_bytes += object.bytes.len() as u64;
+            return Ok(());
+        }
+        let large = object.bytes.len() > INITIALIZATION_SLAB_BYTES;
+        if !self.incoming.is_empty()
+            && (self.incoming.len() == INITIALIZATION_SLAB_OBJECTS
+                || self.incoming_bytes + object.bytes.len() > INITIALIZATION_SLAB_BYTES)
+        {
+            self.probe_incoming()?;
+        }
+        if large {
+            self.flush_batch()?;
+        }
+        self.incoming_bytes += object.bytes.len();
+        self.incoming_index.insert(object.id, self.incoming.len());
+        self.incoming.push(object);
+        if large {
+            // Retire a maximal source object before requesting another source
+            // page; it must not coexist with a second maximal canonical read.
+            self.probe_incoming()?;
+            self.flush_batch()?;
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        self.probe_incoming()?;
+        self.flush_batch()
     }
 
     fn admit_duplicate(&mut self, index: usize, bytes: &[u8]) -> Result<()> {
@@ -3428,12 +3377,16 @@ impl<'a> CheckedOutputAdmission<'a> {
         if object.bytes.len() > ADMISSION_BATCH_BYTES {
             return Err(StoreError::Integrity("canonical object admission size"));
         }
+        let reserve = read::validation_reserve(object.bytes.len());
         if !self.batch.is_empty()
-            && (self.batch.len() == INITIALIZATION_ADMISSION_BATCH_COUNT
-                || self.batch_bytes.saturating_add(object.bytes.len()) > ADMISSION_BATCH_BYTES)
+            && (self.batch.len() == PHYSICAL_ADMISSION_BATCH_COUNT
+                || self.batch_bytes.saturating_add(object.bytes.len())
+                    > 2 * INITIALIZATION_SLAB_BYTES
+                || self.validation_reserve + reserve > read::VALIDATION_RESERVE)
         {
             self.flush_batch()?;
         }
+        self.validation_reserve += reserve;
         self.batch_bytes = self.batch_bytes.saturating_add(object.bytes.len());
         self.pending.insert(object.id, self.batch.len());
         self.batch.push(object);
@@ -3479,8 +3432,13 @@ impl<'a> CheckedOutputAdmission<'a> {
             return Ok(());
         }
         let capacity = self.batch.capacity();
-        let batch = std::mem::take(&mut self.batch);
-        let metrics = consume_checked_owned_page(self.db, batch, &mut self.statement_number)?;
+        let batch = self.take_batch()?;
+        if batch.is_empty() {
+            return Ok(());
+        }
+        let ids = batch.iter().map(|object| object.id).collect::<Vec<_>>();
+        let metrics = consume_checked_owned_page(&self.db, batch, &mut self.statement_number)?;
+        self.available.insert_page(&ids)?;
         self.checked.record(&metrics);
         self.batch = Vec::with_capacity(capacity);
         self.diagnostics.record_sql_batch(
@@ -3494,42 +3452,46 @@ impl<'a> CheckedOutputAdmission<'a> {
             },
         );
         self.batch_bytes = 0;
+        self.validation_reserve = 0;
         self.pending.clear();
-        self.receipt.candidate_objects += metrics.insert.objects;
-        self.receipt.candidate_bytes = self
-            .receipt
-            .candidate_bytes
-            .saturating_add(metrics.insert.bytes);
-        self.receipt.inserted_objects += metrics.insert.objects;
-        self.receipt.inserted_bytes = self
-            .receipt
-            .inserted_bytes
-            .saturating_add(metrics.insert.bytes);
-        self.receipt.batch_inserted_objects = self
-            .receipt
-            .batch_inserted_objects
-            .saturating_add(metrics.insert.objects);
-        self.receipt.batch_inserted_bytes = self
-            .receipt
-            .batch_inserted_bytes
-            .saturating_add(metrics.insert.bytes);
-        self.receipt.admission_transactions += 1;
-        self.receipt.max_transaction_objects = self
-            .receipt
-            .max_transaction_objects
-            .max(metrics.insert.objects);
-        self.receipt.max_transaction_bytes =
-            self.receipt.max_transaction_bytes.max(metrics.insert.bytes);
+        record_admission_receipt(&mut self.receipt, metrics.insert, false);
         Ok(())
     }
 }
 
+pub(crate) fn record_admission_receipt(
+    receipt: &mut crate::CandidateReceipt,
+    metrics: ObjectInsertMetrics,
+    final_batch: bool,
+) {
+    let bytes = metrics.bytes + metrics.skipped_bytes;
+    receipt.candidate_objects += metrics.submitted_rows;
+    receipt.candidate_bytes += bytes;
+    receipt.inserted_objects += metrics.objects;
+    receipt.inserted_bytes += metrics.bytes;
+    receipt.reused_objects += metrics.skipped_ids;
+    receipt.reused_bytes += metrics.skipped_bytes;
+    receipt.preexisting_reused_objects += metrics.skipped_ids;
+    receipt.preexisting_reused_bytes += metrics.skipped_bytes;
+    receipt.max_transaction_objects = receipt.max_transaction_objects.max(metrics.submitted_rows);
+    receipt.max_transaction_bytes = receipt.max_transaction_bytes.max(bytes);
+    if final_batch {
+        receipt.final_inserted_objects += metrics.objects;
+        receipt.final_inserted_bytes += metrics.bytes;
+    } else {
+        receipt.batch_inserted_objects += metrics.objects;
+        receipt.batch_inserted_bytes += metrics.bytes;
+        receipt.admission_transactions += 1;
+    }
+}
+
+/// Owns one synchronous admission through publication or abandonment.
+/// Complete or drop this token before requesting another mutation on the same
+/// Store from this thread. Other writers queue; authenticated reads remain usable.
 pub struct WorkspaceAdmission {
     pub(crate) db: crate::schema::StoreDb,
     pub(crate) workspace_id: [u8; 16],
-    pub(crate) checked: CheckedAdmission,
-    pub(crate) statement_number: u64,
-    seen: SpillableObjectSet,
+    admission: CheckedOutputAdmission,
 }
 
 impl crate::LayerStackStore {
@@ -3537,9 +3499,7 @@ impl crate::LayerStackStore {
         Ok(WorkspaceAdmission {
             db: self.db.clone(),
             workspace_id,
-            checked: Default::default(),
-            statement_number: 0,
-            seen: SpillableObjectSet::empty()?,
+            admission: CheckedOutputAdmission::new(&self.db)?,
         })
     }
 
@@ -3560,10 +3520,9 @@ impl crate::LayerStackStore {
         I::Item: Send,
     {
         let mut token = self.workspace_admission(workspace_id)?;
-        let mut admission = CheckedOutputAdmission::new(&self.db)?;
         let cancelled = std::sync::atomic::AtomicBool::new(false);
         let mut admission_ns = 0_u64;
-        let (output, pipeline) = run_finalized_output(
+        let result = run_finalized_output(
             worker_limit,
             task_count,
             tasks,
@@ -3573,23 +3532,14 @@ impl crate::LayerStackStore {
             finish,
             |page| {
                 let started = Instant::now();
-                let result = (|| {
-                    let _operation = self.db.enter_operation()?;
-                    admission.admit_unique_page(page, &mut token.seen)
-                })();
+                let result = token.admission.admit_page(page);
                 admission_ns = admission_ns.saturating_add(elapsed_ns(started));
                 result
             },
-        )?;
-        let started = Instant::now();
-        {
-            let _operation = self.db.enter_operation()?;
-            admission.flush_batch()?;
-        }
-        admission_ns = admission_ns.saturating_add(elapsed_ns(started));
-        let finished = admission.finish()?;
-        token.checked = finished.checked;
-        token.statement_number = finished.statement_number;
+        );
+        let (output, pipeline) = token.admission.resolve(result)?;
+        // Keep the final file batch owned by the Workspace token. Namespace
+        // construction may add to it before staging closes the operation.
         let mut writer = OutputWriterMetrics::default();
         let output = output
             .into_iter()
@@ -3599,7 +3549,9 @@ impl crate::LayerStackStore {
             })
             .collect();
         if writer.producer_tasks != task_count as u64 {
-            return Err(StoreError::Integrity("Workspace file task coverage"));
+            return token
+                .admission
+                .resolve(Err(StoreError::Integrity("Workspace file task coverage")));
         }
         crate::telemetry::note_workspace_candidate_delivery(
             writer.selected_memory_bytes,
@@ -3619,20 +3571,20 @@ impl crate::LayerStackStore {
 
 impl WorkspaceAdmission {
     pub(crate) fn admit_remaining(
+        self,
+        objects: DeferredObjectStore,
+    ) -> Result<(CheckedAdmission, u64, std::sync::Arc<AdmissionSession>)> {
+        let session = self.admission.session.clone();
+        session.resolve(self.admit_remaining_inner(objects))
+    }
+
+    fn admit_remaining_inner(
         mut self,
         objects: DeferredObjectStore,
-    ) -> Result<(CheckedAdmission, u64)> {
-        let mut admission = CheckedOutputAdmission::new(&self.db)?;
-        admission.checked = self.checked;
-        admission.statement_number = self.statement_number;
-        objects.consume_prevalidated_pages(|page| {
-            admission.admit_unique_page(page, &mut self.seen)?;
-            // The input page's owned bytes move into this batch; drain before
-            // requesting the next private page to bound simultaneous ownership.
-            admission.flush_batch()
-        })?;
-        admission.flush_batch()?;
-        let finished = admission.finish()?;
+    ) -> Result<(CheckedAdmission, u64, std::sync::Arc<AdmissionSession>)> {
+        objects.consume_prevalidated_pages(|page| self.admission.admit_page(page))?;
+        self.admission.flush()?;
+        let finished = self.admission.finish()?;
         let admission = finished.checked;
         if admission.candidate_objects != admission.inserted_objects + admission.reused_objects
             || admission.candidate_bytes != admission.inserted_bytes + admission.reused_bytes
@@ -3641,375 +3593,26 @@ impl WorkspaceAdmission {
         {
             return Err(StoreError::Integrity("checked admission equation"));
         }
-        Ok((admission, finished.statement_number))
+        Ok((admission, finished.statement_number, finished.final_batch.1))
     }
-}
-
-pub(crate) fn admit_planned_objects(
-    db: &crate::schema::StoreDb,
-    objects: &DeferredObjectStore,
-    plan: &CandidatePlan,
-    statement_number: &mut u64,
-) -> Result<PlannedAdmission> {
-    admit_planned_objects_with_limits(
-        db,
-        objects,
-        plan,
-        statement_number,
-        ADMISSION_BATCH_COUNT,
-        ADMISSION_BATCH_BYTES,
-        false,
-    )
-}
-
-pub(crate) fn admit_initialization_objects(
-    db: &crate::schema::StoreDb,
-    objects: &DeferredObjectStore,
-    plan: &CandidatePlan,
-    statement_number: &mut u64,
-) -> Result<PlannedAdmission> {
-    admit_planned_objects_with_limits(
-        db,
-        objects,
-        plan,
-        statement_number,
-        INITIALIZATION_ADMISSION_BATCH_COUNT,
-        ADMISSION_BATCH_BYTES,
-        true,
-    )
-}
-
-fn admit_planned_objects_with_limits(
-    db: &crate::schema::StoreDb,
-    objects: &DeferredObjectStore,
-    plan: &CandidatePlan,
-    statement_number: &mut u64,
-    batch_count: usize,
-    batch_bytes_limit: usize,
-    bulk_insert: bool,
-) -> Result<PlannedAdmission> {
-    let mut batch = Vec::with_capacity(batch_count);
-    let mut batch_bytes = 0_usize;
-    let mut admission = PlannedAdmission {
-        final_batch: Vec::new(),
-        batch_inserted_objects: 0,
-        batch_inserted_bytes: 0,
-        transactions: 0,
-        max_transaction_objects: 0,
-        max_transaction_bytes: 0,
-        begin_ns: 0,
-        insert_ns: 0,
-        commit_ns: 0,
-    };
-    let order = if plan.all_missing {
-        &objects.reachable
-    } else {
-        &plan.missing_order
-    };
-    objects.visit_prevalidated_order(order, &mut |id, bytes| {
-        if bytes.len() > batch_bytes_limit {
-            return Err(StoreError::Integrity("canonical object admission size"));
-        }
-        if !batch.is_empty()
-            && (batch.len() == batch_count
-                || batch_bytes.saturating_add(bytes.len()) > batch_bytes_limit)
-        {
-            let metrics = insert_admission_batch(db, &batch, statement_number, bulk_insert)?;
-            admission.batch_inserted_objects = admission
-                .batch_inserted_objects
-                .saturating_add(metrics.insert.objects);
-            admission.batch_inserted_bytes = admission
-                .batch_inserted_bytes
-                .saturating_add(metrics.insert.bytes);
-            admission.transactions += 1;
-            admission.max_transaction_objects = admission
-                .max_transaction_objects
-                .max(metrics.insert.objects);
-            admission.max_transaction_bytes =
-                admission.max_transaction_bytes.max(metrics.insert.bytes);
-            admission.begin_ns = admission.begin_ns.saturating_add(metrics.begin_ns);
-            admission.insert_ns = admission.insert_ns.saturating_add(metrics.insert.insert_ns);
-            admission.commit_ns = admission.commit_ns.saturating_add(metrics.commit_ns);
-            batch.clear();
-            batch_bytes = 0;
-        }
-        batch_bytes = batch_bytes.saturating_add(bytes.len());
-        batch.push(CanonicalObject {
-            id,
-            bytes: bytes.to_vec(),
-        });
-        Ok(())
-    })?;
-    admission.final_batch = batch;
-    let final_objects = admission.final_batch.len() as u64;
-    let final_bytes = admission
-        .final_batch
-        .iter()
-        .map(|object| object.bytes.len() as u64)
-        .sum::<u64>();
-    admission.max_transaction_objects = admission.max_transaction_objects.max(final_objects);
-    admission.max_transaction_bytes = admission.max_transaction_bytes.max(final_bytes);
-    if admission.batch_inserted_objects + final_objects != plan.inserted_objects
-        || admission.batch_inserted_bytes + final_bytes != plan.inserted_bytes
-        || admission.max_transaction_objects > batch_count as u64
-        || admission.max_transaction_bytes > batch_bytes_limit as u64
-    {
-        return Err(StoreError::Integrity(
-            "bounded candidate admission equation",
-        ));
-    }
-    Ok(admission)
-}
-
-fn insert_admission_batch(
-    db: &crate::schema::StoreDb,
-    batch: &[CanonicalObject],
-    statement_number: &mut u64,
-    bulk_insert: bool,
-) -> Result<AdmissionBatchMetrics> {
-    let begin_started = Instant::now();
-    let mut connection = db.writer()?;
-    let transaction =
-        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    let begin_ns = elapsed_ns(begin_started);
-    #[cfg(feature = "test-instrumentation")]
-    if !bulk_insert {
-        crate::schema::verification_store_checkpoint(
-            crate::schema::VerificationStoreFault::LaterAdmissionBatch,
-        )?;
-    }
-    let insert = if bulk_insert {
-        insert_initialization_object_batch(&transaction, batch, statement_number)?
-    } else {
-        insert_object_batch(&transaction, batch, statement_number)?
-    };
-    let commit_started = Instant::now();
-    transaction.commit()?;
-    #[cfg(feature = "test-instrumentation")]
-    if !bulk_insert {
-        crate::schema::verification_early_committed();
-    }
-    Ok(AdmissionBatchMetrics {
-        insert,
-        begin_ns,
-        commit_ns: elapsed_ns(commit_started),
-    })
 }
 
 fn consume_checked_owned_page(
     db: &crate::schema::StoreDb,
-    mut batch: Vec<AuthenticatedCanonicalObject>,
+    batch: MissingBatch,
     statement_number: &mut u64,
 ) -> Result<AdmissionBatchMetrics> {
-    if batch.len() > ADMISSION_BATCH_COUNT
-        || batch.iter().map(|object| object.bytes.len()).sum::<usize>() > ADMISSION_BATCH_BYTES
-    {
-        return Err(StoreError::Integrity("checked admission page limit"));
-    }
-    let sort_started = Instant::now();
-    batch.sort_unstable_by_key(|object| object.id);
-    let sort_ns = elapsed_ns(sort_started);
-    // Fresh storage reads create a new checked owner; immutable memory retains it.
-    crate::telemetry::note_workspace_admission_validation(0, sort_ns);
-    let begin_started = Instant::now();
-    let mut connection = db.writer()?;
-    let transaction =
-        connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    let begin_ns = elapsed_ns(begin_started);
-    #[cfg(feature = "test-instrumentation")]
-    crate::schema::verification_store_checkpoint(
-        crate::schema::VerificationStoreFault::LaterAdmissionBatch,
-    )?;
-    let insert = insert_checked_object_batch(&transaction, &batch, statement_number, &mut |_| {})?;
-    let commit_started = Instant::now();
-    transaction.commit()?;
+    let prepared = admission::PreparedAdmission::prepare_missing(db, batch)?;
+    let (_, metrics) = prepared.publish(db, statement_number, |_, _, _| {
+        #[cfg(feature = "test-instrumentation")]
+        crate::schema::verification_store_checkpoint(
+            crate::schema::VerificationStoreFault::LaterAdmissionBatch,
+        )?;
+        Ok(())
+    })?;
     #[cfg(feature = "test-instrumentation")]
     crate::schema::verification_early_committed();
-    Ok(AdmissionBatchMetrics {
-        insert,
-        begin_ns,
-        commit_ns: elapsed_ns(commit_started),
-    })
-}
-
-pub(crate) fn insert_object_batch(
-    transaction: &rusqlite::Transaction<'_>,
-    objects: &[CanonicalObject],
-    statement_number: &mut u64,
-) -> Result<ObjectInsertMetrics> {
-    let prepare_started = Instant::now();
-    let mut insert = transaction.prepare_cached(crate::statements::objects::INSERT)?;
-    let mut equal = transaction.prepare_cached(crate::statements::objects::EQUAL)?;
-    let mut metrics = ObjectInsertMetrics {
-        insert_ns: elapsed_ns(prepare_started),
-        ..ObjectInsertMetrics::default()
-    };
-    let mut payload_started = Instant::now();
-    for object in objects {
-        metrics.payload_ns = metrics
-            .payload_ns
-            .saturating_add(elapsed_ns(payload_started));
-        *statement_number += 1;
-        crate::schema::fail_transaction_statement(*statement_number)?;
-        let insert_started = Instant::now();
-        let inserted = insert.execute(rusqlite::params![
-            object.id.as_bytes().as_slice(),
-            object.bytes.as_slice()
-        ])?;
-        if inserted == 0 {
-            let same = equal.exists(rusqlite::params![
-                object.id.as_bytes().as_slice(),
-                object.bytes.as_slice()
-            ])?;
-            return Err(StoreError::Integrity(if same {
-                "unexpected existing object"
-            } else {
-                "object collision"
-            }));
-        }
-        metrics.insert_ns = metrics.insert_ns.saturating_add(elapsed_ns(insert_started));
-        metrics.objects += 1;
-        metrics.bytes = metrics.bytes.saturating_add(object.bytes.len() as u64);
-        payload_started = Instant::now();
-    }
     Ok(metrics)
-}
-
-pub(crate) fn insert_initialization_object_batch(
-    transaction: &rusqlite::Transaction<'_>,
-    objects: &[CanonicalObject],
-    statement_number: &mut u64,
-) -> Result<ObjectInsertMetrics> {
-    if objects.is_empty() {
-        return Ok(ObjectInsertMetrics::default());
-    }
-    for _ in objects {
-        *statement_number += 1;
-        crate::schema::fail_transaction_statement(*statement_number)?;
-    }
-    let mut sql = String::with_capacity(80 + objects.len() * 6);
-    sql.push_str("INSERT INTO objects(object_id, bytes) VALUES ");
-    for index in 0..objects.len() {
-        if index != 0 {
-            sql.push(',');
-        }
-        sql.push_str("(?,?)");
-    }
-    sql.push_str(" ON CONFLICT(object_id) DO NOTHING");
-    let started = Instant::now();
-    let inserted = transaction.execute(
-        &sql,
-        params_from_iter(
-            objects
-                .iter()
-                .flat_map(|object| [object.id.as_bytes().as_slice(), object.bytes.as_slice()]),
-        ),
-    )?;
-    if inserted != objects.len() {
-        return Err(StoreError::Integrity("unexpected existing object"));
-    }
-    Ok(ObjectInsertMetrics {
-        insert_ns: elapsed_ns(started),
-        objects: objects.len() as u64,
-        bytes: objects.iter().map(|object| object.bytes.len() as u64).sum(),
-        ..ObjectInsertMetrics::default()
-    })
-}
-
-pub(crate) fn insert_initialization_segment_batch<T: AsRef<CanonicalObject>>(
-    transaction: &rusqlite::Transaction<'_>,
-    objects: &[T],
-    statement_number: &mut u64,
-) -> Result<ObjectInsertMetrics> {
-    insert_checked_object_batch(transaction, objects, statement_number, &mut |_| {})
-}
-
-// Outcomes are provisional until the caller commits its transaction.
-pub(crate) fn insert_checked_object_batch<T: AsRef<CanonicalObject>>(
-    transaction: &rusqlite::Transaction<'_>,
-    objects: &[T],
-    statement_number: &mut u64,
-    outcome: &mut dyn FnMut(bool),
-) -> Result<ObjectInsertMetrics> {
-    if objects.is_empty() {
-        return Ok(ObjectInsertMetrics::default());
-    }
-    for _ in objects {
-        *statement_number += 1;
-        crate::schema::fail_transaction_statement(*statement_number)?;
-    }
-    let started = Instant::now();
-    let prepare_started = Instant::now();
-    let mut statement = transaction.prepare_cached(crate::statements::objects::INSERT)?;
-    let sql_prepare_ns = elapsed_ns(prepare_started);
-    let step_started = Instant::now();
-    let mut inserted_objects = 0_u64;
-    let mut inserted_bytes = 0_u64;
-    let mut skipped = Vec::new();
-    for object in objects {
-        let object = object.as_ref();
-        if statement.execute(rusqlite::params![
-            object.id.as_bytes().as_slice(),
-            object.bytes.as_slice()
-        ])? == 0
-        {
-            skipped.push(object);
-            outcome(false);
-        } else {
-            outcome(true);
-            inserted_objects += 1;
-            inserted_bytes = inserted_bytes.saturating_add(object.bytes.len() as u64);
-        }
-    }
-    let sql_bind_step_returning_ns = elapsed_ns(step_started);
-    drop(statement);
-    let skipped_bytes = skipped
-        .iter()
-        .map(|object| object.bytes.len() as u64)
-        .sum::<u64>();
-    let mut conflict_read_calls = 0_u64;
-    let mut conflict_read_rows = 0_u64;
-    let mut conflict_read_bytes = 0_u64;
-    let mut conflict_read_ns = 0_u64;
-    for page in skipped.chunks(OBJECT_PAGE_COUNT) {
-        let ids = page.iter().map(|object| object.id).collect::<Vec<_>>();
-        let conflict_started = Instant::now();
-        let durable = read_object_rows_from_connection(transaction, &ids)?;
-        conflict_read_ns = conflict_read_ns.saturating_add(elapsed_ns(conflict_started));
-        conflict_read_calls += 1;
-        conflict_read_rows = conflict_read_rows.saturating_add(durable.len() as u64);
-        conflict_read_bytes = conflict_read_bytes.saturating_add(
-            durable
-                .iter()
-                .map(|object| object.bytes.len() as u64)
-                .sum::<u64>(),
-        );
-        if durable
-            .iter()
-            .zip(page)
-            .any(|(durable, object)| durable.bytes != object.bytes)
-        {
-            return Err(StoreError::Integrity("object collision"));
-        }
-    }
-    Ok(ObjectInsertMetrics {
-        insert_ns: elapsed_ns(started),
-        objects: inserted_objects,
-        bytes: inserted_bytes,
-        submitted_rows: objects.len() as u64,
-        returned_ids: inserted_objects,
-        skipped_ids: skipped.len() as u64,
-        skipped_bytes,
-        collision_checks: skipped.len() as u64,
-        sql_string_build_ns: 0,
-        sql_prepare_ns,
-        sql_bind_step_returning_ns,
-        conflict_read_calls,
-        conflict_read_rows,
-        conflict_read_bytes,
-        conflict_read_ns,
-        ..ObjectInsertMetrics::default()
-    })
 }
 
 impl ObjectSource for crate::schema::StoreDb {
@@ -4096,6 +3699,76 @@ mod tests {
     }
 
     #[test]
+    fn small_completed_files_match_streaming_and_validate_eof_before_output() {
+        struct Fragmented<'a> {
+            bytes: &'a [u8],
+            interrupt: bool,
+        }
+        impl Read for Fragmented<'_> {
+            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                if std::mem::take(&mut self.interrupt) {
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                let count = output.len().min(self.bytes.len()).min(7);
+                output[..count].copy_from_slice(&self.bytes[..count]);
+                self.bytes = &self.bytes[count..];
+                Ok(count)
+            }
+        }
+        for size in [0, 1, 8_191, 8_192] {
+            let data = (0..size).map(|i| (i % 251) as u8).collect::<Vec<_>>();
+            let mut expected = ObjectBuffer::empty().unwrap();
+            let streamed =
+                layerfs_content::file::rope::build_complete(&mut expected, data.as_slice())
+                    .unwrap();
+            let mut actual = ObjectBuffer::empty().unwrap();
+            let completed = build_checked_file(
+                &mut actual,
+                Fragmented {
+                    bytes: &data,
+                    interrupt: size < layerfs_content::file::cdc::MINIMUM_CHUNK_BYTES,
+                },
+                size as u64,
+            )
+            .unwrap();
+            assert_eq!(completed.root, streamed.root);
+            assert_eq!(completed.logical_len, streamed.logical_len);
+            assert_eq!(completed.counters, streamed.counters);
+            let expected = expected.finish(streamed.root.0, size as u64).unwrap();
+            let actual = actual.finish(completed.root.0, size as u64).unwrap();
+            assert_eq!(actual.objects.len(), expected.objects.len());
+            for id in expected.objects.ids_in_order(usize::MAX).unwrap().unwrap() {
+                assert_eq!(
+                    actual.objects.read_object(id).unwrap(),
+                    expected.objects.read_object(id).unwrap()
+                );
+            }
+        }
+        for (bytes, expected) in [
+            (b"x".as_slice(), 0),
+            (b"".as_slice(), 1),
+            (b"xy".as_slice(), 1),
+        ] {
+            let mut objects = ObjectBuffer::empty().unwrap();
+            assert!(matches!(
+                build_checked_file(&mut objects, bytes, expected),
+                Err(StoreError::Integrity("completed file length"))
+            ));
+            assert_eq!(objects.objects.len(), 0);
+        }
+        struct Broken;
+        impl Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::Other.into())
+            }
+        }
+        let mut objects = ObjectBuffer::empty().unwrap();
+        let error_after_payload = std::io::Cursor::new(b"x").chain(Broken);
+        assert!(build_checked_file(&mut objects, error_after_payload, 1).is_err());
+        assert_eq!(objects.objects.len(), 0);
+    }
+
+    #[test]
     fn partitioned_completed_files_share_direct_facts_and_keep_failures_private() {
         let mut random = 23_u64;
         let data = (0..2 * 1024 * 1024 + 17)
@@ -4155,7 +3828,8 @@ mod tests {
         );
         assert_eq!(buffer.objects.index_limit * 4, CANDIDATE_INDEX_BYTES);
         assert_eq!(
-            buffer.objects.spill_buffer_bytes * 4,
+            (buffer.objects.spill_buffer_bytes + spill::ID_BUFFER_BYTES) * 4
+                + spill::ID_BUFFER_BYTES,
             CANDIDATE_SPILL_BUFFER_BYTES
         );
         assert!(buffer.partition_output(0).is_err());
@@ -4265,22 +3939,20 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let db = crate::schema::StoreDb::create(root.join("store.sqlite")).unwrap();
         let mut admission = CheckedOutputAdmission::new(&db).unwrap();
-        let mut seen = SpillableObjectSet::empty().unwrap();
         let objects = (0..300_u64)
             .map(|index| {
                 let bytes = layerfs_content::encode_bytes_object(&index.to_le_bytes()).unwrap();
                 AuthenticatedCanonicalObject::new(bytes, None).unwrap()
             })
             .collect::<Vec<_>>();
-        admission
-            .admit_unique_page(objects.clone(), &mut seen)
-            .unwrap();
-        admission.flush_batch().unwrap();
+        admission.admit_page(objects.clone()).unwrap();
+        admission.flush().unwrap();
         #[cfg(feature = "test-instrumentation")]
         crate::schema::reset_sql_trace();
         admission
-            .admit_unique_page(objects.iter().rev().cloned().collect(), &mut seen)
+            .admit_page(objects.iter().rev().cloned().collect())
             .unwrap();
+        admission.flush().unwrap();
         #[cfg(feature = "test-instrumentation")]
         assert_eq!(
             crate::schema::sql_trace()
@@ -4302,7 +3974,9 @@ mod tests {
         // Production owners expose no mutable bytes.
         corrupt.0.bytes = objects[1].bytes.clone();
         assert!(matches!(
-            admission.admit_unique_page(vec![corrupt], &mut seen),
+            admission
+                .admit_page(vec![corrupt])
+                .and_then(|_| admission.flush()),
             Err(StoreError::Integrity("object collision"))
         ));
         drop(admission);
@@ -4483,7 +4157,9 @@ mod tests {
             .workspace_admission([0; 16])
             .unwrap()
             .admit_remaining(selected(0))
-            .unwrap();
+            .unwrap()
+            .2
+            .retain();
         let (_, token) = store
             .construct_workspace_files(
                 [1; 16],
@@ -4495,7 +4171,9 @@ mod tests {
                 |_| Ok(()),
             )
             .unwrap();
-        let (receipt, _) = token.admit_remaining(selected(1)).unwrap();
+        let (receipt, _, session) = token.admit_remaining(selected(1)).unwrap();
+        session.retain();
+        drop(session);
         assert_eq!(
             (
                 receipt.candidate_objects,
@@ -4515,20 +4193,31 @@ mod tests {
         assert_eq!(store.store_counts().unwrap().commits, 0);
         assert!(store.workspace_stage([1; 16]).unwrap().is_none());
         crate::schema::set_transaction_failure_at(Some(1));
-        let failed = store.construct_workspace_files(
-            [2; 16],
-            1,
-            1,
-            std::iter::once(2),
-            |_| Ok(()),
-            |_, _, index, writer| writer.send_selected(selected(index)),
-            |_| Ok(()),
-        );
+        let (_, pending) = store
+            .construct_workspace_files(
+                [2; 16],
+                1,
+                1,
+                std::iter::once(2),
+                |_| Ok(()),
+                |_, _, index, writer| writer.send_selected(selected(index)),
+                |_| Ok(()),
+            )
+            .unwrap();
+        // The small final file batch stays in the token until namespace delivery
+        // closes admission. The consumer and this final flush run on this thread.
+        assert_eq!(store.store_counts().unwrap().objects, 2);
+        assert!(store.db.object_membership(&[ids[2]]).unwrap().is_empty());
+        let failed = pending.admit_remaining(selected(2));
         crate::schema::set_transaction_failure_at(None);
-        assert!(matches!(
-            failed,
-            Err(StoreError::Integrity("injected transaction failure"))
-        ));
+        assert!(
+            matches!(
+                failed,
+                Err(StoreError::Integrity("injected transaction failure"))
+            ),
+            "actual error (None means unexpected success): {:?}",
+            failed.as_ref().err()
+        );
         assert_eq!(store.store_counts().unwrap().objects, 2);
         assert!(store.workspace_stage([2; 16]).unwrap().is_none());
         drop(store);
@@ -4572,7 +4261,7 @@ mod tests {
         assert_eq!(owner.id, ObjectId::for_bytes(&canonical));
         assert_eq!(
             std::mem::size_of::<AuthenticatedCanonicalObject>(),
-            std::mem::size_of::<CanonicalObject>()
+            std::mem::size_of::<CanonicalObject>() + std::mem::size_of::<PhysicalHints>()
         );
         assert!(matches!(
             AuthenticatedCanonicalObject::new(
@@ -4590,22 +4279,6 @@ mod tests {
             assert!(AuthenticatedCanonicalObject::new(invalid.clone(), None).is_err());
             assert!(AuthenticatedCanonicalObject::new(invalid, Some(expected)).is_err());
         }
-    }
-
-    #[test]
-    fn structural_handoff_identity_is_fixed_at_buffer_insertion() {
-        let bytes =
-            layerfs_content::encode_bytes_object(b"authenticated structural object").unwrap();
-        let expected = ObjectId::for_bytes(&bytes);
-        let wrong = ObjectId::for_bytes(b"different structural object");
-        assert!(matches!(
-            AuthenticatedCanonicalObject::new(bytes.clone(), Some(wrong)),
-            Err(CoreError::IdentityMismatch)
-        ));
-
-        let mut buffer = InitializationTaskObjectBuffer::new();
-        assert_eq!(buffer.put_owned(bytes).unwrap(), expected);
-        assert_eq!(buffer.objects[0].id, expected);
     }
 
     #[test]
@@ -4629,7 +4302,7 @@ mod tests {
 
     fn finish_segment_admission(
         db: &crate::schema::StoreDb,
-        admission: CheckedOutputAdmission<'_>,
+        admission: CheckedOutputAdmission,
     ) -> (crate::CandidateReceipt, Vec<ObjectId>) {
         let finished = admission.finish().unwrap();
         let ids = finished
@@ -4638,26 +4311,12 @@ mod tests {
             .map(|object| object.id)
             .collect::<Vec<_>>();
         let mut statement_number = finished.statement_number;
-        let mut connection = db.writer().unwrap();
-        let transaction = connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        let (_, metrics) = PreparedAdmission::prepare_missing(&db, finished.final_batch)
+            .unwrap()
+            .publish(db, &mut statement_number, |_, _, _| Ok(()))
             .unwrap();
-        let metrics = insert_initialization_segment_batch(
-            &transaction,
-            &finished.final_batch,
-            &mut statement_number,
-        )
-        .unwrap();
-        transaction.commit().unwrap();
         let mut receipt = finished.receipt;
-        receipt.candidate_objects += metrics.objects;
-        receipt.candidate_bytes = receipt.candidate_bytes.saturating_add(metrics.bytes);
-        receipt.inserted_objects += metrics.objects;
-        receipt.inserted_bytes = receipt.inserted_bytes.saturating_add(metrics.bytes);
-        receipt.final_inserted_objects = metrics.objects;
-        receipt.final_inserted_bytes = metrics.bytes;
-        receipt.max_transaction_objects = receipt.max_transaction_objects.max(metrics.objects);
-        receipt.max_transaction_bytes = receipt.max_transaction_bytes.max(metrics.bytes);
+        record_admission_receipt(&mut receipt, metrics.insert, true);
         assert_eq!(receipt.candidate_objects, receipt.inserted_objects);
         assert_eq!(receipt.candidate_bytes, receipt.inserted_bytes);
         assert_eq!(
@@ -4669,6 +4328,107 @@ mod tests {
             receipt.batch_inserted_bytes + receipt.final_inserted_bytes
         );
         (receipt, ids)
+    }
+
+    #[test]
+    fn s1_inode_origin_survives_delivery_and_delta_origin_stays_full() {
+        use layerfs_content::tree::{
+            batch::inode_table_apply_sorted,
+            inode::{
+                codec::{encode_inode_table_node, InodeTableNodeV1},
+                InodeId, InodeTableRoot,
+            },
+        };
+        for spill in [false, true] {
+            let directory = std::env::temp_dir().join(format!(
+                "layerfs-s1-origin-{}-{}-{spill}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir(&directory).unwrap();
+            let db = crate::schema::StoreDb::create(directory.join("store.sqlite")).unwrap();
+            let mut entries = Vec::new();
+            let mut initial = Vec::new();
+            for serial in 0..64u64 {
+                let bytes = layerfs_content::encode_bytes_object(&serial.to_be_bytes()).unwrap();
+                let id = ObjectId::for_bytes(&bytes);
+                initial.push(CanonicalObject { id, bytes });
+                entries.push((InodeId::allocate([7; 32], serial), id));
+            }
+            entries.sort();
+            let leaf = encode_inode_table_node(&InodeTableNodeV1::Leaf(entries.clone())).unwrap();
+            let mut prior = ObjectId::for_bytes(&leaf);
+            initial.push(CanonicalObject {
+                id: prior,
+                bytes: leaf,
+            });
+            let mut admission = CheckedOutputAdmission::new(&db).unwrap();
+            admission.admit(sealed_segment(initial)).unwrap();
+            finish_segment_admission(&db, admission);
+
+            for generation in 0..2u64 {
+                let mut buffer = ObjectBuffer::new(&db).unwrap();
+                let record = buffer
+                    .put_owned(
+                        layerfs_content::encode_bytes_object(&(1000 + generation).to_be_bytes())
+                            .unwrap(),
+                    )
+                    .unwrap();
+                entries[generation as usize].1 = record;
+                let expected =
+                    encode_inode_table_node(&InodeTableNodeV1::Leaf(entries.clone())).unwrap();
+                let (next, _) = inode_table_apply_sorted(
+                    &mut buffer,
+                    InodeTableRoot(prior),
+                    std::iter::once(Ok((entries[generation as usize].0, Some(record)))),
+                )
+                .unwrap();
+                assert_eq!(next.0, ObjectId::for_bytes(&expected));
+                if spill {
+                    buffer.objects.spill().unwrap();
+                }
+                let built = buffer.finish(next.0, 0).unwrap();
+                built
+                    .objects
+                    .visit_authenticated_order(&built.objects.reachable, &mut |object| {
+                        if object.id == next.0 {
+                            assert_eq!(object.prior_ids(), &[Some(prior), None, None, None]);
+                            assert!(object.1.has_predecessor);
+                            assert!(object.1.first_span.is_none());
+                            assert_eq!(object.1.diagnostic & diagnostic::FILE, 0);
+                        }
+                        Ok(())
+                    })
+                    .unwrap();
+                let before = db.physical_storage_receipt();
+                let mut admission = CheckedOutputAdmission::new(&db).unwrap();
+                admission.admit(built.objects).unwrap();
+                finish_segment_admission(&db, admission);
+                let physical = db.physical_storage_receipt().since(before);
+                assert_eq!(physical.delta_selected, u64::from(generation == 0));
+                assert_eq!(physical.diag_eligible_count, 0);
+                assert_eq!(physical.diag_eligible_bytes, 0);
+                assert_eq!(physical.diag_missing_span_count, 0);
+                assert_eq!(
+                    physical.diag_new_full_count + physical.diag_new_delta_count,
+                    0
+                );
+                assert_eq!(physical.diag_invalid, 0);
+                assert_eq!(db.read_object_row(next.0).unwrap(), expected);
+                prior = next.0;
+            }
+            let chunk =
+                layerfs_content::file::extent_codec::encode_chunk_object(b"LFS4INT\0").unwrap();
+            assert!(!is_inode_table_leaf(&chunk).unwrap());
+            let mut bad = encode_inode_table_node(&InodeTableNodeV1::Leaf(entries)).unwrap();
+            bad.pop();
+            assert!(is_inode_table_leaf(&bad).is_err());
+            drop(db);
+            std::fs::remove_dir_all(directory).unwrap();
+        }
     }
 
     #[test]
@@ -4692,6 +4452,7 @@ mod tests {
         .unwrap();
         buffer
             .into_resumable()
+            .unwrap()
             .all_reachable()
             .unwrap()
             .consume_prevalidated_pages(|page| {
@@ -4917,14 +4678,14 @@ mod tests {
         assert_eq!(spill.index_bytes, 0);
         assert!(spill.pending.is_empty());
         let disk = spill.disk_index.as_ref().unwrap();
-        let index_path = disk._path.0.clone();
+        let index_path = disk.test_path().to_path_buf();
         let payload_path = spill.path.clone();
         assert_eq!(
             std::fs::metadata(&index_path).unwrap().permissions().mode() & 0o777,
             0o600
         );
         {
-            let connection = disk.connection.lock().unwrap();
+            let connection = disk.test_connection();
             let rows: i64 = connection
                 .query_row("SELECT count(*) FROM offsets", [], |row| row.get(0))
                 .unwrap();
@@ -4981,10 +4742,13 @@ mod tests {
             (count, written)
         );
         assert!(matches!(
-            objects.put_authenticated(AuthenticatedCanonicalObject(CanonicalObject {
-                id: ids[0],
-                bytes: canonical[1].clone()
-            })),
+            objects.put_authenticated(AuthenticatedCanonicalObject(
+                CanonicalObject {
+                    id: ids[0],
+                    bytes: canonical[1].clone()
+                },
+                PhysicalHints::default()
+            )),
             Err(StoreError::Integrity("candidate object collision"))
         ));
         let objects = objects.all_reachable().unwrap();
@@ -5052,8 +4816,8 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        // The same exact subset is delivered physically, excluding the middle row.
-        assert_eq!(owned, vec![ids[0], ids[2]]);
+        // Consumption preserves the checked child-first graph order, excluding the middle row.
+        assert_eq!(owned, vec![ids[2], ids[0]]);
     }
 
     #[cfg(unix)]
@@ -5130,6 +4894,7 @@ mod tests {
         );
         assert_eq!(finished.diagnostics.collision_checks, 1);
 
+        drop(finished);
         drop(db);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -5145,7 +4910,7 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&root).unwrap();
-        for count in [0_usize, 1, 127, 128, 8190, 8191] {
+        for count in [0_usize, 1, 127, 128, 511, 512, 513, 8190, 8191] {
             let db = crate::schema::StoreDb::create(root.join(format!("{count}.sqlite"))).unwrap();
             let objects = (0..count)
                 .map(|index| {
@@ -5169,8 +4934,19 @@ mod tests {
             let (receipt, _) = finish_segment_admission(&db, admission);
             assert_eq!(receipt.candidate_objects, count as u64);
             assert_eq!(receipt.candidate_bytes, expected_bytes);
-            assert_eq!(receipt.max_transaction_objects, count as u64);
-            assert_eq!(receipt.max_transaction_bytes, expected_bytes);
+            assert_eq!(
+                receipt.max_transaction_objects,
+                count.min(PHYSICAL_ADMISSION_BATCH_COUNT) as u64
+            );
+            assert_eq!(
+                receipt.max_transaction_bytes,
+                if count == 0 {
+                    0
+                } else {
+                    (expected_bytes / count as u64)
+                        * count.min(PHYSICAL_ADMISSION_BATCH_COUNT) as u64
+                }
+            );
             drop(db);
         }
         std::fs::remove_dir_all(root).unwrap();
@@ -5275,62 +5051,27 @@ mod tests {
             .admit_worker_segment(sealed_segment(vec![duplicate]))
             .unwrap();
         let finished = admission.finish().unwrap();
-        let retained_objects = finished.final_batch.len() as u64;
         let mut statement_number = finished.statement_number;
-        let mut connection = db.writer().unwrap();
-        let transaction = connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        let (_, metrics) = PreparedAdmission::prepare_missing(&db, finished.final_batch)
+            .unwrap()
+            .publish(&db, &mut statement_number, |_, _, _| Ok(()))
             .unwrap();
-        let final_metrics = insert_initialization_segment_batch(
-            &transaction,
-            &finished.final_batch,
-            &mut statement_number,
-        )
-        .unwrap();
-        transaction.commit().unwrap();
-        let mut diagnostics = finished.diagnostics;
-        diagnostics.record_sql_batch(final_metrics, 0, 0, InitializationSqlPhase::Publication);
-        assert!(final_metrics.objects < retained_objects);
-        assert_eq!(diagnostics.cross_batch_skipped_objects, 1);
-        assert_eq!(diagnostics.sql_submitted_rows, expected_objects + 1);
+        assert_eq!(finished.diagnostics.cross_batch_skipped_objects, 1);
         assert_eq!(
-            diagnostics.sql_returned_ids + diagnostics.sql_skipped_ids,
-            diagnostics.sql_submitted_rows
-        );
-        assert_eq!(diagnostics.conflict_read_rows, 1);
-        assert_eq!(
-            finished.receipt.batch_inserted_objects + final_metrics.objects,
+            finished.receipt.batch_inserted_objects + metrics.insert.objects,
             expected_objects
         );
-
-        let forged = layerfs_content::file::extent_codec::encode_chunk_object(&vec![
-            255;
-            layerfs_content::file::cdc::MAXIMUM_CHUNK_BYTES
-        ])
+        let forged = layerfs_content::file::extent_codec::encode_chunk_object(
+            &vec![255; layerfs_content::file::cdc::MAXIMUM_CHUNK_BYTES],
+        )
         .unwrap();
-        let transaction = connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .unwrap();
-        assert!(matches!(
-            insert_initialization_segment_batch(
-                &transaction,
-                &[CanonicalObject {
-                    id: duplicate_id,
-                    bytes: forged,
-                }],
-                &mut statement_number,
-            ),
-            Err(StoreError::Integrity("object collision"))
-        ));
-        drop(transaction);
-
-        drop(connection);
+        assert!(AuthenticatedCanonicalObject::new(forged, Some(duplicate_id)).is_err());
         drop(db);
         std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn planned_admission_keeps_every_object_transaction_below_the_frozen_bounds() {
+    fn shared_admission_keeps_every_object_transaction_below_the_frozen_bounds() {
         let root = std::env::temp_dir().join(format!(
             "layerfs-bounded-admission-{}-{}",
             std::process::id(),
@@ -5340,122 +5081,34 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&root).unwrap();
-        let db = crate::schema::StoreDb::create(root.join("store.sqlite")).unwrap();
-        let mut objects = DeferredObjectStore::new().unwrap();
-        for index in 0_u64..300 {
-            let canonical = layerfs_content::encode_bytes_object(&index.to_le_bytes()).unwrap();
-            let id = ObjectId::for_bytes(&canonical);
-            objects.put(id, &canonical).unwrap();
-        }
-        let plan = db.plan_initialization_candidate(&objects).unwrap();
-        assert!(plan.all_missing);
-        let mut initialization_statement_number = 0;
-        let initialization = admit_initialization_objects(
-            &db,
-            &objects,
-            &plan,
-            &mut initialization_statement_number,
-        )
-        .unwrap();
-        assert_eq!(initialization.transactions, 0);
-        assert_eq!(initialization.final_batch.len(), 300);
-        assert_eq!(initialization.max_transaction_objects, 300);
-        let bulk_db = crate::schema::StoreDb::create(root.join("bulk.sqlite")).unwrap();
-        {
-            let mut connection = bulk_db.writer().unwrap();
-            let transaction = connection
-                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        for payload_length in [8, 1000] {
+            let db = crate::schema::StoreDb::create(root.join(format!("{payload_length}.sqlite")))
                 .unwrap();
-            let metrics = insert_initialization_object_batch(
-                &transaction,
-                &initialization.final_batch,
-                &mut initialization_statement_number,
-            )
-            .unwrap();
-            assert_eq!(metrics.objects, 300);
-            transaction.commit().unwrap();
-        }
-        assert_eq!(
-            bulk_db
-                .plan_initialization_candidate(&objects)
-                .unwrap()
-                .reused_objects,
-            300
-        );
-
-        let object_count = 2 * ADMISSION_BATCH_COUNT as u64 + 46;
-        for index in 300..object_count {
-            let canonical = layerfs_content::encode_bytes_object(&index.to_le_bytes()).unwrap();
-            objects
-                .put(ObjectId::for_bytes(&canonical), &canonical)
-                .unwrap();
-        }
-        let plan = db.plan_candidate(&objects).unwrap();
-        let mut statement_number = 0;
-        let admission = admit_planned_objects(&db, &objects, &plan, &mut statement_number).unwrap();
-        assert_eq!(admission.transactions, 2);
-        assert_eq!(
-            admission.batch_inserted_objects,
-            2 * ADMISSION_BATCH_COUNT as u64
-        );
-        assert_eq!(admission.final_batch.len(), 46);
-        assert_eq!(
-            admission.max_transaction_objects,
-            ADMISSION_BATCH_COUNT as u64
-        );
-        assert!(admission.max_transaction_bytes < OBJECT_PAGE_BYTES as u64);
-        {
-            let mut connection = db.writer().unwrap();
-            let transaction = connection
-                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-                .unwrap();
-            let final_metrics =
-                insert_object_batch(&transaction, &admission.final_batch, &mut statement_number)
+            let count = 2 * ADMISSION_BATCH_COUNT as u64 + 46;
+            let mut admission = CheckedOutputAdmission::new(&db).unwrap();
+            for index in 0..count {
+                let mut random = index + 1;
+                let mut payload = (0..payload_length)
+                    .map(|_| {
+                        random ^= random << 13;
+                        random ^= random >> 7;
+                        random ^= random << 17;
+                        random as u8
+                    })
+                    .collect::<Vec<_>>();
+                payload[..8].copy_from_slice(&index.to_le_bytes());
+                let bytes = layerfs_content::encode_bytes_object(&payload).unwrap();
+                admission
+                    .admit_object(AuthenticatedCanonicalObject::new(bytes, None).unwrap())
                     .unwrap();
-            assert_eq!(final_metrics.objects, 46);
-            transaction.commit().unwrap();
+            }
+            let (receipt, _) = finish_segment_admission(&db, admission);
+            assert_eq!(receipt.candidate_objects, count);
+            assert_eq!(receipt.inserted_objects, count);
+            assert!(receipt.max_transaction_objects <= ADMISSION_BATCH_COUNT as u64);
+            assert!(receipt.max_transaction_bytes < OBJECT_PAGE_BYTES as u64);
+            drop(db);
         }
-        assert_eq!(
-            db.plan_candidate(&objects).unwrap().reused_objects,
-            object_count
-        );
-        let existing = admission.final_batch[0].clone();
-        let mut forged = DeferredObjectStore::new_all_reachable().unwrap();
-        let forged_bytes = layerfs_content::encode_bytes_object(&u64::MAX.to_le_bytes()).unwrap();
-        assert_eq!(forged_bytes.len(), existing.bytes.len());
-        assert!(matches!(
-            forged.put(existing.id, &forged_bytes),
-            Err(StoreError::Integrity("object identity"))
-        ));
-        {
-            let mut connection = db.writer().unwrap();
-            let transaction = connection
-                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-                .unwrap();
-            assert!(matches!(
-                insert_object_batch(
-                    &transaction,
-                    std::slice::from_ref(&existing),
-                    &mut statement_number,
-                ),
-                Err(StoreError::Integrity("unexpected existing object"))
-            ));
-        }
-        let collision = CanonicalObject {
-            id: existing.id,
-            bytes: forged_bytes,
-        };
-        let mut connection = db.writer().unwrap();
-        let transaction = connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .unwrap();
-        assert!(matches!(
-            insert_object_batch(&transaction, &[collision], &mut statement_number),
-            Err(StoreError::Integrity("object collision"))
-        ));
-        drop(transaction);
-        drop(connection);
-        drop(db);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -5496,7 +5149,7 @@ mod tests {
         assert!(spill.reader.lock().unwrap().write_all(&[0]).is_err());
         let mut missing = SpillableObjectSet::empty().unwrap();
         missing.insert_page(&[root]).unwrap();
-        let order = objects.order_missing(&missing).unwrap();
+        let order = objects.order_missing(&missing, missing.count).unwrap();
         let mut visited = Vec::new();
         objects
             .visit_prevalidated_order(&order, &mut |id, bytes| {
@@ -5576,7 +5229,8 @@ mod tests {
             source: None,
             objects,
         }
-        .into_resumable();
+        .into_resumable()
+        .unwrap();
         let mut resumed = ObjectBuffer {
             source: None,
             objects,
@@ -5605,21 +5259,26 @@ mod tests {
         let first_id = ObjectId::for_bytes(&first);
         let second_id = ObjectId::for_bytes(&second);
         let corrupt_id = ObjectId::for_bytes(&corrupt);
-        {
-            let connection = db.writer().unwrap();
-            for (id, bytes) in [
-                (first_id, first.as_slice()),
-                (second_id, second.as_slice()),
-                (corrupt_id, second.as_slice()),
-            ] {
-                connection
-                    .execute(
-                        crate::statements::objects::INSERT,
-                        rusqlite::params![id.as_bytes().as_slice(), bytes],
-                    )
-                    .unwrap();
-            }
-        }
+        let objects = [
+            (first_id, &first),
+            (second_id, &second),
+            (corrupt_id, &corrupt),
+        ]
+        .into_iter()
+        .map(|(id, bytes)| CanonicalObject {
+            id,
+            bytes: bytes.clone(),
+        })
+        .collect();
+        let mut admission = CheckedOutputAdmission::new(&db).unwrap();
+        admission.admit(sealed_segment(objects)).unwrap();
+        finish_segment_admission(&db, admission);
+        // Admission itself must authenticate. Corruption belongs after a valid
+        // fixture: point the unrelated ID at the second object's locator/length.
+        db.writer().unwrap().execute(
+            "UPDATE objects SET (canonical_length,pack_id,group_number,record_number) = (SELECT canonical_length,pack_id,group_number,record_number FROM objects WHERE object_id=?1) WHERE object_id=?2",
+            rusqlite::params![second_id.as_bytes().as_slice(), corrupt_id.as_bytes().as_slice()],
+        ).unwrap();
 
         reset_read_batch_counters();
         let rows = db
@@ -5656,13 +5315,22 @@ mod tests {
             }
         );
         let trace = crate::schema::sql_trace();
-        assert_eq!(trace.len(), 1);
-        assert!(trace[0].contains("WHERE object_id ="));
-        assert!(!trace[0].contains(" IN "));
-        assert!(matches!(
-            db.read_object_rows(&[ObjectId::for_bytes(b"missing")]),
+        let locator_reads = trace
+            .iter()
+            .filter(|sql| sql.contains("FROM objects "))
+            .collect::<Vec<_>>();
+        assert_eq!(locator_reads.len(), 1, "{trace:?}");
+        assert!(locator_reads[0].contains("WHERE object_id ="));
+        assert!(!locator_reads[0].contains(" IN "));
+        let missing = ObjectId::for_bytes(b"missing");
+        assert_eq!(
+            db.read_object_rows(&[missing]),
+            Err(StoreError::Integrity("visible object missing"))
+        );
+        assert_eq!(
+            db.read_object_rows(&[first_id, missing]),
             Err(StoreError::Integrity("visible object cardinality"))
-        ));
+        );
         assert!(db.read_object_rows(&[corrupt_id]).is_err());
 
         struct Claimed(Vec<CanonicalObject>);
@@ -5709,3 +5377,6 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[cfg(test)]
+mod ingestion_tests;

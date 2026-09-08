@@ -6,7 +6,7 @@ use layerfs_layerstack_store::{
 use std::collections::BTreeSet;
 
 #[test]
-fn exact_v5_schema_runtime_and_old_schema_rejection() {
+fn exact_v7_schema_runtime_and_old_schema_rejection() {
     let root = temp("schema");
     let path = root.join("store.sqlite");
     let store = LayerStackStore::create(&path).unwrap();
@@ -16,8 +16,8 @@ fn exact_v5_schema_runtime_and_old_schema_rejection() {
         rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .unwrap();
     assert_eq!(pragma(&connection, "application_id"), 0x4c46_534c);
-    assert_eq!(pragma(&connection, "user_version"), 5);
-    assert_eq!(pragma(&connection, "page_size"), 65_536);
+    assert_eq!(pragma(&connection, "user_version"), 7);
+    assert_eq!(pragma(&connection, "page_size"), 4096);
 
     let tables = connection
         .prepare(
@@ -43,11 +43,12 @@ fn exact_v5_schema_runtime_and_old_schema_rejection() {
             ("commits".to_owned(), 4, 1, 1),
             ("layer_stacks".to_owned(), 3, 1, 1),
             ("layers".to_owned(), 6, 1, 1),
-            ("objects".to_owned(), 2, 0, 1),
+            ("object_packs".to_owned(), 2, 0, 1),
+            ("objects".to_owned(), 5, 1, 1),
             ("workspace_stages".to_owned(), 3, 1, 1),
         ]
     );
-    assert_eq!(tables.iter().map(|table| table.1).sum::<i64>(), 23);
+    assert_eq!(tables.iter().map(|table| table.1).sum::<i64>(), 28);
     let indexes = connection
         .prepare(
             "SELECT name FROM sqlite_schema \
@@ -201,6 +202,7 @@ fn directory_initialization_receipt_counts_scanned_files_and_bytes() {
             layer_stack_id: initialized.layer_stack_id,
             scanned_files: 2,
             scanned_bytes: 9,
+            source_passes: 1,
         }]
     );
 
@@ -260,26 +262,9 @@ fn no_op_commit_writes_nothing_and_every_publication_statement_rolls_back() {
     assert_eq!(std::fs::metadata(&path).unwrap().len(), before_bytes);
     assert_eq!(store_files(&root), vec!["store.sqlite"]);
 
-    let candidate = apply_changes(
-        &pinned.reader,
-        pinned.root,
-        &[ContentChange::Write {
-            path: "hello".to_owned(),
-            bytes: b"world".to_vec(),
-            mode: 0o644,
-        }],
-        [2; 32],
-    )
-    .unwrap();
-    let missing = candidate
-        .objects
-        .ids_in_order(usize::MAX)
-        .unwrap()
-        .unwrap()
-        .iter()
-        .filter(|id| store.read_object(**id).is_err())
-        .count() as u64;
-    for statement in 1..=missing + 2 {
+    // The two logical publication statements have stable fault sentinels;
+    // pack and locator insertion can batch independently of object count.
+    for statement in [1, 2, u64::MAX - 1, u64::MAX - 2] {
         let candidate = apply_changes(
             &pinned.reader,
             pinned.root,
@@ -393,23 +378,61 @@ fn visible_missing_and_same_length_corrupt_objects_are_integrity_errors() {
         .unwrap();
     let pinned = store.pin_branch(branch_id).unwrap();
     let visible_root = pinned.root;
+    let canonical = pinned.reader.read_object(visible_root).unwrap();
     drop(pinned);
     drop(store);
+    // A valid RAW singleton keeps framing and canonical length intact. Verify
+    // its positive control before changing only an authenticated payload byte.
+    let mut packed = b"LFPACK\0\0\x01\0\0\0\x01\0\0\0".to_vec();
+    for value in [
+        32,
+        canonical.len() + 9,
+        canonical.len() + 9,
+        0,
+        1,
+        canonical.len() + 1,
+    ] {
+        packed.extend_from_slice(&(value as u32).to_le_bytes());
+    }
+    packed.push(0);
+    packed.extend_from_slice(&canonical);
     let connection = rusqlite::Connection::open(&path).unwrap();
     connection
+        .execute("INSERT INTO object_packs(data) VALUES(?1)", [&packed])
+        .unwrap();
+    let pack_id = connection.last_insert_rowid();
+    connection
         .execute(
-            "UPDATE objects SET bytes=zeroblob(length(bytes)) WHERE object_id=?1",
-            [visible_root.as_bytes().as_slice()],
+            "UPDATE objects SET pack_id=?1,group_number=0,record_number=0 WHERE object_id=?2",
+            rusqlite::params![pack_id, visible_root.as_bytes().as_slice()],
         )
         .unwrap();
     drop(connection);
     let store = LayerStackStore::connect(&path).unwrap();
-    assert!(matches!(
+    assert_eq!(
+        store
+            .snapshot_reader(visible_root)
+            .read_object(visible_root)
+            .unwrap(),
+        canonical
+    );
+    drop(store);
+    *packed.last_mut().unwrap() ^= 1;
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute(
+            "UPDATE object_packs SET data=?1 WHERE pack_id=?2",
+            rusqlite::params![packed, pack_id],
+        )
+        .unwrap();
+    drop(connection);
+    let store = LayerStackStore::connect(&path).unwrap();
+    assert_eq!(
         store
             .snapshot_reader(visible_root)
             .read_object(visible_root),
-        Err(StoreError::Integrity(_))
-    ));
+        Err(StoreError::Integrity("object identity"))
+    );
     drop(store);
     let connection = rusqlite::Connection::open(&path).unwrap();
     connection

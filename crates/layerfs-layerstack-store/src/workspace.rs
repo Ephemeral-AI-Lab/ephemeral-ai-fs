@@ -1,7 +1,6 @@
 use crate::objects::{
-    admit_planned_objects, apply_reconcile_choices, combine_candidates, insert_object_batch,
-    reconcile_candidate, BuildCounters, BuiltRoot, CanonicalObject, DeferredObjectStore,
-    ObjectSource,
+    apply_reconcile_choices, combine_candidates, reconcile_candidate, BuildCounters, BuiltRoot,
+    CanonicalObject, CheckedOutputAdmission, DeferredObjectStore, ObjectSource, PreparedAdmission,
 };
 use crate::records::{
     decode_branch, decode_commit, decode_layer_stack_at, decode_object_id, optional_id,
@@ -283,7 +282,6 @@ impl LayerStackStore {
         new_base_layer_id: LayerId,
         built: BuiltRoot,
     ) -> Result<CommitOutcome> {
-        let _operation = self.db.enter_operation()?;
         #[cfg(feature = "test-instrumentation")]
         crate::schema::verification_candidate(expected.id, built.counters.spill_count);
         crate::telemetry::note_workspace_commit_cdc(built.counters.cdc_bytes_scanned);
@@ -305,15 +303,13 @@ impl LayerStackStore {
             base_layer_id: new_base_layer_id,
         };
         let started = Instant::now();
-        let plan = self.db.plan_candidate(&built.objects)?;
-        crate::telemetry::note_workspace_commit_phase(
-            crate::WorkspaceCommitPhase::LocalAdmission,
-            elapsed_ns(started),
-        );
-        let started = Instant::now();
-        let mut statement_number = 0;
-        let admission =
-            admit_planned_objects(&self.db, &built.objects, &plan, &mut statement_number)?;
+        let mut accumulator = CheckedOutputAdmission::new(&self.db)?;
+        accumulator.admit(built.objects)?;
+        let finished = accumulator.finish()?;
+        let mut receipt = finished.receipt;
+        let mut statement_number = finished.statement_number;
+        let prepared = PreparedAdmission::prepare_missing(&self.db, finished.final_batch)?;
+        let admission = finished.checked;
         crate::telemetry::note_workspace_admission(
             admission.transactions,
             admission.max_transaction_objects,
@@ -327,113 +323,100 @@ impl LayerStackStore {
             elapsed_ns(started),
         );
         let started = Instant::now();
-        let begin_started = Instant::now();
-        let mut connection = self.db.writer()?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let begin_ns = elapsed_ns(begin_started);
-        let insert_metrics =
-            insert_object_batch(&transaction, &admission.final_batch, &mut statement_number)?;
-        let metadata_started = Instant::now();
-        statement_number += 1;
-        crate::schema::fail_transaction_statement(statement_number)?;
-        if transaction.execute(
-            crate::statements::workspace::INSERT_COMMIT,
-            rusqlite::params![
-                commit.id.as_slice(),
-                commit.root_id.as_bytes().as_slice(),
-                commit.parent_commit_id.map(|id| id.to_bytes().to_vec()),
-                commit.base_layer_id.as_slice(),
-            ],
-        )? == 0
-        {
-            let existing = transaction
-                .query_row(
-                    crate::statements::branch::GET_COMMIT,
-                    [commit.id.as_slice()],
-                    decode_commit,
-                )
-                .optional()?
-                .ok_or(StoreError::Integrity("Commit conflict"))?;
-            if existing != commit {
-                return Err(StoreError::Integrity("Commit collision"));
-            }
-        }
-        statement_number += 1;
-        crate::schema::fail_transaction_statement(statement_number)?;
-        #[cfg(feature = "test-instrumentation")]
-        crate::schema::verification_store_checkpoint(
-            crate::schema::VerificationStoreFault::FinalPublication,
+        let (metadata_ns, metrics) = prepared.publish(
+            &self.db,
+            &mut statement_number,
+            |transaction, _, statement_number| {
+                let metadata_started = Instant::now();
+                *statement_number += 1;
+                crate::schema::fail_transaction_statement(*statement_number)?;
+                // Stable fault boundary independent of packed admission statement counts.
+                crate::schema::fail_transaction_statement(u64::MAX - 1)?;
+                if transaction.execute(
+                    crate::statements::workspace::INSERT_COMMIT,
+                    rusqlite::params![
+                        commit.id.as_slice(),
+                        commit.root_id.as_bytes().as_slice(),
+                        commit.parent_commit_id.map(|id| id.to_bytes().to_vec()),
+                        commit.base_layer_id.as_slice(),
+                    ],
+                )? == 0
+                {
+                    let existing = transaction
+                        .query_row(
+                            crate::statements::branch::GET_COMMIT,
+                            [commit.id.as_slice()],
+                            decode_commit,
+                        )
+                        .optional()?
+                        .ok_or(StoreError::Integrity("Commit conflict"))?;
+                    if existing != commit {
+                        return Err(StoreError::Integrity("Commit collision"));
+                    }
+                }
+                *statement_number += 1;
+                crate::schema::fail_transaction_statement(*statement_number)?;
+                #[cfg(feature = "test-instrumentation")]
+                crate::schema::verification_store_checkpoint(
+                    crate::schema::VerificationStoreFault::FinalPublication,
+                )?;
+                // Stable fault boundary independent of packed admission statement counts.
+                crate::schema::fail_transaction_statement(u64::MAX - 2)?;
+                if transaction.execute(
+                    crate::statements::workspace::ADVANCE_BRANCH,
+                    rusqlite::params![
+                        expected.id.as_slice(),
+                        commit.id.as_slice(),
+                        expected.head_commit_id.map(|id| id.to_bytes().to_vec()),
+                        new_base_layer_id.as_slice(),
+                        expected.base_layer_id.as_slice(),
+                    ],
+                )? == 0
+                {
+                    let actual = transaction
+                        .query_row(
+                            crate::statements::workspace::CURRENT_BRANCH,
+                            [expected.id.as_slice()],
+                            |row| {
+                                Ok((row.get::<_, Option<Vec<u8>>>(0)?, row.get::<_, Vec<u8>>(1)?))
+                            },
+                        )
+                        .optional()?;
+                    let actual = actual
+                        .map(|(head, _)| optional_id::<CommitId>(head))
+                        .transpose()?
+                        .flatten();
+                    return Err(StoreError::CommitHeadMoved {
+                        expected: expected.head_commit_id,
+                        actual,
+                    });
+                }
+                Ok(elapsed_ns(metadata_started))
+            },
         )?;
-        if transaction.execute(
-            crate::statements::workspace::ADVANCE_BRANCH,
-            rusqlite::params![
-                expected.id.as_slice(),
-                commit.id.as_slice(),
-                expected.head_commit_id.map(|id| id.to_bytes().to_vec()),
-                new_base_layer_id.as_slice(),
-                expected.base_layer_id.as_slice(),
-            ],
-        )? == 0
-        {
-            let actual = transaction
-                .query_row(
-                    crate::statements::workspace::CURRENT_BRANCH,
-                    [expected.id.as_slice()],
-                    |row| Ok((row.get::<_, Option<Vec<u8>>>(0)?, row.get::<_, Vec<u8>>(1)?)),
-                )
-                .optional()?;
-            drop(transaction);
-            let actual = actual
-                .map(|(head, _)| optional_id::<CommitId>(head))
-                .transpose()?
-                .flatten();
-            return Err(StoreError::CommitHeadMoved {
-                expected: expected.head_commit_id,
-                actual,
-            });
-        }
-        let metadata_ns = elapsed_ns(metadata_started);
-        let commit_started = Instant::now();
-        transaction.commit()?;
-        let commit_ns = elapsed_ns(commit_started);
         crate::telemetry::note_workspace_publication(
-            begin_ns,
-            insert_metrics.payload_ns,
-            insert_metrics.insert_ns,
+            metrics.begin_ns,
+            metrics.insert.payload_ns,
+            metrics.insert.insert_ns,
             metadata_ns,
-            commit_ns,
+            metrics.commit_ns,
         );
         crate::telemetry::note_workspace_commit_phase(
             crate::WorkspaceCommitPhase::Publication,
             elapsed_ns(started),
         );
-        crate::telemetry::record_candidate(crate::CandidateReceipt {
-            candidate_objects: plan.candidate_objects,
-            candidate_bytes: plan.candidate_bytes,
-            inserted_objects: plan.inserted_objects,
-            inserted_bytes: plan.inserted_bytes,
-            reused_objects: plan.reused_objects,
-            reused_bytes: plan.reused_bytes,
-            batch_inserted_objects: admission.batch_inserted_objects,
-            batch_inserted_bytes: admission.batch_inserted_bytes,
-            final_inserted_objects: insert_metrics.objects,
-            final_inserted_bytes: insert_metrics.bytes,
-            preexisting_reused_objects: plan.reused_objects,
-            preexisting_reused_bytes: plan.reused_bytes,
-            admission_transactions: admission.transactions,
-            max_transaction_objects: admission.max_transaction_objects,
-            max_transaction_bytes: admission.max_transaction_bytes,
-        })?;
+        crate::objects::record_admission_receipt(&mut receipt, metrics.insert, true);
+        crate::telemetry::record_candidate(receipt)?;
         Ok(CommitOutcome::Committed {
             commit_id: commit.id,
             root_id: commit.root_id,
             counters: built.counters,
-            candidate_objects: plan.candidate_objects,
-            candidate_bytes: plan.candidate_bytes,
-            inserted_objects: plan.inserted_objects,
-            inserted_bytes: plan.inserted_bytes,
-            reused_objects: plan.reused_objects,
-            reused_bytes: plan.reused_bytes,
+            candidate_objects: receipt.candidate_objects,
+            candidate_bytes: receipt.candidate_bytes,
+            inserted_objects: receipt.inserted_objects,
+            inserted_bytes: receipt.inserted_bytes,
+            reused_objects: receipt.reused_objects,
+            reused_bytes: receipt.reused_bytes,
         })
     }
 
@@ -449,7 +432,6 @@ impl LayerStackStore {
         if admission.workspace_id != workspace_id || !self.db.same_instance(&admission.db) {
             return Err(StoreError::Integrity("Workspace admission owner"));
         }
-        let _operation = self.db.enter_operation()?;
         #[cfg(feature = "test-instrumentation")]
         crate::schema::verification_candidate(expected.id, built.counters.spill_count);
         crate::telemetry::note_workspace_commit_cdc(built.counters.cdc_bytes_scanned);
@@ -466,7 +448,8 @@ impl LayerStackStore {
         }
 
         let started = Instant::now();
-        let (admission, mut statement_number) = admission.admit_remaining(built.objects)?;
+        let (admission, mut statement_number, session) =
+            admission.admit_remaining(built.objects)?;
         crate::telemetry::note_workspace_admission(
             admission.transactions,
             admission.max_transaction_objects,
@@ -501,7 +484,9 @@ impl LayerStackStore {
             receipt.validate()?;
         }
 
-        let stage = self.stage_workspace_root(workspace_id, expected.id, built.root_id)?;
+        let stage =
+            session.resolve(self.stage_workspace_root(workspace_id, expected.id, built.root_id))?;
+        session.retain();
         let publication_started = Instant::now();
         let begin_started = Instant::now();
         let mut connection = self.db.writer()?;
@@ -543,6 +528,8 @@ impl LayerStackStore {
             };
             statement_number += 1;
             crate::schema::fail_transaction_statement(statement_number)?;
+            // Stable fault boundary independent of packed admission statement counts.
+            crate::schema::fail_transaction_statement(u64::MAX - 1)?;
             if transaction.execute(
                 crate::statements::workspace::INSERT_COMMIT,
                 rusqlite::params![
@@ -571,6 +558,8 @@ impl LayerStackStore {
             crate::schema::verification_store_checkpoint(
                 crate::schema::VerificationStoreFault::FinalPublication,
             )?;
+            // Stable fault boundary independent of packed admission statement counts.
+            crate::schema::fail_transaction_statement(u64::MAX - 2)?;
             if transaction.execute(
                 crate::statements::workspace::ADVANCE_BRANCH,
                 rusqlite::params![
@@ -674,6 +663,27 @@ impl SnapshotReader {
                 .lock()
                 .map_err(|_| StoreError::Integrity("read metrics"))?,
         ))
+    }
+
+    pub(crate) fn note_delivery_diagnostic(&self, stats: crate::PhysicalStorageReceipt) {
+        self.db.note_physical(stats);
+    }
+
+    pub(crate) fn note_predecessor_correspondence(
+        &self,
+        reserved: u64,
+        descriptors: u64,
+        skips: u64,
+        memory_skipped: bool,
+    ) {
+        self.db.note_physical(crate::PhysicalStorageReceipt {
+            correspondence_reserved_bytes: reserved,
+            correspondence_descriptors: descriptors,
+            correspondence_budget_skips: skips,
+            memory_budget_skips: u64::from(memory_skipped && skips != 0),
+            budget_skips: skips,
+            ..Default::default()
+        });
     }
 
     pub fn read_metrics_snapshot(&self) -> Result<WorkspaceReadReceipt> {
@@ -860,15 +870,19 @@ impl ObjectSource for SnapshotReader {
                 bytes
             }
         };
-        self.cache_object(&CanonicalObject {
-            id,
-            bytes: bytes.clone(),
-        })?;
-        self.note_local_read(1, 1, bytes.len() as u64, elapsed_ns(started))?;
-        Ok(bytes)
+        let object = CanonicalObject { id, bytes };
+        self.cache_object(&object)?;
+        self.note_local_read(1, 1, object.bytes.len() as u64, elapsed_ns(started))?;
+        Ok(object.bytes)
     }
 
     fn read_authenticated_objects(&self, ids: &[ObjectId]) -> Result<Vec<CanonicalObject>> {
+        if let [id] = ids {
+            return Ok(vec![CanonicalObject {
+                id: *id,
+                bytes: self.read_object(*id)?,
+            }]);
+        }
         if ids.len() > crate::OBJECT_PAGE_COUNT {
             return Err(StoreError::InvalidInput("object read page"));
         }
@@ -974,22 +988,36 @@ mod tests {
         let second_id = ObjectId::for_bytes(&second);
         let unrelated_id = ObjectId::for_bytes(&unrelated);
         let corrupt_id = ObjectId::for_bytes(b"different bytes");
-        {
-            let connection = store.db.writer().unwrap();
-            for (id, bytes) in [
-                (first_id, first.as_slice()),
-                (second_id, second.as_slice()),
-                (unrelated_id, unrelated.as_slice()),
-                (corrupt_id, corrupt.as_slice()),
-            ] {
-                connection
-                    .execute(
-                        crate::statements::objects::INSERT,
-                        rusqlite::params![id.as_bytes().as_slice(), bytes],
-                    )
-                    .unwrap();
-            }
+        fn admit(store: &LayerStackStore, bytes: &[u8]) -> ObjectId {
+            use layerfs_content::object::access::ObjectStore;
+            let mut buffer = crate::ObjectBuffer::empty().unwrap();
+            let id = buffer.put(bytes).unwrap();
+            let objects = buffer.finish(id, 0).unwrap().objects;
+            let mut admission = crate::objects::CheckedOutputAdmission::new(&store.db).unwrap();
+            admission.admit(objects).unwrap();
+            let mut finished = admission.finish().unwrap();
+            crate::objects::PreparedAdmission::prepare_missing(&store.db, finished.final_batch)
+                .unwrap()
+                .publish(&store.db, &mut finished.statement_number, |_, _, _| Ok(()))
+                .unwrap();
+            id
         }
+        for bytes in [&first, &second, &unrelated, &corrupt] {
+            admit(&store, bytes);
+        }
+        // Corrupt only an unrelated selected identity after valid packed admission.
+        store
+            .db
+            .writer()
+            .unwrap()
+            .execute(
+                "UPDATE objects SET object_id=?1 WHERE object_id=?2",
+                rusqlite::params![
+                    corrupt_id.as_bytes().as_slice(),
+                    ObjectId::for_bytes(&corrupt).as_bytes().as_slice()
+                ],
+            )
+            .unwrap();
 
         let reader = store.snapshot_reader(first_id);
         #[cfg(feature = "test-instrumentation")]
@@ -1085,15 +1113,10 @@ mod tests {
         .unwrap();
         assert!(structural.len() > SNAPSHOT_CACHE_PAYLOAD_BYTES);
         let structural_id = ObjectId::for_bytes(&structural);
-        store
-            .db
-            .writer()
-            .unwrap()
-            .execute(
-                crate::statements::objects::INSERT,
-                rusqlite::params![structural_id.as_bytes().as_slice(), structural],
-            )
-            .unwrap();
+        // The cache proof removed these locators; restore the real dependency
+        // before admitting a structural object that references it.
+        assert_eq!(admit(&store, &first), first_id);
+        assert_eq!(admit(&store, &structural), structural_id);
         assert_eq!(reader.read_object(structural_id).unwrap(), structural);
         reader.reset_read_metrics().unwrap();
         assert_eq!(

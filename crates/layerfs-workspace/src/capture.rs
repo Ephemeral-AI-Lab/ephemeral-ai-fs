@@ -194,6 +194,7 @@ impl Read for CaptureReader {
 
 fn build_capture(receiver: Receiver<CaptureMessage>) -> Result<CapturedContent> {
     let mut objects = ObjectBuffer::bounded_output(None)?;
+    objects.diagnostic_file_payloads();
     let reader = CaptureReader {
         receiver,
         current: Cursor::new(Vec::new()),
@@ -203,6 +204,6 @@ fn build_capture(receiver: Receiver<CaptureMessage>) -> Result<CapturedContent> 
     Ok(CapturedContent {
         root,
         counters,
-        objects: objects.into_resumable(),
+        objects: objects.into_resumable()?,
     })
 }

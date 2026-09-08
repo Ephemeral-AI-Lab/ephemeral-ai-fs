@@ -1,4 +1,4 @@
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 mod branch;
 mod error;
@@ -38,9 +38,9 @@ pub use telemetry::{
     note_workspace_spool_retirement, record_fuse_write, record_workspace_lifecycle,
     record_workspace_read, take_storage_receipts, take_workspace_commit_diagnostics,
     CandidateReceipt, CaptureMode, FuseWriteReceipt, LayerStackInitializationReceipt,
-    StorageReceipt, WorkspaceCommitDiagnostics, WorkspaceCommitDiagnosticsGuard,
-    WorkspaceCommitPhase, WorkspaceCommitReceipt, WorkspaceCommitTimer, WorkspaceLifecycleKind,
-    WorkspaceLifecycleReceipt,
+    PhysicalStorageReceipt, StorageReceipt, WorkspaceCommitDiagnostics,
+    WorkspaceCommitDiagnosticsGuard, WorkspaceCommitPhase, WorkspaceCommitReceipt,
+    WorkspaceCommitTimer, WorkspaceLifecycleKind, WorkspaceLifecycleReceipt,
 };
 pub use workspace::{
     CommitOutcome, PinnedSnapshot, PreparedReconciliation, SnapshotReader, WorkspaceLease,

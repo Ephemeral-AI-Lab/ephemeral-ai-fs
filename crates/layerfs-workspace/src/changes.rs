@@ -345,7 +345,13 @@ impl Workspace {
     // edges directly preserves untouched subtrees, including a renamed directory,
     // without building either complete namespace manifest.
     fn build_frontier_candidate(&mut self, purpose: CandidatePurpose) -> Result<PreparedCommit> {
-        self.build_frontier_candidate_with_workers(purpose, 1)
+        let workers = std::thread::available_parallelism()
+            .map(std::num::NonZeroUsize::get)
+            .unwrap_or(1)
+            .min(8);
+        // CandidateInputs further caps workers by eligible tasks and partitions
+        // the existing aggregate journal, candidate and spill allowances.
+        self.build_frontier_candidate_with_workers(purpose, workers)
     }
 
     fn build_frontier_candidate_with_workers(
@@ -582,6 +588,8 @@ impl CandidateInputs<'_> {
             dirty: self.live.dirty,
             reader: self.reader.clone(),
             base_inodes: self.base_inodes,
+            base_root: self.live.base_root,
+            correspondence_reserved: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             generation: self.live.mutation_generation,
             spool: self.spool,
             io_bytes: io_bytes / 2,
@@ -930,11 +938,13 @@ struct StableFileInputs<'a> {
     spool: &'a std::path::Path,
     io_bytes: usize,
     captured: std::sync::Mutex<Option<crate::capture::CapturedFile>>,
+    base_root: ObjectId,
+    correspondence_reserved: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 // Fixed task slots restore ordinal order without an in-memory completion map.
 // Each slot holds NodeId, worker+1, journal offset and encoded result length.
-const FILE_TASK_BYTES: u64 = 32;
+const FILE_TASK_BYTES: u64 = 324;
 struct FileTaskPlan {
     file: File,
     count: usize,
@@ -1036,6 +1046,10 @@ impl StableFileInputs<'_> {
     fn prepare(&self) -> Result<FileTaskPlan> {
         let mut writer = BufWriter::with_capacity(self.io_bytes, anonymous_journal(self.spool)?);
         let mut count = 0_usize;
+        // One 8-KiB canonical directory page per lookup plus decoded/request
+        // ownership; callbacks discard each decoded node before the next one.
+        let limit = (self.io_bytes / (16 * 1024)).clamp(1, 128);
+        let mut page = Vec::with_capacity(limit);
         for &id in self.dirty {
             let node = self
                 .nodes
@@ -1044,12 +1058,17 @@ impl StableFileInputs<'_> {
             if !matches!(node.data, Data::File(_)) || (node.paths.is_empty() && node.links == 0) {
                 continue;
             }
-            let mut slot = [0; FILE_TASK_BYTES as usize];
-            slot[..8].copy_from_slice(&id.0.to_le_bytes());
-            writer.write_all(&slot)?;
+            page.push(id);
             count = count
                 .checked_add(1)
                 .ok_or(StorageError::Integrity("file task count"))?;
+            if page.len() == limit {
+                self.prepare_page(&page, &mut writer)?;
+                page.clear();
+            }
+        }
+        if !page.is_empty() {
+            self.prepare_page(&page, &mut writer)?;
         }
         writer.flush()?;
         Ok(FileTaskPlan {
@@ -1057,6 +1076,128 @@ impl StableFileInputs<'_> {
             count,
             generation: self.generation,
         })
+    }
+
+    fn prepare_page(&self, page: &[NodeId], writer: &mut impl Write) -> Result<()> {
+        let core = CoreReader(&self.reader);
+        let mut before = vec![None; page.len()];
+        let known: Vec<_> = page
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, id)| self.nodes[id].canonical.map(|inode| (slot, inode)))
+            .collect();
+        let keys: Vec<_> = known.iter().map(|(_, inode)| *inode).collect();
+        if !keys.is_empty() {
+            for ((slot, _), record) in known.into_iter().zip(FrontierInodes::base_records(
+                &core,
+                self.base_inodes,
+                &keys,
+                page.len(),
+            )?) {
+                before[slot] = Some(record);
+            }
+        }
+        let mut prior = before.clone();
+        let mut paths: Vec<_> = page
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, id)| {
+                if before[slot].is_some() {
+                    return None;
+                }
+                self.nodes[id]
+                    .paths
+                    .first()
+                    .map(|path| (slot, path.split('/')))
+            })
+            .collect();
+        if !paths.is_empty() {
+            let namespace = filesystem::namespace(&core, self.base_root)?;
+            let root = FrontierInodes::base_records(
+                &core,
+                self.base_inodes,
+                &[namespace.root_directory_inode],
+                1,
+            )?[0];
+            for (slot, _) in &paths {
+                prior[*slot] = Some(root);
+            }
+            // Directory states/nodes and inode records use bounded reader waves
+            // at each path depth, including requests spanning distinct directories.
+            loop {
+                let mut lookups = Vec::with_capacity(page.len());
+                for (slot, components) in &mut paths {
+                    let Some(record) = prior[*slot] else {
+                        continue;
+                    };
+                    let Some(component) = components.next() else {
+                        continue;
+                    };
+                    if record.kind != InodeKind::Directory {
+                        prior[*slot] = None;
+                        continue;
+                    }
+                    lookups.push((*slot, record.content_root, component));
+                }
+                if lookups.is_empty() {
+                    break;
+                }
+                lookups.sort_unstable_by_key(|(_, root, name)| (*root, *name));
+                let mut slots = Vec::with_capacity(lookups.len());
+                let mut keys = Vec::with_capacity(lookups.len());
+                let directory_keys = lookups
+                    .iter()
+                    .map(|(_, root, component)| {
+                        Ok((
+                            DirectoryStateRoot(*root),
+                            CanonicalName::from_bytes(component.as_bytes())?,
+                        ))
+                    })
+                    .collect::<layerfs_content::CoreResult<Vec<_>>>()?;
+                let found = layerfs_content::tree::directory::directory_lookup_many(
+                    &core,
+                    &directory_keys,
+                    &mut NamespaceCounters::default(),
+                )?;
+                for ((slot, _, _), inode) in lookups.into_iter().zip(found) {
+                    match inode {
+                        Some(inode) => {
+                            slots.push(slot);
+                            keys.push(inode);
+                        }
+                        None => prior[slot] = None,
+                    }
+                }
+                if !keys.is_empty() {
+                    for (slot, record) in slots.into_iter().zip(FrontierInodes::base_records(
+                        &core,
+                        self.base_inodes,
+                        &keys,
+                        page.len(),
+                    )?) {
+                        prior[slot] = Some(record);
+                    }
+                }
+            }
+        }
+        for (slot, id) in page.iter().enumerate() {
+            let mut encoded = [0; FILE_TASK_BYTES as usize];
+            encoded[..8].copy_from_slice(&id.0.to_le_bytes());
+            if let Some(record) = prior[slot].filter(|record| record.kind == InodeKind::RegularFile)
+            {
+                encoded[32..64].copy_from_slice(record.content_root.as_bytes());
+            }
+            if let Some(record) = before[slot] {
+                let record = encode_inode_record(record)?;
+                if record.len() > 256 {
+                    return Err(StorageError::Integrity("file predecessor record size"));
+                }
+                encoded[64..68].copy_from_slice(&(record.len() as u32).to_le_bytes());
+                encoded[68..68 + record.len()].copy_from_slice(&record);
+            }
+            writer.write_all(&encoded)?;
+        }
+        Ok(())
     }
 
     fn worker(&self, worker: usize, workers: usize) -> Result<FileResultWriter> {
@@ -1086,20 +1227,25 @@ impl StableFileInputs<'_> {
             .get(&id)
             .ok_or(StorageError::Integrity("frozen file node"))?;
         let input = FrozenFile::from_node(&self.reader, node)?;
-        let before = node
-            .canonical
-            .map(|inode| -> Result<_> {
-                let core = CoreReader(&self.reader);
-                let record = inode_table_lookup(
-                    &core,
-                    self.base_inodes,
-                    inode,
-                    &mut InodeTableCounters::default(),
-                )?
-                .ok_or(StorageError::Integrity("frozen file inode"))?;
-                Ok(core.with_authenticated_canonical(record, decode_inode_record)?)
-            })
-            .transpose()?;
+        let mut prepared = [0; FILE_TASK_BYTES as usize];
+        index.read_exact_at(&mut prepared, ordinal as u64 * FILE_TASK_BYTES)?;
+        if u64::from_le_bytes(prepared[..8].try_into().unwrap()) != id.0 {
+            return Err(StorageError::Integrity("file predecessor task"));
+        }
+        let before_len = u32::from_le_bytes(prepared[64..68].try_into().unwrap()) as usize;
+        if before_len > 256 {
+            return Err(StorageError::Integrity("file predecessor record"));
+        }
+        let before = if before_len == 0 {
+            None
+        } else {
+            Some(decode_inode_record(&prepared[68..68 + before_len])?)
+        };
+        let predecessor = if prepared[32..64].iter().all(|byte| *byte == 0) {
+            None
+        } else {
+            Some(FileStateRoot(ObjectId::from_bytes(&prepared[32..64])?))
+        };
         let captured = {
             let mut captured = self
                 .captured
@@ -1114,7 +1260,13 @@ impl StableFileInputs<'_> {
                 None
             }
         };
-        let built = input.build(before, captured, worker.partitions)?;
+        let built = input.build(
+            before,
+            predecessor,
+            self.correspondence_reserved.clone(),
+            captured,
+            worker.partitions,
+        )?;
         let root = built.root_id;
         add_build_counters(&mut worker.counters, built.counters);
         emit(built.objects)?;
@@ -1198,7 +1350,7 @@ impl FileResults {
             .and_then(|worker| usize::try_from(worker).ok())
             .ok_or(StorageError::Integrity("missing file result"))?;
         let offset = u64::from_le_bytes(slot[16..24].try_into().unwrap());
-        let encoded_len = u64::from_le_bytes(slot[24..].try_into().unwrap());
+        let encoded_len = u64::from_le_bytes(slot[24..32].try_into().unwrap());
         if u64::from_le_bytes(slot[..8].try_into().unwrap()) != node.0
             || self.offsets.get(worker) != Some(&offset)
             || !(52..=308).contains(&encoded_len)
@@ -1293,16 +1445,11 @@ impl FrozenFile {
     fn build(
         &self,
         before: Option<InodeRecordV1>,
+        predecessor: Option<FileStateRoot>,
+        correspondence_reserved: std::sync::Arc<std::sync::atomic::AtomicU64>,
         captured: Option<crate::capture::CapturedFile>,
         partitions: usize,
     ) -> Result<BuiltRoot> {
-        if before.is_none() && captured.is_none() {
-            return ObjectBuffer::build_complete_file_partition(
-                self.reader(),
-                self.len,
-                partitions,
-            );
-        }
         let (mut objects, captured_root) = match captured {
             Some(captured) => {
                 if captured.len != self.len {
@@ -1315,7 +1462,16 @@ impl FrozenFile {
             }
             None => (ObjectBuffer::bounded_output(Some(&self.reader))?, None),
         };
+        objects.diagnostic_file_payloads();
         objects.partition_output(partitions)?;
+        if let Some(predecessor) = predecessor {
+            objects.set_physical_predecessor(
+                self.reader.clone(),
+                predecessor,
+                correspondence_reserved,
+            )?;
+        }
+
         let (root, counters) = if let Some(captured) = captured_root {
             captured
         } else if let Some(record) = before {
@@ -1328,20 +1484,12 @@ impl FrozenFile {
                         (FileStateRoot(record.content_root), RopeCounters::default())
                     }
                     None => {
-                        return ObjectBuffer::build_complete_file_partition(
-                            self.reader(),
-                            self.len,
-                            partitions,
-                        )
+                        return objects.build_complete_with_predecessor(self.reader(), self.len)
                     }
                 }
             }
         } else {
-            return ObjectBuffer::build_complete_file_partition(
-                self.reader(),
-                self.len,
-                partitions,
-            );
+            return objects.build_complete_with_predecessor(self.reader(), self.len);
         };
         if rope::state(&objects, root, &mut RopeCounters::default())?.logical_len != self.len {
             return Err(StorageError::Integrity("completed file length"));
@@ -2491,7 +2639,7 @@ mod tests {
                     len: files[0].1.len() as u64,
                     root,
                     counters,
-                    objects: objects.into_resumable(),
+                    objects: objects.into_resumable().unwrap(),
                 }));
         };
         let before = workspace.store.store_counts().unwrap();
@@ -2608,6 +2756,8 @@ mod tests {
             dirty: &workspace.live.dirty,
             reader: workspace.reader.clone(),
             base_inodes: workspace.base_inodes,
+            base_root: workspace.base_root,
+            correspondence_reserved: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             generation: workspace.live.mutation_generation,
             spool: &workspace.spool,
             io_bytes: 1024,

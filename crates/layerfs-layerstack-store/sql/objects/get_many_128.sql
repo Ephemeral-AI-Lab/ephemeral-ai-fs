@@ -2,7 +2,7 @@
 -- name: get_many_128
 -- parameters: ?1..?128 ObjectIds, unused positions NULL
 -- results: object_id, bytes ordered by object_id
-SELECT object_id, bytes
+SELECT object_id, canonical_length, pack_id, group_number, record_number
 FROM objects
 WHERE object_id IN (
     ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,

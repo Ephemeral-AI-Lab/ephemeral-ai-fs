@@ -103,13 +103,16 @@ pub fn replace_range_with_metadata<S: ObjectStore, R: Read>(
     if resolved.record.kind != InodeKind::RegularFile {
         return Err(CoreError::WrongLogicalRole);
     }
-    let (content, rope) = replace(
+    let previous = store.set_file_payload_context(true);
+    let result = replace(
         store,
         FileStateRoot(resolved.record.content_root),
         start,
         delete_len,
         replacement,
-    )?;
+    );
+    store.set_file_payload_context(previous);
+    let (content, rope) = result?;
     counters.rope = rope;
     let NamespaceRootV1 {
         profile_id,
@@ -399,6 +402,40 @@ pub fn build_initial_directory(
     Ok(root)
 }
 
+/// Builds strictly sorted, unique bindings without incremental tree insertion.
+/// Scratch and retained canonical objects keep their existing construction bounds;
+/// only final reachable objects are transferred to the caller's store.
+#[doc(hidden)]
+pub fn build_initial_directory_sorted(
+    store: &mut impl ObjectStore,
+    entries: impl IntoIterator<Item = (crate::CanonicalName, InodeId)>,
+) -> CoreResult<DirectoryStateRoot> {
+    Ok(build_initial_directory_sorted_observed(store, entries)?.0)
+}
+
+fn build_initial_directory_sorted_observed(
+    store: &mut impl ObjectStore,
+    entries: impl IntoIterator<Item = (crate::CanonicalName, InodeId)>,
+) -> CoreResult<(
+    DirectoryStateRoot,
+    crate::tree::batch::TreeBatchCounters,
+    usize,
+)> {
+    let mut deferred = DeferredDirectory::new(store);
+    let empty = empty_directory(&mut deferred)?;
+    let (root, counters) = crate::tree::batch::directory_apply_sorted_with_budget(
+        &mut deferred,
+        empty,
+        entries
+            .into_iter()
+            .map(|(name, inode)| Ok((name, Some(inode)))),
+        crate::tree::batch::SORTED_TREE_UPDATE_SCRATCH_BYTES,
+    )?;
+    let peak_bytes = deferred.peak_charged_bytes();
+    deferred.commit(root)?;
+    Ok((root, counters, peak_bytes))
+}
+
 pub fn apply_directory_changes_observed(
     store: &mut impl ObjectStore,
     root: DirectoryStateRoot,
@@ -684,7 +721,10 @@ where
         &name,
         &mut counters.namespace,
     )?;
-    let (content, rope) = build(store, input)?;
+    let previous = store.set_file_payload_context(true);
+    let result = build(store, input);
+    store.set_file_payload_context(previous);
+    let (content, rope) = result?;
     counters.rope = rope;
     let table = InodeTableRoot(namespace.inode_table_root);
     let (inode, record) = match directory.take() {
@@ -855,6 +895,118 @@ mod tests {
     }
 
     #[test]
+    fn public_file_changes_scope_payload_provenance_and_restore_after_errors() {
+        #[derive(Default)]
+        struct ProvenanceStore {
+            inner: CountingStore,
+            file: bool,
+            payloads: Vec<(ObjectId, bool, u64, u32)>,
+        }
+        impl ObjectStore for ProvenanceStore {
+            fn get(&self, id: ObjectId) -> CoreResult<Vec<u8>> {
+                self.inner.get(id)
+            }
+
+            fn put(&mut self, bytes: &[u8]) -> CoreResult<ObjectId> {
+                self.inner.put(bytes)
+            }
+
+            fn set_file_payload_context(&mut self, enabled: bool) -> bool {
+                std::mem::replace(&mut self.file, enabled)
+            }
+
+            fn put_file_payload(
+                &mut self,
+                canonical: Vec<u8>,
+                start: u64,
+                len: u32,
+            ) -> CoreResult<ObjectId> {
+                let id = self.put(&canonical)?;
+                self.payloads.push((id, self.file, start, len));
+                Ok(id)
+            }
+        }
+        use crate::filesystem::{apply_changes, empty_root, ContentChange};
+        let mut actual = ProvenanceStore::default();
+        let mut expected = CountingStore::default();
+        let mut root = empty_root(&mut actual, [1; 32]).unwrap();
+        assert_eq!(root, empty_root(&mut expected, [1; 32]).unwrap());
+        let data = vec![b'x'; 4096];
+        let payload =
+            ObjectId::for_bytes(&crate::file::extent_codec::encode_chunk_object(&data).unwrap());
+        for change in [
+            ContentChange::Write {
+                path: "file".to_owned(),
+                bytes: data,
+                mode: 0o644,
+            },
+            ContentChange::Splice {
+                path: "file".to_owned(),
+                start: 19,
+                delete_len: 5,
+                replacement: b"patch".to_vec(),
+            },
+            ContentChange::SetMode {
+                path: "file".to_owned(),
+                mode: 0o600,
+            },
+            ContentChange::Symlink {
+                path: "link".to_owned(),
+                target: b"file".to_vec(),
+            },
+        ] {
+            actual.payloads.clear();
+            let changes = std::slice::from_ref(&change);
+            let applied = apply_changes(&mut actual, root, changes, [2; 32]).unwrap();
+            assert_eq!(
+                applied,
+                apply_changes(&mut expected, root, changes, [2; 32]).unwrap()
+            );
+            assert_eq!(actual.inner.objects, expected.objects);
+            assert!(!actual.file);
+            assert!(!actual.payloads.is_empty());
+            match change {
+                ContentChange::Write { .. } => {
+                    assert_eq!(
+                        actual
+                            .payloads
+                            .iter()
+                            .filter(|entry| entry.1)
+                            .copied()
+                            .collect::<Vec<_>>(),
+                        vec![(payload, true, 0, 4096)]
+                    );
+                    assert!(actual.payloads.iter().any(|entry| !entry.1));
+                }
+                ContentChange::Splice { .. } => {
+                    assert!(actual.payloads.iter().all(|entry| entry.1 && entry.3 > 0));
+                }
+                _ => assert!(actual.payloads.iter().all(|entry| !entry.1)),
+            }
+            root = applied.root_id;
+        }
+        struct Broken;
+        impl Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::Other.into())
+            }
+        }
+        let path = CanonicalPath::new("file").unwrap();
+        for previous in [false, true] {
+            actual.file = previous;
+            assert!(replace_file(&mut actual, root, &path, Broken, |_| unreachable!()).is_err());
+            assert_eq!(actual.file, previous);
+            assert!(replace_range(&mut actual, root, &path, 19, 5, Broken).is_err());
+            assert_eq!(actual.file, previous);
+        }
+        actual.file = false;
+        actual.payloads.clear();
+        crate::filesystem::set_mtime(&mut actual, root, &path, 7, 0).unwrap();
+        assert!(!actual.payloads.is_empty());
+        assert!(actual.payloads.iter().all(|entry| !entry.1));
+    }
+
+    #[test]
     fn initial_directory_sorted_transfer_matches_insertion_and_fallback() {
         for count in [0, 1, 100, 189, 190, 285, 500, 513] {
             for reverse in [false, true] {
@@ -897,6 +1049,78 @@ mod tests {
         assert_eq!(
             build_initial_directory(&mut store, [entry.clone(), entry]),
             Err(CoreError::NameCollision)
+        );
+        assert!(store.objects.is_empty());
+    }
+
+    #[test]
+    fn initial_directory_sorted_wide_matches_final_objects_with_bounded_work() {
+        for (count, long_names) in [
+            (0, false),
+            (1, false),
+            (512, false),
+            (513, false),
+            (7589, false),
+            (7589, true),
+        ] {
+            let entries = || {
+                (0..count).map(|index| {
+                    let prefix = format!("f{index:05}");
+                    let suffix = if long_names {
+                        255 - prefix.len()
+                    } else {
+                        index % 37
+                    };
+                    (
+                        crate::CanonicalName::new(&format!("{prefix}{}", "x".repeat(suffix)))
+                            .unwrap(),
+                        InodeId::allocate([47; 32], index as u64),
+                    )
+                })
+            };
+            let mut expected = CountingStore::default();
+            let mut deferred = DeferredDirectory::new(&mut expected);
+            let mut root = empty_directory(&mut deferred).unwrap();
+            let mut incremental_nodes = 0;
+            for (name, inode) in entries() {
+                let (next, counters) = directory_insert(&mut deferred, root, name, inode).unwrap();
+                incremental_nodes += counters.nodes_created;
+                root = next;
+                deferred.prune_to(root).unwrap();
+            }
+            deferred.commit(root).unwrap();
+            let mut actual = CountingStore::default();
+            let (sorted, counters, peak_bytes) =
+                build_initial_directory_sorted_observed(&mut actual, entries()).unwrap();
+            assert_eq!(sorted, root, "count={count}, long_names={long_names}");
+            assert_eq!(actual.objects, expected.objects);
+            assert!(
+                counters.peak_scratch_bytes < crate::tree::batch::SORTED_TREE_UPDATE_SCRATCH_BYTES
+            );
+            assert!(peak_bytes <= crate::tree::directory::DEFERRED_DIRECTORY_MAX_BYTES);
+            if count > 512 {
+                assert!(counters.nodes_created < incremental_nodes);
+            }
+        }
+    }
+
+    #[test]
+    fn initial_directory_sorted_rejects_invalid_order_and_ownership_overflow_privately() {
+        let entry = |index| {
+            (
+                crate::CanonicalName::new(&format!("f{index:06}{}", "x".repeat(248))).unwrap(),
+                InodeId::allocate([47; 32], index),
+            )
+        };
+        for indices in [[1, 0], [0, 0]] {
+            let mut store = CountingStore::default();
+            assert!(build_initial_directory_sorted(&mut store, indices.map(entry)).is_err());
+            assert!(store.objects.is_empty());
+        }
+        let mut store = CountingStore::default();
+        assert_eq!(
+            build_initial_directory_sorted(&mut store, (0..100_000).map(entry)),
+            Err(CoreError::ObjectLimitExceeded),
         );
         assert!(store.objects.is_empty());
     }

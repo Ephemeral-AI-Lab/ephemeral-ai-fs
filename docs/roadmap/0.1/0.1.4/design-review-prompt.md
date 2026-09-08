@@ -1,7 +1,7 @@
 # v0.1.4 storage design review prompt
 
 Copy the prompt below into a review task. It requests a review and recommendations,
-not implementation or a new benchmark campaign. The review must distinguish
+not implementation, test-verification planning, or a new benchmark campaign. The review must distinguish
 mechanistic reasoning from measured proof; document review cannot guarantee
 storage ratios or latency.
 
@@ -28,7 +28,9 @@ contract. Do not repeatedly ask for approval for normal read-only investigation.
 Read applicable AGENTS.md and review skills. Record the repository revision,
 branch, and reviewed document identities. Preserve unrelated working-tree edits.
 Inspect the proposed PR/branch if the files are not on main; do not substitute an
-older roadmap silently. The original proposal is in PR #77:
+older roadmap silently. PR #77 merged at `28177560c8f049c02192e18c263cdc5543c1ab52`; the revised
+specification builds on its independent audit. Use the actual revision under
+review, not the original worktree as an authority. The original proposal is in PR #77:
 https://github.com/Ephemeral-AI-Lab/layerfs/pull/77
 
 The original documentation worktree is:
@@ -45,6 +47,9 @@ Read these documents in full:
 - `docs/roadmap/0.1/0.1.4/storage-architecture-spec.md`
 - `docs/roadmap/0.1/0.1.4/sqlite-storage-format.md`
 - `docs/roadmap/0.1/0.1.4/evidence.md`
+- `docs/roadmap/0.1/0.1.4/review-disposition.md`
+- PR #80's pinned development-smoke plan linked by the boundary document; preserve
+  its first-five-checkpoint scope and host SQLite/SDK + managed Docker/real FUSE topology.
 
 Read relevant compatibility and architecture context:
 
@@ -107,10 +112,16 @@ are intentionally TBD. Review whether the design states what needs validation,
 but do not fill those placeholders, adopt old family populations, or turn this
 review into benchmark implementation. Existing benchmark rules still apply.
 
-Proposed pack/group sizes, codec, delta depth, base-search count, schema, and
-format compatibility are not frozen measured conclusions. Identify the decisions
-that must be resolved before implementation. A large code change is acceptable;
-a silent incompatible format or public-semantic change is not.
+The revised architecture/format specify proposed wire fields, bounds, codec,
+hint provenance, admission races and selection approximation. Review those concrete
+rules rather than treating them as unspecified; they are not measured conclusions.
+The compatibility transition remains an explicit owner policy decision. PR #80
+already records three development smokes and the confirmed topology; do not repeat
+blanket environment/test-plan deferral. Its remaining prerequisites and the separate
+full-family/numerical qualification definitions are open. Do not expand or execute
+them during this review or classify those intentional open details as design defects. Identify only
+remaining architectural contradictions or owner-required decisions. A large code
+change is acceptable; a silent incompatible format or public-semantic change is not.
 
 ## A. Clarity and end-to-end consistency
 
@@ -197,6 +208,21 @@ multiplied by its total service time per operation. Label assumptions. Tool-call
 rate is not SQL transaction rate: each call may cause multiple admission batches,
 reads, staging and publication transactions. A large Init or formatter call can
 produce far more work than a small edit at the same QPS.
+
+Require <=2 membership visits per distinct admission candidate and no shrinking-set
+retry. Audit scalar-but-linear costs separately: parameter/byte-bounded multirow
+pack/locator INSERTs, scratch-page insertion/membership, buffered sealed ID-order
+I/O, grouped target/base read waves and incremental pack counters. State N, B, G,
+M, touched nodes and H separately; SQLite/B-tree access is indexed/logarithmic,
+required canonical sorting may remain, and Init has unavoidable linear source work.
+No finite cap or low QPS excuses a quadratic admission mechanism. No whole-history
+scan or old-tree restart per emitted chunk is allowed for physical hints. Include
+the nonempty-Store Init parent-copy path, SpillDiskIndex flush/location callers,
+shared invalidation-view versus per-conflict manifest rebuilding, and FIFO broadcast
+fanout in the closure matrix. Preserve exact resolution fingerprints and disclose
+remaining overlapping-scope work rather than claiming every Commit path linear.
+Targeted FIFO notification must identify the next waiter, not blindly notify_one
+on a shared ticket condition variable.
 
 Examine writer lock duration, shared reader/writer connection locking, compression
 outside locks, bounded queueing, fairness, peak memory across active operations,
@@ -305,10 +331,16 @@ Then provide:
    explicitly deferred cloud responsibilities.
 7. **Concrete document corrections.** Quote replacement wording or provide small
    proposed text snippets for the important ambiguities; do not edit the source.
-8. **Prioritized next decisions.** Only decisions necessary before implementation.
-   Keep the new benchmark family and environment for their separate discussion.
+8. **Finding closure and next decisions.** Map every original finding to resolved,
+   remaining decision, or deferred measurement. Identify only necessary remaining
+   architecture/policy decisions; leave family/population, environment, numerical
+   gates for the separate full-family discussion; acknowledge PR #80's smoke plan
+   and remaining prerequisites without implementing or running it. Assess design
+   clarity, consistency, bounded mechanisms, minimalism and cloud seams separately
+   from empirical storage/speed confidence. Do not manufacture very-high empirical
+   confidence from improved prose.
 
 If a proposed mechanism does not justify its complexity, recommend removing or
 simplifying it explicitly. If a larger rewrite yields a cleaner final system,
 state the replacement boundary and deletion scope. The review should leave us
-with a clearer, smaller design and testable claims, not a larger wish list.
+with a clearer, smaller design and precise bounded claims, not a larger wish list or a new verification plan.

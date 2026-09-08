@@ -5,10 +5,15 @@ use layerfs_layerstack_store::{
 };
 
 #[test]
-fn v4_migration_and_v5_staging_preserve_exact_publication_semantics() {
-    let root = temp("migration-staging");
+fn v4_rejection_and_legacy_v6_staging_preserve_exact_publication_semantics() {
+    let root = temp("legacy-staging");
     let path = root.join("store.sqlite");
-    let store = LayerStackStore::create(&path).unwrap();
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch(include_str!("../sql/schema/v6.sql"))
+        .unwrap();
+    drop(connection);
+    let store = LayerStackStore::connect(&path).unwrap();
     let initialized = store
         .initialize_layerstack(
             EntityName::new("demo").unwrap(),
@@ -29,13 +34,21 @@ fn v4_migration_and_v5_staging_preserve_exact_publication_semantics() {
     drop(original);
     drop(store);
 
-    let connection = rusqlite::Connection::open(&path).unwrap();
+    let unsupported = root.join("v4.sqlite");
+    std::fs::copy(&path, &unsupported).unwrap();
+    let connection = rusqlite::Connection::open(&unsupported).unwrap();
     connection
         .execute_batch("DROP TABLE workspace_stages; PRAGMA user_version=4;")
         .unwrap();
     drop(connection);
+    let unsupported_before = std::fs::read(&unsupported).unwrap();
+    assert!(matches!(
+        LayerStackStore::connect(&unsupported),
+        Err(StoreError::WrongStoreSchema)
+    ));
+    assert_eq!(std::fs::read(&unsupported).unwrap(), unsupported_before);
     let malformed = root.join("malformed.sqlite");
-    std::fs::copy(&path, &malformed).unwrap();
+    std::fs::copy(&unsupported, &malformed).unwrap();
     let connection = rusqlite::Connection::open(&malformed).unwrap();
     connection
         .execute_batch("CREATE TABLE unexpected(value INTEGER) STRICT;")
@@ -65,9 +78,8 @@ fn v4_migration_and_v5_staging_preserve_exact_publication_semantics() {
 
     let pinned = store.pin_branch(branch_id).unwrap();
     let candidate = write_candidate(&pinned.reader, pinned.root, "first", [1; 32]);
-    let candidate_statements = candidate.objects.len();
     let retained_workspace = [1; 16];
-    layerfs_layerstack_store::set_transaction_failure_at(Some(candidate_statements + 3));
+    layerfs_layerstack_store::set_transaction_failure_at(Some(u64::MAX - 1));
     let failed = store.commit_workspace_candidate(
         retained_workspace,
         &pinned.branch,
@@ -186,7 +198,7 @@ fn v4_migration_and_v5_staging_preserve_exact_publication_semantics() {
     drop(store);
     let connection = rusqlite::Connection::open(&path).unwrap();
     assert_eq!(pragma(&connection, "application_id"), 0x4c46_534c);
-    assert_eq!(pragma(&connection, "user_version"), 5);
+    assert_eq!(pragma(&connection, "user_version"), 6);
     let columns = connection
         .prepare("SELECT name FROM pragma_table_info('workspace_stages') ORDER BY cid")
         .unwrap()

@@ -11,6 +11,7 @@ use std::sync::{
 
 #[allow(dead_code)]
 pub(crate) mod workspace_common;
+mod storage_smoke;
 #[allow(dead_code)]
 pub(crate) mod ordinary_workloads;
 #[allow(dead_code)]
@@ -1089,6 +1090,9 @@ fn run() -> Result<()> {
     }
     if args.first().is_some_and(|arg| arg.starts_with("workspace-")) {
         return workspace_registry::dispatch(&args);
+    }
+    if args.first().is_some_and(|arg| arg.starts_with("storage-smoke-")) {
+        return storage_smoke::dispatch(&args);
     }
     match args.as_slice() {
         [command] if command == "self-check" => self_check(),

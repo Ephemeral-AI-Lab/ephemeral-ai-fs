@@ -90,6 +90,12 @@ bytes and identities, CDC profile, public SDK and CLI behavior, daemon protocol,
 visibility and acknowledgement semantics, and resource bounds. Only the item
 that fails this boundary moves to 0.2.0.
 
+The owner approved a narrow v0.1.4 physical-schema exception for storage v3:
+explicit new-Store-only schema 6 / pack wire 1, legacy rejection in the new
+binary, and existing compatible tools for old Stores. No converter or in-place
+migration is included. All other compatibility requirements remain. See the
+[recorded implementation decision](0.1.4/implementation-progress.md#owner-decisions).
+
 ## Acceptance criteria
 
 The 0.1.x phase is complete when:

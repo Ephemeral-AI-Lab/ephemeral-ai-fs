@@ -64,7 +64,7 @@ pub fn build_bytes<S: ObjectStore>(
     }
 
     let canonical = encode_chunk_object(bytes)?;
-    let payload = store.put_owned(canonical)?;
+    let payload = store.put_file_payload(canonical, 0, bytes.len() as u32)?;
     let logical_len = u64::try_from(bytes.len()).map_err(|_| CoreError::LengthOverflow)?;
     let logical_length = u32::try_from(bytes.len()).map_err(|_| CoreError::LengthOverflow)?;
     let node = ExtentNodeV3::Leaf {
@@ -113,7 +113,11 @@ fn scan_mapping<S: ObjectStore, R: Read>(
     let mut counters = RopeCounters::default();
     let cdc = FastCdc::new().scan(source, |chunk| {
         let canonical = encode_chunk_object(chunk)?;
-        let payload = store.put_owned(canonical)?;
+        let payload = store.put_file_payload(
+            canonical,
+            counters.payload_bytes_written,
+            chunk.len() as u32,
+        )?;
         counters.payload_bytes_written = add(counters.payload_bytes_written, chunk.len() as u64)?;
         counters.chunks_created = add(counters.chunks_created, 1)?;
         match &mut levels[0] {
@@ -131,13 +135,14 @@ fn scan_mapping<S: ObjectStore, R: Read>(
 pub(super) fn scan_replacement_mapping_with<S, R, FP, FN>(
     store: &mut S,
     source: R,
+    origin: u64,
     mut put_payload: FP,
     mut put_sealed_node: FN,
 ) -> CoreResult<ReplacementScan>
 where
     S: ObjectStore,
     R: Read,
-    FP: FnMut(&mut S, &[u8]) -> CoreResult<ObjectId>,
+    FP: FnMut(&mut S, Vec<u8>, u64, u32) -> CoreResult<ObjectId>,
     FN: FnMut(&mut S, &[u8]) -> CoreResult<ObjectId>,
 {
     let mut deferred = DeferredNodes::new(store);
@@ -146,7 +151,12 @@ where
     let mut flushed = 0_u64;
     let cdc = FastCdc::new().scan(source, |chunk| {
         let canonical = encode_chunk_object(chunk)?;
-        let payload = put_payload(deferred.store, &canonical)?;
+        let payload = put_payload(
+            deferred.store,
+            canonical,
+            add(origin, counters.payload_bytes_written)?,
+            chunk.len() as u32,
+        )?;
         counters.payload_bytes_written = add(counters.payload_bytes_written, chunk.len() as u64)?;
         counters.chunks_created = add(counters.chunks_created, 1)?;
         match &mut levels[0] {
