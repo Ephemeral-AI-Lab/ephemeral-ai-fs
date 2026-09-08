@@ -2,6 +2,7 @@
 """Contract-fixed synthetic preflight; root serial execution slot required."""
 import argparse
 import hashlib
+import io
 import json
 from pathlib import Path
 import random
@@ -60,6 +61,10 @@ def main():
                 rows.append(row)
             snapshots.append(snapshot)
         assert snapshots[2] == snapshots[5] and snapshots[0] == snapshots[6]
+        duplicate = root / "separate-file-same-content"
+        duplicate.write_bytes(generated[:32768])
+        duplicate_id = "file:" + hashlib.sha256(duplicate.read_bytes()).hexdigest()
+        assert duplicate_id == snapshots[0][0] and duplicate_id in seen
         manifest = destination / "manifest.jsonl"
         manifest.write_text("".join(json.dumps(row) + "\n" for row in rows))
         args = SimpleNamespace(output=str(destination / "screen"), library=options.library, level=3, window_log=20,
@@ -76,6 +81,12 @@ def main():
         try:
             with open(destination / "screen/selected.frames", "rb") as frames:
                 validate_file_header(frames)
+                try:
+                    validate_file_header(io.BytesIO(b"BADMAGIC" + b"\0" * 8))
+                except ValueError:
+                    checks.append("malformed container header rejected")
+                else:
+                    raise AssertionError("malformed container header accepted")
                 for checkpoint, ids in enumerate(snapshots, 1):
                     stats = dict(frame_reads=0, encoded_bytes=0, decoded_bytes=0)
                     actual = b"".join(reconstruct(index, frames, identity, codec, 4, 1048576, stats) for identity in ids)
@@ -111,7 +122,7 @@ def main():
             raise AssertionError("future base accepted")
         assert RECORD_HEADER.size == 56
         summary = {"status": "PASS", "checks": checks + ["all synthetic raw/canonical identities and roundtrips",
-                   "FULL/PREFIX conservation", "localized64byte edits", "typed recurrence identity",
+                   "FULL/PREFIX conservation", "localized64byte edits", "typed recurrence/cross-file identity",
                    "262143->262145->262143 wholefile/CDC transition", "future base rejected with preserved failure"],
                    "read_probes": result["read_probes"], "totals": result["totals"],
                    "scope": "synthetic content-route boundary check; no public API, OS cold or product timing claim",

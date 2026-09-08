@@ -204,6 +204,7 @@ def run(args):
     codec = Zstd(args.library, args.level, args.window_log)
     index = index_create(output / "index.sqlite")
     source_hash = sha256_file(args.manifest)
+    tool_hash, library_hash = sha256_file(__file__), sha256_file(codec.path)
     contracts = {str(Path(path).resolve()): sha256_file(path) for path in args.contract}
     totals = dict(targets=0, target_bytes=0, prefix_candidates=0, prefix_candidate_frame_bytes=0,
                   full_frame_bytes=0, selected_frame_bytes=0, prefix_selected=0,
@@ -243,7 +244,7 @@ def run(args):
             for ordinal, line in enumerate(manifest):
                 row = json.loads(line)
                 require(row["ordinal"] == ordinal, "nonconsecutive ordinal")
-                require(previous_checkpoint <= row["checkpoint"] <= 157, "checkpoint order/bounds")
+                require(max(1, previous_checkpoint) <= row["checkpoint"] <= 157, "checkpoint order/bounds")
                 if row["checkpoint"] != previous_checkpoint or ordinal % 1024 == 0:
                     budget_check()
                 previous_checkpoint = row["checkpoint"]
@@ -398,6 +399,8 @@ def run(args):
                     "container byte conservation")
         require(sha256_file(args.manifest) == source_hash, "manifest changed during execution")
         require(all(sha256_file(path) == digest for path, digest in contracts.items()), "contract changed during execution")
+        require(sha256_file(__file__) == tool_hash and sha256_file(codec.path) == library_hash,
+                "tool/library changed during execution")
         budget_check()
         index.close()
         index = None
@@ -420,8 +423,8 @@ def run(args):
                          "prefix_max_bytes": args.prefix_max_bytes, "max_input_bytes": args.max_input_bytes,
                          "base_policy": "single extractor-authenticated prior from strictly earlier checkpoint; no anchor substitution or future base",
                          "winner_policy": "prefix frame plus32-byte baseID strictly smaller than FULL frame; shared56-byte record header"},
-            "identity": {"library_path": str(codec.path), "library_sha256": sha256_file(codec.path),
-                         "zstd_version_number": codec.version, "tool_sha256": sha256_file(__file__)},
+            "identity": {"library_path": str(codec.path), "library_sha256": library_hash,
+                         "zstd_version_number": codec.version, "tool_sha256": tool_hash},
             "totals": totals,
             "canonical": {**canonical,
                 "units": "counts and canonical/payload bytes, logical dimension not added to frames",
