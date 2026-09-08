@@ -1,0 +1,29 @@
+{
+  "scope": "additive combined feasibility review; self-hash excluded",
+  "files": {
+    "findings-and-pursuit.md": {
+      "sha256": "d2ece3383d44bba85ffafef407c2ce716a34851765528eb3552ac2f77145af34",
+      "bytes": 10143
+    },
+    "identity-and-scope.json": {
+      "sha256": "096d05003f9c63bb7a923c140adba2298cb4e27d1e23f2ac43b5c91a6885ec58",
+      "bytes": 1779
+    },
+    "issue88-scope.json": {
+      "sha256": "886f5cc816aad9965563ca54498e830755fd1f6aa961dc716034f15c97a767ec",
+      "bytes": 10660
+    },
+    "path.md": {
+      "sha256": "1a9e8bc264694e45d65288f11374103be467083e5264d1d95456fb533d80986e",
+      "bytes": 12803
+    },
+    "physical.md": {
+      "sha256": "ec4d3fce99639a7a1a61bfb78baf055947ec139f233efc8a1efadb827e5015d8",
+      "bytes": 12907
+    },
+    "review.md": {
+      "sha256": "90c9ba58e8a86226721ff153ac8a146dafc0dc03219dd19d6574e49114c38bb7",
+      "bytes": 16644
+    }
+  }
+}

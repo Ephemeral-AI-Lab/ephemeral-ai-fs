@@ -1,0 +1,17 @@
+{
+  "scope": "three independent read-only feasibility/path reviews; no Store access, encoding, replay, benchmark or product edit",
+  "head": "76b2443270e1ace1b9d6cb8c5e3fb587e55b64d6",
+  "working_tree_status": " M docs/roadmap/0.1/0.1.4/issue88-experiments/review.md\n?? docs/roadmap/0.1/0.1.4/issue88-experiments/.gitignore\n?? docs/roadmap/0.1/0.1.4/issue88-experiments/README.md\n?? docs/roadmap/0.1/0.1.4/issue88-experiments/census_report.py\n?? docs/roadmap/0.1/0.1.4/issue88-experiments/findings.md\n?? docs/roadmap/0.1/0.1.4/issue88-experiments/summarize_full.py\n",
+  "source_checkout": "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-issue88-experiments",
+  "sources_sha256": {
+    "crates/layerfs-layerstack-store/src/objects/admission.rs": "45c4e913c9ef2b3123eb4afd79d4f90de86351fa328251159180ab62974b530d",
+    "crates/layerfs-layerstack-store/src/objects/pack.rs": "002a879064bb9cec89af735d186ac67a28d7313fa48de30b68f8cfe1ece86dbe",
+    "crates/layerfs-layerstack-store/src/objects/read.rs": "9ea63828b4e68b37afce8bd9b93823312447b61fa55bc669a5f70f739b285b85",
+    "crates/layerfs-layerstack-store/src/objects.rs": "56be27e9997f2ae55620b873bfa81a744943ae6ef991e15ed6ee665b58ff4173",
+    "docs/roadmap/0.1/0.1.4/issue88-experiments/contract-v1.md": "15c559c3fbfef1681698f67eb1596095218fad5c09d946141bcff42013ff2814",
+    "docs/roadmap/0.1/0.1.4/issue88-experiments/findings.md": "0c987a8e5c06d297ad619f58833b86380414a2a2697e1b08287bc04e84414509"
+  },
+  "units": "integer bytes/counts/ns in evidence; decimal MB in presentation",
+  "milestone_status": "hypothetical heterogeneous component reference, not measured combined or allocated bytes",
+  "source_report_status": "existing issue88 final fullrun census/report finalization remains incomplete; this review is separate"
+}
