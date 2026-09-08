@@ -1,3 +1,154 @@
+# M4 independent review completed — stop before M5
+
+2026-09-08. Three independent subagents reviewed physical encoding/admission/read
+bounds, predecessor/capture/spill callers, and raw evidence/oracles. The review
+found real source gaps in the earlier completion claim. They are corrected in
+`de3a046f6a488ddd9d5f6710db8d98609b9983d6`, with fresh matching host/runtime
+builds and all three approved smokes. **M4 implementation and scoped verification
+are complete; performance diagnostics are not all passing.** No M5 work ran.
+
+Current evidence: [review JSON](implementation-milestone-4-review.json).
+The [original M4 JSON](implementation-milestone-4.json), M2/M3 JSON, and all earlier
+raw runs remain unchanged. The historical ledger follows below.
+
+## Review findings and disposition
+
+| Finding | Shared-owner correction | Status |
+| --- | --- | --- |
+| Group-capacity accounting rescanned all groups for each group | Precompute fixed associations once; increment retained encoded capacity | Fixed |
+| Directory predecessor misses still used scalar reader crossings | Batched unique directory-state and traversal-node waves; retain root/child validation and request order/duplicates | Fixed |
+| Batch optional-fetch exhaustion reset on the next target | Persistent batch exhaustion separate from per-target reset; stop further locator/header reads | Fixed |
+| Absent-predecessor metric meant empty hint list | Carry retained-predecessor presence through private hints/spill; separate `targets_without_hints` | Fixed |
+| Correspondence reservation left spill/read-ahead capacities unchanged | Shrink existing/future spill buffers before correspondence, flushing pending data first | Fixed |
+
+The directory helper uses the existing authenticated batch reader and canonical
+codecs; no new cache/interface/backend. Workspace preparation charges 16 KiB per
+request for additional wave/association ownership. This is not a standalone total
+memory bound: one decoded node, canonical rewrap/validation reencoding and physical
+reader scratch retain their existing separate charges. Producer reservation still
+fits existing output partitions; the physical encoder's 2-MiB reserve and complete
+late-validation reservation are unchanged.
+
+Nine implementation files changed in this review: Store `objects.rs`,
+`objects/{admission,read,spill}.rs`, `telemetry.rs`; content
+`tree/directory/{read,mod}.rs`; Workspace `changes.rs`; and benchmark
+`storage_smoke.rs` for the corrected diagnostic. Other M4 owners were reviewed
+without further edits. No schema, canonical codec, CDC or workload change.
+
+## Fresh corrected evidence
+
+All 33 reopened FUSE mappings passed, covering 114,620,274 bytes and the original
+path/type/mode/symlink oracles. All four frequent-edit no-change outcomes and every
+performance/verification cleanup passed. There are still 269 selected DELTAs:
+266 DeepSeek and 3 ordinary binary, all with selected FULL anchors. No unselected
+physical records or retained stages were observed. Independent audit rehashed all
+new manifests and compared every observed TSV directly to its original oracle.
+
+Each row is one fresh corrected observation compared with historical controls.
+These are not matched pairs, not a latency distribution and not final qualification.
+
+| Case | Baseline / M3 / corrected M4 allocation B | Mutation + Commit ms, baseline / M3 / corrected M4 |
+| --- | --- | --- |
+| fuse-binary-8m | 11,206,656 / 10,354,688 / 10,289,152 | 263.891 / 266.834 / 234.130 |
+| fuse-text-32k | 1,179,648 / 983,040 / 983,040 | 40.491 / 49.442 / 47.847 |
+| sdk-binary-8m | 11,141,120 / 10,354,688 / 10,354,688 | 28.220 / 39.050 / 34.499 |
+| sdk-text-32k | 983,040 / 983,040 / 983,040 | 32.937 / 33.138 / 32.473 |
+| small-files | 1,441,792 / 1,114,112 / 2,162,688 | 22.108 / 30.301 / 34.236 |
+| deepseek-five | 12,320,768 / 5,898,240 / 4,849,664 | 1095.992 / 1256.791 / 1365.948 |
+
+**Retain bounded emission as a development checkpoint.** DeepSeek still saves
+17.78% allocation versus M3 (60.64% versus baseline), with 8.69% additional replay
+elapsed versus M3. Ordinary binary saves 64 KiB versus M3; SDK/text allocations
+are unchanged. This recommendation is not a claim that every storage/performance
+gate passes. Do not widen search or run M5 to force a more favorable result.
+
+### Small-file storage regression retained
+
+Init remains 1,114,112 B. Final allocation is **2,162,688 B**, versus previous M4/M3
+1,114,112 B and baseline 1,441,792 B: a valid original storage-gate miss. It is not
+replaced by the smaller logical SQLite size. The fresh canonical trajectory matches
+the original baseline exactly:
+`447/380991 →454/386031 →458/390818 →461/395507` objects/bytes. Previous M3/M4 ended
+at 460/391367. This is consistent with the recorded randomized inode/COW population
+variation; it is not evidence of incorrect retained contents.
+
+The fresh final pack is 4,387 B versus 339 B previously; total pack BLOB bytes are
+112,712 versus108,664 (+4,048 B), with the same 7 packs / 23 groups and no unselected
+records. The pack table adds one 65,536-byte page; total SQLite pages rise 17→18.
+Logical file size is 1,179,648 B, while filesystem allocation is 2,162,688 B,
+983,040 B larger. Together this yields the measured 1,048,576-byte allocation jump.
+The exact filesystem allocation mechanism remains unestablished. No repeat for
+nicer allocation, truncation, VACUUM or SQLite tuning was performed.
+
+Post-Init growth: DeepSeek 3,866,624 B; ordinary binary 0; SDK binary 65,536 B;
+text 0; small files 1,048,576 B. These are separate from total-allocation denominators.
+
+### Diagnostics and resource limits
+
+Original diagnostic misses in this corrected run are SDK binary steps 2/3;
+small-file final allocation, first read and steps 1/2/3; DeepSeek steps 3/5.
+All raw operands and allowances are in the review JSON. Original M3 and initial
+M4 misses remain in their own reports. Small-file Init is 8.037 ms, first/repeated
+reads 26.775 / 7.071 ms; no cold-cache claim. Correctness/cleanup PASS does not relabel
+these diagnostic misses.
+
+DeepSeek: 292 base trials, 82.176 ms matching and 31.714 ms encoding; 3,719 performance
+group fetches, 25,968,180 encoded group bytes, 53,234,935 decoded bytes and 3,705
+decompressions. Absent predecessors now count 758 eligible targets while 984 have
+no hints; 193 correspondence budget skips remain explicit. The fields no longer
+conflate absence with optional discovery exhaustion. Group-byte counters include
+record framing, exclude outer pack headers/directories; range counts include them.
+Historical M3 lacks these counters, so no physical-read comparison ratio is claimed.
+
+DeepSeek public-phase CPU 438.480 ms versus M3 313.462 ms (+39.88%) is separately
+reported from 8.69% replay elapsed growth. Performance host lifetime RSS peaks range
+10,747,904–30,130,176 B; container lifetime peaks 5,156,864–14,766,080 B; sampled
+spool peaks 4,096–24,576 B. Resource comparisons and absolute caps pass; no swap/OOM.
+These are sampled/lifetime scopes, not exact phase peaks. All per-case CPU/I/O,
+cgroup categories, wall scopes and historical verification costs remain in JSON.
+
+## Commands, custody and completion
+
+Run directories under `/Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs`:
+`m4-review-edits-1`, `m4-review-small-1`, `m4-review-deepseek-1`. Each has separate
+performance/verification raw JSONL, results, identities, manifests and cleanup.
+One matching host/image build and one performance/verification observation per
+smoke ran. No build or smoke failed. Prior successful runs were not overwritten.
+
+- Product correction: `de3a046f6a488ddd9d5f6710db8d98609b9983d6`.
+- Combined seal: `240c9f21007f3c3f724ce8c2ac6813b753c89532f738a3d5f9be7d48b8f533cb`.
+- Product seal: `00e076f7711284cbc4a0144fc77f44537349f9a5d806fc61cab398015fc04b4b`.
+- Host SHA-256: `0133fbe3b04b9164a5732904319b5701dd675bc238c9dd57140a8264939a28ee`.
+- Host and sidecar: `builds/m4-review-host`, `builds/m4-review-host.identity.json`.
+- Image tag: `layerfs-bench-infra:240c9f21007f3c3f`; exact image ID in review JSON.
+- Patch/reporter: `builds/m4-review-source.patch`, `builds/m4-review-report.py`.
+- Logs: `builds/m4-review-host-1.log`, `builds/m4-review-image-1.log`, and
+  `builds/m4-review-{edits,small,deepseek}-{perf,verify}-1.log`.
+
+```sh
+python3 benchmark/fs-bench-pro/shared/runner.py --build-host
+python3 benchmark/fs-bench-pro/shared/runner.py --build-storage-smoke-image
+python3 benchmark/fs-bench-pro/shared/runner.py --storage-smoke frequent-edits --source-arm candidate --repetition 1 --image layerfs-bench-infra:240c9f21007f3c3f --output /Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/m4-review-edits-1
+python3 benchmark/fs-bench-pro/shared/runner.py --storage-smoke frequent-edits --source-arm candidate --repetition 1 --image layerfs-bench-infra:240c9f21007f3c3f --storage-verify-run /Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/m4-review-edits-1
+python3 benchmark/fs-bench-pro/shared/runner.py --storage-smoke small-files --source-arm candidate --repetition 1 --image layerfs-bench-infra:240c9f21007f3c3f --output /Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/m4-review-small-1
+python3 benchmark/fs-bench-pro/shared/runner.py --storage-smoke small-files --source-arm candidate --repetition 1 --image layerfs-bench-infra:240c9f21007f3c3f --storage-verify-run /Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/m4-review-small-1
+python3 benchmark/fs-bench-pro/shared/runner.py --storage-smoke deepseek-five --source-arm candidate --repetition 1 --image layerfs-bench-infra:240c9f21007f3c3f --output /Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/m4-review-deepseek-1
+python3 benchmark/fs-bench-pro/shared/runner.py --storage-smoke deepseek-five --source-arm candidate --repetition 1 --image layerfs-bench-infra:240c9f21007f3c3f --storage-verify-run /Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/m4-review-deepseek-1
+```
+
+All applicable M4 completion items are checked after source correction and fresh
+smokes. No unresolved source finding remains from the three scoped reviews.
+Unexercised malformed-record, concurrency, small-budget and exhaustion branches
+remain source-reviewed, not empirically qualified. The storage regression above
+remains a valid measurement/acceptance limitation, not an unfinished optimization
+campaign. No M5 implementation or final three-pair qualification ran.
+
+Remaining M5: checkpoint/trusted-read and reconciliation cleanup/deletion review,
+affected checks for later changes and final frozen three-pair qualification.
+Stronger codec, SQLite tuning, migration, cloud and durability stay deferred.
+
+---
+
 # Storage architecture v3 — M4 checkpoint
 
 Status: **M4 implemented and smoke-verified; stop before M5**, 2026-09-08.

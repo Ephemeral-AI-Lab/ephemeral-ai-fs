@@ -1,7 +1,10 @@
 # Milestone 4: bounded deltas and encoded-group selection
 
 Status: **M4 implemented and smoke-verified**, 2026-09-08.
-Evidence: [M4 report](implementation-milestone-4.json) and [progress](implementation-progress.md).
+Evidence: [reviewed M4 report](implementation-milestone-4-review.json),
+[original M4 report](implementation-milestone-4.json), and [progress](implementation-progress.md).
+Independent review gaps were corrected and the three smokes rerun; storage/timing
+diagnostic misses remain explicit.
 This development checkpoint stops before M5 and is not complete v0.1.4 qualification.
 Tracking: [M4 issue #84](https://github.com/Ephemeral-AI-Lab/layerfs/issues/84).
 Continue from closed M3 on `codex/storage-v3-implementation`, draft PR #81.
