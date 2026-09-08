@@ -1,0 +1,69 @@
+{
+  "scope": "final issue88 S1/S2/S3 report; manifest self-hash excluded",
+  "files": {
+    "artifacts.sha256.json": {
+      "sha256": "4922146a69af20fc7b83209df53a2b23edfe69e10328e85105b4652dc5a413cd",
+      "bytes": 233103
+    },
+    "contract-v1.md": {
+      "sha256": "15c559c3fbfef1681698f67eb1596095218fad5c09d946141bcff42013ff2814",
+      "bytes": 6716
+    },
+    "decoder-and-host-authentication.json": {
+      "sha256": "7d14b1e04a9e529fa762bcec5e13e9675531c7543186184a55235a28ddee609f",
+      "bytes": 3334
+    },
+    "final-custody.json": {
+      "sha256": "a6ebae58730a383a295642ad02c11b8c18ef873a683c57c199caaa1cc894bfd7",
+      "bytes": 668495
+    },
+    "final-review-addendum.md": {
+      "sha256": "0405242ec76cdfd2c0772ac96ab12dd19eb528e4a5e8fd2389d4a4d3791d4450",
+      "bytes": 11376
+    },
+    "findings.md": {
+      "sha256": "d26d4ff70a3985c9fe0df80cfd42c7f2e1bc099c8f18c80abdaa35ece2b573da",
+      "bytes": 16599
+    },
+    "full-history-continuation.md": {
+      "sha256": "8f9a3bf135b842e51872a5a24904bd9560a0e8f3fbb00caa66b67e9c3cbc8b1b",
+      "bytes": 2504
+    },
+    "full157-census.json": {
+      "sha256": "47dd85db70f216f9409c018b0e9ac03ad271768627ca34183bb01cb88d7162dc",
+      "bytes": 9678
+    },
+    "full157-results.json": {
+      "sha256": "10113b075ecb59f2a9a12cf0a4823a12f8cd9082cf54e5a6b7d0c60177117175",
+      "bytes": 660778
+    },
+    "offline-results.json": {
+      "sha256": "c741a6bdc44d27499254c8ebcfba02d6af2be7afb215d4ff65612dde8697f689",
+      "bytes": 14608
+    },
+    "public-s1-contract.md": {
+      "sha256": "4ea850f5381fb845b097eba2dbe971872524f31f0173482d19275d21e5e1b288",
+      "bytes": 3003
+    },
+    "public-smokes.json": {
+      "sha256": "b99aad9efe32d66735142e00dcc5a4ee92b96abc7a7a5125d04c5d2d62d1e3f3",
+      "bytes": 148829
+    },
+    "read-cost-contract.md": {
+      "sha256": "0f5e342b748e605fccb9c7721c26c2b26a8e9831c731f50fbf77c293d8a33857",
+      "bytes": 997
+    },
+    "read-costs.json": {
+      "sha256": "a7960df9c69211497ef7ae91b6edde6189f73c6164ba5875f8ebcc90247279a9",
+      "bytes": 28540
+    },
+    "reporter-sources.sha256.json": {
+      "sha256": "3130b4865e1a9cac10ad9fe3cf1661628f8a9b448bb1b6b6995288e3d3d16629",
+      "bytes": 4263
+    },
+    "review.md": {
+      "sha256": "0de7d5e3c6c8be472cd23cbc633d092cb6f34317ddaa090bc28fafd659f5439b",
+      "bytes": 18645
+    }
+  }
+}

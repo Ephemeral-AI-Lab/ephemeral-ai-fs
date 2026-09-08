@@ -1,0 +1,372 @@
+{
+  "status": "PASS",
+  "scope": "offline encoded potential; no combined/full allocated Store claim",
+  "units": "integerbytes/ns/counts; explicit ratios",
+  "screens": {
+    "S1": {
+      "status": "PASS",
+      "scope": "offline identical structural groups; no allocation or latency claim",
+      "origin_provenance": "actual_offline_tree_engine_reconstruction",
+      "historical_producer_origin_observed": false,
+      "roots_verified_count": 157,
+      "groups_count": 9918,
+      "authenticated_records_count": 279724,
+      "A_encoded_bytes": 78792537,
+      "selected_encoded_bytes": 56857102,
+      "encoded_difference_bytes": 21935435,
+      "DELTA_selected_count": 4585,
+      "canonical_bytes": 94362335,
+      "origin_present_count": 8771,
+      "eligible_origin_count": 4591,
+      "origin_missing_count": 1118,
+      "base_not_prior_count": 0,
+      "base_candidate_not_FULL_count": 4180,
+      "raw_no_candidate_count": 0,
+      "mixed_selected_groups_count": 3566,
+      "matcher_budget_skips_count": 0,
+      "strict_prior_checkpoint": true,
+      "candidate_FULL_base_closure": true,
+      "max_delta_depth": 1,
+      "all_selected_records_authenticated": true,
+      "allocation_bytes": null,
+      "allocation_null_reason": "offline group encoding only",
+      "cold_read_ns": null,
+      "cold_read_null_reason": "no public read measurement in offline screen"
+    },
+    "S2": {
+      "status": "PASS",
+      "targets_count": 86412,
+      "raw_payload_bytes": 703348161,
+      "control_complete_frame_bytes": 243582540,
+      "candidate_complete_frame_bytes": 102306097,
+      "encoded_difference_bytes": 141276443,
+      "prefix_selected_count": 58298,
+      "max_edges": 4,
+      "max_closure_payload_bytes": 163840,
+      "analysis_index_bytes": 28934144,
+      "analysis_index_scope": "joint control/candidate diagnostic index, not productmetadata; do notchargeasbotharmsindependentproductionindexes",
+      "resources": {
+        "elapsed_ns": 36357164291,
+        "user_cpu_ns": 28185165000,
+        "system_cpu_ns": 6981505000,
+        "process_lifetime_maxrss_platform_units": 53067776,
+        "process_lifetime_peak_rss_bytes": 53067776,
+        "minimum_sampled_free_disk_bytes": 491953041408,
+        "peak_codec_encoder_bytes": 541720,
+        "peak_codec_decoder_bytes": 123336,
+        "process_read_write_bytes": null,
+        "process_read_write_unknown_reason": "not supplied by this portable in-process observer"
+      },
+      "codec_work_ns": {
+        "encode_full_ns": 4738583437,
+        "encode_prefix_ns": 1631666757,
+        "candidate_base_reconstruct_ns": 6476109894,
+        "verification_ns": 13187043633
+      },
+      "canonical": {
+        "chunk_targets": 86412,
+        "chunk_payload_bytes": 703348161,
+        "chunk_canonical_bytes": 705162813,
+        "file_targets": 0,
+        "file_payload_bytes": 0,
+        "file_canonical_bytes": 0,
+        "units": "counts and canonical/payload bytes, logical dimension not added to frames",
+        "existing_canonical_authentication": "derived from exact sealed extractor canonical ID and every target raw SHA256/length roundtrip; canonical21-byte framing deterministic; no direct decoder BLAKE3 claim",
+        "file_canonical_authentication": "SHA256 of LFS88FC-NUL + u64be payload length + reconstructed payload; experimental identity, not existing LayerFS format"
+      },
+      "read_probes": [
+        {
+          "id": "chunk:a43b41b61400ce9128d9e8fbe878a15fe3270725a9d74ef41844e3db3e754ae8",
+          "mode": "small_range",
+          "returned_bytes": 3481,
+          "fresh_elapsed_ns": 147209,
+          "warm_elapsed_ns": 375,
+          "fresh_condition": "fresh_decoder_empty_application_cache_os_cache_uncontrolled",
+          "warm_condition": "one_target_decoded_cache_os_cache_uncontrolled",
+          "decoded_cache_bytes": 3481,
+          "fresh_work": {
+            "frame_reads": 1,
+            "encoded_bytes": 1894,
+            "decoded_bytes": 3481
+          },
+          "warm_work": {
+            "frame_reads": 0,
+            "encoded_bytes": 0,
+            "decoded_bytes": 0
+          }
+        },
+        {
+          "id": "chunk:a43b41b61400ce9128d9e8fbe878a15fe3270725a9d74ef41844e3db3e754ae8",
+          "mode": "full",
+          "returned_bytes": 3481,
+          "fresh_elapsed_ns": 43916,
+          "warm_elapsed_ns": 208,
+          "fresh_condition": "fresh_decoder_empty_application_cache_os_cache_uncontrolled",
+          "warm_condition": "one_target_decoded_cache_os_cache_uncontrolled",
+          "decoded_cache_bytes": 3481,
+          "fresh_work": {
+            "frame_reads": 1,
+            "encoded_bytes": 1894,
+            "decoded_bytes": 3481
+          },
+          "warm_work": {
+            "frame_reads": 0,
+            "encoded_bytes": 0,
+            "decoded_bytes": 0
+          }
+        },
+        {
+          "id": "chunk:b221684304f15b9ef4cc27cdabeaaf1119c0448cbad4e540280a01766b589122",
+          "mode": "small_range",
+          "returned_bytes": 4096,
+          "fresh_elapsed_ns": 96958,
+          "warm_elapsed_ns": 750,
+          "fresh_condition": "fresh_decoder_empty_application_cache_os_cache_uncontrolled",
+          "warm_condition": "one_target_decoded_cache_os_cache_uncontrolled",
+          "decoded_cache_bytes": 32768,
+          "fresh_work": {
+            "frame_reads": 1,
+            "encoded_bytes": 3186,
+            "decoded_bytes": 32768
+          },
+          "warm_work": {
+            "frame_reads": 0,
+            "encoded_bytes": 0,
+            "decoded_bytes": 0
+          }
+        },
+        {
+          "id": "chunk:b221684304f15b9ef4cc27cdabeaaf1119c0448cbad4e540280a01766b589122",
+          "mode": "full",
+          "returned_bytes": 32768,
+          "fresh_elapsed_ns": 92042,
+          "warm_elapsed_ns": 166,
+          "fresh_condition": "fresh_decoder_empty_application_cache_os_cache_uncontrolled",
+          "warm_condition": "one_target_decoded_cache_os_cache_uncontrolled",
+          "decoded_cache_bytes": 32768,
+          "fresh_work": {
+            "frame_reads": 1,
+            "encoded_bytes": 3186,
+            "decoded_bytes": 32768
+          },
+          "warm_work": {
+            "frame_reads": 0,
+            "encoded_bytes": 0,
+            "decoded_bytes": 0
+          }
+        },
+        {
+          "id": "chunk:d7172f301ee96f6c85eb6f29077e48bdd16e954632e45c966a121af881a212d6",
+          "mode": "small_range",
+          "returned_bytes": 4096,
+          "fresh_elapsed_ns": 473416,
+          "warm_elapsed_ns": 1333,
+          "fresh_condition": "fresh_decoder_empty_application_cache_os_cache_uncontrolled",
+          "warm_condition": "one_target_decoded_cache_os_cache_uncontrolled",
+          "decoded_cache_bytes": 4320,
+          "fresh_work": {
+            "frame_reads": 5,
+            "encoded_bytes": 3144,
+            "decoded_bytes": 17392
+          },
+          "warm_work": {
+            "frame_reads": 0,
+            "encoded_bytes": 0,
+            "decoded_bytes": 0
+          }
+        },
+        {
+          "id": "chunk:d7172f301ee96f6c85eb6f29077e48bdd16e954632e45c966a121af881a212d6",
+          "mode": "full",
+          "returned_bytes": 4320,
+          "fresh_elapsed_ns": 211958,
+          "warm_elapsed_ns": 166,
+          "fresh_condition": "fresh_decoder_empty_application_cache_os_cache_uncontrolled",
+          "warm_condition": "one_target_decoded_cache_os_cache_uncontrolled",
+          "decoded_cache_bytes": 4320,
+          "fresh_work": {
+            "frame_reads": 5,
+            "encoded_bytes": 3144,
+            "decoded_bytes": 17392
+          },
+          "warm_work": {
+            "frame_reads": 0,
+            "encoded_bytes": 0,
+            "decoded_bytes": 0
+          }
+        }
+      ],
+      "artifact_result_sha256": "946eb9a53154b86b551d3271709ab82f3588778dc65951b65873e5b7a49ea5cc"
+    },
+    "S3": {
+      "status": "PASS",
+      "targets_count": 77487,
+      "raw_payload_bytes": 833900528,
+      "control_complete_frame_bytes": 267114049,
+      "candidate_complete_frame_bytes": 99824523,
+      "encoded_difference_bytes": 167289526,
+      "prefix_selected_count": 52206,
+      "max_edges": 4,
+      "max_closure_payload_bytes": 1027939,
+      "analysis_index_bytes": 25694208,
+      "analysis_index_scope": "joint control/candidate diagnostic index, not productmetadata; do notchargeasbotharmsindependentproductionindexes",
+      "resources": {
+        "elapsed_ns": 35077678916,
+        "user_cpu_ns": 27846923000,
+        "system_cpu_ns": 6306442000,
+        "process_lifetime_maxrss_platform_units": 55443456,
+        "process_lifetime_peak_rss_bytes": 55443456,
+        "minimum_sampled_free_disk_bytes": 491515658240,
+        "peak_codec_encoder_bytes": 1303576,
+        "peak_codec_decoder_bytes": 123336,
+        "process_read_write_bytes": null,
+        "process_read_write_unknown_reason": "not supplied by this portable in-process observer"
+      },
+      "codec_work_ns": {
+        "encode_full_ns": 4881857018,
+        "encode_prefix_ns": 1533323553,
+        "candidate_base_reconstruct_ns": 6174942579,
+        "verification_ns": 12542255016
+      },
+      "canonical": {
+        "chunk_targets": 1751,
+        "chunk_payload_bytes": 38144851,
+        "chunk_canonical_bytes": 38181622,
+        "file_targets": 75736,
+        "file_payload_bytes": 795755677,
+        "file_canonical_bytes": 796967453,
+        "units": "counts and canonical/payload bytes, logical dimension not added to frames",
+        "existing_canonical_authentication": "derived from exact sealed extractor canonical ID and every target raw SHA256/length roundtrip; canonical21-byte framing deterministic; no direct decoder BLAKE3 claim",
+        "file_canonical_authentication": "SHA256 of LFS88FC-NUL + u64be payload length + reconstructed payload; experimental identity, not existing LayerFS format"
+      },
+      "read_probes": [
+        {
+          "id": "file:3b4d3b6b744c395300db4ddcc92f5c508f2853043cbbb3de846653b1cde565c7",
+          "mode": "small_range",
+          "returned_bytes": 3481,
+          "fresh_elapsed_ns": 144792,
+          "warm_elapsed_ns": 417,
+          "fresh_condition": "fresh_decoder_empty_application_cache_os_cache_uncontrolled",
+          "warm_condition": "one_target_decoded_cache_os_cache_uncontrolled",
+          "decoded_cache_bytes": 3481,
+          "fresh_work": {
+            "frame_reads": 1,
+            "encoded_bytes": 1894,
+            "decoded_bytes": 3481
+          },
+          "warm_work": {
+            "frame_reads": 0,
+            "encoded_bytes": 0,
+            "decoded_bytes": 0
+          }
+        },
+        {
+          "id": "file:3b4d3b6b744c395300db4ddcc92f5c508f2853043cbbb3de846653b1cde565c7",
+          "mode": "full",
+          "returned_bytes": 3481,
+          "fresh_elapsed_ns": 44583,
+          "warm_elapsed_ns": 250,
+          "fresh_condition": "fresh_decoder_empty_application_cache_os_cache_uncontrolled",
+          "warm_condition": "one_target_decoded_cache_os_cache_uncontrolled",
+          "decoded_cache_bytes": 3481,
+          "fresh_work": {
+            "frame_reads": 1,
+            "encoded_bytes": 1894,
+            "decoded_bytes": 3481
+          },
+          "warm_work": {
+            "frame_reads": 0,
+            "encoded_bytes": 0,
+            "decoded_bytes": 0
+          }
+        },
+        {
+          "id": "file:506d4774477b7e8a2990f0ae9984e399cb160ddac313442d80fadfac6ef11223",
+          "mode": "small_range",
+          "returned_bytes": 4096,
+          "fresh_elapsed_ns": 569750,
+          "warm_elapsed_ns": 833,
+          "fresh_condition": "fresh_decoder_empty_application_cache_os_cache_uncontrolled",
+          "warm_condition": "one_target_decoded_cache_os_cache_uncontrolled",
+          "decoded_cache_bytes": 261753,
+          "fresh_work": {
+            "frame_reads": 2,
+            "encoded_bytes": 88389,
+            "decoded_bytes": 333145
+          },
+          "warm_work": {
+            "frame_reads": 0,
+            "encoded_bytes": 0,
+            "decoded_bytes": 0
+          }
+        },
+        {
+          "id": "file:506d4774477b7e8a2990f0ae9984e399cb160ddac313442d80fadfac6ef11223",
+          "mode": "full",
+          "returned_bytes": 261753,
+          "fresh_elapsed_ns": 497416,
+          "warm_elapsed_ns": 208,
+          "fresh_condition": "fresh_decoder_empty_application_cache_os_cache_uncontrolled",
+          "warm_condition": "one_target_decoded_cache_os_cache_uncontrolled",
+          "decoded_cache_bytes": 261753,
+          "fresh_work": {
+            "frame_reads": 2,
+            "encoded_bytes": 88389,
+            "decoded_bytes": 333145
+          },
+          "warm_work": {
+            "frame_reads": 0,
+            "encoded_bytes": 0,
+            "decoded_bytes": 0
+          }
+        },
+        {
+          "id": "file:b6b80fd015f65f3e359cd0639556124774552f1582a55903445ad6ef2b0eb6bb",
+          "mode": "small_range",
+          "returned_bytes": 4096,
+          "fresh_elapsed_ns": 295250,
+          "warm_elapsed_ns": 667,
+          "fresh_condition": "fresh_decoder_empty_application_cache_os_cache_uncontrolled",
+          "warm_condition": "one_target_decoded_cache_os_cache_uncontrolled",
+          "decoded_cache_bytes": 4320,
+          "fresh_work": {
+            "frame_reads": 5,
+            "encoded_bytes": 3144,
+            "decoded_bytes": 17392
+          },
+          "warm_work": {
+            "frame_reads": 0,
+            "encoded_bytes": 0,
+            "decoded_bytes": 0
+          }
+        },
+        {
+          "id": "file:b6b80fd015f65f3e359cd0639556124774552f1582a55903445ad6ef2b0eb6bb",
+          "mode": "full",
+          "returned_bytes": 4320,
+          "fresh_elapsed_ns": 229625,
+          "warm_elapsed_ns": 166,
+          "fresh_condition": "fresh_decoder_empty_application_cache_os_cache_uncontrolled",
+          "warm_condition": "one_target_decoded_cache_os_cache_uncontrolled",
+          "decoded_cache_bytes": 4320,
+          "fresh_work": {
+            "frame_reads": 5,
+            "encoded_bytes": 3144,
+            "decoded_bytes": 17392
+          },
+          "warm_work": {
+            "frame_reads": 0,
+            "encoded_bytes": 0,
+            "decoded_bytes": 0
+          }
+        }
+      ],
+      "artifact_result_sha256": "4c2a5dc748957a9ea159bcadacfcdee5ee7de4d1fc5110ffe00558524ec60dfc"
+    }
+  },
+  "granularity_increment": {
+    "S3_fewer_frame_bytes_than_S2": 2481574,
+    "S3_more_raw_payload_bytes": 130552367,
+    "interpretation": "small encodedgain vsnewcanonicalunits; wrapper/index regeneration unmeasured; no combinedclaim"
+  }
+}

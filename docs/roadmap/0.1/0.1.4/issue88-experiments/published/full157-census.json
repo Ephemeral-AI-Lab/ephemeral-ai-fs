@@ -1,0 +1,365 @@
+{
+  "status": "PASS",
+  "scope": "exact olddecoder authentication of new publicS1 preverification logicalsnapshot; filesystemallocation from ORIGINALack notcopy",
+  "units": "integerbytes/counts; allgroups/rolesexclusive where labelled",
+  "provenance": {
+    "status": "PASS",
+    "source": "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/issue88-s1-full157-1/deepseek-full/host-runtime/store.sqlite",
+    "source_sha256": "20de43b8b987aa0cb3341fdd4e468b8bea82bd8d14bc9e02c6b4e9c67e8958b2",
+    "source_current_allocated_bytes": 302006272,
+    "source_logical_bytes": 296845312,
+    "primary_final_ack": {
+      "canonical_bytes": 799576457,
+      "canonical_objects": 366293,
+      "database_allocated_bytes": 302006272,
+      "database_logical_bytes": 296845312,
+      "freelist_page_count": 0,
+      "kind": "storage-smoke-allocation",
+      "label": "step-157",
+      "page_count": 72472,
+      "page_size_bytes": 4096,
+      "sidecar_allocated_bytes": 0,
+      "sidecar_logical_bytes": 0,
+      "store_allocated_bytes": 302006272,
+      "store_apparent_bytes": 296845312
+    },
+    "method": "shutil.copyfile logicalcopy; allocationnot equivalent",
+    "copy_sha256": "20de43b8b987aa0cb3341fdd4e468b8bea82bd8d14bc9e02c6b4e9c67e8958b2",
+    "copy_elapsed_ns": 895344708,
+    "observer_effect": "hash/copy warmsOS cachebefore normalverification, outside publicperformance",
+    "performance_manifest_sha256": "ce17eeed33a5374ed11afc63a5a2a8923a333189b4fcc9079d089a364da81089"
+  },
+  "filesystem": {
+    "allocated_bytes": 302006272,
+    "sidecars_bytes": 0,
+    "logical_bytes": 296845312,
+    "signed_adjustment_bytes": 5160960
+  },
+  "sqlite": {
+    "page_size": 4096,
+    "page_count": 72472,
+    "freelist_count": 0,
+    "pages": [
+      {
+        "name": "branch_identity",
+        "pagetype": "leaf",
+        "page_count": 1,
+        "page_bytes": 4096,
+        "payload_bytes": 37,
+        "unused_bytes": 4048,
+        "overhead_bytes": 11
+      },
+      {
+        "name": "branch_names",
+        "pagetype": "leaf",
+        "page_count": 1,
+        "page_bytes": 4096,
+        "payload_bytes": 45,
+        "unused_bytes": 4040,
+        "overhead_bytes": 11
+      },
+      {
+        "name": "branches",
+        "pagetype": "leaf",
+        "page_count": 1,
+        "page_bytes": 4096,
+        "payload_bytes": 113,
+        "unused_bytes": 3972,
+        "overhead_bytes": 11
+      },
+      {
+        "name": "commits",
+        "pagetype": "internal",
+        "page_count": 1,
+        "page_bytes": 4096,
+        "payload_bytes": 680,
+        "unused_bytes": 3364,
+        "overhead_bytes": 52
+      },
+      {
+        "name": "commits",
+        "pagetype": "leaf",
+        "page_count": 6,
+        "page_bytes": 24576,
+        "payload_bytes": 20639,
+        "unused_bytes": 3282,
+        "overhead_bytes": 655
+      },
+      {
+        "name": "layer_identity",
+        "pagetype": "leaf",
+        "page_count": 1,
+        "page_bytes": 4096,
+        "payload_bytes": 53,
+        "unused_bytes": 4032,
+        "overhead_bytes": 11
+      },
+      {
+        "name": "layer_stack_names",
+        "pagetype": "leaf",
+        "page_count": 1,
+        "page_bytes": 4096,
+        "payload_bytes": 33,
+        "unused_bytes": 4052,
+        "overhead_bytes": 11
+      },
+      {
+        "name": "layer_stacks",
+        "pagetype": "leaf",
+        "page_count": 1,
+        "page_bytes": 4096,
+        "payload_bytes": 67,
+        "unused_bytes": 4018,
+        "overhead_bytes": 11
+      },
+      {
+        "name": "layers",
+        "pagetype": "leaf",
+        "page_count": 1,
+        "page_bytes": 4096,
+        "payload_bytes": 89,
+        "unused_bytes": 3996,
+        "overhead_bytes": 11
+      },
+      {
+        "name": "layers_child",
+        "pagetype": "leaf",
+        "page_count": 1,
+        "page_bytes": 4096,
+        "payload_bytes": 0,
+        "unused_bytes": 4088,
+        "overhead_bytes": 8
+      },
+      {
+        "name": "layers_genesis",
+        "pagetype": "leaf",
+        "page_count": 1,
+        "page_bytes": 4096,
+        "payload_bytes": 53,
+        "unused_bytes": 4032,
+        "overhead_bytes": 11
+      },
+      {
+        "name": "layers_source",
+        "pagetype": "leaf",
+        "page_count": 1,
+        "page_bytes": 4096,
+        "payload_bytes": 0,
+        "unused_bytes": 4088,
+        "overhead_bytes": 8
+      },
+      {
+        "name": "object_packs",
+        "pagetype": "internal",
+        "page_count": 9,
+        "page_bytes": 36864,
+        "payload_bytes": 0,
+        "unused_bytes": 10136,
+        "overhead_bytes": 26728
+      },
+      {
+        "name": "object_packs",
+        "pagetype": "leaf",
+        "page_count": 3340,
+        "page_bytes": 13680640,
+        "payload_bytes": 10178574,
+        "unused_bytes": 3422245,
+        "overhead_bytes": 79821
+      },
+      {
+        "name": "object_packs",
+        "pagetype": "overflow",
+        "page_count": 64494,
+        "page_bytes": 264167424,
+        "payload_bytes": 263754194,
+        "unused_bytes": 155254,
+        "overhead_bytes": 257976
+      },
+      {
+        "name": "objects",
+        "pagetype": "internal",
+        "page_count": 63,
+        "page_bytes": 258048,
+        "payload_bytes": 195055,
+        "unused_bytes": 30429,
+        "overhead_bytes": 32564
+      },
+      {
+        "name": "objects",
+        "pagetype": "leaf",
+        "page_count": 4545,
+        "page_bytes": 18616320,
+        "payload_bytes": 15522582,
+        "unused_bytes": 1972131,
+        "overhead_bytes": 1121607
+      },
+      {
+        "name": "sqlite_schema",
+        "pagetype": "internal",
+        "page_count": 1,
+        "page_bytes": 4096,
+        "payload_bytes": 0,
+        "unused_bytes": 3977,
+        "overhead_bytes": 119
+      },
+      {
+        "name": "sqlite_schema",
+        "pagetype": "leaf",
+        "page_count": 2,
+        "page_bytes": 8192,
+        "payload_bytes": 5347,
+        "unused_bytes": 2763,
+        "overhead_bytes": 82
+      },
+      {
+        "name": "workspace_stages",
+        "pagetype": "leaf",
+        "page_count": 1,
+        "page_bytes": 4096,
+        "payload_bytes": 0,
+        "unused_bytes": 4088,
+        "overhead_bytes": 8
+      }
+    ],
+    "object_packs_SQL_row_encoding_bytes": 24347
+  },
+  "packs": {
+    "count": 4913,
+    "blob_bytes": 273908421,
+    "header_bytes": 78608,
+    "directory_bytes": 624912,
+    "encoded_group_bytes": 273204901,
+    "decoded_group_bytes": 694540462,
+    "decoded_directory_bytes": 1621400,
+    "FULL_record_bytes": 666524298,
+    "DELTA_record_bytes": 26394764
+  },
+  "groups_by_lane": [
+    {
+      "lane": "payload",
+      "group_count": 29156,
+      "encoded_bytes": 216448341,
+      "decoded_bytes": 619957422
+    },
+    {
+      "lane": "structural",
+      "group_count": 9901,
+      "encoded_bytes": 56756560,
+      "decoded_bytes": 74583040
+    }
+  ],
+  "roles": [
+    {
+      "role": "FileState",
+      "kind": "FULL",
+      "objects_count": 75927,
+      "canonical_bytes": 8048262
+    },
+    {
+      "role": "directory_map_branch",
+      "kind": "FULL",
+      "objects_count": 406,
+      "canonical_bytes": 160456
+    },
+    {
+      "role": "directory_map_leaf",
+      "kind": "FULL",
+      "objects_count": 14023,
+      "canonical_bytes": 11240607
+    },
+    {
+      "role": "directory_state",
+      "kind": "FULL",
+      "objects_count": 13647,
+      "canonical_bytes": 1337406
+    },
+    {
+      "role": "extent_leaf",
+      "kind": "FULL",
+      "objects_count": 75927,
+      "canonical_bytes": 7337108
+    },
+    {
+      "role": "inode_record",
+      "kind": "FULL",
+      "objects_count": 89576,
+      "canonical_bytes": 8778448
+    },
+    {
+      "role": "inode_table_branch",
+      "kind": "FULL",
+      "objects_count": 163,
+      "canonical_bytes": 668164
+    },
+    {
+      "role": "inode_table_leaf",
+      "kind": "DELTA",
+      "objects_count": 4674,
+      "canonical_bytes": 26807832
+    },
+    {
+      "role": "inode_table_leaf",
+      "kind": "FULL",
+      "objects_count": 5364,
+      "canonical_bytes": 30015088
+    },
+    {
+      "role": "metadata_map_leaf",
+      "kind": "FULL",
+      "objects_count": 4,
+      "canonical_bytes": 572
+    },
+    {
+      "role": "namespace_root",
+      "kind": "FULL",
+      "objects_count": 158,
+      "canonical_bytes": 19118
+    },
+    {
+      "role": "payload_chunk",
+      "kind": "DELTA",
+      "objects_count": 8024,
+      "canonical_bytes": 106597922
+    },
+    {
+      "role": "payload_chunk",
+      "kind": "FULL",
+      "objects_count": 78393,
+      "canonical_bytes": 598565032
+    },
+    {
+      "role": "symlink_state",
+      "kind": "FULL",
+      "objects_count": 7,
+      "canonical_bytes": 442
+    }
+  ],
+  "retention": {
+    "selected_count": 366293,
+    "canonical_bytes": 799576457,
+    "logical_union_count": 366293,
+    "outside_logical_union_count": 0,
+    "base_only_count": 0,
+    "base_only_canonical_bytes": 0,
+    "outside_required_union_count": 0,
+    "all_selected_delta_bases_selected_FULL": true,
+    "unselected_records_count": 0,
+    "dependencies": [
+      {
+        "delta_count": 12698,
+        "base_count": 7736,
+        "cross_pack_count": 12698
+      }
+    ]
+  },
+  "limitations": [
+    "No perrecord compressed attribution",
+    "Logical and physicalbase populations separately computed; outside doesnot imply safegarbage",
+    "Snapshotcopyallocation notused",
+    "Initialrandominodevalues produce canonicalcountdifferences vs historicalcontrol"
+  ],
+  "analysis_source_hashes": {
+    "snapshot_sha256": "20de43b8b987aa0cb3341fdd4e468b8bea82bd8d14bc9e02c6b4e9c67e8958b2",
+    "inventory_sha256": "705006b92b0e7ec63225297584887ed8c726f05fd18b06c92becd165d62571a5"
+  }
+}

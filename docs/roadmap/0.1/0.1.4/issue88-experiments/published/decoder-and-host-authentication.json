@@ -1,0 +1,58 @@
+{
+  "status": "PASS",
+  "decoder_hash": "eb848498a988bf9ced1506a5ba7fb9c070800e16d20a2cc43b8ce339d1657301",
+  "decoder_expected_source": "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/storage-breakdown-014c0b9-full157-m45-1-issue87/identity-and-scope.json",
+  "host_identity": {
+    "LAYERFS_PRODUCT_SEAL": "1649675c68a853f8a9da7debd36e30ba7cacd883c016e842dcfe99ba34f1e91f",
+    "LAYERFS_SOURCE_COMMIT": "3afe76243c22d516d0c10449f99ad3466d557669",
+    "LAYERFS_SOURCE_DIRTY": "false",
+    "LAYERFS_SOURCE_SEAL": "c9be627f1a0d17a55a0b6c165a2b194e00b45ec8a80034ef526b8bd9269d8db5",
+    "LAYERFS_SOURCE_TREE": "9d4e9c578906b6ac49ded68e3fb5cb35706e2891",
+    "WORKLOAD_SOURCE_SHA256": "86a12224417d3972c29c62c134e019a0ce8e80cf5360df5394f3537e15901127",
+    "binary_sha256": "89fc4cb9c87b4d4eb774f1747d1a6c5f3ea1c03fb0571864c6f9bdb5477f4869",
+    "platform": "macOS-26.4.1-arm64-arm-64bit-Mach-O",
+    "rust_toolchain": "1.85.1",
+    "schema_sha256": "53bda8792a601683038af508b183986e1f880a3c0f2158dc3cc9f6bbf1fced50"
+  },
+  "host_hash_verified": true,
+  "run_identity_fields": {
+    "admission_eligible": false,
+    "cache_profile": "fresh-store-existing-os-cache-uncontrolled",
+    "contract_sha256": "d543c2cf5567ed9bd7533685e88c4866d5cadf7e0aad83c5b856c774c901f2f0",
+    "full_run_contract_sha256": "c3b1178778580949d9978659959b1aecd34d6d7d7737042a1886017b006c2526",
+    "host_identity": {
+      "LAYERFS_PRODUCT_SEAL": "1649675c68a853f8a9da7debd36e30ba7cacd883c016e842dcfe99ba34f1e91f",
+      "LAYERFS_SOURCE_COMMIT": "3afe76243c22d516d0c10449f99ad3466d557669",
+      "LAYERFS_SOURCE_DIRTY": "false",
+      "LAYERFS_SOURCE_SEAL": "c9be627f1a0d17a55a0b6c165a2b194e00b45ec8a80034ef526b8bd9269d8db5",
+      "LAYERFS_SOURCE_TREE": "9d4e9c578906b6ac49ded68e3fb5cb35706e2891",
+      "WORKLOAD_SOURCE_SHA256": "86a12224417d3972c29c62c134e019a0ce8e80cf5360df5394f3537e15901127",
+      "binary_sha256": "89fc4cb9c87b4d4eb774f1747d1a6c5f3ea1c03fb0571864c6f9bdb5477f4869",
+      "platform": "macOS-26.4.1-arm64-arm-64bit-Mach-O",
+      "rust_toolchain": "1.85.1",
+      "schema_sha256": "53bda8792a601683038af508b183986e1f880a3c0f2158dc3cc9f6bbf1fced50"
+    },
+    "image_id": "sha256:d95da176d7deca0d7ab9f5d7cd05fe983baf922ed00c25dd033e6e5bbb44cdbd",
+    "phase_operation_verification_limits_seconds": [
+      14400,
+      300,
+      14400
+    ],
+    "preparation_ns": 59737252916,
+    "repetition": 1,
+    "resource_profile": "host phase CPU and lifetime RSS; container lifetime/boundary categories; sampled disk",
+    "schema": "deepseek-full-m45-v1",
+    "smoke": "deepseek-full",
+    "source": {
+      "LAYERFS_PRODUCT_SEAL": "1649675c68a853f8a9da7debd36e30ba7cacd883c016e842dcfe99ba34f1e91f",
+      "LAYERFS_SOURCE_COMMIT": "6f1c120c68f1532a88eb866c2af593b74c3cc772",
+      "LAYERFS_SOURCE_DIRTY": "false",
+      "LAYERFS_SOURCE_SEAL": "c9be627f1a0d17a55a0b6c165a2b194e00b45ec8a80034ef526b8bd9269d8db5",
+      "LAYERFS_SOURCE_TREE": "1196d39ad3f7af8b8f6a75ed615f4387d88782fb",
+      "WORKLOAD_SOURCE_SHA256": "86a12224417d3972c29c62c134e019a0ce8e80cf5360df5394f3537e15901127"
+    },
+    "source_arm": "candidate"
+  },
+  "run_identity_path": "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/issue88-s1-full157-1/identity.json",
+  "run_identity_sha256": "52b63ae8e9e2686be35a63fb16c14b1d24264d6fa0e3036812aed3c71a541f1e"
+}
