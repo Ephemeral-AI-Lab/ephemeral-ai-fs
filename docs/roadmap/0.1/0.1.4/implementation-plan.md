@@ -1,5 +1,13 @@
 # Storage architecture v3: implementation and rollout plan
 
+> **Current owner direction (2026-09-08):** corrected M4 is checkpointed; small-file
+> storage acceptance remains unresolved. Proceed with the isolated
+> [M4.5 plan](implementation-milestone-4.5-plan.md), tracked in
+> [#86](https://github.com/Ephemeral-AI-Lab/layerfs/issues/86), then stop before M5.
+> This supersedes earlier stop-at-M4/SQLite-tuning deferral instructions only for
+> that scoped experiment. Historical milestone instructions below remain context.
+
+
 Status: **M0–M3 checkpointed; M4 plan finalized, not implemented**, 2026-09-08. Based on the specification at
 `555d91f0cd74148364331e24acf0ba14408d7c78` and source baseline
 `28177560c8f049c02192e18c263cdc5543c1ab52`. This document plans work; it does not

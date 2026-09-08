@@ -1,5 +1,13 @@
 # M4 implementation handoff prompt
 
+> **Current owner direction (2026-09-08):** corrected M4 is checkpointed; small-file
+> storage acceptance remains unresolved. Proceed with the isolated
+> [M4.5 plan](implementation-milestone-4.5-plan.md), tracked in
+> [#86](https://github.com/Ephemeral-AI-Lab/layerfs/issues/86), then stop before M5.
+> This supersedes earlier stop-at-M4/SQLite-tuning deferral instructions only for
+> that scoped experiment. Historical milestone instructions below remain context.
+
+
 Copy the following into the implementation task. This document starts no task or
 verification run. The prior M3-only and full-M0–M5 handoff versions are retained in
 Git history; they do not override this milestone's stop condition.

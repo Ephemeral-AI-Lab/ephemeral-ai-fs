@@ -1,3 +1,15 @@
+# M4.5 authorized — plan only, execution pending
+
+2026-09-08. Follow [M4.5 plan](implementation-milestone-4.5-plan.md) and
+[issue #86](https://github.com/Ephemeral-AI-Lab/layerfs/issues/86). Create one 4-KiB
+candidate while preserving supported 64-KiB access, use the three approved smokes
+and separate compatibility receipts, and retain allocation-amplification limits.
+Small-file storage acceptance remains open. No M4.5 code or measurements were
+performed by this documentation update. Stop before M5. The prior ledger is
+preserved verbatim below.
+
+---
+
 # M4 independent review completed — stop before M5
 
 2026-09-08. Three independent subagents reviewed physical encoding/admission/read

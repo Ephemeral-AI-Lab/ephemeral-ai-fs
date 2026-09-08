@@ -1,5 +1,13 @@
 # LayerFS 0.1.4 — Storage efficiency
 
+> **Current owner direction (2026-09-08):** corrected M4 is checkpointed; small-file
+> storage acceptance remains unresolved. Proceed with the isolated
+> [M4.5 plan](implementation-milestone-4.5-plan.md), tracked in
+> [#86](https://github.com/Ephemeral-AI-Lab/layerfs/issues/86), then stop before M5.
+> This supersedes earlier stop-at-M4/SQLite-tuning deferral instructions only for
+> that scoped experiment. Historical milestone instructions below remain context.
+
+
 > **Status (2026-09-08):** M3 is complete as a development checkpoint in
 > draft PR #81. The [M4 plan](implementation-milestone-4-plan.md) is finalized:
 > bounded depth-one deltas, two encoded group alternatives, read batching and
