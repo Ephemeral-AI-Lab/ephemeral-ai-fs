@@ -1,8 +1,10 @@
 # M4.5: 4-KiB SQLite creation and allocation evaluation
 
-Status: **implemented and smoke/compatibility verified; unqualified development checkpoint**, 2026-09-08.
+Status: **completed; owner accepted 4-KiB creation default**, 2026-09-08.
 Evidence: [M4.5 JSON](implementation-milestone-4.5.json) and [progress](implementation-progress.md).
-Allocation amplification and full acceptance remain unresolved.
+The default is accepted; original diagnostic misses and full release qualification
+are unchanged. Unresolved allocation amplification remains tracked in
+[issue #83 (M3-R6)](https://github.com/Ephemeral-AI-Lab/layerfs/issues/83).
 Tracking: [issue #86](https://github.com/Ephemeral-AI-Lab/layerfs/issues/86).
 Complete this isolated iteration after M4 and stop before M5. This supersedes the
 prior blanket SQLite-tuning deferral only for the scope below. S3 remains future
@@ -171,3 +173,15 @@ Fix demonstrated errors within scope; no indefinite search for a favorable run.
 A task may report a genuine external blocker or unqualified result, but must not
 mark missing empirical compatibility or unresolved acceptance as passed. No M5,
 S3, conversion tooling, schema consolidation or new durability work is authorized.
+
+## Final owner disposition (2026-09-08)
+
+The owner accepts 4096-byte SQLite pages as the default for new Stores and closes
+#86 as completed. Preserve support for existing 65536-byte schema-6 Stores, with
+no page conversion on Connect. Old M4 binaries reject new 4-KiB Stores; upgraded
+M4.5 code supports both layouts. All raw evidence and original allocation-growth,
+timing and resource observations retain their original status. This decision is
+not full release qualification and does not establish the cause or bounds of
+allocation amplification. That unresolved work remains in #83, M3-R6, with the
+latest M4.5 evidence. No new optimization, measurement, migration, merge or M5 work
+is part of this disposition.

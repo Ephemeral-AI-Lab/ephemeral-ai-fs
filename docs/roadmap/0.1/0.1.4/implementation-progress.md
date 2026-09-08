@@ -1,4 +1,4 @@
-# M4.5 complete as an unqualified development checkpoint
+# M4.5 complete — 4-KiB creation default accepted
 
 2026-09-08. Owner-authorized [single-candidate plan](implementation-milestone-4.5-plan.md)
 implemented after clean custody at `897de8254bf7f20b8afcee50fd5e04af23106934`.
@@ -6,11 +6,18 @@ Product/harness commit: `70955bc25` on `codex/storage-v3-implementation`, draft
 [PR #81](https://github.com/Ephemeral-AI-Lab/layerfs/pull/81), tracking #86.
 [Full machine-readable evidence](implementation-milestone-4.5.json).
 
-**Recommendation: retain 4-KiB creation as the development default, retaining both
-layout readers.** Small-Store total-allocation reductions are substantial and
-backward readability passed. **Storage acceptance remains unqualified:** binary
-post-Init growth misses, additional foreground/read costs, and unexplained allocation
-amplification remain explicit. No M5 or release qualification ran.
+**Owner decision (2026-09-08): accept 4-KiB SQLite pages as the default for new
+Stores; M4.5 is completed under [issue #86](https://github.com/Ephemeral-AI-Lab/layerfs/issues/86).**
+Existing 64-KiB schema-6 Stores remain supported without conversion. Old M4 binaries
+reject new 4-KiB Stores; use the M4.5 reader capability for those Stores.
+
+This accepts the creation policy, not every measured gate or full release
+qualification. Binary post-Init growth misses, foreground/read costs and all raw
+results remain unchanged. Unexplained allocation amplification remains open in
+[issue #83, M3-R6](https://github.com/Ephemeral-AI-Lab/layerfs/issues/83), linked to
+the latest [M4.5 evidence](implementation-milestone-4.5.json). Its cause and general
+bounds are not established. This disposition runs no new measurements or product
+changes; no M5 work or merge is authorized.
 
 ## Scope and completion
 

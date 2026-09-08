@@ -407,9 +407,9 @@ this walkthrough must not be presented as an already supported SQLite format.
 
 ## M4.5 page-layout reader direction
 
-The owner-authorized [M4.5 experiment](implementation-milestone-4.5-plan.md)
-separates SQLite creation policy from supported layouts. The candidate creates
-4096-byte-page Stores and explicitly accepts both 4096 and 65536-byte pages for
+The owner-accepted [M4.5 policy](implementation-milestone-4.5-plan.md)
+separates SQLite creation policy from supported layouts. New Stores use
+4096-byte pages; the upgraded reader explicitly accepts both 4096 and 65536-byte pages for
 otherwise valid schema 6 / pack wire 1 Stores. Canonical bytes and pack wire fields
 are unchanged. Connect does not convert or rewrite page size. Older M4 binaries
 require 65536-byte pages and reject new 4096-byte Stores; access requires the M4.5
