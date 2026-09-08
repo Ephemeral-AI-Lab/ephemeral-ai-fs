@@ -232,7 +232,7 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
             {
                 self.counters.nodes_reused += 1;
             } else {
-                node.id = Some(self.store.put_owned(canonical)?);
+                node.id = Some(self.store.put_tree_origin(canonical, page.origin)?);
                 self.counters.nodes_created += 1;
             }
         } else {

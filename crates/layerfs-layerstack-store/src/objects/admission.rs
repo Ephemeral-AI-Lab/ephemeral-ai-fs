@@ -567,16 +567,19 @@ impl DeltaSearch {
         object: &AuthenticatedCanonicalObject,
         stats: &mut crate::PhysicalStorageReceipt,
     ) -> Result<Option<Vec<u8>>> {
-        // Original file-span hints identify payload chunks. No metadata/global
-        // similarity search is introduced; other canonical roles remain FULL.
+        // Payload span hints retain their policy. S1 additionally accepts only
+        // exact inode leaves carrying the tree editor's immutable origin.
         let value = layerfs_content::decode_bytes_object(&object.bytes);
         let Ok(value) = value else {
             return Ok(None);
         };
-        if !value.starts_with(layerfs_content::file::extent_codec::CHUNK_MAGIC) {
-            return Ok(None);
+        let inode_leaf = super::is_inode_table_leaf(&object.bytes)?;
+        if !inode_leaf {
+            if !value.starts_with(layerfs_content::file::extent_codec::CHUNK_MAGIC) {
+                return Ok(None);
+            }
+            layerfs_content::file::extent_codec::decode_chunk_payload(value)?;
         }
-        layerfs_content::file::extent_codec::decode_chunk_payload(value)?;
         if object.bytes.len() + 9 > pack::GROUP_LIMIT {
             return Ok(None);
         }
@@ -606,6 +609,7 @@ impl DeltaSearch {
             let prior = db.read_hint(id, false, &mut self.reads)?;
             let base = match prior {
                 Some(read::HintRecord::Full(base)) => base,
+                Some(read::HintRecord::Anchor(_)) if inode_leaf => continue,
                 Some(read::HintRecord::Anchor(id)) => {
                     if anchors.contains(&id) {
                         continue;
@@ -633,11 +637,17 @@ impl DeltaSearch {
             if !anchors.insert(base.id) {
                 continue;
             }
-            let base_value = layerfs_content::decode_bytes_object(&base.bytes)?;
-            if !base_value.starts_with(layerfs_content::file::extent_codec::CHUNK_MAGIC) {
-                continue;
+            if inode_leaf {
+                if !super::is_inode_table_leaf(&base.bytes)? {
+                    continue;
+                }
+            } else {
+                let base_value = layerfs_content::decode_bytes_object(&base.bytes)?;
+                if !base_value.starts_with(layerfs_content::file::extent_codec::CHUNK_MAGIC) {
+                    continue;
+                }
+                layerfs_content::file::extent_codec::decode_chunk_payload(base_value)?;
             }
-            layerfs_content::file::extent_codec::decode_chunk_payload(base_value)?;
             stats.usable_bases += 1;
             stats.candidate_trials += 1;
             self.trials += 1;

@@ -205,6 +205,17 @@ impl AuthenticatedCanonicalObject {
     }
 }
 
+fn is_inode_table_leaf(canonical: &[u8]) -> CoreResult<bool> {
+    let value = layerfs_content::decode_bytes_object(canonical)?;
+    if !value.starts_with(b"LFS4INT\0") {
+        return Ok(false);
+    }
+    Ok(matches!(
+        layerfs_content::tree::inode::codec::decode_inode_table_node(canonical)?,
+        layerfs_content::tree::inode::codec::InodeTableNodeV1::Leaf(_)
+    ))
+}
+
 pub(crate) struct InitializationTaskObjectBuffer {
     objects: Vec<AuthenticatedCanonicalObject>,
     payload_bytes: usize,
@@ -2796,6 +2807,23 @@ impl ObjectStore for ObjectBuffer<'_> {
         Ok(id)
     }
 
+    fn put_tree_origin(
+        &mut self,
+        canonical: Vec<u8>,
+        origin: Option<ObjectId>,
+    ) -> CoreResult<ObjectId> {
+        let mut object = AuthenticatedCanonicalObject::new(canonical, None)?;
+        if is_inode_table_leaf(&object.bytes)? {
+            object.1.prior_ids[0] = origin;
+            object.1.has_predecessor = origin.is_some();
+        }
+        let id = object.id;
+        self.objects
+            .put_authenticated(object)
+            .map_err(|_| CoreError::Io)?;
+        Ok(id)
+    }
+
     fn put(&mut self, canonical: &[u8]) -> CoreResult<ObjectId> {
         self.put_owned(canonical.to_vec())
     }
@@ -4058,6 +4086,90 @@ mod tests {
             receipt.batch_inserted_bytes + receipt.final_inserted_bytes
         );
         (receipt, ids)
+    }
+
+    #[test]
+    fn s1_inode_origin_survives_delivery_and_delta_origin_stays_full() {
+        use layerfs_content::tree::{
+            batch::inode_table_apply_sorted,
+            inode::{
+                codec::{encode_inode_table_node, InodeTableNodeV1},
+                InodeId, InodeTableRoot,
+            },
+        };
+        for spill in [false, true] {
+            let directory = std::env::temp_dir().join(format!(
+                "layerfs-s1-origin-{}-{}-{spill}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir(&directory).unwrap();
+            let db = crate::schema::StoreDb::create(directory.join("store.sqlite")).unwrap();
+            let mut entries = Vec::new();
+            let mut initial = Vec::new();
+            for serial in 0..64u64 {
+                let bytes = layerfs_content::encode_bytes_object(&serial.to_be_bytes()).unwrap();
+                let id = ObjectId::for_bytes(&bytes);
+                initial.push(CanonicalObject { id, bytes });
+                entries.push((InodeId::allocate([7; 32], serial), id));
+            }
+            entries.sort();
+            let leaf = encode_inode_table_node(&InodeTableNodeV1::Leaf(entries.clone())).unwrap();
+            let mut prior = ObjectId::for_bytes(&leaf);
+            initial.push(CanonicalObject { id: prior, bytes: leaf });
+            let mut admission = CheckedOutputAdmission::new(&db).unwrap();
+            admission.admit(sealed_segment(initial)).unwrap();
+            finish_segment_admission(&db, admission);
+
+            for generation in 0..2u64 {
+                let mut buffer = ObjectBuffer::new(&db).unwrap();
+                let record = buffer.put_owned(
+                    layerfs_content::encode_bytes_object(&(1000 + generation).to_be_bytes()).unwrap(),
+                ).unwrap();
+                entries[generation as usize].1 = record;
+                let expected = encode_inode_table_node(&InodeTableNodeV1::Leaf(entries.clone())).unwrap();
+                let (next, _) = inode_table_apply_sorted(
+                    &mut buffer,
+                    InodeTableRoot(prior),
+                    std::iter::once(Ok((entries[generation as usize].0, Some(record)))),
+                ).unwrap();
+                assert_eq!(next.0, ObjectId::for_bytes(&expected));
+                if spill { buffer.objects.spill().unwrap(); }
+                let built = buffer.finish(next.0, 0).unwrap();
+                built.objects.visit_authenticated_order(&built.objects.reachable, &mut |object| {
+                    if object.id == next.0 {
+                        assert_eq!(object.prior_ids(), &[Some(prior), None, None, None]);
+                        assert!(object.1.has_predecessor);
+                        assert!(object.1.first_span.is_none());
+                        assert_eq!(object.1.diagnostic & diagnostic::FILE, 0);
+                    }
+                    Ok(())
+                }).unwrap();
+                let before = db.physical_storage_receipt();
+                let mut admission = CheckedOutputAdmission::new(&db).unwrap();
+                admission.admit(built.objects).unwrap();
+                finish_segment_admission(&db, admission);
+                let physical = db.physical_storage_receipt().since(before);
+                assert_eq!(physical.delta_selected, u64::from(generation == 0));
+                assert_eq!(physical.diag_eligible_count, 0);
+                assert_eq!(physical.diag_eligible_bytes, 0);
+                assert_eq!(physical.diag_missing_span_count, 0);
+                assert_eq!(physical.diag_new_full_count + physical.diag_new_delta_count, 0);
+                assert_eq!(physical.diag_invalid, 0);
+                assert_eq!(db.read_object_row(next.0).unwrap(), expected);
+                prior = next.0;
+            }
+            let chunk = layerfs_content::file::extent_codec::encode_chunk_object(b"LFS4INT\0").unwrap();
+            assert!(!is_inode_table_leaf(&chunk).unwrap());
+            let mut bad = encode_inode_table_node(&InodeTableNodeV1::Leaf(entries)).unwrap();
+            bad.pop();
+            assert!(is_inode_table_leaf(&bad).is_err());
+            drop(db);
+            std::fs::remove_dir_all(directory).unwrap();
+        }
     }
 
     #[test]

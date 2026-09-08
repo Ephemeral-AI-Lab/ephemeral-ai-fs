@@ -52,6 +52,16 @@ pub trait ObjectStore {
         self.put(&canonical)
     }
 
+    /// Optional physical origin; the default preserves ordinary publication.
+    #[doc(hidden)]
+    fn put_tree_origin(
+        &mut self,
+        canonical: Vec<u8>,
+        _origin: Option<ObjectId>,
+    ) -> CoreResult<ObjectId> {
+        self.put_owned(canonical)
+    }
+
     #[doc(hidden)]
     fn put_file_payload(
         &mut self,
