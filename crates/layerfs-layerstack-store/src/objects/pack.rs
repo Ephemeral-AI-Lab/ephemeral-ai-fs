@@ -1,4 +1,4 @@
-//! Wire version 1. Byte work only: no database, permits, or publication.
+//! Explicit legacy/native wire grammars. Byte work only: no database or publication.
 use crate::{Result, StoreError};
 use layerfs_content::ObjectId;
 use std::ops::Range;
@@ -93,6 +93,138 @@ pub(super) fn entry(
         codec,
         oversized,
     })
+}
+
+/// The old wrappers remain version-1-only so a legacy caller cannot reinterpret
+/// native kind tags. Point readers opt into this explicit dispatch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Version { Legacy, Native }
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Header {
+    pub version: Version,
+    pub group_count: usize,
+}
+
+pub(super) fn versioned_header(bytes: &[u8; 16], blob_length: usize) -> Result<Header> {
+    match u32_at(bytes, 8)? {
+        1 => Ok(Header { version: Version::Legacy, group_count: header(bytes, blob_length)? }),
+        2 => {
+            let count = u32_at(bytes, 12)?;
+            if &bytes[..8] != MAGIC || blob_length > PACK_LIMIT
+                || !(1..=GROUP_COUNT_LIMIT).contains(&count)
+                || blob_length <= 16 + 16 * count {
+                return Err(invalid());
+            }
+            Ok(Header { version: Version::Native, group_count: count })
+        }
+        _ => Err(invalid()),
+    }
+}
+
+pub(super) fn versioned_entry(bytes: &[u8; 16], header: Header, blob_length: usize) -> Result<GroupEntry> {
+    let parsed = entry(bytes, header.group_count, blob_length)?;
+    if header.version == Version::Native
+        && (parsed.oversized || parsed.codec != Codec::Raw || blob_length > PACK_LIMIT) {
+        return Err(invalid());
+    }
+    Ok(parsed)
+}
+
+pub(super) const NATIVE_RAW_LIMIT: usize = 32_768;
+pub(super) const NATIVE_FRAME_LIMIT: usize = 33_024;
+pub(super) const NATIVE_ENCODE_WORKSPACE: usize = 1_048_576;
+pub(super) const NATIVE_DECODE_WORKSPACE: usize = 262_144;
+
+#[derive(Debug)]
+pub(super) enum NativeRecord<'a> {
+    Full { raw_length: usize, frame: &'a [u8] },
+    Prefix { raw_length: usize, base: ObjectId, frame: &'a [u8] },
+}
+
+pub(super) fn native_record(bytes: &[u8]) -> Result<NativeRecord<'_>> {
+    let raw_length = u32_at(bytes, 1)?;
+    if raw_length > NATIVE_RAW_LIMIT { return Err(invalid()); }
+    let (base, start) = match bytes.first() {
+        Some(0) => (None, 5),
+        Some(1) => (Some(ObjectId::from_bytes(bytes.get(5..37).ok_or_else(invalid)?)?), 37),
+        _ => return Err(invalid()),
+    };
+    let frame = bytes.get(start..).ok_or_else(invalid)?;
+    if frame.is_empty() || frame.len() > NATIVE_FRAME_LIMIT { return Err(invalid()); }
+    Ok(match base {
+        None => NativeRecord::Full { raw_length, frame },
+        Some(base) => NativeRecord::Prefix { raw_length, base, frame },
+    })
+}
+
+/// Validate the COMPLETE end directory but return only one group-relative range.
+/// The caller reads count/directory and selected bytes; neighboring bodies are
+/// intentionally not authenticated by a point read.
+pub(super) fn native_record_range(count: usize, ends: &[u8], group_length: usize, ordinal: usize) -> Result<Range<usize>> {
+    if !(1..=RECORD_COUNT_LIMIT).contains(&count) || ordinal >= count
+        || group_length > GROUP_LIMIT || ends.len() != 4 * count {
+        return Err(invalid());
+    }
+    let area_start = 4 + ends.len();
+    let area_length = group_length.checked_sub(area_start).ok_or_else(invalid)?;
+    let mut previous = 0;
+    let mut selected = 0..0;
+    for index in 0..count {
+        let end = u32_at(ends, 4 * index)?;
+        if end <= previous || end > area_length { return Err(invalid()); }
+        if index == ordinal { selected = area_start + previous..area_start + end; }
+        previous = end;
+    }
+    if previous != area_length { return Err(invalid()); }
+    Ok(selected)
+}
+
+pub(super) fn native_encode_record(raw_length: usize, base: Option<ObjectId>, frame: &[u8]) -> Result<Vec<u8>> {
+    if raw_length > NATIVE_RAW_LIMIT || frame.is_empty() || frame.len() > NATIVE_FRAME_LIMIT {
+        return Err(invalid());
+    }
+    let mut bytes = Vec::with_capacity((if base.is_some() { 37 } else { 5 }) + frame.len());
+    bytes.push(u8::from(base.is_some()));
+    put_u32(&mut bytes, raw_length)?;
+    if let Some(base) = base { bytes.extend_from_slice(base.as_bytes()); }
+    bytes.extend_from_slice(frame);
+    Ok(bytes)
+}
+
+pub(super) fn native_group(records: &[&[u8]]) -> Result<EncodedGroup> {
+    if records.is_empty() || records.len() > RECORD_COUNT_LIMIT { return Err(invalid()); }
+    let mut length = 4 + 4 * records.len();
+    for record in records {
+        native_record(record)?;
+        length = length.checked_add(record.len()).ok_or_else(invalid)?;
+    }
+    if length > GROUP_LIMIT { return Err(invalid()); }
+    let mut bytes = Vec::with_capacity(length);
+    put_u32(&mut bytes, records.len())?;
+    let mut end = 0;
+    for record in records { end += record.len(); put_u32(&mut bytes, end)?; }
+    for record in records { bytes.extend_from_slice(record); }
+    Ok(EncodedGroup { bytes, decoded_length: length, records: records.len(), codec: Codec::Raw })
+}
+
+pub(super) fn assemble_native(groups: &[EncodedGroup]) -> Result<Vec<u8>> {
+    if groups.iter().any(|group| group.codec != Codec::Raw || group.decoded_length > GROUP_LIMIT) {
+        return Err(invalid());
+    }
+    // Existing assembly owns all pack-size/count/contiguous-directory checks.
+    let mut bytes = assemble(groups)?;
+    if bytes.len() > PACK_LIMIT { return Err(invalid()); }
+    bytes[8..12].copy_from_slice(&2u32.to_le_bytes());
+    Ok(bytes)
+}
+
+pub(super) fn native_compress(raw: &[u8], prefix: Option<&[u8]>) -> Result<Vec<u8>> {
+    zstandard::native_compress(raw, prefix)
+}
+
+pub(super) fn native_decompress(frame: &[u8], raw_length: usize, prefix: Option<&[u8]>) -> Result<Vec<u8>> {
+    zstandard::native_decompress(frame, raw_length, prefix)
 }
 
 pub(super) enum Record<'a> {
@@ -634,6 +766,98 @@ mod zstandard {
         Ok(bytes)
     }
 
+    use super::{NATIVE_DECODE_WORKSPACE, NATIVE_ENCODE_WORKSPACE, NATIVE_FRAME_LIMIT, NATIVE_RAW_LIMIT};
+
+    /// Exact S2 requested setter sequence, shared with the dynamic-equivalence
+    /// test. No CParams substitution or parameter adjustment to fit workspace.
+    unsafe fn native_parameters(context: *mut ZSTD_CCtx) -> Result<()> {
+        // SAFETY: Caller supplies a live initialized context, exclusively owned.
+        unsafe {
+            checked(ZSTD_CCtx_reset(context, ZSTD_ResetDirective::ZSTD_reset_session_and_parameters))?;
+            for (parameter, value) in [
+                (ZSTD_cParameter::ZSTD_c_compressionLevel, 3),
+                (ZSTD_cParameter::ZSTD_c_windowLog, 20),
+                (ZSTD_cParameter::ZSTD_c_contentSizeFlag, 1),
+                (ZSTD_cParameter::ZSTD_c_checksumFlag, 1),
+                (ZSTD_cParameter::ZSTD_c_dictIDFlag, 0),
+                (ZSTD_cParameter::ZSTD_c_nbWorkers, 0),
+            ] { checked(ZSTD_CCtx_setParameter(context, parameter, value))?; }
+        }
+        Ok(())
+    }
+
+    pub(super) fn native_compress(raw: &[u8], prefix: Option<&[u8]>) -> Result<Vec<u8>> {
+        let prefix = prefix.unwrap_or(&[]);
+        if raw.len() > NATIVE_RAW_LIMIT || prefix.len() > NATIVE_RAW_LIMIT { return Err(invalid()); }
+        // SAFETY: All workspaces are live, aligned and disjoint. Prefix is a
+        // borrowed raw prefix (refPrefix's default), never a dictionary parser.
+        // The static context has no C free and cannot grow beyond this region.
+        unsafe {
+            let mut memory = workspace(NATIVE_ENCODE_WORKSPACE, NATIVE_ENCODE_WORKSPACE)?;
+            let context = ZSTD_initStaticCCtx(memory.as_mut_ptr().cast(), memory.len() * 8);
+            if context.is_null() { return Err(resource()); }
+            native_parameters(context)?;
+            checked(ZSTD_CCtx_refPrefix(context,
+                if prefix.is_empty() { std::ptr::null() } else { prefix.as_ptr().cast() }, prefix.len()))?;
+            let bound = checked(ZSTD_compressBound(raw.len()))?;
+            if bound > NATIVE_FRAME_LIMIT { return Err(resource()); }
+            let mut encoded = output(bound)?;
+            if encoded.capacity() > NATIVE_FRAME_LIMIT { return Err(resource()); }
+            let length = checked(ZSTD_compress2(context, encoded.as_mut_ptr().cast(), encoded.len(), raw.as_ptr().cast(), raw.len()))?;
+            if length == 0 || length > encoded.len() { return Err(invalid()); }
+            encoded.truncate(length);
+            Ok(encoded)
+        }
+    }
+
+    pub(super) fn native_decompress(encoded: &[u8], length: usize, prefix: Option<&[u8]>) -> Result<Vec<u8>> {
+        let prefix = prefix.unwrap_or(&[]);
+        if length > NATIVE_RAW_LIMIT || prefix.len() > NATIVE_RAW_LIMIT
+            || encoded.is_empty() || encoded.len() > NATIVE_FRAME_LIMIT
+            || encoded.get(..4) != Some(&[0x28, 0xb5, 0x2f, 0xfd])
+            || encoded.get(4).is_none_or(|descriptor| descriptor & 0x1b != 0) {
+            return Err(invalid());
+        }
+        // SAFETY: Header parsing only borrows encoded. DCtx and DDict have
+        // separate caller-owned aligned regions; DDict borrows raw prefix until
+        // one-shot decoding completes. Neither static object uses a C free.
+        // DCtx_refPrefix is deliberately avoided: it creates a heap DDict.
+        unsafe {
+            let mut header = std::mem::MaybeUninit::<ZSTD_FrameHeader>::uninit();
+            if checked(ZSTD_getFrameHeader(header.as_mut_ptr(), encoded.as_ptr().cast(), encoded.len()))? != 0 {
+                return Err(invalid());
+            }
+            let header = header.assume_init();
+            if header.frameType != ZSTD_FrameType_e::ZSTD_frame
+                || header.frameContentSize != length as u64
+                || header.windowSize > 1_048_576 || header.dictID != 0 || header.checksumFlag != 1
+                || checked(ZSTD_findFrameCompressedSize(encoded.as_ptr().cast(), encoded.len()))? != encoded.len() {
+                return Err(invalid());
+            }
+            let mut memory = workspace(ZSTD_estimateDCtxSize(), NATIVE_DECODE_WORKSPACE)?;
+            let context = ZSTD_initStaticDCtx(memory.as_mut_ptr().cast(), memory.len() * 8);
+            if context.is_null() { return Err(resource()); }
+            checked(ZSTD_DCtx_reset(context, ZSTD_ResetDirective::ZSTD_reset_session_and_parameters))?;
+            checked(ZSTD_DCtx_setParameter(context, ZSTD_dParameter::ZSTD_d_windowLogMax, 20))?;
+            let remaining = NATIVE_DECODE_WORKSPACE.checked_sub(memory.capacity() * 8).ok_or_else(resource)?;
+            let mut dictionary = if prefix.is_empty() { Vec::new() } else {
+                workspace(ZSTD_estimateDDictSize(prefix.len(), ZSTD_dictLoadMethod_e::ZSTD_dlm_byRef), remaining)?
+            };
+            let ddict = if prefix.is_empty() { std::ptr::null() } else {
+                let ptr = ZSTD_initStaticDDict(dictionary.as_mut_ptr().cast(), dictionary.len() * 8,
+                    prefix.as_ptr().cast(), prefix.len(), ZSTD_dictLoadMethod_e::ZSTD_dlm_byRef,
+                    ZSTD_dictContentType_e::ZSTD_dct_rawContent);
+                if ptr.is_null() { return Err(resource()); }
+                ptr
+            };
+            let mut decoded = output(length)?;
+            if decoded.capacity() > NATIVE_RAW_LIMIT { return Err(resource()); }
+            if checked(ZSTD_decompress_usingDDict(context, decoded.as_mut_ptr().cast(), decoded.len(),
+                encoded.as_ptr().cast(), encoded.len(), ddict))? != length { return Err(invalid()); }
+            Ok(decoded)
+        }
+    }
+
     pub(super) fn compress(raw: &[u8]) -> Result<Vec<u8>> {
         if raw.is_empty() || raw.len() > GROUP_LIMIT {
             return Err(invalid());
@@ -735,5 +959,147 @@ mod zstandard {
             }
             Ok(decoded)
         }
+    }
+    #[cfg(test)]
+    mod native_tests {
+        use super::*;
+
+        // A dynamic control is test-only and uses the exact frozen setter
+        // sequence. Product execution never retries static failures dynamically.
+        fn dynamic_frame(raw: &[u8], prefix: &[u8]) -> Vec<u8> {
+            struct Context(*mut ZSTD_CCtx);
+            impl Drop for Context {
+                fn drop(&mut self) {
+                    // SAFETY: This test owns a dynamic context, unlike product.
+                    unsafe { ZSTD_freeCCtx(self.0); }
+                }
+            }
+            // SAFETY: Owned context plus disjoint live borrowed slices/output.
+            unsafe {
+                let context = Context(ZSTD_createCCtx());
+                assert!(!context.0.is_null());
+                native_parameters(context.0).unwrap();
+                checked(ZSTD_CCtx_refPrefix(context.0, prefix.as_ptr().cast(), prefix.len())).unwrap();
+                let mut frame = vec![0; ZSTD_compressBound(raw.len())];
+                let n = checked(ZSTD_compress2(context.0, frame.as_mut_ptr().cast(), frame.len(), raw.as_ptr().cast(), raw.len())).unwrap();
+                frame.truncate(n);
+                frame
+            }
+        }
+
+        #[test]
+        fn native_static_fit_equivalence_and_strict_frames() {
+            // Source-size boundaries cover tiny inputs and the pinned level-3
+            // size-table regimes; exercise empty, tiny and maximum prefixes.
+            // SAFETY: This API returns the linked library's immutable version.
+            assert_eq!(unsafe { ZSTD_versionNumber() }, 10507);
+            let sizes = [0, 1, 7, 8, 15, 16, 31, 32, 63, 64, 127, 128, 255, 256,
+                511, 512, 1023, 1024, 2047, 2048, 4095, 4096, 8191, 8192,
+                16383, 16384, 32767, 32768];
+            let mut random = vec![0; NATIVE_RAW_LIMIT];
+            let mut state = 0x174ab28du32;
+            for byte in &mut random {
+                state ^= state << 13; state ^= state >> 17; state ^= state << 5;
+                *byte = state as u8;
+            }
+            let repeated = vec![b'a'; NATIVE_RAW_LIMIT];
+            let mut dictionary_magic = random.clone();
+            dictionary_magic[..4].copy_from_slice(&[0x37, 0xa4, 0x30, 0xec]);
+            for source in [&random, &repeated, &dictionary_magic] {
+                for size in sizes {
+                    for prefix_size in [0, 1, 7, 8, 63, 64, 1024, 32768] {
+                        let raw = &source[..size];
+                        let prefix = &source[..prefix_size];
+                        let encoded = native_compress(raw, Some(prefix)).unwrap();
+                        assert!(encoded.capacity() <= NATIVE_FRAME_LIMIT);
+                        assert_eq!(encoded, dynamic_frame(raw, prefix));
+                        assert_eq!(native_decompress(&encoded, size, Some(prefix)).unwrap(), raw);
+                    }
+                }
+            }
+            let frame = native_compress(&random, Some(&random)).unwrap();
+            let wrong = vec![0u8; NATIVE_RAW_LIMIT];
+            assert!(native_decompress(&frame, random.len(), Some(&wrong)).is_err());
+            assert!(native_decompress(&frame, random.len() - 1, Some(&random)).is_err());
+            assert!(native_decompress(&frame[..frame.len()-1], random.len(), Some(&random)).is_err());
+            let mut extra = frame.clone(); extra.push(0);
+            assert!(native_decompress(&extra, random.len(), Some(&random)).is_err());
+            extra = frame.clone(); extra.extend_from_slice(&frame);
+            assert!(native_decompress(&extra, random.len(), Some(&random)).is_err());
+            for bad in [0x01, 0x02, 0x03, 0x08, 0x10] {
+                let mut broken = frame.clone(); broken[4] |= bad;
+                assert!(native_decompress(&broken, random.len(), Some(&random)).is_err());
+            }
+            let mut no_checksum = frame.clone(); no_checksum[4] &= !4;
+            assert!(native_decompress(&no_checksum, random.len(), Some(&random)).is_err());
+            let mut checksum = frame.clone(); *checksum.last_mut().unwrap() ^= 1;
+            assert!(native_decompress(&checksum, random.len(), Some(&random)).is_err());
+            let mut skippable = frame.clone(); skippable[..4].copy_from_slice(&[0x50,0x2a,0x4d,0x18]);
+            assert!(native_decompress(&skippable, random.len(), Some(&random)).is_err());
+            // Explicit non-single-segment header declares windowLog21. The
+            // oversized window is rejected before block/checksum decoding.
+            let excessive_window = [0x28,0xb5,0x2f,0xfd,0x84,0x58,0,0,0,0,1,0,0,0,0,0,0];
+            assert!(native_decompress(&excessive_window, 0, None).is_err());
+            assert!(native_compress(&vec![0; NATIVE_RAW_LIMIT + 1], None).is_err());
+            assert!(native_compress(&[], Some(&vec![0; NATIVE_RAW_LIMIT + 1])).is_err());
+        }
+    }
+
+}
+
+#[cfg(test)]
+mod native_framing_tests {
+    use super::*;
+
+    #[test]
+    fn native_grammar_ranges_and_legacy_dispatch() {
+        // Fixed-header parsing does not claim frame authentication. This literal
+        // nonempty frame lets framing checks run without invoking any codec.
+        let full = native_encode_record(0, None, &[1]).unwrap();
+        assert_eq!(full, [0, 0, 0, 0, 0, 1]);
+        let base = ObjectId::for_bytes(b"base");
+        let prefix = native_encode_record(NATIVE_RAW_LIMIT, Some(base), &[2]).unwrap();
+        assert_eq!(&prefix[..5], &[1, 0, 128, 0, 0]);
+        assert_eq!(&prefix[5..37], base.as_bytes());
+        assert!(matches!(native_record(&prefix).unwrap(), NativeRecord::Prefix { raw_length: NATIVE_RAW_LIMIT, base: id, frame: [2] } if id == base));
+        let group = native_group(&[&full, &prefix]).unwrap();
+        assert_eq!(native_record_range(2, &group.bytes[4..12], group.bytes.len(), 0).unwrap(), 12..18);
+        assert_eq!(native_record_range(2, &group.bytes[4..12], group.bytes.len(), 1).unwrap(), 18..56);
+        let packed = assemble_native(&[group]).unwrap();
+        let multiple = assemble_native(&[native_group(&[&full]).unwrap(), native_group(&[&prefix]).unwrap()]).unwrap();
+        let mh = versioned_header(multiple[..16].try_into().unwrap(), multiple.len()).unwrap();
+        assert_eq!(mh.group_count, 2);
+        let first = versioned_entry(multiple[16..32].try_into().unwrap(), mh, multiple.len()).unwrap();
+        let second = versioned_entry(multiple[32..48].try_into().unwrap(), mh, multiple.len()).unwrap();
+        assert_eq!(first.range.start, 48);
+        assert_eq!(first.range.end, second.range.start);
+        assert_eq!(second.range.end, multiple.len());
+        let h: &[u8;16] = packed[..16].try_into().unwrap();
+        assert!(header(h, packed.len()).is_err());
+        let parsed = versioned_header(h, packed.len()).unwrap();
+        assert_eq!(parsed.version, Version::Native);
+        let e: &[u8;16] = packed[16..32].try_into().unwrap();
+        assert_eq!(versioned_entry(e, parsed, packed.len()).unwrap().range, 32..packed.len());
+        for offset in [12,13,14,15] {
+            let mut corrupt = *e; corrupt[offset] = 1;
+            assert!(versioned_entry(&corrupt, parsed, packed.len()).is_err());
+        }
+        assert!(versioned_header(h, PACK_LIMIT + 1).is_err());
+        assert!(native_record_range(0, &[], 4, 0).is_err());
+        assert!(native_record_range(RECORD_COUNT_LIMIT + 1, &[], 4, 0).is_err());
+        assert!(native_record_range(2, &[1,0,0,0,1,0,0,0], 14, 0).is_err());
+        assert!(native_record_range(2, &[1,0,0,0,3,0,0,0], 14, 0).is_err());
+        assert!(native_record_range(2, &[1,0,0,0,2,0,0,0], 15, 0).is_err());
+        assert!(native_record_range(2, &[1,0,0,0,2,0,0,0], 14, 2).is_err());
+        assert!(native_record(&[0,0,0,0,0]).is_err());
+        assert!(native_record(&[1,0,0,0,0,1]).is_err());
+        assert!(native_record(&[2,0,0,0,0,1]).is_err());
+        assert!(native_encode_record(NATIVE_RAW_LIMIT + 1, None, &[1]).is_err());
+        let maximal = native_encode_record(NATIVE_RAW_LIMIT, None, &vec![1;NATIVE_FRAME_LIMIT]).unwrap();
+        assert!(native_group(&[&maximal]).is_ok());
+        assert!(native_group(&[&maximal,&maximal]).is_err());
+        let legacy = assemble(&[EncodedGroup { bytes: vec![1,0,0,0,2,0,0,0,0,1], decoded_length: 10, records: 1, codec: Codec::Raw }]).unwrap();
+        assert_eq!(header(legacy[..16].try_into().unwrap(), legacy.len()).unwrap(), 1);
+        assert_eq!(versioned_header(legacy[..16].try_into().unwrap(), legacy.len()).unwrap().version, Version::Legacy);
     }
 }
