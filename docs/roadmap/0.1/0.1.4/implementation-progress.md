@@ -1,6 +1,6 @@
 # Storage architecture v3 implementation progress
 
-Status: **milestones 0–2 complete as a FULL/RAW development checkpoint; stop here**.
+Status: **M3 in progress; milestones 0–2 completed and preserved below**.
 Updated 2026-09-08. This is **not final storage-v3 qualification**. Three integrated
 smokes passed public-operation completion, historical mounted readback and cleanup.
 Three comparisons exceed the original smoke elapsed allowances; the owner accepts
@@ -22,6 +22,31 @@ Subsequent owner timing disposition: the 1.58% replay increase is acceptable;
 this milestone-2 checkpoint. All reported elapsed comparisons meet that tolerance.
 This records owner acceptance separately from the unchanged frozen smoke contract
 and its original diagnostic misses; it is not final-v3 qualification.
+
+## Owner update for M3–M5 (prospective, 2026-09-08)
+
+The owner authorizes M3 bounded group compression now, continuing from completed
+M2 HEAD `0e18ec561d11934f2935e20832bf49eab1afab72` on the existing implementation
+branch/PR #81, and requires this task to stop after M3. M4/M5 remain later work.
+The existing schema-6/wire-1 new-Store-only scope is unchanged.
+
+Before new M3 candidate measurements, record the owner's updated tradeoff policy:
+substantial storage reduction takes priority with reasonable foreground cost.
+Approximately sub-50 ms **total public-operation elapsed** can make a percentage
+increase immaterial; this is not 50 ms extra per object lookup. For longer
+foreground operations, approximately 30% added elapsed is acceptable for meaningful
+storage improvement (1.0 s to 1.3 s is explicitly acceptable). These are tradeoff
+criteria, not an allowance to spend on negligible savings. Repeated reads, total
+workload time, CPU/resources and queueing still matter. Results outside these
+examples require reporting the actual tradeoff and investigating concrete causes,
+not inventing a passing threshold. Smoke evidence establishes no aggregate-load
+qualification. Historical gates, observations and failures remain unchanged;
+this policy changes no storage target and does not retrospectively pass old misses.
+
+M3 follows the frozen one-observation-per-coherent-slice development procedure,
+using all three approved smokes because shared Commit/read behavior is affected.
+The M5 final three-pair qualification will not run. Baseline and M2 comparisons
+are descriptive historical comparisons, not new matched timing controls.
 
 ## Recovery and source custody
 
