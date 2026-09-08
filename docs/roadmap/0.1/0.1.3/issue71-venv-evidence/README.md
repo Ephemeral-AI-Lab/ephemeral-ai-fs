@@ -29,3 +29,7 @@ Create, Exec, Commit, Exec+Commit and lifecycle are separate timings. Exec+Commi
 Use the shared `layerfs-infra-measurement.lock` during builds, measurements and verification. Freeze paired sample order/count and record source/binary/image/lock identities before collection. Fresh output per sample; retain failures and every result. Default-option performance and diagnostic-counter runs stay separate. OS caches are uncontrolled; no cold-disk claim. The directory is trusted immutable test input during a run, not a coherent snapshot of concurrent native mutations.
 
 Native regression inputs use the unchanged existing `namespace-fixture` generator and `namespace-init-diagnostic` entrypoint for all four profiles. Keep generated fixtures, Stores and archives outside the repository; only compact reports, receipts and this probe belong in source control.
+
+## Workspace workload revision 2
+
+The initial default-record GNU tar attempts failed on the release baseline while writing the386MB library. The release enforces4,096edits per file; default10KiB tar writes are incompatible with this large file. Those failures are retained. Revision2 uses ordinary GNU tar `--blocking-factor=2048` (1MiB records) on BOTH arms, retaining every archive byte, mode, timestamp and symlink and all LayerFS limits. This is a declared workload revision, not a speedup comparison with the failed recipe. Native measurements are unchanged.

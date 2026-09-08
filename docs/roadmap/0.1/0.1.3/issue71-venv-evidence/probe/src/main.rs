@@ -332,6 +332,7 @@ fn workspace(archive: &Path, root: &Path, image: &str) -> Result<(), Box<dyn std
                 session.id,
                 NonEmpty::new(vec![
                     OsString::from("tar"),
+                    OsString::from("--blocking-factor=2048"),
                     OsString::from("--no-same-owner"),
                     OsString::from("-xpf"),
                     OsString::from("/input.tar"),
@@ -343,6 +344,10 @@ fn workspace(archive: &Path, root: &Path, image: &str) -> Result<(), Box<dyn std
             let mut after = 0;
             loop {
                 let page = reader.read(after, true)?;
+                assert!(!page.truncated, "execution output was truncated");
+                for chunk in &page.chunks {
+                    std::io::Write::write_all(&mut std::io::stderr(), &chunk.bytes)?;
+                }
                 if page.exited {
                     let receipt = page.receipt.ok_or("missing execution receipt")?;
                     assert_eq!(receipt.exit_code, Some(0));
