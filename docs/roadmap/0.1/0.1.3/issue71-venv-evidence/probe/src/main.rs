@@ -362,8 +362,9 @@ fn workspace(archive: &Path, root: &Path, image: &str) -> Result<(), Box<dyn std
             let exec = exec_started.elapsed().as_secs_f64();
             println!("exec_seconds={exec:.9}");
             let commit_started = Instant::now();
-            let commit = client.commit_workspace_session(session.id)?;
-            assert!(matches!(commit, WorkspaceCommitResult::Created { .. }));
+            let commit = client.commit_workspace_session_with_status(session.id)?;
+            assert!(matches!(commit.result, WorkspaceCommitResult::Created { .. }));
+            assert!(!commit.presentation_failed, "committed data but failed live checkpoint");
             let commit_seconds = commit_started.elapsed().as_secs_f64();
             let after = usage();
             println!("commit_seconds={commit_seconds:.9}");

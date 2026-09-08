@@ -31,3 +31,11 @@ Proceed on the separate `codex/fix-nested-init` worktree, retaining the tested b
 - Approximately0.74–1.03s for581.7MB at historical low-cardinality throughput is an investigation reference, **not a promised universal subsecond result**. A final candidate that fails correctness/resources or materially regresses affected cases is not ready for the PR.
 
 Commit the implementation specification before collection. Keep compact reproduction commands/results in the PR and link this issue. Retain rejected attempts instead of silently dropping them. Make no new API/format change or broad issue-closure claim: remaining hard-link, extreme-shape or general scheduling limitations must be explicit.
+
+## Approved checkpoint extension (Workspace proof revision 3)
+
+The full 17,682-node environment exceeded the live checkpoint receiver’s fixed 16,384-record map. The released baseline saved its Store but failed presentation and clean shutdown; that attempt remains failed evidence. The user approved fixing this shared Workspace checkpoint bottleneck in the same PR on September 8, 2026. See the [issue update](https://github.com/Ephemeral-AI-Lab/layerfs/issues/71#issuecomment-5587697624).
+
+Replace retained checkpoint records with bounded-memory staging using transient live-operation metadata scratch bounded by admitted live nodes. Validate the complete checkpoint before applying records; preserve duplicate/identity validation, generation checks, retry, view isolation, and cleanup. Keep canonical construction, SQLite, publication, and payload spool on the host. Do not increase the record limit or caches to fit this fixture.
+
+Before final sampling, build the matching runtime and pass focused checks for more than 16,384 records, malformed/duplicate records, interrupted application/retry, and cleanup. The public probe must use Commit status and reject presentation failure, then verify all source content and metadata and require End(Clean). Collect three candidate full-environment runs with unchanged source and version-2 tar records, fresh Stores/processes, and the same container bounds. Report them as successful candidate timings only: the untouched release cannot complete this case, so there is no valid full-environment Workspace speedup ratio. Preserve the completed independent native pairs and report namespace controls as exploratory one-sample checks.
