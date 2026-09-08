@@ -2,7 +2,7 @@
 use super::diagnostic;
 use super::{
     pack, read, AuthenticatedCanonicalObject, ObjectInsertMetrics, ADMISSION_BATCH_BYTES,
-    ADMISSION_BATCH_COUNT, OBJECT_PAGE_COUNT,
+    OBJECT_PAGE_COUNT,
 };
 use crate::schema::StoreDb;
 use crate::{Result, StoreError};
@@ -73,13 +73,11 @@ impl PreparedAdmission {
             .iter()
             .try_fold(0usize, |sum, object| sum.checked_add(object.bytes.len()))
             .ok_or(StoreError::Integrity("admission length overflow"))?;
-        let reserve = objects
-            .iter()
-            .map(|object| read::validation_reserve(object.bytes.len()))
-            .sum::<usize>();
-        if objects.len() > ADMISSION_BATCH_COUNT
+        // Output ownership is bounded independently from collision-read waves.
+        // Maximal canonical objects retain their existing isolated treatment.
+        if objects.len() > super::PHYSICAL_ADMISSION_BATCH_COUNT
             || length > ADMISSION_BATCH_BYTES
-            || reserve > read::VALIDATION_RESERVE
+            || (objects.len() > 1 && length > 2 * super::INITIALIZATION_SLAB_BYTES)
         {
             return Err(StoreError::Integrity("prepared admission bound"));
         }
@@ -807,7 +805,7 @@ impl PreparedAdmission {
             .iter()
             .map(|object| object.id)
             .collect::<Vec<_>>();
-        let supplied = self
+        let mut supplied = self
             .objects
             .iter()
             .map(|object| {
@@ -819,10 +817,14 @@ impl PreparedAdmission {
                         .unwrap_or_else(|| &self.packs[object.pack][object.canonical.clone()]),
                 )
             })
-            .collect::<BTreeMap<_, _>>();
+            .collect::<Vec<_>>();
 
         let late = db.object_locations(&ids)?;
-        compare(db, &late, &supplied, &mut self.metrics)?;
+        drop(ids);
+        let retained = self.physical_backing()
+            + self.objects.capacity() * std::mem::size_of::<PreparedObject>()
+            + self.packs.capacity() * std::mem::size_of::<Vec<u8>>();
+        compare(db, &late, &mut supplied, &mut self.metrics, retained)?;
         let mut winners = vec![Vec::new(); self.packs.len()];
         for object in &self.objects {
             if !late.contains_key(&object.id) {
@@ -1230,15 +1232,28 @@ fn is_content(canonical: &[u8]) -> Result<bool> {
 pub(super) fn compare(
     db: &StoreDb,
     known: &BTreeMap<ObjectId, read::Location>,
-    supplied: &BTreeMap<ObjectId, &[u8]>,
+    supplied: &mut Vec<(ObjectId, &[u8])>,
     metrics: &mut ObjectInsertMetrics,
+    retained_physical: usize,
 ) -> Result<()> {
     let started = Instant::now();
-    let mut ordinary = Vec::new();
+    if supplied.len() > super::PHYSICAL_ADMISSION_BATCH_COUNT || known.len() > supplied.len() {
+        return Err(StoreError::Integrity("comparison ownership count"));
+    }
+    supplied.sort_unstable_by_key(|(id, _)| *id);
+    if supplied.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+        return Err(StoreError::Integrity("duplicate comparison operand"));
+    }
+    let canonical_for = |id: ObjectId| {
+        supplied
+            .binary_search_by_key(&id, |(id, _)| *id)
+            .ok()
+            .map(|index| supplied[index].1)
+    };
+    let mut ordinary = Vec::with_capacity(known.len());
     for (id, location) in known {
-        let canonical = supplied
-            .get(id)
-            .ok_or(StoreError::Integrity("unexpected membership result"))?;
+        let canonical =
+            canonical_for(*id).ok_or(StoreError::Integrity("unexpected membership result"))?;
         if canonical.len() != location.canonical_length {
             return Err(StoreError::Integrity("object length collision"));
         }
@@ -1250,12 +1265,24 @@ pub(super) fn compare(
         metrics.skipped_ids += 1;
         metrics.skipped_bytes += canonical.len() as u64;
     }
-    db.visit_locations(&mut ordinary, |object| {
-        if supplied.get(&object.id).copied() != Some(object.bytes.as_slice()) {
-            return Err(StoreError::Integrity("object collision"));
-        }
-        Ok(())
-    })?;
+    if !ordinary.is_empty() {
+        // Retained locator/map/slot ownership is charged for the whole lookup;
+        // each active wave retains its own conservative association charge too.
+        // The other 1 MiB remains reserved for active decoding/reconstruction.
+        let retained = retained_physical
+            .checked_add(supplied.capacity() * std::mem::size_of::<(ObjectId, &[u8])>())
+            .and_then(|n| n.checked_add(known.len() * 512))
+            .ok_or(StoreError::Integrity("comparison ownership overflow"))?;
+        let reserve = read::VALIDATION_RESERVE
+            .checked_sub(retained)
+            .ok_or(StoreError::Integrity("comparison physical reservation"))?;
+        db.visit_locations_with_reserve(&mut ordinary, reserve, |object| {
+            if canonical_for(object.id) != Some(object.bytes.as_slice()) {
+                return Err(StoreError::Integrity("object collision"));
+            }
+            Ok(())
+        })?;
+    }
     metrics.collision_checks += known.len() as u64;
     metrics.conflict_read_rows += known.len() as u64;
     metrics.conflict_read_bytes += known

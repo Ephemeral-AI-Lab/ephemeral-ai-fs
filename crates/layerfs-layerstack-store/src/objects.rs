@@ -1960,7 +1960,6 @@ pub(crate) struct CheckedOutputAdmission {
     seen: SpillableObjectSet,
     pending: HashMap<ObjectId, usize>,
     batch_bytes: usize,
-    validation_reserve: usize,
     statement_number: u64,
     receipt: crate::CandidateReceipt,
     checked: CheckedAdmission,
@@ -3105,7 +3104,6 @@ impl CheckedOutputAdmission {
             available: SpillableObjectSet::bounded(CANDIDATE_INDEX_BYTES / 4)?,
             pending: HashMap::new(),
             batch_bytes: 0,
-            validation_reserve: 0,
             statement_number: 0,
             receipt: crate::CandidateReceipt::default(),
             checked: CheckedAdmission::default(),
@@ -3196,7 +3194,6 @@ impl CheckedOutputAdmission {
         let batch = std::mem::take(&mut self.batch);
         self.pending.clear();
         self.batch_bytes = 0;
-        self.validation_reserve = 0;
         Ok(MissingBatch(batch, self.session.clone(), false))
     }
 
@@ -3249,12 +3246,13 @@ impl CheckedOutputAdmission {
             if known.len() != ids.len() {
                 return Err(StoreError::Integrity("flushed duplicate missing"));
             }
-            let supplied = repeated
+            drop(ids);
+            let mut supplied = repeated
                 .iter()
                 .map(|object| (object.id, object.bytes.as_slice()))
-                .collect();
+                .collect::<Vec<_>>();
             let mut metrics = ObjectInsertMetrics::default();
-            admission::compare(&self.db, &known, &supplied, &mut metrics)?;
+            admission::compare(&self.db, &known, &mut supplied, &mut metrics, 0)?;
             self.note_collision_reads(metrics);
             self.diagnostics.cross_batch_skipped_objects += repeated.len() as u64;
             self.diagnostics.cross_batch_skipped_bytes += metrics.skipped_bytes;
@@ -3266,12 +3264,13 @@ impl CheckedOutputAdmission {
         self.db.note_physical(diagnostic_stats);
         let ids = fresh.iter().map(|object| object.id).collect::<Vec<_>>();
         let known = self.db.object_locations(&ids)?;
-        let supplied = fresh
+        drop(ids);
+        let mut supplied = fresh
             .iter()
             .map(|object| (object.id, object.bytes.as_slice()))
-            .collect();
+            .collect::<Vec<_>>();
         let mut reused = ObjectInsertMetrics::default();
-        admission::compare(&self.db, &known, &supplied, &mut reused)?;
+        admission::compare(&self.db, &known, &mut supplied, &mut reused, 0)?;
         self.note_collision_reads(reused);
         self.available
             .insert_page(&known.keys().copied().collect::<Vec<_>>())?;
@@ -3377,16 +3376,13 @@ impl CheckedOutputAdmission {
         if object.bytes.len() > ADMISSION_BATCH_BYTES {
             return Err(StoreError::Integrity("canonical object admission size"));
         }
-        let reserve = read::validation_reserve(object.bytes.len());
         if !self.batch.is_empty()
             && (self.batch.len() == PHYSICAL_ADMISSION_BATCH_COUNT
                 || self.batch_bytes.saturating_add(object.bytes.len())
-                    > 2 * INITIALIZATION_SLAB_BYTES
-                || self.validation_reserve + reserve > read::VALIDATION_RESERVE)
+                    > 2 * INITIALIZATION_SLAB_BYTES)
         {
             self.flush_batch()?;
         }
-        self.validation_reserve += reserve;
         self.batch_bytes = self.batch_bytes.saturating_add(object.bytes.len());
         self.pending.insert(object.id, self.batch.len());
         self.batch.push(object);
@@ -3452,7 +3448,6 @@ impl CheckedOutputAdmission {
             },
         );
         self.batch_bytes = 0;
-        self.validation_reserve = 0;
         self.pending.clear();
         record_admission_receipt(&mut self.receipt, metrics.insert, false);
         Ok(())
@@ -4311,7 +4306,7 @@ mod tests {
             .map(|object| object.id)
             .collect::<Vec<_>>();
         let mut statement_number = finished.statement_number;
-        let (_, metrics) = PreparedAdmission::prepare_missing(&db, finished.final_batch)
+        let (_, metrics) = PreparedAdmission::prepare_missing(db, finished.final_batch)
             .unwrap()
             .publish(db, &mut statement_number, |_, _, _| Ok(()))
             .unwrap();

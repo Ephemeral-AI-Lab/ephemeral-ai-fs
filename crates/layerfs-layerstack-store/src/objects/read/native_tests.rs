@@ -170,8 +170,10 @@ fn native_reader_depth_budget_and_legacy_hint_separation() {
         last = Some(id);
         previous = Some((id, raw));
     }
-    let mut budget = HintReadBudget::default();
-    budget.batch_encoded = 8 * 1024 * 1024;
+    let mut budget = HintReadBudget {
+        batch_encoded: 8 * 1024 * 1024,
+        ..Default::default()
+    };
     budget.begin_target();
     assert!(matches!(
         f.db.read_native_prior(last.unwrap(), &mut budget).unwrap(),
@@ -390,4 +392,89 @@ fn native_reader_empty_chunk_same_pack_and_cross_role() {
             .unwrap(),
         NativePriorOutcome::Unavailable
     ));
+}
+
+#[test]
+fn native_batch_shares_directory_but_only_reads_requested_bodies() {
+    let f = Fixture::new();
+    let raw = [
+        b"unrequested".as_slice(),
+        b"requested one",
+        b"requested two",
+    ];
+    let records = raw.map(|bytes| record(bytes, None));
+    let ids = raw.map(canonical);
+    let mut packed = native_pack(&records.iter().map(Vec::as_slice).collect::<Vec<_>>());
+    f.insert(
+        1,
+        &packed,
+        &ids.iter()
+            .enumerate()
+            .map(|(i, (id, bytes))| (*id, bytes.len(), i))
+            .collect::<Vec<_>>(),
+    );
+    let read = || -> Result<Vec<CanonicalObject>> {
+        let mut locations =
+            f.db.object_locations(&[ids[1].0, ids[2].0])?
+                .into_iter()
+                .collect::<Vec<_>>();
+        let mut values = Vec::new();
+        f.db.visit_locations(&mut locations, |object| {
+            values.push(object);
+            Ok(())
+        })?;
+        Ok(values)
+    };
+    let before = f.db.physical_storage_receipt();
+    let values = read().unwrap();
+    assert_eq!(
+        values
+            .iter()
+            .map(|v| v.bytes.as_slice())
+            .collect::<Vec<_>>(),
+        vec![ids[1].1.as_slice(), ids[2].1.as_slice()]
+    );
+    let work = f.db.physical_storage_receipt().since(before);
+    assert_eq!(work.group_fetches, 1);
+    assert_eq!(work.native_record_fetches, 2);
+    assert_eq!(work.blob_ranges, 6); // header, directory, count, ends, two bodies
+    assert_eq!(
+        work.native_request_bytes,
+        (32 + 4 + 12 + records[1].len() + records[2].len()) as u64
+    );
+    // Native records start after the 32-byte pack framing and 16-byte group directory.
+    packed[48] = 255;
+    f.db.reader()
+        .unwrap()
+        .execute("UPDATE object_packs SET data=? WHERE pack_id=1", [&packed])
+        .unwrap();
+    assert!(read().is_ok());
+    assert!(f.read(ids[0].0).is_err());
+    f.db.reader()
+        .unwrap()
+        .execute(
+            "UPDATE objects SET record_number=99 WHERE object_id=?",
+            [ids[2].0.as_bytes().as_slice()],
+        )
+        .unwrap();
+    assert!(read().is_err());
+    f.db.reader()
+        .unwrap()
+        .execute(
+            "UPDATE objects SET record_number=2 WHERE object_id=?",
+            [ids[2].0.as_bytes().as_slice()],
+        )
+        .unwrap();
+    packed[36..40].copy_from_slice(&0u32.to_le_bytes());
+    f.db.reader()
+        .unwrap()
+        .execute("UPDATE object_packs SET data=? WHERE pack_id=1", [&packed])
+        .unwrap();
+    assert!(read().is_err());
+    assert!(f.db.extract_demanded_group(1, 0, &[]).is_err());
+    let location = f.db.object_locations(&[ids[1].0]).unwrap()[&ids[1].0];
+    assert!(f
+        .db
+        .extract_demanded_group(1, 0, &vec![(ids[1].0, location); OBJECT_PAGE_COUNT + 1])
+        .is_err());
 }

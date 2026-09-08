@@ -180,6 +180,148 @@ fn native_admission_peak_reservations_reject_unowned_buffers() {
 }
 
 #[test]
+fn native_admission_batches_bound_output_and_stream_late_collision_waves() {
+    for corrupt in [false, true] {
+        let f = Fixture::new();
+        let base = object(b"preexisting retained witness", None);
+        f.publish(f.prepare(vec![base.clone()]));
+        let raw = random();
+        let objects = (0_u64..120)
+            .map(|index| {
+                let mut bytes = raw[..4096].to_vec();
+                bytes[..8].copy_from_slice(&index.to_le_bytes());
+                object(&bytes, None)
+            })
+            .collect::<Vec<_>>();
+        assert!(objects.iter().map(|o| o.bytes.len()).sum::<usize>() < 512 * 1024);
+        assert!(
+            objects
+                .iter()
+                .map(|o| read::validation_reserve(o.bytes.len()))
+                .sum::<usize>()
+                > read::VALIDATION_RESERVE
+        );
+        let prepared = f.prepare(objects.clone());
+        assert_eq!(
+            prepared.objects.len(),
+            objects.len(),
+            "a bounded output batch is not a single collision-read wave"
+        );
+        let session = prepared.session.clone();
+        let other = PreparedAdmission::prepare_missing(
+            &f.db,
+            super::super::MissingBatch(objects.clone(), session.clone(), false),
+        )
+        .unwrap();
+        f.publish(other);
+        if corrupt {
+            let id = objects.last().unwrap().id;
+            let location = f.db.object_locations(&[id]).unwrap()[&id];
+            let db = f.db.writer().unwrap();
+            let mut packed: Vec<u8> = db
+                .query_row(
+                    "SELECT data FROM object_packs WHERE pack_id=?1",
+                    [location.pack],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let header =
+                pack::versioned_header(packed[..16].try_into().unwrap(), packed.len()).unwrap();
+            let start = 16 + 16 * location.group;
+            let entry = pack::versioned_entry(
+                packed[start..start + 16].try_into().unwrap(),
+                header,
+                packed.len(),
+            )
+            .unwrap();
+            let count = u32::from_le_bytes(
+                packed[entry.range.start..entry.range.start + 4]
+                    .try_into()
+                    .unwrap(),
+            ) as usize;
+            let ends = &packed[entry.range.start + 4..entry.range.start + 4 + 4 * count];
+            let range =
+                pack::native_record_range(count, ends, entry.range.len(), location.record).unwrap();
+            packed[entry.range.start + range.end - 1] ^= 1;
+            assert_eq!(
+                db.execute(
+                    "UPDATE object_packs SET data=?1 WHERE pack_id=?2",
+                    rusqlite::params![packed, location.pack]
+                )
+                .unwrap(),
+                1
+            );
+        }
+        let result = prepared.publish(&f.db, &mut 0, |_, _, _| Ok(()));
+        if corrupt {
+            assert!(
+                result.is_err(),
+                "later-wave corruption must fail authentication"
+            );
+            assert_eq!(
+                f.db.reader()
+                    .unwrap()
+                    .query_row("SELECT count(*) FROM objects", [], |row| row
+                        .get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
+        } else {
+            let (_, metrics) = result.unwrap();
+            assert_eq!(metrics.insert.skipped_ids, objects.len() as u64);
+            for object in objects {
+                assert_eq!(f.db.read_object_row(object.id).unwrap(), object.bytes);
+            }
+        }
+        assert_eq!(f.db.read_object_row(base.id).unwrap(), base.bytes);
+        drop(session);
+    }
+}
+
+#[test]
+fn collision_comparison_preserves_the_physical_reserve_and_unique_operands() {
+    let f = Fixture::new();
+    let object = object(b"authenticated comparison operand", None);
+    f.publish(f.prepare(vec![object.clone()]));
+    let known = f.db.object_locations(&[object.id]).unwrap();
+    let mut supplied = vec![(object.id, object.bytes.as_slice())];
+    assert!(matches!(
+        compare(
+            &f.db,
+            &known,
+            &mut supplied,
+            &mut ObjectInsertMetrics::default(),
+            read::VALIDATION_RESERVE
+        ),
+        Err(StoreError::Integrity("comparison physical reservation"))
+    ));
+    let mut locations = known
+        .iter()
+        .map(|(&id, &location)| (id, location))
+        .collect::<Vec<_>>();
+    assert!(f
+        .db
+        .visit_locations_with_reserve(&mut locations, read::VALIDATION_RESERVE + 1, |_| Ok(()))
+        .is_err());
+    assert!(f
+        .db
+        .visit_locations_with_reserve(&mut locations, 0, |_| Ok(()))
+        .is_err());
+    supplied.push(supplied[0]);
+    assert!(matches!(
+        compare(
+            &f.db,
+            &known,
+            &mut supplied,
+            &mut ObjectInsertMetrics::default(),
+            0
+        ),
+        Err(StoreError::Integrity("duplicate comparison operand"))
+    ));
+    assert_eq!(f.db.read_object_row(object.id).unwrap(), object.bytes);
+}
+
+#[test]
 fn failed_admission_reclaims_private_packs_and_preserves_waiting_owners_and_bases() {
     let f = Fixture::new();
     let raw = random();
