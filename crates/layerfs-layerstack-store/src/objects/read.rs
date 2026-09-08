@@ -26,6 +26,7 @@ pub(super) struct HintReadBudget {
     target_decoded: usize,
     batch_encoded: usize,
     batch_decoded: usize,
+    batch_exhausted: bool,
     pub exhausted: bool,
 }
 
@@ -34,14 +35,17 @@ impl HintReadBudget {
         self.target_fetches = 0;
         self.target_encoded = 0;
         self.target_decoded = 0;
-        self.exhausted = false;
+        // A later target may reset its own allowance, never restart a batch
+        // whose optional discovery has already exhausted its work budget.
+        self.exhausted = self.batch_exhausted;
     }
 
     fn charge(&mut self, encoded: usize, decoded: usize) -> bool {
-        if self.target_encoded + encoded > 512 * 1024
+        self.batch_exhausted |= self.batch_encoded + encoded > 8 * 1024 * 1024
+            || self.batch_decoded + decoded > 8 * 1024 * 1024;
+        if self.batch_exhausted
+            || self.target_encoded + encoded > 512 * 1024
             || self.target_decoded + decoded > 512 * 1024
-            || self.batch_encoded + encoded > 8 * 1024 * 1024
-            || self.batch_decoded + decoded > 8 * 1024 * 1024
         {
             self.exhausted = true;
             return false;

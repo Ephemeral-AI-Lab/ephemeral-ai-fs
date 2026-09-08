@@ -54,6 +54,7 @@ physical_storage_receipt!(
     blob_ranges,
     eligible_targets,
     absent_predecessors,
+    targets_without_hints,
     usable_bases,
     predecessor_hints,
     candidate_trials,

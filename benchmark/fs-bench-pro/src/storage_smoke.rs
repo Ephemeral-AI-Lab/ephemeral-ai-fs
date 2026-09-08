@@ -16,6 +16,7 @@ fn physical_json(receipt: layerfs_layerstack_store::PhysicalStorageReceipt) -> S
         ("blob_ranges", receipt.blob_ranges),
         ("eligible_targets", receipt.eligible_targets),
         ("absent_predecessors", receipt.absent_predecessors),
+        ("targets_without_hints", receipt.targets_without_hints),
         ("usable_bases", receipt.usable_bases),
         ("predecessor_hints", receipt.predecessor_hints),
         ("candidate_trials", receipt.candidate_trials),

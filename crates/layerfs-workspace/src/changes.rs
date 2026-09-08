@@ -1040,7 +1040,9 @@ impl StableFileInputs<'_> {
     fn prepare(&self) -> Result<FileTaskPlan> {
         let mut writer = BufWriter::with_capacity(self.io_bytes, anonymous_journal(self.spool)?);
         let mut count = 0_usize;
-        let limit = (self.io_bytes / 2048).clamp(1, 128);
+        // One 8-KiB canonical directory page per lookup plus decoded/request
+        // ownership; callbacks discard each decoded node before the next one.
+        let limit = (self.io_bytes / (16 * 1024)).clamp(1, 128);
         let mut page = Vec::with_capacity(limit);
         for &id in self.dirty {
             let node = self
@@ -1114,9 +1116,8 @@ impl StableFileInputs<'_> {
             for (slot, _) in &paths {
                 prior[*slot] = Some(root);
             }
-            // Reuse the existing single-leaf directory lookup owner; inode and
-            // record pages at each path depth are fetched in bounded waves.
-            let mut directory = layerfs_content::tree::directory::DirectoryLookupCache::default();
+            // Directory states/nodes and inode records use bounded reader waves
+            // at each path depth, including requests spanning distinct directories.
             loop {
                 let mut lookups = Vec::with_capacity(page.len());
                 for (slot, components) in &mut paths {
@@ -1138,13 +1139,22 @@ impl StableFileInputs<'_> {
                 lookups.sort_unstable_by_key(|(_, root, name)| (*root, *name));
                 let mut slots = Vec::with_capacity(lookups.len());
                 let mut keys = Vec::with_capacity(lookups.len());
-                for (slot, root, component) in lookups {
-                    match directory.lookup(
-                        &core,
-                        DirectoryStateRoot(root),
-                        &CanonicalName::from_bytes(component.as_bytes())?,
-                        &mut NamespaceCounters::default(),
-                    )? {
+                let directory_keys = lookups
+                    .iter()
+                    .map(|(_, root, component)| {
+                        Ok((
+                            DirectoryStateRoot(*root),
+                            CanonicalName::from_bytes(component.as_bytes())?,
+                        ))
+                    })
+                    .collect::<layerfs_content::CoreResult<Vec<_>>>()?;
+                let found = layerfs_content::tree::directory::directory_lookup_many(
+                    &core,
+                    &directory_keys,
+                    &mut NamespaceCounters::default(),
+                )?;
+                for ((slot, _, _), inode) in lookups.into_iter().zip(found) {
+                    match inode {
                         Some(inode) => {
                             slots.push(slot);
                             keys.push(inode);

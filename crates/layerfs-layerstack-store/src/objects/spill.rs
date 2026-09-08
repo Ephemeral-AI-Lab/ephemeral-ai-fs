@@ -470,6 +470,7 @@ impl SpillObjects {
             hints[..8].copy_from_slice(&start.to_le_bytes());
             hints[8..12].copy_from_slice(&len.to_le_bytes());
         }
+        hints[12] = u8::from(object.1.has_predecessor);
         for (slot, id) in object.1.prior_ids.iter().enumerate() {
             if let Some(id) = id {
                 hints[16 + slot * 32..48 + slot * 32].copy_from_slice(id.as_bytes());
@@ -582,8 +583,12 @@ impl SpillObjects {
                 file.read_exact(&mut encoded_hints)?;
                 let start = u64::from_le_bytes(encoded_hints[..8].try_into().unwrap());
                 let len = u32::from_le_bytes(encoded_hints[8..12].try_into().unwrap());
+                if encoded_hints[12] > 1 || encoded_hints[13..16] != [0; 3] {
+                    return Err(StoreError::Integrity("candidate hint flags"));
+                }
                 let mut hints = PhysicalHints {
                     first_span: (len != 0).then_some((start, len)),
+                    has_predecessor: encoded_hints[12] != 0,
                     ..PhysicalHints::default()
                 };
                 for slot in 0..4 {

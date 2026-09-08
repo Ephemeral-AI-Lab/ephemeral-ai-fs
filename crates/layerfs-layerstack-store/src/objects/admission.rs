@@ -145,24 +145,22 @@ impl PreparedAdmission {
         let mut encoded = Vec::with_capacity(groups.len());
         let pack_index = self.packs.len();
         let mut offset = 16 + 16 * groups.len();
+        let fixed_associations = search.input_associations
+            + self.packs.capacity() * std::mem::size_of::<Vec<u8>>()
+            + self.objects.capacity() * std::mem::size_of::<PreparedObject>()
+            + objects.capacity() * std::mem::size_of::<AuthenticatedCanonicalObject>()
+            + groups.capacity() * std::mem::size_of::<Vec<usize>>()
+            + groups
+                .iter()
+                .map(|group| group.capacity() * std::mem::size_of::<usize>())
+                .sum::<usize>()
+            + encoded.capacity() * std::mem::size_of::<pack::EncodedGroup>();
+        let mut backing = 0usize;
         for (group_number, group) in groups.iter().enumerate() {
             let mut deltas = Vec::with_capacity(group.len());
             // All live delta capacities sum to at most the group's FULL decoded
             // size. Matching scratch is dropped before either codec invocation.
-            let backing = encoded
-                .iter()
-                .map(|group: &pack::EncodedGroup| group.bytes.capacity())
-                .sum::<usize>();
-            let associations = search.input_associations
-                + self.packs.capacity() * std::mem::size_of::<Vec<u8>>()
-                + self.objects.capacity() * std::mem::size_of::<PreparedObject>()
-                + objects.capacity() * std::mem::size_of::<AuthenticatedCanonicalObject>()
-                + groups.capacity() * std::mem::size_of::<Vec<usize>>()
-                + groups
-                    .iter()
-                    .map(|group| group.capacity() * std::mem::size_of::<usize>())
-                    .sum::<usize>()
-                + groups.len() * std::mem::size_of::<pack::EncodedGroup>()
+            let associations = fixed_associations
                 + group.len()
                     * (std::mem::size_of::<Option<Vec<u8>>>() + std::mem::size_of::<&[u8]>());
             // Worst codec phase: static 1-MiB context, RAW group and complete
@@ -214,6 +212,7 @@ impl PreparedAdmission {
                 cursor = end;
             }
             offset += selected.bytes.len();
+            backing += selected.bytes.capacity();
             encoded.push(selected);
         }
         self.packs.push(pack::assemble(&encoded)?);
@@ -462,8 +461,11 @@ impl DeltaSearch {
         }
         stats.eligible_targets += 1;
         let hints = object.prior_ids();
-        if hints.iter().all(Option::is_none) {
+        if !object.1.has_predecessor {
             stats.absent_predecessors += 1;
+        }
+        if hints.iter().all(Option::is_none) {
+            stats.targets_without_hints += 1;
             return Ok(None);
         }
         let mut seen_hints = BTreeSet::new();

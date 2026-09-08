@@ -147,6 +147,7 @@ pub(crate) struct AuthenticatedCanonicalObject(CanonicalObject, PhysicalHints);
 struct PhysicalHints {
     prior_ids: [Option<ObjectId>; 4],
     first_span: Option<(u64, u32)>,
+    has_predecessor: bool,
 }
 
 impl std::ops::Deref for AuthenticatedCanonicalObject {
@@ -2032,6 +2033,7 @@ impl DeferredObjectStore {
             });
         let mut file_reserved = 0u64;
         let mut push = |mut object: AuthenticatedCanonicalObject| {
+            object.1.has_predecessor |= predecessor.is_some();
             if let (Some((reader, cursor, operation_reserved, available)), Some((start, len))) =
                 (&mut predecessor, object.1.first_span)
             {
@@ -2424,6 +2426,19 @@ impl<'a> ObjectBuffer<'a> {
         let available = self.objects.memory_limit >= CORRESPONDENCE_MEMORY + 32 * 1024;
         if available {
             self.objects.memory_limit -= CORRESPONDENCE_MEMORY;
+            // Spilled output retains its pending Vec capacity while ordered
+            // delivery allocates read-ahead. Shrink both owners prospectively;
+            // changing only the canonical spill threshold does not release them.
+            self.objects.spill_buffer_bytes = self
+                .objects
+                .spill_buffer_bytes
+                .saturating_sub(CORRESPONDENCE_MEMORY)
+                .max(spill::ID_BUFFER_BYTES);
+            if let DeferredObjects::Spill(spill) = &mut self.objects.storage {
+                spill.flush()?;
+                spill.pending = Vec::with_capacity(self.objects.spill_buffer_bytes);
+                spill.buffer_bytes = self.objects.spill_buffer_bytes;
+            }
             if matches!(&self.objects.storage, DeferredObjects::Memory { bytes, .. } if *bytes > self.objects.memory_limit)
             {
                 self.objects.spill()?;

@@ -1,4 +1,4 @@
-use super::codec::DirectoryNodeV1;
+use super::codec::{decode_directory_node, decode_directory_state, DirectoryNodeV1};
 use super::diff::DirectoryEntryDiff;
 use super::edit::emit_directory_node;
 use super::node::{
@@ -11,6 +11,7 @@ use super::validate::{
 use crate::file::rope::{ObjectRead, ObjectStore};
 use crate::tree::inode::InodeId;
 use crate::{CanonicalName, CoreError, CoreResult, ObjectId};
+use std::collections::{BTreeMap, BTreeSet};
 
 pub fn empty_directory<S: ObjectStore>(store: &mut S) -> CoreResult<DirectoryStateRoot> {
     let mut counters = NamespaceCounters::default();
@@ -32,6 +33,123 @@ pub fn directory_lookup<S: ObjectRead>(
     counters: &mut NamespaceCounters,
 ) -> CoreResult<Option<InodeId>> {
     DirectoryLookupCache::default().lookup(store, root, name, counters)
+}
+
+/// Resolve a bounded page across directory roots, fetching each traversal wave
+/// together. Results preserve request order and duplicate requests.
+pub fn directory_lookup_many<S: ObjectRead>(
+    store: &S,
+    keys: &[(DirectoryStateRoot, CanonicalName)],
+    counters: &mut NamespaceCounters,
+) -> CoreResult<Vec<Option<InodeId>>> {
+    if keys.len() > 128 {
+        return Err(CoreError::ObjectLimitExceeded);
+    }
+    let ids = keys.iter().map(|(root, _)| root.0).collect::<BTreeSet<_>>();
+    let ids = ids.into_iter().collect::<Vec<_>>();
+    let mut states = BTreeMap::new();
+    store.get_authenticated_batch(&ids, |id, payload| {
+        states.insert(
+            id,
+            decode_directory_state(&crate::encode_bytes_object(payload)?)?,
+        );
+        Ok(())
+    })?;
+    counters.nodes_read = counters
+        .nodes_read
+        .checked_add(ids.len() as u64)
+        .ok_or(CoreError::LengthOverflow)?;
+    struct Pending {
+        slot: usize,
+        node: ObjectId,
+        level: u8,
+        entries: Option<u64>,
+        maximum: Option<CanonicalName>,
+    }
+    let mut pending = keys
+        .iter()
+        .enumerate()
+        .map(|(slot, (root, _))| {
+            let state = states.get(&root.0).ok_or(CoreError::MissingObject)?;
+            Ok(Pending {
+                slot,
+                node: state.mapping_root,
+                level: state.tree_level,
+                entries: Some(state.entry_count),
+                maximum: None,
+            })
+        })
+        .collect::<CoreResult<Vec<_>>>()?;
+    drop(states);
+    let mut output = vec![None; keys.len()];
+    while !pending.is_empty() {
+        pending.sort_unstable_by_key(|lookup| lookup.node);
+        let mut ids = pending.iter().map(|lookup| lookup.node).collect::<Vec<_>>();
+        ids.dedup();
+        let mut next = Vec::with_capacity(pending.len());
+        let mut visited = 0;
+        store.get_authenticated_batch(&ids, |id, payload| {
+            let node = decode_directory_node(&crate::encode_bytes_object(payload)?)?;
+            let first = pending.partition_point(|lookup| lookup.node < id);
+            let last = pending.partition_point(|lookup| lookup.node <= id);
+            let summary = directory_node_shape(
+                id,
+                &node,
+                pending[first..last]
+                    .iter()
+                    .all(|lookup| lookup.entries.is_some()),
+            )?;
+            for lookup in &pending[first..last] {
+                visited += 1;
+                if summary.level != lookup.level
+                    || lookup
+                        .entries
+                        .is_some_and(|entries| summary.entries != entries)
+                    || lookup
+                        .maximum
+                        .as_ref()
+                        .is_some_and(|maximum| summary.max.as_ref() != Some(maximum))
+                {
+                    return Err(CoreError::InvalidRecord("directory child summary"));
+                }
+                let name = &keys[lookup.slot].1;
+                match &node {
+                    DirectoryNodeV1::Leaf { entries, .. } => {
+                        output[lookup.slot] = entries
+                            .binary_search_by(|(candidate, _)| candidate.cmp(name))
+                            .ok()
+                            .map(|index| entries[index].1);
+                    }
+                    DirectoryNodeV1::Branch {
+                        level, children, ..
+                    } => {
+                        let index = children
+                            .partition_point(|(maximum, _)| maximum < name)
+                            .min(children.len().saturating_sub(1));
+                        next.push(Pending {
+                            slot: lookup.slot,
+                            node: children[index].1,
+                            level: level
+                                .checked_sub(1)
+                                .ok_or(CoreError::InvalidRecord("directory child summary"))?,
+                            entries: None,
+                            maximum: Some(children[index].0.clone()),
+                        });
+                    }
+                }
+            }
+            Ok(())
+        })?;
+        if visited != pending.len() {
+            return Err(CoreError::MissingObject);
+        }
+        counters.nodes_read = counters
+            .nodes_read
+            .checked_add(ids.len() as u64)
+            .ok_or(CoreError::LengthOverflow)?;
+        pending = next;
+    }
+    Ok(output)
 }
 
 type CachedLeaf = (DirectoryStateRoot, Vec<(CanonicalName, InodeId)>, bool);

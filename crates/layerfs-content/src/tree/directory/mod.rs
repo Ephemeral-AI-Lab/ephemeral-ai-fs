@@ -15,8 +15,8 @@ pub use node::{
     DirectoryPage, DirectoryStateRoot, DirectoryStateV1, NamespaceCounters, SymlinkStateV1,
 };
 pub use read::{
-    directory_entries, directory_lookup, directory_page_after, empty_directory,
-    visit_directory_entries, DirectoryLookupCache,
+    directory_entries, directory_lookup, directory_lookup_many, directory_page_after,
+    empty_directory, visit_directory_entries, DirectoryLookupCache,
 };
 pub(crate) use validate::nearest_half;
 pub use validate::{validate_inode_record, validate_inode_record_metadata};
