@@ -44,7 +44,7 @@ fn extract(original:&Connection,index:&Connection,c:&Connection)->u64{
  let mut query=index.prepare("SELECT r.pack,r.grp,r.rec,r.id,l.first_retained_checkpoint,r.role FROM records r JOIN logical l ON l.id=r.id WHERE r.selected=1 AND r.role!='payload_chunk' ORDER BY r.pack,r.grp,r.rec").unwrap();
  let mut rr=query.query([]).unwrap();
  while let Some(r)=rr.next().unwrap(){
-  let p:i64=r.get(0).unwrap();let g:usize=r.get(1).unwrap();let n:usize=r.get(2).unwrap();
+  let p:i64=r.get(0).unwrap();let g=usize::try_from(r.get::<_,i64>(1).unwrap()).unwrap();let n=usize::try_from(r.get::<_,i64>(2).unwrap()).unwrap();
   let entry=groups.entry((p,g)).or_default();assert_eq!(entry.len(),n,"structural group contains payload/unselected locator");
   entry.push((id(&r.get::<_,Vec<u8>>(3).unwrap()),r.get(4).unwrap(),r.get(5).unwrap()));
  }
@@ -59,12 +59,12 @@ fn extract(original:&Connection,index:&Connection,c:&Connection)->u64{
    let Some(expected)=groups.remove(&(p,g)) else{continue};
    let decoded=pack::decode_group(e.clone(),data[e.range.clone()].to_vec()).unwrap();
    let cp=expected[0].1;assert!(expected.iter().all(|x|x.1==cp));
-   c.execute("INSERT INTO groups VALUES(?,?,?,?,?,?)",params![p,g,cp,e.range.len(),decoded.len(),blake3::hash(&data[e.range.clone()]).to_hex().to_string()]).unwrap();
+   c.execute("INSERT INTO groups VALUES(?,?,?,?,?,?)",params![p,i64::try_from(g).unwrap(),cp,i64::try_from(e.range.len()).unwrap(),i64::try_from(decoded.len()).unwrap(),blake3::hash(&data[e.range.clone()]).to_hex().to_string()]).unwrap();
    let mut seen=0;
    pack::visit_records(&decoded,false,|record,body|{
     let pack::Record::Full(canonical)=body else{panic!("structural baseline must be FULL")};
     let (k,checkpoint,role)=&expected[record];layerfs_content::authenticate_identity(canonical,*k)?;
-    assert!(canonical.len()<=8192);c.execute("INSERT INTO objects VALUES(?,?,?,?,?,?,?)",params![k.as_bytes().as_slice(),canonical,role,p,g,record,checkpoint]).unwrap();seen+=1;Ok(())
+    assert!(canonical.len()<=8192);c.execute("INSERT INTO objects VALUES(?,?,?,?,?,?,?)",params![k.as_bytes().as_slice(),canonical,role,p,i64::try_from(g).unwrap(),i64::try_from(record).unwrap(),checkpoint]).unwrap();seen+=1;Ok(())
    }).unwrap();assert_eq!(seen,expected.len());records+=seen as u64;
   }
   assert_eq!(end,data.len());
@@ -152,5 +152,5 @@ fn main(){
  let out=Path::new(&args[3]);fs::create_dir(out).unwrap();
  let original=ro(&args[1]);let index=ro(&args[2]);let c=Connection::open(out.join("structural.sqlite")).unwrap();
  c.execute_batch("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA cache_size=-8192; CREATE TABLE objects(id BLOB PRIMARY KEY,canonical BLOB,role TEXT,pack INTEGER,grp INTEGER,rec INTEGER,checkpoint INTEGER) WITHOUT ROWID;CREATE INDEX object_location ON objects(pack,grp,rec);CREATE TABLE groups(pack INTEGER,grp INTEGER,checkpoint INTEGER,original_encoded INTEGER,original_decoded INTEGER,original_blake3 TEXT,PRIMARY KEY(pack,grp));CREATE TABLE origins(target BLOB PRIMARY KEY,base BLOB,checkpoint INTEGER) WITHOUT ROWID;CREATE TABLE generated(id BLOB PRIMARY KEY,canonical BLOB) WITHOUT ROWID;CREATE TABLE candidate_full(id BLOB PRIMARY KEY) WITHOUT ROWID;").unwrap();
- extract(&original,&index,&c);drop(original);drop(index);reconstruct(&c,out);encode(&c,out);println!("S1 PASS: extraction, actual engine roots, chronological candidate FULL closure and paired group reconstruction");
+ let mut timing=BufWriter::new(File::create_new(out.join("phase-timings.csv")).unwrap());writeln!(timing,"phase,elapsed_ns,scope").unwrap();let t=Instant::now();extract(&original,&index,&c);writeln!(timing,"extraction,{},offline structural extraction authentication and spool writes",elapsed_ns(t)).unwrap();timing.flush().unwrap();eprintln!("S1 structural extraction authenticated");drop(original);drop(index);let t=Instant::now();reconstruct(&c,out);writeln!(timing,"tree_reconstruction,{},offline retained binding difference and exact engine roots",elapsed_ns(t)).unwrap();timing.flush().unwrap();eprintln!("S1 all157 offline roots identical");let t=Instant::now();encode(&c,out);writeln!(timing,"paired_encoding_validation,{},offline A plus candidate A/B plus reconstruction and output writes",elapsed_ns(t)).unwrap();timing.flush().unwrap();println!("S1 PASS: extraction, actual engine roots, chronological candidate FULL closure and paired group reconstruction");
 }
