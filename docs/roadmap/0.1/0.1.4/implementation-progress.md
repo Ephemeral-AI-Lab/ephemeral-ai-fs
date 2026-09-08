@@ -1,6 +1,6 @@
 # Storage architecture v3 implementation progress
 
-Status: **M3 implemented and smoke-verified; stop at M3**. Updated 2026-09-08.
+Status: **M3 complete and closed as a development milestone; follow-ups tracked below**. Updated 2026-09-08.
 The complete v0.1.4 storage design is **not qualified**. M4/M5 remain deferred.
 No merge, migration, cloud work, crash qualification or benchmark campaign ran.
 
@@ -268,6 +268,52 @@ wrapper logs are `builds/m3-{small,edits,deepseek}-{perf,verify}-1.log`.
 The image builder disabled its generic self-check as required. No unit, property,
 fuzz, race, crash, full-workspace, fourth smoke, full benchmark, Git arm, 157-state
 replay or M5 three-pair qualification ran.
+
+## Post-M3 review findings and follow-up ledger
+
+Recorded 2026-09-08 after three independent subagent reviews of
+`c16855e0ef656704ed171a922660440fe0cee9aa`: codec/grouping, admission/pack formation,
+and existing allocation evidence. The review used source, retained receipts/census
+and read-only file metadata. No product changes, builds, smoke reruns, recompression
+trials or new candidate measurements ran. No demonstrated M3 correctness defect,
+skipped eligible compression, or large readily recoverable storage loss was found.
+
+**Disposition: close M3, retain these findings, and recommend M4 next.** Closing
+M3 does not merge PR #81, qualify the complete design, or authorize execution of
+M4/M5 or these experiments in this documentation update. The owner prioritizes
+storage savings with generous latency margins; that makes further compression
+worth evaluating, but does not establish its unmeasured benefit.
+
+| ID / priority | Finding and established evidence | Follow-up owner / timing | Required disposition or evidence |
+| --- | --- | --- | --- |
+| M3-R1 / first experiment | Writer uses fixed Zstandard level 1. DeepSeek has 3,121,104 encoded Zstandard bytes; 421/424 groups already compress. A modestly higher fixed level, such as 3, may reduce already-compressed content. No alternate level has been measured. | `objects/pack.rs`; consider after M4 establishes the FULL/DELTA mix, before final M5 qualification. | Prospectively record one candidate level; preserve one trial/group, frame/window/output limits, 1-MiB encoder cap, 2-MiB scratch and 8-MiB inclusive allowance. Use only affected approved smokes; report complete allocation and CPU/read/foreground costs, retain failures. Keep only for worthwhile measured savings, or explicitly record why deferred. Do not silently raise memory limits. |
+| M3-R2 / concrete, low priority | `prepare_full` charges 20 bytes of possible group framing per record, although actual grouping needs that charge per group. This can close a pack early; the excess is a capacity estimate, not physically written padding. DeepSeek outer framing totals only 7,712 bytes. | `objects/admission.rs`; revisit when pack formation is next touched or evidence attributes material loss to these boundaries. | Maintain exact projected role-group counts/sizes incrementally in the existing owner. Preserve all caps, a forward pass and one encode per closed group. Demonstrate actual pack/page reduction; no storage saving is established by the conservative-charge arithmetic alone. |
+| M3-R3 / layout investigation | Retained `dbstat` reports unused pack-table space: DeepSeek 724,874 bytes, SDK binary 958,335, ordinary binary 936,745, small files 87,788. | Existing pack/admission and SQLite layout owners; separate evidence-led investigation. | Attribute waste to concrete placement/overflow behavior before changing it. Larger/fewer packs can worsen SQLite overflow allocation. Unused bytes are not a reclaimable-byte promise; preserve synchronous operation-end flushes and count all allocation. |
+| M3-R4 / requires design revision | Per-record worst-case late-validation reserve can constrain pack filling, but the closed-episode sum reservation is required by the approved admission protocol. Generic reader-wave draining does not override it. | Admission protocol/specification first, then `objects.rs`, `objects/admission.rs`, `objects/read.rs`; not a current-contract M3 fix. | Any decoupling needs a prospective ownership/synchronization revision preserving 2-MiB/8-MiB bounds, one final recheck, complete DELTA-reader safeguards, and no unplanned late split/retry. No compliant reserve-removal route was demonstrated; FULL-only smoke coverage is not grounds to weaken safeguards. |
+| M3-R5 / separate layout work | Both text Stores occupy 15 x 64-KiB pages despite only 3,899/4,305 pack BLOB bytes. Required table/index root pages dominate. | Schema/page-layout design, beyond M3. | Smaller pages or consolidation need separately reviewed compatibility, constraints, index and I/O tradeoffs. More compression cannot eliminate a required root page under the present layout. Do not create a small-file backend or drop required indexes to improve a smoke. |
+| M3-R6 / allocation question | DeepSeek logical file size is 5,111,808 bytes (78 pages), versus 5,898,240 filesystem-allocated bytes. The extra 786,432 bytes are outside logical SQLite length, not freelist/B-tree slack; retained receipts and read-only stat agree. | Existing SQLite/filesystem allocation boundary; bounded diagnosis before any proposed change. | Establish the actual allocation mechanism and whether it can safely be avoided. Preallocation is only a plausible explanation. Keep charging these bytes; no post-operation truncation/compaction or reduced accounting numerator is authorized. |
+
+These are **open follow-ups, not incomplete M3 checklist items**. R1 should receive
+an explicit measured or deferred disposition before final qualification; R2–R6
+remain evidence-dependent and are not silently added as mandatory M4/M5 scope.
+Do not hold M3 open for indefinite tuning or claim a large opportunity without
+new attributable evidence. A subsequently demonstrated correctness/bounds defect
+or material avoidable cost would justify reopening the relevant owner.
+
+Source anchors: [codec parameters](../../../../crates/layerfs-layerstack-store/src/objects/pack.rs),
+[pack accounting](../../../../crates/layerfs-layerstack-store/src/objects/admission.rs),
+[closed-episode reservation](storage-architecture-spec.md#batched-duplicate-validation-and-memory-reservation),
+[group/read batching](storage-architecture-spec.md#groupread-batching-and-single-pass-byte-work),
+[format policy](sqlite-storage-format.md#4-groups-records-and-codec), and
+[retained M3 evidence](implementation-milestone-3.json).
+
+Low-value alternatives are explicitly deprioritized: reducing the 16-byte keep
+threshold could recover at most 45 bytes across DeepSeek's existing RAW groups
+with the same codec output; all six censuses have zero unselected records,
+freelist pages and workspace stages. No cleanup windfall or missed RAW-compression
+population is established. Small-file final COW-population variation and historical
+timing comparability caveats remain as recorded above; no historical evidence is
+rewritten by this review.
 
 ## Remaining scope
 

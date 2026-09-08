@@ -33,6 +33,27 @@ using all three approved smokes because shared Commit/read behavior is affected.
 The M5 final three-pair qualification will not run. Baseline and M2 comparisons
 are descriptive historical comparisons, not new matched timing controls.
 
+## Completed M3 and retained review findings (2026-09-08)
+
+M3 is complete and closed as a development milestone at
+`c16855e0ef656704ed171a922660440fe0cee9aa` on the existing implementation branch/PR.
+The later read-only review did not reopen M3 or authorize new product work.
+Preserve its evidence and the [M3-R1–R6 follow-up ledger](implementation-progress.md#post-m3-review-findings-and-follow-up-ledger).
+
+When later implementation is authorized, recommend M4 next. Before final
+qualification, explicitly disposition one modestly higher fixed Zstandard-level
+experiment (R1), preferably on the resulting FULL/DELTA mix: measure worthwhile
+complete-Store savings under existing hard memory/read bounds, or record deferral.
+The other findings remain evidence-dependent: exact incremental pack accounting
+(R2), page utilization (R3), admission-reservation redesign (R4), small-Store page
+floor (R5), and filesystem allocation beyond logical file size (R6).
+
+Do not mistake R4 for a routine fix: current closed-episode reservation is required
+by the approved protocol; general reader waves do not permit dropping it. R4/R5
+need prospective design decisions. No unused-byte count is promised recoverable,
+no new experiment has run, and no follow-up changes the original M3 measurements,
+format limits, historical timing gates, or the three-smoke-only execution scope.
+
 ---
 
 Implement LayerFS's agreed storage architecture v3 using the implementation plan.
