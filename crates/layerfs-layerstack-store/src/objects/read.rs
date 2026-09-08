@@ -267,7 +267,7 @@ impl StoreDb {
                 })?;
                 continue;
             }
-            let decoded = decode(entry, encoded)?;
+            let decoded = pack::decode_group(entry, encoded)?;
             let mut requested = record_slots(targets)?;
             pack::visit_records(&decoded, false, |index, record| {
                 let Some((id, location)) = requested.remove(&index) else {
@@ -332,7 +332,7 @@ impl StoreDb {
                 )?;
                 continue;
             }
-            let decoded = decode(entry, encoded)?;
+            let decoded = pack::decode_group(entry, encoded)?;
             let mut requested = record_slots(targets)?;
             pack::visit_records(&decoded, false, |index, record| {
                 let Some((id, location)) = requested.remove(&index) else {
@@ -472,12 +472,4 @@ fn finish_deltas(
         })?;
     }
     Ok(())
-}
-
-fn decode(entry: pack::GroupEntry, encoded: Vec<u8>) -> Result<Vec<u8>> {
-    match entry.codec {
-        pack::Codec::Raw if encoded.len() == entry.decoded_length => Ok(encoded),
-        pack::Codec::Zstandard => Err(StoreError::Core(layerfs_content::CoreError::Unsupported)),
-        _ => Err(StoreError::Integrity("group decoded length")),
-    }
 }

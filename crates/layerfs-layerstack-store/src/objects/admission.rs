@@ -19,6 +19,8 @@ struct PreparedObject {
     group: usize,
     record: usize,
     canonical: Range<usize>,
+    // Compressed records retain the original authenticated comparison operand.
+    retained: Option<Vec<u8>>,
 }
 
 pub(crate) struct PreparedAdmission {
@@ -90,7 +92,7 @@ impl PreparedAdmission {
         self.prepare_ordinary(ordinary)
     }
 
-    fn prepare_ordinary(&mut self, objects: Vec<AuthenticatedCanonicalObject>) -> Result<()> {
+    fn prepare_ordinary(&mut self, mut objects: Vec<AuthenticatedCanonicalObject>) -> Result<()> {
         if objects.is_empty() {
             return Ok(());
         }
@@ -127,7 +129,7 @@ impl PreparedAdmission {
         for (group_number, group) in groups.iter().enumerate() {
             let mut cursor = offset + 4 + 4 * group.len();
             for (record_number, index) in group.iter().enumerate() {
-                let object = &objects[*index];
+                let object = &mut objects[*index];
                 let end = cursor + 1 + object.bytes.len();
                 self.objects.push(PreparedObject {
                     id: object.id,
@@ -136,6 +138,8 @@ impl PreparedAdmission {
                     group: group_number,
                     record: record_number,
                     canonical: cursor + 1..end,
+                    retained: (encoded[group_number].codec == pack::Codec::Zstandard)
+                        .then(|| std::mem::take(&mut object.0.bytes)),
                 });
                 cursor = end;
             }
@@ -182,6 +186,7 @@ impl PreparedAdmission {
             group: 0,
             record: 0,
             canonical: 41..total,
+            retained: None,
         });
         self.packs.push(bytes);
         Ok(())
@@ -204,7 +209,10 @@ impl PreparedAdmission {
             .map(|object| {
                 (
                     object.id,
-                    &self.packs[object.pack][object.canonical.clone()],
+                    object
+                        .retained
+                        .as_deref()
+                        .unwrap_or_else(|| &self.packs[object.pack][object.canonical.clone()]),
                 )
             })
             .collect::<BTreeMap<_, _>>();

@@ -280,11 +280,24 @@ pub(super) fn full_group(canonical: &[&[u8]]) -> Result<EncodedGroup> {
         bytes.push(0);
         bytes.extend_from_slice(value);
     }
+    let codec = if length <= GROUP_LIMIT {
+        let compressed = zstandard::compress(&bytes)?;
+        // The 16-byte directory entry is identical for RAW and Zstandard.
+        // compressed includes the entire frame, content-size field and checksum.
+        if compressed.len() + 16 <= length {
+            bytes = compressed;
+            Codec::Zstandard
+        } else {
+            Codec::Raw
+        }
+    } else {
+        Codec::Raw
+    };
     Ok(EncodedGroup {
         bytes,
         decoded_length: length,
         records: canonical.len(),
-        codec: Codec::Raw,
+        codec,
     })
 }
 
@@ -349,4 +362,180 @@ pub(super) fn assemble(groups: &[EncodedGroup]) -> Result<Vec<u8>> {
         bytes.extend_from_slice(&group.bytes);
     }
     Ok(bytes)
+}
+
+/// Consumes the selected BLOB range; RAW transfers ownership without a copy.
+/// Framing and declared sizes are checked before any decoder/output allocation.
+pub(super) fn decode_group(entry: GroupEntry, encoded: Vec<u8>) -> Result<Vec<u8>> {
+    if entry.range.end.checked_sub(entry.range.start) != Some(encoded.len())
+        || encoded.is_empty()
+        || entry.decoded_length == 0
+    {
+        return Err(invalid());
+    }
+    match entry.codec {
+        Codec::Raw if encoded.len() == entry.decoded_length => Ok(encoded),
+        Codec::Zstandard
+            if !entry.oversized
+                && entry.decoded_length <= GROUP_LIMIT
+                && encoded.len() <= entry.decoded_length =>
+        {
+            zstandard::decompress(&encoded, entry.decoded_length)
+        }
+        _ => Err(invalid()),
+    }
+}
+
+// zstd-safe has no static-workspace API. Keep the small FFI boundary here:
+// static contexts cannot malloc/realloc, including when an estimate is too small.
+// The pinned library's one-shot API needs no separate streaming window buffer.
+#[allow(unsafe_code)]
+mod zstandard {
+    use super::{invalid, Result, StoreError, GROUP_LIMIT};
+    use zstd_sys::*;
+
+    const ENCODE_CONTEXT_LIMIT: usize = 1024 * 1024;
+    const DECODE_CONTEXT_LIMIT: usize = 256 * 1024;
+
+    fn resource() -> StoreError {
+        StoreError::Io(std::io::Error::other(
+            "bounded Zstandard workspace unavailable",
+        ))
+    }
+
+    fn checked(code: usize) -> Result<usize> {
+        // SAFETY: ZSTD_isError only interprets the numeric return code.
+        if unsafe { ZSTD_isError(code) } != 0 {
+            return Err(StoreError::Integrity("Zstandard codec failure"));
+        }
+        Ok(code)
+    }
+
+    fn workspace(size: usize, limit: usize) -> Result<Vec<u64>> {
+        let size = checked(size)?;
+        if size == 0 || size > limit {
+            return Err(resource());
+        }
+        let mut words = Vec::new();
+        words
+            .try_reserve_exact(size.div_ceil(8))
+            .map_err(|_| resource())?;
+        words.resize(size.div_ceil(8), 0u64);
+        // u64 alignment is eight on supported targets; enforce the C contract
+        // even on a target whose Rust u64 alignment is smaller.
+        if words.capacity() > limit / 8 || words.as_ptr().align_offset(8) != 0 {
+            return Err(resource());
+        }
+        Ok(words)
+    }
+
+    fn output(size: usize) -> Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(size).map_err(|_| resource())?;
+        bytes.resize(size, 0);
+        Ok(bytes)
+    }
+
+    pub(super) fn compress(raw: &[u8]) -> Result<Vec<u8>> {
+        if raw.is_empty() || raw.len() > GROUP_LIMIT {
+            return Err(invalid());
+        }
+        // SAFETY: All C pointers borrow live, non-overlapping Rust allocations.
+        // The aligned workspace outlives its context; static contexts must not
+        // be freed with ZSTD_freeCCtx. No pointer escapes this one-shot call.
+        unsafe {
+            let mut parameters = ZSTD_getCParams(1, raw.len() as u64, 0);
+            parameters.windowLog = parameters.windowLog.min(16);
+            let mut memory = workspace(
+                ZSTD_estimateCCtxSize_usingCParams(parameters),
+                ENCODE_CONTEXT_LIMIT,
+            )?;
+            let context = ZSTD_initStaticCCtx(memory.as_mut_ptr().cast(), memory.len() * 8);
+            if context.is_null() {
+                return Err(resource());
+            }
+            checked(ZSTD_CCtx_setCParams(context, parameters))?;
+            checked(ZSTD_CCtx_setFParams(
+                context,
+                ZSTD_frameParameters {
+                    contentSizeFlag: 1,
+                    checksumFlag: 1,
+                    noDictIDFlag: 1,
+                },
+            ))?;
+            let bound = checked(ZSTD_compressBound(raw.len()))?;
+            if bound > GROUP_LIMIT + 1024 {
+                return Err(resource());
+            }
+            let mut encoded = output(bound)?;
+            let length = checked(ZSTD_compress2(
+                context,
+                encoded.as_mut_ptr().cast(),
+                encoded.len(),
+                raw.as_ptr().cast(),
+                raw.len(),
+            ))?;
+            encoded.truncate(length);
+            Ok(encoded)
+        }
+    }
+
+    pub(super) fn decompress(encoded: &[u8], length: usize) -> Result<Vec<u8>> {
+        // Reject dictionary fields (including explicit ID zero), reserved bits,
+        // and nonordinary frame magic before even parsing the frame header.
+        if encoded.get(..4) != Some(&[0x28, 0xb5, 0x2f, 0xfd])
+            || encoded
+                .get(4)
+                .is_none_or(|descriptor| descriptor & 0x1b != 0)
+        {
+            return Err(invalid());
+        }
+        // SAFETY: Header parsing and frame-size scanning only read encoded.
+        // getFrameHeader returning zero initializes every field used below.
+        // The checked fixed workspace and output remain live until decoding ends;
+        // static contexts neither allocate nor require a C free operation.
+        unsafe {
+            let mut header = std::mem::MaybeUninit::<ZSTD_FrameHeader>::uninit();
+            if checked(ZSTD_getFrameHeader(
+                header.as_mut_ptr(),
+                encoded.as_ptr().cast(),
+                encoded.len(),
+            ))? != 0
+            {
+                return Err(invalid());
+            }
+            let header = header.assume_init();
+            if header.frameType != ZSTD_FrameType_e::ZSTD_frame
+                || header.frameContentSize != length as u64
+                || header.windowSize > GROUP_LIMIT as u64
+                || header.dictID != 0
+                || header.checksumFlag != 1
+                || checked(ZSTD_findFrameCompressedSize(
+                    encoded.as_ptr().cast(),
+                    encoded.len(),
+                ))? != encoded.len()
+            {
+                return Err(invalid());
+            }
+            let mut memory = workspace(ZSTD_estimateDCtxSize(), DECODE_CONTEXT_LIMIT)?;
+            let context = ZSTD_initStaticDCtx(memory.as_mut_ptr().cast(), memory.len() * 8);
+            if context.is_null() {
+                return Err(resource());
+            }
+            let mut decoded = output(length)?;
+            // The default decoder verifies the required checksum. Destination
+            // capacity is the validated declared size, never a frame-derived grow.
+            if checked(ZSTD_decompressDCtx(
+                context,
+                decoded.as_mut_ptr().cast(),
+                decoded.len(),
+                encoded.as_ptr().cast(),
+                encoded.len(),
+            ))? != length
+            {
+                return Err(invalid());
+            }
+            Ok(decoded)
+        }
+    }
 }
