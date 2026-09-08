@@ -74,3 +74,33 @@ The source SHA-256 values below identify the reviewed files before final sealing
 | `objects/read/native_tests.rs` | `8c492371da934ee4246415529dc09b88c643874bc0292f4ad67b9236d0d2109a` |
 
 Historical issue-88 allocated-byte, read-cost, CPU, write-observation, and depth-read findings remain evidence of their original producers. This review supplies no new measurement and does not transfer those numbers to the repaired candidate.
+
+## Incremental review: candidate c095fa9b1
+
+The reviewer inspected the changes after `c6e2d5901315a1a399a380b71d1d292f189d2200` through `c095fa9b19306f459a3546584c1658e34ebfb19f`, plus the route test and the older-code probe source/receipts. No new correctness finding was identified. Root owns execution; the reviewer read existing receipts and did not run any build or test.
+
+**Correction to the earlier review recommendation:** asserting two source passes for the symlink fallback was incorrect. The frontier's early `None` does not propagate its metadata observations into that receipt; both fixtures correctly report one import source pass. The failed assertion in `focused-03/output.log` is preserved (one failed selected ingestion test). The replacement test in `layerstack/ingestion_tests.rs` invokes the actual direct initializer on the exact fixture, asserts `Some` for the fast arm and `None` for fallback, drops the unpublished result, checks zero object residue, and then performs public initialization/reopen. It takes the physical-counter baseline after that explicit routing check so prior test preparation cannot satisfy the public import's native-admission assertion. `focused-04/output.log` records the corrected test as one PASS, zero failures. This is a stronger direct routing proof than the withdrawn receipt inference.
+
+Additional stale fixture A08, `durable_batches_hash_unique_rows_once_and_move_on_last_use`, now creates valid packed objects through shared authenticated admission and introduces unrelated corruption afterwards by altering its selected locator. Exact unique-hash and clone-byte assertions remain; singleton lookup still requires exactly one locator point query while allowing the separate packed-payload SQL. Missing singleton and mixed-batch reads assert their distinct existing error contracts. The intermediate `durable-fixture-01` failed because the singleton path was incorrectly expected to return the batch cardinality error; that failed receipt remains preserved. `prefinal-01/output.log` records the repaired selected test as one PASS, zero failures.
+
+The SQL-shape fixture now recognizes actual selected-locator and pack INSERTs, requires real membership probes, and rejects point-read/RETURNING behavior. Its former host-parallelism early return was removed. Additional test-only lifetime fixes drop unfinished direct handoffs before filesystem cleanup. The remaining diagnostic late-CAS fixture now shares a session for two prepared cohorts, preserving its late canonical recheck without deadlocking on a second non-reentrant permit. The new `with_session` constructor is private; normal construction still obtains a new operation permit.
+
+Clippy-related product changes do not alter their respective contracts: the final optional read-budget borrow is consumed after its last use, the spill visitor uses a concrete generic callback with the same arguments/results, and diagnostic receipt initialization is explicit. The benchmark changes examined are formatting and removal of two redundant borrows. No workload, timing boundary, public operation, or native encoding policy change was found there. `Dockerfile.layerfs` broadens the FUSE library correctness command from the `live_runtime` name filter to all library tests, bringing the issue-71 checkpoint tests into that lane; image execution remains pending its own receipt.
+
+The old-code verification obligation now has an actual execution receipt. The reviewer read `old-binary-01/output.log`, `result.json`, `command.json`, and the probe's Cargo manifest and source. Exit status is zero. The probe links the candidate Store crate and the actual older Store crate from `layerfs-issue88-combined-control` into one executable. It creates a fresh version-7 Empty Store, verifies the older crate rejects connect with unchanged bytes, reopens with the candidate, and alternates old/new Empty initialization writes on a version-6 Store. It also checks no journal/WAL/SHM residue remains. This establishes the real old-code open/write boundary, supplementing the earlier frozen-predicate unit test. It is not a run of an archived released executable or a native-file-payload workload; native payload/authentication and mixed dependency behavior remain covered by the focused Store tests.
+
+The old worktree's HEAD observed during review is `bfbc46c11dbb4d8dd949b54845e222cf42cd822f`. The probe uses its own Cargo lockfile, SHA-256 `5632033d2d88a9bb101b3ebcf26d3d7f6b04bc347092fda048e9f68e28c0c854`; it is not the candidate workspace lock. The old-code execution log SHA-256 is `3f3e8f2dd3d52e09d55d7468cb8cd8773e2d0af3242fb2dead4ae50773d26a6f`. Root must retain both crate source identities and the probe build identity in the final handoff.
+
+Updated reviewed-source SHA-256 values:
+
+| File | SHA-256 |
+|---|---|
+| `crates/layerfs-layerstack-store/src/objects.rs` | `99931eacf0e190b41deaabc96ec17356b83064ee74ac88cf2e511afae475d06e` |
+| `crates/layerfs-layerstack-store/src/layerstack.rs` | `1b4a6f2cfb1755422798e4333b247463da7275636e890641c0bf6d6b25623f9c` |
+| `crates/layerfs-layerstack-store/src/objects/read.rs` | `a52ec0ffe0d14991ca5c3d5e959b030810c49551f20484e1e4a0ebdec1c05724` |
+| `crates/layerfs-layerstack-store/src/objects/spill.rs` | `fffbe32e6a83764a036b3e097856b1369755afe5caac56459a2f563334c3e7d8` |
+| `crates/layerfs-layerstack-store/src/objects/diagnostic.rs` | `363fa4d6e5648890ef4ef8ccb62c25b0498dc82965eaa5c87d4a97408e9a3c58` |
+| `crates/layerfs-layerstack-store/src/layerstack/ingestion_tests.rs` | `bbf476fbb2a77f2027aa56db98bfdc6be6deaa94a45a984c9f0dc602cc56ebc0` |
+| `benchmark/fs-bench-pro/Dockerfile.layerfs` | `e05eba21100c134e62502ff81242e03d65214d4e2f16cee4433469fac201c31e` |
+
+Full workspace, complete Store, explicitly ignored large-spill, live FUSE, and container-runtime results remain pending final root receipts at this addendum. Earlier focused passes are not silently relabeled as exact-final-candidate full-suite proof.

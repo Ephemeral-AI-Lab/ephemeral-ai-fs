@@ -560,12 +560,7 @@ fn group_5_candidate_admission_and_publication_failures_retry_once() {
         std::fs::remove_dir_all(root).unwrap();
         inserted
     };
-    for failure in [
-        None,
-        Some(1_u64),
-        Some(inserted_objects + 1),
-        Some(inserted_objects + 2),
-    ] {
+    for failure in [None, Some(1_u64), Some(u64::MAX - 1), Some(u64::MAX - 2)] {
         let label = format!("commit-boundary-{}", failure.unwrap_or(0));
         let (root, workspaces, branch, store) = fixture(&label, b"abcdef");
         let (session, mount) = open_session(&root, &workspaces, branch, "mount");
@@ -587,12 +582,17 @@ fn group_5_candidate_admission_and_publication_failures_retry_once() {
         set_transaction_failure_at(None);
         assert!(failed.is_err(), "failure={failure:?} result={failed:?}");
         let mut after = store.store_counts().unwrap();
-        // Failed staging may retain CAS rows, but must not publish any metadata.
-        assert!(after.objects >= before.objects);
-        assert!(after.objects <= before.objects + inserted_objects);
-        if failure.is_none() {
-            assert_eq!(after.objects, before.objects);
-        }
+        // Candidate/admission failures reclaim private rows; a completed stage
+        // deliberately retains its root when either logical publication fails.
+        assert_eq!(
+            after.objects,
+            before.objects
+                + if matches!(failure, None | Some(1)) {
+                    0
+                } else {
+                    inserted_objects
+                }
+        );
         after.objects = before.objects;
         assert_eq!(after, before);
         assert_eq!(store.branch(branch).unwrap().unwrap(), branch_before);

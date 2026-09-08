@@ -24,6 +24,8 @@ checks; the final verification report supplies executed results and source seals
 | A07 | Cleanup failure must not silently allow subsequent unsafe writes. Drop cannot return a cleanup error. | Return combined errors on fallible paths and quarantine writes for that Store owner; existing authenticated reads remain usable. | `failed_cleanup_quarantines_writes_and_keeps_preexisting_reads` |
 | A08 | Demand-read batching must hash unique rows once and move bytes at final use. Feature-enabled fixture used obsolete2-parameter SQL and expected one old row query for packed reads. | Admit valid packed objects, inject unrelated locator corruption afterward, assert one selected-locator query separately from necessary pack work, preserve exact hash/copy/error checks. | `durable_batches_hash_unique_rows_once_and_move_on_last_use` |
 
+| A09 | Public Workspace retry test must reach both logical publication failures. It guessed SQL ordinals from inserted-object count and unexpectedly succeeded. | Use the actual commit/advance sentinels; strengthen exact cleanup versus retained-stage object counts and preserve one retry/one Commit/no-op checks. | `group_5_candidate_admission_and_publication_failures_retry_once` |
+
 Additional quality repairs remove unused superseded helpers, mark retained test
 oracles as test-only, and resolve warning-denying Clippy findings without lint
 waivers. Benchmark source changes are formatting and two redundant borrows;
