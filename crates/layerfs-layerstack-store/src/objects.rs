@@ -643,7 +643,9 @@ impl FinalizedOutputWriter {
         expected_len: u64,
     ) -> Result<(ObjectId, BuildCounters)> {
         let before = self.metrics.canonical_hash_calls;
+        let before_payload = self.metrics.payload_bytes;
         let completed = build_checked_file(self, source, expected_len)?;
+        self.metrics.selected_memory_bytes += self.metrics.payload_bytes - before_payload;
         Ok((
             completed.root.0,
             BuildCounters {
@@ -3860,6 +3862,7 @@ mod tests {
         assert_eq!(direct[0].0 .1.spill_count, 0);
         assert_eq!(direct[0].0 .1.first_store_write_bytes, 0);
         assert_eq!(direct[0].1.selected_spill_bytes, 0);
+        assert_eq!(direct[0].1.selected_memory_bytes, direct[0].1.payload_bytes);
         assert!(direct[0].1.partial_peak_payload_bytes <= INITIALIZATION_SLAB_BYTES as u64);
         assert_eq!(direct_ids, expected_ids);
         let mut buffer = ObjectBuffer::bounded_output(None).unwrap();
