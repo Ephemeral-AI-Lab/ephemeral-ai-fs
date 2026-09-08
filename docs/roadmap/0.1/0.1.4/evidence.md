@@ -158,3 +158,17 @@ make the diagnostic reviewable. Reused-triggered reservation work is not labelle
 avoidable. Executable validators reject malformed/race/cohort failures. This is
 research and analysis tooling; production instrumentation/replay remain unexecuted,
 #87 stays open, and earlier sealed artifacts remain unchanged.
+
+### Issue87 aggressive134.2MB architecture exploration (2026-09-08)
+
+[Independent architecture/canonical/history research](issue87-134mb-exploration/README.md)
+identifies bounded whole-file actual-parent native-prefix encoding and typed
+structural-page deltas as the large opportunities for the60% target. A new native
+read-only Git audit partitions existing51,989,900pack bytes into46,982,533blob,
+4,976,275tree,31,060commit and32header/trailer bytes. ExactLayerFS groups are
+216,448,341payload and78,792,537structural bytes. A70M/45M/19M target budget is
+explicitly hypothetical; no optimization ratio is claimed. Structural origin
+hints may preserve canonicalIDs; whole-file conversion loses188,544,906raw bytes
+of current chunk sharing and must repay that through history encoding. Research,
+synthetic checks and resource estimates only; original evidence/product unchanged,
+no retained-data encoding/replay/merge and #87 remains open.
