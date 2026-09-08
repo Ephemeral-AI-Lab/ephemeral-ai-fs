@@ -120,3 +120,18 @@ canonical graph/index cost can leave a material gap. No confidence label for the
 revised prose changes those empirical uncertainties. A future compact footprint
 must be achieved before the corresponding operation succeeds, with all required
 work and allocation counted.
+
+## Issue87 full157 retained-storage diagnosis (2026-09-08)
+
+[Sealed report/index and analysis tools](issue87-analysis/README.md) reconcile
+all157 acknowledgements plus Init, authenticate producer/verification custody,
+and independently review physical allocation, exact roles and retention.
+Final acknowledgement335,552,512 allocated bytes remains primary; the census is
+explicitly post-verification. Payload representation dominates; all selected
+objects are logically retained and physical-base-only/unselected residue is zero.
+**ADDITIONAL DIAGNOSTIC REQUIRED:** one separately authorized byte-weighted
+predecessor-coverage funnel diagnostic, with unchanged product policy. #87 stays
+open. No replay, optimization, M5/S3 work, release claim or PR merge occurred.
+Historical Git/LayerFS controls remain historical and retain metadata/timing
+qualifications. Full inventories remain in the external runs-root directory
+named in the sealed index; compact reports and hashes are committed.
