@@ -1,12 +1,13 @@
 //! Prepared whole-pack admission, with one probe and one final recheck.
+use super::diagnostic;
 use super::{
-    pack, read, AuthenticatedCanonicalObject, ObjectInsertMetrics, ADMISSION_BATCH_BYTES,
-    ADMISSION_BATCH_COUNT, OBJECT_PAGE_COUNT,
+    ADMISSION_BATCH_BYTES, ADMISSION_BATCH_COUNT, AuthenticatedCanonicalObject, OBJECT_PAGE_COUNT,
+    ObjectInsertMetrics, pack, read,
 };
 use crate::schema::StoreDb;
 use crate::{Result, StoreError};
 use layerfs_content::ObjectId;
-use rusqlite::{limits::Limit, params_from_iter, types::Value, Transaction, TransactionBehavior};
+use rusqlite::{Transaction, TransactionBehavior, limits::Limit, params_from_iter, types::Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::ops::Range;
@@ -22,7 +23,28 @@ struct PreparedObject {
     // Compressed records retain the original authenticated comparison operand.
     retained: Option<Vec<u8>>,
     delta: bool,
+    diagnostic_terminal: u8,
 }
+
+#[allow(dead_code)]
+struct UndiagnosedPreparedObject {
+    id: ObjectId,
+    length: usize,
+    pack: usize,
+    group: usize,
+    record: usize,
+    canonical: Range<usize>,
+    retained: Option<Vec<u8>>,
+    delta: bool,
+}
+const _: () = {
+    assert!(
+        std::mem::size_of::<PreparedObject>() == std::mem::size_of::<UndiagnosedPreparedObject>()
+    );
+    assert!(
+        std::mem::align_of::<PreparedObject>() == std::mem::align_of::<UndiagnosedPreparedObject>()
+    );
+};
 
 pub(crate) struct PreparedAdmission {
     packs: Vec<Vec<u8>>,
@@ -175,13 +197,67 @@ impl PreparedAdmission {
             }
             let optional = required + 2 * (pack::GROUP_LIMIT + 1024) <= 2 * 1024 * 1024;
             for index in group {
+                let object = &objects[*index];
+                let mut terminal = diagnostic::state(object);
+                let before_bases = stats.usable_bases;
+                let before_fetch = stats.fetch_budget_skips;
+                let before_match = stats.match_budget_skips;
+                let before_instruction = stats.instruction_budget_skips;
+                let before_memory = stats.memory_budget_skips;
                 if optional {
-                    deltas.push(search.candidate(db, &objects[*index], stats)?);
+                    deltas.push(search.candidate(db, object, stats)?);
                 } else {
                     stats.memory_budget_skips += 1;
                     stats.budget_skips += 1;
                     deltas.push(None);
                 }
+                if terminal != 0 {
+                    let has_candidate = deltas.last().unwrap().is_some();
+                    let budget = stats.fetch_budget_skips != before_fetch
+                        || stats.match_budget_skips != before_match
+                        || stats.instruction_budget_skips != before_instruction
+                        || stats.memory_budget_skips != before_memory;
+                    let base = stats.usable_bases != before_bases;
+                    stats.diag_event_base += u64::from(base);
+                    stats.diag_event_base_bytes += u64::from(base) * object.bytes.len() as u64;
+                    stats.diag_event_budget += u64::from(budget);
+                    stats.diag_event_budget_bytes += u64::from(budget) * object.bytes.len() as u64;
+                    stats.diag_event_candidate += u64::from(has_candidate);
+                    stats.diag_event_candidate_bytes +=
+                        u64::from(has_candidate) * object.bytes.len() as u64;
+                    if stats.fetch_budget_skips != before_fetch {
+                        stats.diag_event_fetch_budget_count += 1;
+                        stats.diag_event_fetch_budget_bytes += object.bytes.len() as u64;
+                    }
+                    if stats.match_budget_skips != before_match {
+                        stats.diag_event_match_budget_count += 1;
+                        stats.diag_event_match_budget_bytes += object.bytes.len() as u64;
+                    }
+                    if stats.instruction_budget_skips != before_instruction {
+                        stats.diag_event_instruction_budget_count += 1;
+                        stats.diag_event_instruction_budget_bytes += object.bytes.len() as u64;
+                    }
+                    if stats.memory_budget_skips != before_memory {
+                        stats.diag_event_memory_budget_count += 1;
+                        stats.diag_event_memory_budget_bytes += object.bytes.len() as u64;
+                    }
+                    if has_candidate {
+                        terminal = diagnostic::DELTA;
+                    } else if terminal == diagnostic::BASE {
+                        terminal = if budget {
+                            diagnostic::BUDGET
+                        } else if base {
+                            diagnostic::NO_DELTA
+                        } else {
+                            diagnostic::BASE
+                        };
+                    }
+                }
+                // Grant credit is consumed by initial CAS before MissingBatch.
+                // From here no object can be spilled/rebuffered: reuse this byte
+                // for terminal state until the PreparedObject takes ownership.
+                stats.diag_invalid += u64::from(objects[*index].1.diagnostic_grants != 0);
+                objects[*index].1.diagnostic_grants = terminal;
             }
             let canonical = group
                 .iter()
@@ -198,6 +274,12 @@ impl PreparedAdmission {
                     1 + object.bytes.len()
                 };
                 let end = cursor + record_length;
+                let mut diagnostic_terminal = object.1.diagnostic_grants;
+                if diagnostic_terminal == diagnostic::DELTA && !mixed {
+                    diagnostic_terminal = diagnostic::MIXED_REJECTION;
+                    stats.diag_event_mixed_rejection += 1;
+                    stats.diag_event_mixed_rejection_bytes += object.bytes.len() as u64;
+                }
                 self.objects.push(PreparedObject {
                     id: object.id,
                     length: object.bytes.len(),
@@ -208,6 +290,7 @@ impl PreparedAdmission {
                     retained: (delta || selected.codec == pack::Codec::Zstandard)
                         .then(|| std::mem::take(&mut object.0.bytes)),
                     delta,
+                    diagnostic_terminal,
                 });
                 cursor = end;
             }
@@ -258,6 +341,7 @@ impl PreparedAdmission {
             canonical: 41..total,
             retained: None,
             delta: false,
+            diagnostic_terminal: 0,
         });
         self.packs.push(bytes);
         Ok(())
@@ -301,7 +385,7 @@ impl PreparedAdmission {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let begin_ns = super::elapsed_ns(started);
         let started = Instant::now();
-        self.insert(&transaction, &winners, statement_number)?;
+        let mut diagnostic_stats = self.insert(&transaction, &winners, statement_number)?;
         self.metrics.insert_ns += super::elapsed_ns(started);
         self.metrics.objects = winners.iter().map(|objects| objects.len() as u64).sum();
         self.metrics.bytes = winners
@@ -313,6 +397,29 @@ impl PreparedAdmission {
         let result = publish(&transaction, &self.metrics, statement_number)?;
         let started = Instant::now();
         transaction.commit()?;
+        for object in &self.objects {
+            if object.diagnostic_terminal == 0 {
+                continue;
+            }
+            if late.contains_key(&object.id) {
+                diagnostic_stats.diag_race_count += 1;
+                diagnostic_stats.diag_race_bytes += object.length as u64;
+            } else {
+                if object.delta {
+                    diagnostic_stats.diag_new_delta_count += 1;
+                    diagnostic_stats.diag_new_delta_bytes += object.length as u64;
+                } else {
+                    diagnostic_stats.diag_new_full_count += 1;
+                    diagnostic_stats.diag_new_full_bytes += object.length as u64;
+                }
+                diagnostic::terminal(
+                    object.diagnostic_terminal,
+                    object.length,
+                    &mut diagnostic_stats,
+                );
+            }
+        }
+        db.note_physical(diagnostic_stats);
         db.note_physical(crate::PhysicalStorageReceipt {
             full_selected: winners
                 .iter()
@@ -341,7 +448,8 @@ impl PreparedAdmission {
         transaction: &Transaction<'_>,
         winners: &[Vec<&PreparedObject>],
         statement_number: &mut u64,
-    ) -> Result<()> {
+    ) -> Result<crate::PhysicalStorageReceipt> {
+        let mut diagnostic_stats = crate::PhysicalStorageReceipt::default();
         let mut next: i64 = transaction.query_row(
             "SELECT COALESCE(MAX(pack_id),0) FROM object_packs",
             [],
@@ -358,6 +466,16 @@ impl PreparedAdmission {
                 .filter(|id| *id > 0)
                 .ok_or(StoreError::Integrity("pack identity exhausted"))?;
             packs.push((next, self.packs[index].as_slice()));
+            diagnostic_stats.diag_selected_pack_count += 1;
+            diagnostic_stats.diag_selected_pack_last_id = next as u64;
+            diagnostic_stats.diag_selected_pack_bytes += self.packs[index].len() as u64;
+            diagnostic_stats.diag_selected_pack_groups +=
+                u32::from_le_bytes(self.packs[index][12..16].try_into().unwrap()) as u64;
+            let first = self.objects.partition_point(|object| object.pack < index);
+            let last = self.objects.partition_point(|object| object.pack <= index);
+            diagnostic_stats.diag_selected_pack_records += (last - first) as u64;
+            diagnostic_stats.diag_selected_unlocated_records +=
+                (last - first - objects.len()) as u64;
             for object in objects {
                 locators.push((next, *object));
             }
@@ -399,7 +517,10 @@ impl PreparedAdmission {
         }
         let locator_rows = sql_rows(transaction, 5, 12)?;
         for page in locators.chunks(locator_rows) {
-            let sql = format!("INSERT INTO objects(object_id,canonical_length,pack_id,group_number,record_number) VALUES {}", vec!["(?,?,?,?,?)"; page.len()].join(","));
+            let sql = format!(
+                "INSERT INTO objects(object_id,canonical_length,pack_id,group_number,record_number) VALUES {}",
+                vec!["(?,?,?,?,?)"; page.len()].join(",")
+            );
             let values = page.iter().flat_map(|(pack, object)| {
                 [
                     Value::Blob(object.id.as_bytes().to_vec()),
@@ -415,7 +536,7 @@ impl PreparedAdmission {
                 return Err(StoreError::Integrity("locator insertion cardinality"));
             }
         }
-        Ok(())
+        Ok(diagnostic_stats)
     }
 }
 
@@ -492,7 +613,7 @@ impl DeltaSearch {
                     match db.read_hint(id, true, &mut self.reads)? {
                         Some(read::HintRecord::Full(base)) => base,
                         Some(read::HintRecord::Anchor(_)) => {
-                            return Err(StoreError::Integrity("delta anchor is not FULL"))
+                            return Err(StoreError::Integrity("delta anchor is not FULL"));
                         }
                         None if self.reads.exhausted => {
                             stats.budget_skips += 1;

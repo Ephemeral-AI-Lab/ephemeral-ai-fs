@@ -471,6 +471,8 @@ impl SpillObjects {
             hints[8..12].copy_from_slice(&len.to_le_bytes());
         }
         hints[12] = u8::from(object.1.has_predecessor);
+        hints[13] = object.1.diagnostic;
+        hints[14] = object.1.diagnostic_grants;
         for (slot, id) in object.1.prior_ids.iter().enumerate() {
             if let Some(id) = id {
                 hints[16 + slot * 32..48 + slot * 32].copy_from_slice(id.as_bytes());
@@ -583,12 +585,17 @@ impl SpillObjects {
                 file.read_exact(&mut encoded_hints)?;
                 let start = u64::from_le_bytes(encoded_hints[..8].try_into().unwrap());
                 let len = u32::from_le_bytes(encoded_hints[8..12].try_into().unwrap());
-                if encoded_hints[12] > 1 || encoded_hints[13..16] != [0; 3] {
+                if encoded_hints[12] > 1
+                    || encoded_hints[15] != 0
+                    || !diagnostic::valid(encoded_hints[13], encoded_hints[14])
+                {
                     return Err(StoreError::Integrity("candidate hint flags"));
                 }
                 let mut hints = PhysicalHints {
                     first_span: (len != 0).then_some((start, len)),
                     has_predecessor: encoded_hints[12] != 0,
+                    diagnostic: encoded_hints[13],
+                    diagnostic_grants: encoded_hints[14],
                     ..PhysicalHints::default()
                 };
                 for slot in 0..4 {
@@ -691,9 +698,20 @@ fn scratch_index(label: &str, schema: &str) -> Result<(Connection, TempPath)> {
 }
 
 impl SpillDiskIndex {
+    #[cfg(test)]
+    pub(super) fn test_path(&self) -> &std::path::Path {
+        &self._path.0
+    }
+    #[cfg(test)]
+    pub(super) fn test_connection(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.connection.lock().unwrap()
+    }
+
     fn new() -> Result<Self> {
-        let (connection, path) = scratch_index("candidate-index",
-            "CREATE TABLE offsets (id BLOB PRIMARY KEY CHECK(length(id)=32), offset INTEGER NOT NULL CHECK(offset>=0), length INTEGER NOT NULL CHECK(length>=0)) WITHOUT ROWID;")?;
+        let (connection, path) = scratch_index(
+            "candidate-index",
+            "CREATE TABLE offsets (id BLOB PRIMARY KEY CHECK(length(id)=32), offset INTEGER NOT NULL CHECK(offset>=0), length INTEGER NOT NULL CHECK(length>=0)) WITHOUT ROWID;",
+        )?;
         Ok(Self {
             connection: Mutex::new(connection),
             _path: path,

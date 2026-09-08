@@ -1,4 +1,5 @@
 mod admission;
+mod diagnostic;
 pub(crate) use admission::PreparedAdmission;
 mod pack;
 mod read;
@@ -6,23 +7,21 @@ mod spill;
 #[cfg(test)]
 use spill::SeenStorage;
 pub use spill::SpillableObjectSet;
-use spill::{temporary_file, IdOrder, SpillObjects, TempPath};
+use spill::{IdOrder, SpillObjects, TempPath, temporary_file};
 
 use crate::{Result, StoreError};
 use layerfs_content::filesystem::{self, ContentChange, ReconcileConflict};
 use layerfs_content::object::access::{ObjectRead, ObjectStore};
 use layerfs_content::object::references::referenced_objects;
 use layerfs_content::{CoreError, CoreResult, ObjectId};
-#[cfg(test)]
-use rusqlite::OptionalExtension;
-use rusqlite::{params_from_iter, types::Value, Connection};
+use rusqlite::{Connection, params_from_iter, types::Value};
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 pub const OBJECT_PAGE_COUNT: usize = 128;
@@ -148,7 +147,25 @@ struct PhysicalHints {
     prior_ids: [Option<ObjectId>; 4],
     first_span: Option<(u64, u32)>,
     has_predecessor: bool,
+    diagnostic: u8,
+    diagnostic_grants: u8,
 }
+
+// Diagnostic bytes must not alter canonical batching or association reservations.
+#[allow(dead_code)]
+struct UndiagnosedHints {
+    prior_ids: [Option<ObjectId>; 4],
+    first_span: Option<(u64, u32)>,
+    has_predecessor: bool,
+}
+const _: () = {
+    assert!(std::mem::size_of::<PhysicalHints>() == std::mem::size_of::<UndiagnosedHints>());
+    assert!(std::mem::align_of::<PhysicalHints>() == std::mem::align_of::<UndiagnosedHints>());
+    assert!(
+        std::mem::size_of::<AuthenticatedCanonicalObject>()
+            == std::mem::size_of::<(CanonicalObject, UndiagnosedHints)>()
+    );
+};
 
 impl std::ops::Deref for AuthenticatedCanonicalObject {
     type Target = CanonicalObject;
@@ -380,7 +397,7 @@ where
     I: Iterator + Send,
     I::Item: Send,
 {
-    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::sync::atomic::Ordering;
     if worker_limit == 0 && task_count != 0 {
         return Err(StoreError::InvalidInput("canonical output worker limit"));
@@ -931,6 +948,7 @@ pub struct DeferredObjectStore {
     index_limit: usize,
     spill_buffer_bytes: usize,
     order_memory_bytes: usize,
+    diagnostic_file_context: bool,
     predecessor: Option<(
         crate::SnapshotReader,
         layerfs_content::file::rope::FileStateRoot,
@@ -1886,6 +1904,7 @@ impl DeferredObjectStore {
             index_limit: CANDIDATE_INDEX_BYTES,
             spill_buffer_bytes: CANDIDATE_SPILL_BUFFER_BYTES - 2 * spill::ID_BUFFER_BYTES,
             order_memory_bytes: CANDIDATE_MEMORY_BYTES,
+            diagnostic_file_context: false,
             predecessor: None,
         })
     }
@@ -2032,6 +2051,9 @@ impl DeferredObjectStore {
                 )
             });
         let mut file_reserved = 0u64;
+        let mut diagnostic_stop = 0u8;
+        let mut diagnostic_stats = crate::PhysicalStorageReceipt::default();
+        diagnostic_stats.diag_cursor_attached = u64::from(predecessor.is_some());
         let mut push = |mut object: AuthenticatedCanonicalObject| {
             object.1.has_predecessor |= predecessor.is_some();
             if let (Some((reader, cursor, operation_reserved, available)), Some((start, len))) =
@@ -2040,8 +2062,21 @@ impl DeferredObjectStore {
                 // Each optional metadata object can require a target group and a FULL
                 // anchor group. Reserve the larger encoded bound for both counters.
                 const FETCH_RESERVATION: u64 = 131136;
+                diagnostic_stats.diag_invalid +=
+                    u64::from(object.1.diagnostic & 15 != 0 || object.1.diagnostic_grants != 0);
+                let inherited = cursor.counters().1 != 0;
+                let reserved_before = file_reserved;
+                let mut denied = 0;
+                diagnostic_stats.diag_cursor_queries += 1;
+                diagnostic_stats.diag_cursor_query_bytes += object.bytes.len() as u64;
+                diagnostic_stats.diag_cursor_inherited += u64::from(inherited);
                 object.1.prior_ids = cursor.hints(&CoreReader(reader), start, len, || {
-                    if !*available || file_reserved + FETCH_RESERVATION > 1024 * 1024 {
+                    if !*available {
+                        denied = diagnostic::MEMORY;
+                        return false;
+                    }
+                    if file_reserved + FETCH_RESERVATION > 1024 * 1024 {
+                        denied = diagnostic::FILE_LIMIT;
                         return false;
                     }
                     if operation_reserved
@@ -2055,11 +2090,39 @@ impl DeferredObjectStore {
                         )
                         .is_err()
                     {
+                        denied = diagnostic::OPERATION;
                         return false;
                     }
                     file_reserved += FETCH_RESERVATION;
                     true
                 })?;
+                let grants = (file_reserved - reserved_before) / FETCH_RESERVATION;
+                diagnostic_stats.diag_cursor_grants += grants;
+                object.1.diagnostic_grants = grants as u8;
+                if !inherited && cursor.counters().1 != 0 {
+                    diagnostic_stop = if denied != 0 {
+                        denied
+                    } else {
+                        diagnostic::DESCRIPTOR
+                    };
+                    match diagnostic_stop {
+                        diagnostic::MEMORY => diagnostic_stats.diag_cursor_memory_limit += 1,
+                        diagnostic::FILE_LIMIT => diagnostic_stats.diag_cursor_file_limit += 1,
+                        diagnostic::OPERATION => diagnostic_stats.diag_cursor_operation_limit += 1,
+                        _ => diagnostic_stats.diag_cursor_descriptor_limit += 1,
+                    }
+                }
+                object.1.diagnostic = (object.1.diagnostic & diagnostic::FILE)
+                    | if cursor.counters().1 != 0 {
+                        diagnostic_stop
+                    } else {
+                        diagnostic::COMPLETE
+                    }
+                    | if inherited { diagnostic::INHERITED } else { 0 };
+                diagnostic_stats.diag_invalid += u64::from(!diagnostic::valid(
+                    object.1.diagnostic,
+                    object.1.diagnostic_grants,
+                ));
             }
 
             if object.bytes.len() > ADMISSION_BATCH_BYTES {
@@ -2076,12 +2139,12 @@ impl DeferredObjectStore {
             page.push(object);
             Ok(())
         };
-        match &mut self.storage {
+        let delivery_result: Result<()> = match &mut self.storage {
             DeferredObjects::Memory { rows, .. } => self.reachable.visit(|id| {
                 let object = rows.remove(&id).ok_or(StoreError::MissingObject(id))?;
                 memory_owned_bytes = memory_owned_bytes.saturating_add(object.bytes.len() as u64);
                 push(object)
-            })?,
+            }),
             DeferredObjects::Spill(spill) => {
                 spill.visit_ordered(&self.reachable, &mut |id, bytes, hints| {
                     spill_readback_bytes = spill_readback_bytes.saturating_add(bytes.len() as u64);
@@ -2092,12 +2155,23 @@ impl DeferredObjectStore {
                     storage_authentication_ns =
                         storage_authentication_ns.saturating_add(elapsed_ns(started));
                     push(object)
-                })?;
+                })
             }
+        };
+        if let Err(error) = delivery_result {
+            if let Some((reader, _, _, _)) = &predecessor {
+                diagnostic_stats.diag_invalid += 1;
+                // Include a successful reservation whose metadata read failed
+                // before its occurrence could reach admission.
+                diagnostic_stats.diag_cursor_grants = file_reserved / 131136;
+                reader.note_delivery_diagnostic(diagnostic_stats);
+            }
+            return Err(error);
         }
         if let Some((reader, cursor, _, available)) = predecessor {
             let (descriptors, skips) = cursor.counters();
             reader.note_predecessor_correspondence(file_reserved, descriptors, skips, !available);
+            reader.note_delivery_diagnostic(diagnostic_stats);
         }
         if !page.is_empty() {
             visitor(page)?;
@@ -2411,6 +2485,13 @@ pub struct ObjectBuffer<'a> {
 }
 
 impl<'a> ObjectBuffer<'a> {
+    /// Diagnostic source marker: actual regular-file owners only. Generic rope
+    /// construction also serves mode/mtime metadata and must leave this unset.
+    #[doc(hidden)]
+    pub fn diagnostic_file_payloads(&mut self) {
+        self.objects.diagnostic_file_context = true;
+    }
+
     #[doc(hidden)]
     pub fn set_physical_predecessor(
         &mut self,
@@ -2454,6 +2535,7 @@ impl<'a> ObjectBuffer<'a> {
         source: impl Read,
         expected_len: u64,
     ) -> Result<BuiltRoot> {
+        self.diagnostic_file_payloads();
         self.objects.references = None;
         let completed = build_checked_file(&mut self, source, expected_len)?;
         self.finish_all_reachable(completed.root.0, completed.counters.cdc_bytes_scanned)
@@ -2571,6 +2653,7 @@ impl<'a> ObjectBuffer<'a> {
         partitions: usize,
     ) -> Result<BuiltRoot> {
         let mut objects = Self::bounded_output(None)?;
+        objects.diagnostic_file_payloads();
         objects.partition_output(partitions)?;
         objects.objects.references = None;
         let completed = build_checked_file(&mut objects, source, expected_len)?;
@@ -2700,6 +2783,9 @@ impl ObjectStore for ObjectBuffer<'_> {
     ) -> CoreResult<ObjectId> {
         let mut object = AuthenticatedCanonicalObject::new(canonical, None)?;
         object.1.first_span = Some((start, len));
+        if self.objects.diagnostic_file_context {
+            object.1.diagnostic = diagnostic::FILE;
+        }
         let id = object.id;
         self.objects
             .put_authenticated(object)
@@ -2987,7 +3073,11 @@ impl CheckedOutputAdmission {
             self.diagnostics.cross_batch_skipped_objects += repeated.len() as u64;
             self.diagnostics.cross_batch_skipped_bytes += metrics.skipped_bytes;
         }
-        drop(repeated);
+        let mut diagnostic_stats = crate::PhysicalStorageReceipt::default();
+        for mut object in repeated {
+            diagnostic::occurrence(&mut object, 2, &mut diagnostic_stats);
+        }
+        self.db.note_physical(diagnostic_stats);
         let ids = fresh.iter().map(|object| object.id).collect::<Vec<_>>();
         let known = self.db.object_locations(&ids)?;
         let supplied = fresh
@@ -3010,11 +3100,18 @@ impl CheckedOutputAdmission {
         self.receipt.preexisting_reused_objects += reused.skipped_ids;
         self.receipt.preexisting_reused_bytes += reused.skipped_bytes;
         drop(supplied);
-        for object in fresh {
-            if !known.contains_key(&object.id) {
+        let mut diagnostic_stats = crate::PhysicalStorageReceipt::default();
+        for mut object in fresh {
+            let missing = !known.contains_key(&object.id);
+            diagnostic::occurrence(&mut object, u8::from(missing), &mut diagnostic_stats);
+            if missing {
+                diagnostic::eligible(&object, &mut diagnostic_stats);
+            }
+            if missing {
                 self.push_pending(object)?;
             }
         }
+        self.db.note_physical(diagnostic_stats);
         self.incoming = Vec::with_capacity(INITIALIZATION_SLAB_OBJECTS);
         Ok(())
     }
@@ -3027,14 +3124,20 @@ impl CheckedOutputAdmission {
         self.diagnostics.conflict_read_ns += metrics.conflict_read_ns;
     }
 
-    pub(crate) fn admit_object(&mut self, object: AuthenticatedCanonicalObject) -> Result<()> {
+    pub(crate) fn admit_object(&mut self, mut object: AuthenticatedCanonicalObject) -> Result<()> {
         if object.bytes.len() > ADMISSION_BATCH_BYTES {
             return Err(StoreError::Integrity("canonical object admission size"));
         }
         if let Some(&index) = self.pending.get(&object.id) {
+            let mut stats = crate::PhysicalStorageReceipt::default();
+            diagnostic::occurrence(&mut object, 2, &mut stats);
+            self.db.note_physical(stats);
             return self.admit_duplicate(index, &object.bytes);
         }
         if let Some(&index) = self.incoming_index.get(&object.id) {
+            let mut stats = crate::PhysicalStorageReceipt::default();
+            diagnostic::occurrence(&mut object, 2, &mut stats);
+            self.db.note_physical(stats);
             self.diagnostics.collision_checks += 1;
             if self.incoming[index].bytes != object.bytes {
                 return Err(StoreError::Integrity("object collision"));
@@ -3341,11 +3444,7 @@ mod tests {
                         random ^= random << 13;
                         random ^= random >> 7;
                         random ^= random << 17;
-                        if repetitive {
-                            0
-                        } else {
-                            random as u8
-                        }
+                        if repetitive { 0 } else { random as u8 }
                     })
                     .collect::<Vec<_>>();
                 let mut selected = ObjectBuffer::bounded_output(None).unwrap();
@@ -3503,12 +3602,10 @@ mod tests {
         );
         assert!(failed.is_err());
         assert_eq!(store.store_counts().unwrap(), before);
-        assert!(ObjectBuffer::build_complete_file_partition(
-            data.as_slice(),
-            data.len() as u64 + 1,
-            4
-        )
-        .is_err());
+        assert!(
+            ObjectBuffer::build_complete_file_partition(data.as_slice(), data.len() as u64 + 1, 4)
+                .is_err()
+        );
         drop(store);
         std::fs::remove_file(path).unwrap();
     }
@@ -3672,17 +3769,19 @@ mod tests {
         .unwrap();
         assert!(empty.is_empty());
         assert_eq!(metrics.producer_peak, 0);
-        assert!(run_finalized_output(
-            1,
-            2,
-            0..1,
-            &cancelled,
-            |_| Ok(()),
-            |_, _, _, _| Ok(()),
-            Ok,
-            |_| Ok(())
-        )
-        .is_err());
+        assert!(
+            run_finalized_output(
+                1,
+                2,
+                0..1,
+                &cancelled,
+                |_| Ok(()),
+                |_, _, _, _| Ok(()),
+                Ok,
+                |_| Ok(())
+            )
+            .is_err()
+        );
 
         for failure in [
             "producer",
@@ -3854,13 +3953,15 @@ mod tests {
         // Simulate corruption through a test-only descriptor retained before seal.
         writer.write_all_at(&[0xff], offset + 9).unwrap();
         let mut handed_off = 0;
-        assert!(built
-            .objects
-            .consume_prevalidated_pages(|page| {
-                handed_off += page.len();
-                Ok(())
-            })
-            .is_err());
+        assert!(
+            built
+                .objects
+                .consume_prevalidated_pages(|page| {
+                    handed_off += page.len();
+                    Ok(())
+                })
+                .is_err()
+        );
         assert_eq!(handed_off, 0);
     }
 
@@ -4203,14 +4304,14 @@ mod tests {
         assert_eq!(spill.index_bytes, 0);
         assert!(spill.pending.is_empty());
         let disk = spill.disk_index.as_ref().unwrap();
-        let index_path = disk._path.0.clone();
+        let index_path = disk.test_path().to_path_buf();
         let payload_path = spill.path.clone();
         assert_eq!(
             std::fs::metadata(&index_path).unwrap().permissions().mode() & 0o777,
             0o600
         );
         {
-            let connection = disk.connection.lock().unwrap();
+            let connection = disk.test_connection();
             let rows: i64 = connection
                 .query_row("SELECT count(*) FROM offsets", [], |row| row.get(0))
                 .unwrap();
@@ -4839,25 +4940,31 @@ mod tests {
                 bytes: first.clone(),
             },
         ]);
-        assert!(CoreReader(&reversed)
-            .get_authenticated_batch(&[first_id, second_id], |_, _| Ok(()))
-            .is_err());
+        assert!(
+            CoreReader(&reversed)
+                .get_authenticated_batch(&[first_id, second_id], |_, _| Ok(()))
+                .is_err()
+        );
         let short = Claimed(vec![CanonicalObject {
             id: first_id,
             bytes: first,
         }]);
-        assert!(CoreReader(&short)
-            .get_authenticated_batch(&[first_id, second_id], |_, _| Ok(()))
-            .is_err());
+        assert!(
+            CoreReader(&short)
+                .get_authenticated_batch(&[first_id, second_id], |_, _| Ok(()))
+                .is_err()
+        );
         struct Untrusted(Vec<u8>);
         impl ObjectSource for Untrusted {
             fn read_object(&self, _: ObjectId) -> Result<Vec<u8>> {
                 Ok(self.0.clone())
             }
         }
-        assert!(CoreReader(&Untrusted(second))
-            .get_authenticated_batch(&[corrupt_id], |_, _| Ok(()))
-            .is_err());
+        assert!(
+            CoreReader(&Untrusted(second))
+                .get_authenticated_batch(&[corrupt_id], |_, _| Ok(()))
+                .is_err()
+        );
 
         drop(db);
         std::fs::remove_dir_all(root).unwrap();

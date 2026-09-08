@@ -1,6 +1,7 @@
 use crate::objects::{
-    apply_reconcile_choices, combine_candidates, reconcile_candidate, BuildCounters, BuiltRoot,
-    CanonicalObject, CheckedOutputAdmission, DeferredObjectStore, ObjectSource, PreparedAdmission,
+    BuildCounters, BuiltRoot, CanonicalObject, CheckedOutputAdmission, DeferredObjectStore,
+    ObjectSource, PreparedAdmission, apply_reconcile_choices, combine_candidates,
+    reconcile_candidate,
 };
 use crate::records::{
     decode_branch, decode_commit, decode_layer_stack_at, decode_object_id, optional_id,
@@ -655,6 +656,10 @@ impl SnapshotReader {
         ))
     }
 
+    pub(crate) fn note_delivery_diagnostic(&self, stats: crate::PhysicalStorageReceipt) {
+        self.db.note_physical(stats);
+    }
+
     pub(crate) fn note_predecessor_correspondence(
         &self,
         reserved: u64,
@@ -1111,11 +1116,13 @@ mod tests {
             reader.clone().cached_object(structural_id).unwrap(),
             Some(structural)
         );
-        assert!(store
-            .snapshot_reader(first_id)
-            .cached_object(structural_id)
-            .unwrap()
-            .is_none());
+        assert!(
+            store
+                .snapshot_reader(first_id)
+                .cached_object(structural_id)
+                .unwrap()
+                .is_none()
+        );
 
         let payload =
             layerfs_content::file::extent_codec::encode_chunk_object(&vec![0; 8192]).unwrap();

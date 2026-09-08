@@ -1456,6 +1456,7 @@ impl FrozenFile {
             }
             None => (ObjectBuffer::bounded_output(Some(&self.reader))?, None),
         };
+        objects.diagnostic_file_payloads();
         objects.partition_output(partitions)?;
         if let Some(predecessor) = predecessor {
             objects.set_physical_predecessor(
