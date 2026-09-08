@@ -1,6 +1,8 @@
 # Milestone 4: bounded deltas and encoded-group selection
 
-Status: **finalized implementation plan, not implemented**, 2026-09-08.
+Status: **M4 implemented and smoke-verified**, 2026-09-08.
+Evidence: [M4 report](implementation-milestone-4.json) and [progress](implementation-progress.md).
+This development checkpoint stops before M5 and is not complete v0.1.4 qualification.
 Tracking: [M4 issue #84](https://github.com/Ephemeral-AI-Lab/layerfs/issues/84).
 Continue from closed M3 on `codex/storage-v3-implementation`, draft PR #81.
 Discovery HEAD: `4626583c72c0e4cbe0dd818c58fbe784c453dbbc`; M3 product commit:
@@ -179,19 +181,19 @@ is flat across edits; do not promise large total reductions there.
 
 ## Completion and stop checklist
 
-- [ ] Source custody and preceding evidence preserved; revised policy recorded before measurements.
-- [ ] Shared read ordering/counters implemented without new cache or interface.
-- [ ] Same-inode, complete, range and captured/tempfile predecessor handoffs connected.
-- [ ] Matcher/base authentication and depth-one limits implemented within existing budgets.
-- [ ] Before DELTA emission, source-review admission/cleanup so required FULL bases
+- [x] Source custody and preceding evidence preserved; revised policy recorded before measurements.
+- [x] Shared read ordering/counters implemented without new cache or interface.
+- [x] Same-inode, complete, range and captured/tempfile predecessor handoffs connected.
+- [x] Matcher/base authentication and depth-one limits implemented within existing budgets.
+- [x] Before DELTA emission, source-review admission/cleanup so required FULL bases
       remain readable even without direct logical references. Describe physical
       closure through existing record/base locations; export/GC remain deferred.
-- [ ] Two alternatives, threshold, selected-only persistence and buffer bounds implemented.
-- [ ] All three approved smokes and historical/no-change/cleanup checks completed; affected failures fixed.
-- [ ] Allocation/latency/resource evidence and DELTA coverage/limits recorded honestly.
-- [ ] Final diff removes obsolete policy/code and has no unrelated or M5 work.
-- [ ] Progress and new `implementation-milestone-4.json` record actual results, not fabricated placeholders.
-- [ ] Commit/push existing draft PR; do not merge. Stop with retain/revise/remove recommendation.
+- [x] Two alternatives, threshold, selected-only persistence and buffer bounds implemented.
+- [x] All three approved smokes and historical/no-change/cleanup checks completed; affected failures fixed.
+- [x] Allocation/latency/resource evidence and DELTA coverage/limits recorded honestly.
+- [x] Final diff removes obsolete policy/code and has no unrelated or M5 work.
+- [x] Progress and new `implementation-milestone-4.json` record actual results, not fabricated placeholders.
+- [x] Commit/push existing draft PR; do not merge. Stop with retain/revise/remove recommendation.
 
 If gains are weak, finish a correct reviewable checkpoint and disclose that result.
 Do not escalate search or rewrite benchmarks to satisfy an invented target. Any

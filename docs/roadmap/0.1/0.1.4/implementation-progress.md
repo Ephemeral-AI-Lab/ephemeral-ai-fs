@@ -1,3 +1,265 @@
+# Storage architecture v3 — M4 checkpoint
+
+Status: **M4 implemented and smoke-verified; stop before M5**, 2026-09-08.
+This is not complete v0.1.4 qualification. Product commit
+`1aa40785a7b4a96c78ba04a6af59af221b8f93bb`, branch
+`codex/storage-v3-implementation`, existing draft [PR #81](https://github.com/Ephemeral-AI-Lab/layerfs/pull/81).
+The exact committed product/harness bytes match the measured dirty-source build.
+[Machine-readable M4 evidence](implementation-milestone-4.json) retains all raw
+operands, source/binary/image identities, manifests, commands and limitations.
+
+**Recommendation: retain bounded emission.** DeepSeek allocation falls a further
+17.78% from M3, with replay elapsed +0.55% against that historical observation.
+Ordinary binary saves one 64-KiB allocation unit. Other allocations are flat.
+This is a useful workload-dependent increment, not universal savings or a reason
+to widen matching, deepen chains, tune SQLite, or change the workloads.
+
+## Completion and ownership
+
+- [x] Preserved source custody, M2/M3 reports, finalized selection policy and prior failures.
+- [x] Shared physical-order reads/counters, preserving request order and duplicates.
+- [x] Same-inode, complete-build, localized-range and captured/tempfile predecessor handoff.
+- [x] Forward metadata cursor, original first spans, four hints and authenticated admitted FULL anchors.
+- [x] Bounded COPY/INSERT matching, optional exhaustion and required error propagation.
+- [x] Reviewed physical base retention before emission; no object reclamation or locator replacement.
+- [x] Fixed-membership A/B selection, selected-only persistence and prospective capacity checks.
+- [x] All three approved smokes, 33 retained mappings, no-change and cleanup passed.
+- [x] Allocation, elapsed, physical work and resource evidence reported with historical limitations.
+- [x] Final product diff reviewed; no unrelated edits, new backend/cache, obsolete recursive extent visitor or M5 work.
+- [x] Progress and M4 JSON recorded from actual retained evidence; existing draft branch checkpointed for push.
+
+No implementation or smoke item remains incomplete. Commit/push custody is checked
+at task completion; no merge or release qualification is authorized.
+
+Actual files and responsibilities:
+
+- Store `objects.rs` and `objects/spill.rs`: owned hint/span facts, bounded selected
+  delivery and private spool frames. `objects/read.rs`: physical ordering,
+  authenticated reconstruction, bounded hint-record inspection and read counters.
+- Store `objects/pack.rs`: fixed seed matcher and FULL/mixed group encoding.
+  `objects/admission.rs`: admitted-base trials, budgets, comparison operands,
+  selection and finally admitted representation counters.
+- Content `file/rope/{build,edit,read,mod,validate}.rs` and `object/access.rs`:
+  original CDC positions, shared forward traversal and removed old visitor.
+- Workspace `changes.rs`: batched retained-inode/path task preparation and physical-
+  only predecessor handoff. `capture.rs` is unchanged: its existing CapturedFile
+  already owns the now span-bearing DeferredObjectStore; no second capture pass.
+- Store `layerstack.rs`/`workspace.rs`: pass Store access into shared preparation;
+  snapshot correspondence diagnostics. Store `schema.rs`, `store.rs`, `telemetry.rs`,
+  `lib.rs`, SDK `client.rs`, and benchmark `storage_smoke.rs`: existing receipt
+  integration, Store-local counters and structured diagnostic rendering.
+- Documentation: this ledger, M4 JSON and checked completion list in the M4 plan.
+  No schema/SQL, canonical encoding, CDC profile, workload or oracle changes.
+
+## Measured outcomes
+
+Every control/candidate has one observation. Baseline and M3 are historical,
+not freshly paired controls. New diagnostic rendering changes harness bytes;
+fixtures, public operations, output-drain/finalization and timing boundaries are
+unchanged. Random Init inode identity/order can affect canonical tree populations
+and compressed bytes. All six M4 final canonical counts/bytes match M3; this is not
+a claim that their exact IDs or grouping bytes are identical.
+
+| Case | Baseline allocated B | M3 allocated B | M4 allocated B | Baseline reduction | M3 reduction | Mutation + Commit ms: baseline / M3 / M4 |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| fuse-binary-8m | 11,206,656 | 10,354,688 | 10,289,152 | 8.19% | 0.63% | 263.891 / 266.834 / 266.340 |
+| fuse-text-32k | 1,179,648 | 983,040 | 983,040 | 16.67% | 0.00% | 40.491 / 49.442 / 48.906 |
+| sdk-binary-8m | 11,141,120 | 10,354,688 | 10,354,688 | 7.06% | 0.00% | 28.220 / 39.050 / 34.686 |
+| sdk-text-32k | 983,040 | 983,040 | 983,040 | 0.00% | 0.00% | 32.937 / 33.138 / 32.304 |
+| small-files | 1,441,792 | 1,114,112 | 1,114,112 | 22.73% | 0.00% | 22.108 / 30.301 / 22.098 |
+| deepseek-five | 12,320,768 | 5,898,240 | 4,849,664 | 60.64% | 17.78% | 1095.992 / 1256.791 / 1263.726 |
+
+Allocation is complete SQLite filesystem allocation plus required sidecars at
+acknowledgement, before verifier Branches. DeepSeek growth after Empty Init is
+3,866,624 B (M3 4,915,200 B); ordinary binary growth is 0 (M3 65,536 B);
+SDK binary growth remains 65,536 B; text and small-file growth remain 0.
+These growth figures do not replace the primary total-allocation denominator.
+DeepSeek pack BLOB bytes fall 3,140,288 →2,757,089 (383,199 B), while filesystem
+allocation falls 1,048,576 B. SQLite/page/filesystem allocation granularity makes
+those different quantities; no hidden reclamation, truncation, VACUUM or tuning ran.
+
+Small-file Init: 8.765 ms versus M3 8.561 / baseline 7.029; first read 25.014 ms
+versus 25.329 /19.658; repeated read 7.675 ms versus 7.666 /7.439. Neither read
+is OS-cold. Binary Init is 18.535 ms SDK /19.491 ms ordinary. All public operations
+and the full DeepSeek checkpoint/step timings remain in JSON, without pooled SDK
+and ordinary-route claims.
+
+Three original diagnostic misses remain: ordinary text step 2 is 15.238 ms versus
+14.352-ms allowance; SDK binary return-to-A is 9.841 ms versus 9.403-ms allowance;
+small-file first read is 25.014 ms versus 24.658-ms allowance. They are not relabeled
+PASS under a new numerical gate. Historical M3 misses remain preserved independently.
+All original storage/resource diagnostics hold for this single observation. The
+owner's short-total-operation tradeoff and material DeepSeek gain support retaining
+this checkpoint; no final three-pair qualification or aggregate-load claim follows.
+
+## Representation, read and work evidence
+
+All 33 reopened FUSE mappings passed independent path/type/mode/symlink/byte oracles,
+reading 114,620,274 bytes. Frequent edits retain SDK calls/members 1/1/1/3/0 and
+ordinary in-place, full rewrite, tempfile/rename and return-to-A routes. All four
+no-change Commits return UpToDate. Cleanup passed in every performance/verification
+case; no retained workspace stage or unselected physical record was observed.
+The unrelated `layerfs-phase21-binary-build` container was preserved.
+
+| Case | FULL / DELTA records | FULL anchors | RAW / Zstd groups | Pack BLOB B | Trials | Matching ms | Codec calls / ms |
+| --- | --- | ---: | --- | ---: | ---: | ---: | --- |
+| fuse-binary-8m | 478 / 3 | 3 | 397 / 11 | 8,449,219 | 5 | 2.933 | 411 / 6.680 |
+| fuse-text-32k | 43 / 0 | 0 | 0 / 10 | 3,899 | 4 | 4.391 | 12 / 0.256 |
+| sdk-binary-8m | 488 / 0 | 0 | 398 / 10 | 8,476,754 | 6 | 2.406 | 408 / 6.466 |
+| sdk-text-32k | 46 / 0 | 0 | 0 / 11 | 4,301 | 6 | 2.636 | 11 / 0.283 |
+| small-files | 460 / 0 | 0 | 3 / 20 | 108,664 | 0 | 0.000 | 23 / 0.696 |
+| deepseek-five | 5290 / 266 | 172 | 5 / 417 | 2,757,089 | 292 | 75.872 | 498 / 30.940 |
+
+Ordinary binary selected two DELTAs on complete rewrite and one on tempfile/rename.
+DeepSeek selected 266 DELTAs with 172 distinct FULL anchors. Offline locator census
+confirms all 269 selected DELTA dependencies resolve to selected FULL records;
+public reopened readback exercises reconstruction/authentication. Verification
+records 347 base fetches for DeepSeek and 10 for ordinary binary. This does not
+qualify every malformed/deep-chain rejection or dependency-reclamation scenario.
+
+DeepSeek A-alternative encoded sum is 3,129,618 B; eligible B sum is 256,644 B;
+selected sum is 2,749,409 B. A and B totals have different group populations;
+A minus B is not a storage-saving equation. Two ordinary-text mixed alternatives
+were rejected, correctly retaining FULL. No raw per-record 12.5% acceptance gate
+remains. Encoding calls include unsuccessful compression trials and both A/B routes.
+
+DeepSeek performance phases fetch 3,572 groups, 24,700,984 encoded group bytes,
+51,195,843 decoded bytes and make 3,557 decompressions. Verification separately
+fetches 8,347 groups, 57,256,082 encoded and 118,677,689 decoded bytes. Group bytes
+include record framing and exclude outer pack header/directory bytes; BLOB-range
+counts include their reads. Later waves repeat groups explicitly, without a cache.
+Matching charges 1,709,010 comparison bytes and 13,754,848 seed/hash bytes across
+DeepSeek's batches; 292 trials take 75.872 ms, encoding 30.940 ms. Required read,
+authentication and construction costs remain within public operation timers.
+
+DeepSeek correspondence reports 193 optional budget skips and 66,617,088 reserved
+bytes summed across separate Commits, each limited to 16 MiB. This is prospective
+worst-case reservation, not actual metadata I/O. No matching/fetch/instruction or
+memory-budget skip occurred in this smoke set. The smaller-partition memory-skip
+path is source-reviewed, not empirically exercised. `absent_predecessors` currently
+counts eligible targets with no prior IDs at encoder entry, including Init,
+no-overlap and exhausted correspondence; it is not an exact count of files without
+a predecessor. The report preserves that diagnostic limitation explicitly.
+
+Read/matching counters were unavailable in historical M3, so no physical-read
+speedup ratio is claimed. Snapshot intervals include shared-Store worker activity;
+concurrent overlap would not be exclusive operation attribution. Membership SQL
+counts and matching-only base-byte attribution remain unavailable. Metadata targets
+stay FULL; current hints originate from payload spans. No global similarity search.
+
+## Resource scopes and evidence custody
+
+DeepSeek public-phase host CPU is 364.495 ms versus M3 313.462 (+16.28%); replay
+elapsed is 1,263.726 ms versus1,256.791 (+0.55%). Historical-verification wall is
+2.714 s versus2.600 (+4.40%); performance work wall is3.964 s versus4.786, an
+unpaired observation including coordinator overhead, not attributed codec speedup.
+Performance host lifetime RSS peaks range10,747,904–32,587,776 B, container lifetime
+peaks4,870,144–14,966,784 B and sampled spool peaks4,096–24,576 B. All absolute and
+comparative resource checks hold; no swap/OOM or incomplete cleanup occurred.
+These are lifetime/boundary/sampled scopes, not precise codec or operation peaks.
+Complete host CPU/I/O, cgroup categories and spool/staging observations are in JSON.
+
+Artifact root: `/Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs`.
+Final directories: `m4-checkpoint-edits-1`, `m4-checkpoint-small-1`,
+`m4-checkpoint-deepseek-1`; each contains performance and verification manifests,
+identity, exact child commands, raw JSONL, results, resource/cleanup records and Stores.
+All baseline/M3/M4 final verification manifests were rechecked. Three host builds
+were preparation during integration; all succeeded. Only the final build was used
+for measurements. One image build and one performance/verification observation per
+smoke ran; no failed smoke or rerun was discarded.
+
+- Combined seal: `074900ce608a6fb6c7307a2ee873bdc9f459beacf7d6bd9e9b87f764222b1171`.
+- Product seal: `2d430bcbf902e37b0a57d3116bec9c3591da199988a2118b9f2900ce511b9e23`.
+- Retained host: `builds/m4-checkpoint-host`; SHA-256
+  `d81f79e478cc6ba55a3a545fbc40aa20d0a6a00927d62665359a42be01d0aa98`.
+- Image: `layerfs-bench-infra:074900ce608a6fb6`; exact Docker ID in run identities.
+- Build logs: `builds/m4-host-{1,2,3}.log`, `builds/m4-image-1.log`.
+- Source patch and reporter: `builds/m4-checkpoint-source.patch`,
+  `builds/m4-checkpoint-report.py`; exact hashes in M4 JSON.
+- Wrapper logs: `builds/m4-{edits,small,deepseek}-{perf,verify}-1.log`.
+
+Build commands from the implementation worktree:
+
+```sh
+python3 benchmark/fs-bench-pro/shared/runner.py --build-host
+python3 benchmark/fs-bench-pro/shared/runner.py --build-storage-smoke-image
+```
+
+Exact smoke commands (run serially, each performance followed by verification):
+
+```sh
+python3 benchmark/fs-bench-pro/shared/runner.py --storage-smoke frequent-edits --source-arm candidate --repetition 1 --image layerfs-bench-infra:074900ce608a6fb6 --output /Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/m4-checkpoint-edits-1
+python3 benchmark/fs-bench-pro/shared/runner.py --storage-smoke frequent-edits --source-arm candidate --repetition 1 --image layerfs-bench-infra:074900ce608a6fb6 --storage-verify-run /Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/m4-checkpoint-edits-1
+python3 benchmark/fs-bench-pro/shared/runner.py --storage-smoke small-files --source-arm candidate --repetition 1 --image layerfs-bench-infra:074900ce608a6fb6 --output /Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/m4-checkpoint-small-1
+python3 benchmark/fs-bench-pro/shared/runner.py --storage-smoke small-files --source-arm candidate --repetition 1 --image layerfs-bench-infra:074900ce608a6fb6 --storage-verify-run /Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/m4-checkpoint-small-1
+python3 benchmark/fs-bench-pro/shared/runner.py --storage-smoke deepseek-five --source-arm candidate --repetition 1 --image layerfs-bench-infra:074900ce608a6fb6 --output /Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/m4-checkpoint-deepseek-1
+python3 benchmark/fs-bench-pro/shared/runner.py --storage-smoke deepseek-five --source-arm candidate --repetition 1 --image layerfs-bench-infra:074900ce608a6fb6 --storage-verify-run /Users/yifanxu/Ephemeral-AI-Lab/layerfs-storage-v3-runs/m4-checkpoint-deepseek-1
+```
+
+No unit/fuzz/property/race/crash/full-workspace/full-family/fourth-smoke suite,
+new population, stronger codec or M5 final qualification ran. Remaining M5 work:
+checkpoint fact/trusted-read cleanup, invocation-local reconciliation cleanup and
+its deletion ledger, affected checks for subsequent changes and the frozen final
+three-pair qualification. Stronger-codec and SQLite layout opportunities remain
+separately deferred; this checkpoint does not silently authorize them.
+
+## M4 pre-measurement ownership review (2026-09-08)
+
+The writer uses common FULL-sized group membership, level-1 encoding of A and
+at most one mixed B, independent 16-byte codec savings, and the finalized
+`max(64, ceil(A/8))` encoded-group threshold. Matcher work is bounded by four
+hints/trials per target, a 64-KiB fixed seed table, 512 batch trials and 16 MiB
+seed/hash/comparison work. Missing untrusted hints are optional; fetched malformed
+records and invalid selected FULL bases fail. Only admission winners contribute
+FULL/DELTA selected counters. No same-batch anchor or extra durable FULL copy exists.
+
+The existing output allowance remains inclusive: at most 6 MiB resident canonical/
+prepared ownership and 2 MiB physical scratch inside 8 MiB. Existing upstream
+slabs, bounded indexes and spool I/O keep their distinct charges. The shared
+consumer normally closes missing canonical batches at 512 KiB (plus an incoming
+256-KiB page); larger objects flush separately. Closed-episode late validation
+still reserves the complete worst selected DELTA-program sum, up to 1 MiB,
+inside physical scratch. No late split/recheck or weaker validation is introduced.
+
+For one group, source-derived physical preflight charges actual retained current-
+pack encoded Vec capacities and association capacities, 1 MiB codec context, RAW
+and compressBound buffers (each conservatively 66,560 bytes), and, for B, another
+66,560 bytes each for retained A and aggregate delta programs. The input vector
+and preallocated prepared-object associations are charged; unused initial ID sets
+are dropped before preparation. Base/table/current/best matching owners drop before
+codec calls. Programs have capacity at most their FULL records, summing to at most
+one FULL-sized group. Prepared backing outside this current pack is in the resident
+allowance; assembly runs after codec contexts drop. Optional B is skipped before
+search if its prospective capacity cannot fit; required encoding failure propagates.
+
+Producer correspondence can overlap admission and other producers. Each capable
+producer reserves 576 KiB (64 KiB forward cursor/frontier plus 512 KiB bounded
+metadata decode/reconstruction) from its existing partitioned output allowance,
+spilling existing canonical output if needed. Partitions with less than this plus
+32 KiB output skip optional correspondence, preserve predecessor context and spans,
+and report the memory reason. Worker counts and workloads are unchanged. This
+conservative policy can significantly reduce opportunities in multi-file parallel
+construction; it is a limit to report, not a claim that all potential bases were
+searched. Correspondence also prospectively reserves 131,136 bytes per metadata
+fetch against 1 MiB/file and 16 MiB/operation and caps descriptors at 4,096/file.
+Reserved work is distinct from actual read counters and survives admission flushes.
+
+Production admission locators/packs remain immutable and no production object
+reclamation path exists. Stage discard deletes only its stage. Failed/fallback
+construction retains admitted objects. Thus admitted FULL anchors remain readable
+without a direct logical reference. Physical closure follows each DELTA base
+ObjectId through its selected locator to its FULL record/group/pack; no new
+persistent dependency index is needed. Export and garbage collection remain deferred.
+
+Read ordering is shared by ordinary reads and admission comparisons. Store-local
+atomic diagnostics include worker and mounted-host read activity; counter intervals
+are shared-Store intervals and may overlap under concurrency. They do not establish
+aggregate-load attribution or phase-exact memory peaks. New diagnostic rendering
+changes harness bytes but no fixture, public call, oracle or timing boundary.
+Baseline/M3 comparisons will be descriptive historical controls.
+
+---
+
 # Storage architecture v3 implementation progress
 
 Status: **M3 complete and closed as a development milestone; follow-ups tracked below**. Updated 2026-09-08.
