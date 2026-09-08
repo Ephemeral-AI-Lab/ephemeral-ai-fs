@@ -65,18 +65,322 @@ impl Drop for Owner {
     }
 }
 
-type PendingCheckpoint = (
-    layerfs_content::ObjectId,
-    u64,
-    std::collections::BTreeMap<
-        NodeId,
-        (
-            layerfs_content::tree::inode::InodeId,
-            layerfs_content::ObjectId,
-            Attr,
-        ),
-    >,
-);
+// This is live-operation metadata scratch, never a payload spool or canonical
+// Store. Files are immediately unlinked and owned by this frozen install only.
+// The host remains the owner of durable Checkpoint/SQLite/content storage.
+const CHECKPOINT_RECORD_BYTES: usize = 104;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CheckpointRecord {
+    node: NodeId,
+    inode: layerfs_content::tree::inode::InodeId,
+    content: layerfs_content::ObjectId,
+    attr: Attr,
+}
+
+impl CheckpointRecord {
+    // Same fixed metadata representation as the host's private CheckpointJournal.
+    fn encode(self) -> [u8; CHECKPOINT_RECORD_BYTES] {
+        let mut bytes = [0; CHECKPOINT_RECORD_BYTES];
+        bytes[..8].copy_from_slice(&self.node.0.to_le_bytes());
+        bytes[8..40].copy_from_slice(self.inode.as_bytes());
+        bytes[40..72].copy_from_slice(self.content.as_bytes());
+        bytes[72..80].copy_from_slice(&self.attr.size.to_le_bytes());
+        bytes[80..84].copy_from_slice(&self.attr.mode.to_le_bytes());
+        bytes[84..88].copy_from_slice(&self.attr.links.to_le_bytes());
+        bytes[88..96].copy_from_slice(&self.attr.mtime_seconds.to_le_bytes());
+        bytes[96..100].copy_from_slice(&self.attr.mtime_nanoseconds.to_le_bytes());
+        bytes[100] = match self.attr.kind {
+            Kind::File => 1,
+            Kind::Directory => 2,
+            Kind::Symlink => 3,
+        };
+        bytes
+    }
+
+    fn decode(bytes: &[u8; CHECKPOINT_RECORD_BYTES]) -> PortResult<Self> {
+        let node = NodeId(u64::from_le_bytes(bytes[..8].try_into().unwrap()));
+        if node.0 == 0 || bytes[101..] != [0; 3] {
+            return Err(PortError::Invalid);
+        }
+        Ok(Self {
+            node,
+            inode: layerfs_content::tree::inode::InodeId(bytes[8..40].try_into().unwrap()),
+            content: layerfs_content::ObjectId::from_bytes(&bytes[40..72])
+                .map_err(|_| PortError::Invalid)?,
+            attr: Attr {
+                node,
+                size: u64::from_le_bytes(bytes[72..80].try_into().unwrap()),
+                mode: u32::from_le_bytes(bytes[80..84].try_into().unwrap()),
+                links: u32::from_le_bytes(bytes[84..88].try_into().unwrap()),
+                mtime_seconds: i64::from_le_bytes(bytes[88..96].try_into().unwrap()),
+                mtime_nanoseconds: u32::from_le_bytes(bytes[96..100].try_into().unwrap()),
+                kind: match bytes[100] {
+                    1 => Kind::File,
+                    2 => Kind::Directory,
+                    3 => Kind::Symlink,
+                    _ => return Err(PortError::Invalid),
+                },
+            },
+        })
+    }
+}
+
+fn checkpoint_scratch() -> PortResult<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| PortError::Io)?
+        .as_nanos();
+    for _ in 0..16 {
+        let path = std::env::temp_dir().join(format!(
+            "layerfs-install-{}-{epoch}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+        {
+            Ok(file) => {
+                std::fs::remove_file(path).map_err(io)?;
+                return Ok(file);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(io(error)),
+        }
+    }
+    Err(PortError::Io)
+}
+
+struct CheckpointJournal {
+    writer: std::io::BufWriter<std::fs::File>,
+    nodes: std::fs::File,
+    slots: u64,
+    hash: std::collections::hash_map::RandomState,
+    count: u64,
+    node_limit: u64,
+    last_inode: Option<layerfs_content::tree::inode::InodeId>,
+    closed: bool,
+}
+
+impl CheckpointJournal {
+    fn new(node_limit: usize, io_bytes: usize) -> PortResult<Self> {
+        let node_limit = u64::try_from(node_limit).map_err(|_| PortError::NoSpace)?;
+        let slots = node_limit
+            .max(1)
+            .checked_mul(2)
+            .and_then(u64::checked_next_power_of_two)
+            .ok_or(PortError::NoSpace)?;
+        // At most 104N record bytes + 32N sparse uniqueness bytes for admitted
+        // live nodes. This is a job-derived scratch quota, not a node-count cliff.
+        node_limit
+            .checked_mul(CHECKPOINT_RECORD_BYTES as u64)
+            .ok_or(PortError::NoSpace)?;
+        let index_bytes = slots.checked_mul(8).ok_or(PortError::NoSpace)?;
+        let nodes = checkpoint_scratch()?;
+        nodes.set_len(index_bytes).map_err(io)?;
+        Ok(Self {
+            writer: std::io::BufWriter::with_capacity(io_bytes, checkpoint_scratch()?),
+            nodes,
+            slots,
+            hash: Default::default(),
+            count: 0,
+            node_limit,
+            last_inode: None,
+            closed: false,
+        })
+    }
+
+    fn push(&mut self, record: CheckpointRecord) -> PortResult<()> {
+        use std::hash::BuildHasher;
+        use std::io::Write;
+        use std::os::unix::fs::FileExt;
+        if self.closed
+            || record.node.0 == 0
+            || record.attr.node != record.node
+            || self.last_inode.is_some_and(|last| last >= record.inode)
+        {
+            return Err(PortError::Invalid);
+        }
+        if self.count >= self.node_limit {
+            return Err(PortError::NoSpace);
+        }
+        // FrontierInodes::finish emits the host checkpoint in strict inode order.
+        // Check NodeId uniqueness separately without a second in-memory map.
+        let first = self.hash.hash_one(record.node) & (self.slots - 1);
+        for probe in 0..self.slots {
+            let offset = ((first + probe) & (self.slots - 1)) * 8;
+            let mut bytes = [0; 8];
+            self.nodes.read_exact_at(&mut bytes, offset).map_err(io)?;
+            let old = u64::from_le_bytes(bytes);
+            if old == record.node.0 {
+                return Err(PortError::Invalid);
+            }
+            if old == 0 {
+                self.nodes
+                    .write_all_at(&record.node.0.to_le_bytes(), offset)
+                    .map_err(io)?;
+                self.writer.write_all(&record.encode()).map_err(io)?;
+                self.count += 1;
+                self.last_inode = Some(record.inode);
+                return Ok(());
+            }
+        }
+        Err(PortError::NoSpace)
+    }
+
+    fn close(&mut self) -> PortResult<()> {
+        use std::io::Write;
+        self.closed = true;
+        self.writer.flush().map_err(io)?;
+        if self.writer.get_ref().metadata().map_err(io)?.len()
+            != self.count * CHECKPOINT_RECORD_BYTES as u64
+        {
+            return Err(PortError::Invalid);
+        }
+        Ok(())
+    }
+
+    fn matches(&self, cursor: u64, record: CheckpointRecord) -> PortResult<()> {
+        use std::os::unix::fs::FileExt;
+        if !self.closed || cursor >= self.count {
+            return Err(PortError::Invalid);
+        }
+        let mut bytes = [0; CHECKPOINT_RECORD_BYTES];
+        self.writer
+            .get_ref()
+            .read_exact_at(&mut bytes, cursor * CHECKPOINT_RECORD_BYTES as u64)
+            .map_err(io)?;
+        if bytes != record.encode() {
+            return Err(PortError::Invalid);
+        }
+        Ok(())
+    }
+
+    fn visit(&self, mut visitor: impl FnMut(CheckpointRecord) -> PortResult<()>) -> PortResult<()> {
+        use std::io::{Read, Seek, SeekFrom};
+        if !self.closed
+            || self.writer.get_ref().metadata().map_err(io)?.len()
+                != self.count * CHECKPOINT_RECORD_BYTES as u64
+        {
+            return Err(PortError::Invalid);
+        }
+        let mut reader =
+            std::io::BufReader::with_capacity(self.writer.capacity(), self.writer.get_ref());
+        reader.seek(SeekFrom::Start(0)).map_err(io)?;
+        for _ in 0..self.count {
+            let mut bytes = [0; CHECKPOINT_RECORD_BYTES];
+            reader.read_exact(&mut bytes).map_err(io)?;
+            visitor(CheckpointRecord::decode(&bytes)?)?;
+        }
+        Ok(())
+    }
+}
+
+struct PendingCheckpoint {
+    root: layerfs_content::ObjectId,
+    generation: u64,
+    journal: CheckpointJournal,
+    replay: Option<u64>,
+    applying: bool,
+    installed: bool,
+    head: Option<[u8; 33]>,
+    _charge: crate::live_runtime::LiveReservation,
+}
+
+impl PendingCheckpoint {
+    fn new(
+        root: layerfs_content::ObjectId,
+        generation: u64,
+        state: &LiveWorkspace,
+        scheduler: &Scheduler,
+    ) -> PortResult<Self> {
+        let io_bytes = (state
+            .policy
+            .max_final_delta_memory_bytes
+            .saturating_sub(1024)
+            / 64)
+            .clamp(256, 64 * 1024) as usize;
+        let memory = 2 * io_bytes + std::mem::size_of::<Self>() + CHECKPOINT_RECORD_BYTES;
+        state
+            .policy
+            .check_final_delta(memory as u64)
+            .map_err(core)?;
+        let charge = scheduler.reserve_live(memory).map_err(io)?;
+        Ok(Self {
+            root,
+            generation,
+            journal: CheckpointJournal::new(state.nodes.len(), io_bytes)?,
+            replay: None,
+            applying: false,
+            installed: false,
+            head: None,
+            _charge: charge,
+        })
+    }
+
+    fn push(&mut self, record: CheckpointRecord) -> PortResult<()> {
+        if let Some(cursor) = self.replay.as_mut() {
+            self.journal.matches(*cursor, record)?;
+            *cursor += 1;
+            Ok(())
+        } else if self.applying {
+            Err(PortError::Invalid)
+        } else {
+            self.journal.push(record)
+        }
+    }
+
+    fn finish(
+        &mut self,
+        state: &mut LiveWorkspace,
+        root: layerfs_content::ObjectId,
+        count: u64,
+        head: Option<[u8; 33]>,
+        #[cfg(test)] before_install: impl Fn(u64) -> PortResult<()>,
+    ) -> PortResult<()> {
+        if self.root != root
+            || self.journal.count != count
+            || self.replay.is_some_and(|cursor| cursor != count)
+            || (self.applying && self.head != head)
+            || (!self.installed && state.mutation_generation != self.generation)
+            || (self.installed && (state.base_root != root || state.mutation_generation != 0))
+        {
+            return Err(PortError::Invalid);
+        }
+        if self.installed {
+            return Ok(());
+        }
+        self.journal.close()?;
+        self.journal.visit(|record| {
+            state
+                .validate_checkpoint_record(record.node, record.inode, record.attr)
+                .map_err(core)
+        })?;
+        self.applying = true;
+        self.head = head;
+        #[cfg(test)]
+        let mut index = 0;
+        self.journal.visit(|record| {
+            #[cfg(test)]
+            {
+                before_install(index)?;
+                index += 1;
+            }
+            state
+                .install_checkpoint_record(record.node, record.inode, record.content, record.attr)
+                .map_err(core)
+        })?;
+        state.finish_checkpoint(root).map_err(core)?;
+        self.installed = true;
+        Ok(())
+    }
+}
 
 struct PendingSplices {
     node: NodeId,
@@ -799,12 +1103,12 @@ impl LiveOwner {
         }
         match &node.data {
             Data::File(layerfs_workspace_core::FileData::Edited { .. }) => {
-                return Err(PortError::Io)
+                return Err(PortError::Io);
             }
             Data::Directory(directory)
                 if directory.base.is_none() || !directory.changes.is_empty() =>
             {
-                return Err(PortError::Io)
+                return Err(PortError::Io);
             }
             _ => {}
         }
@@ -2027,6 +2331,7 @@ impl LiveOwner {
         self.0.closing.store(true, Ordering::Release);
         self.0.cut.lock().map_err(|_| wire::invalid())?.take();
         self.0.edit.lock().map_err(|_| wire::invalid())?.take();
+        self.0.install.lock().map_err(|_| wire::invalid())?.take();
         #[cfg(target_os = "linux")]
         self.0
             .kernel_root
@@ -2513,6 +2818,14 @@ impl LiveOwner {
             }
             wire::RESUME => {
                 input.done().map_err(io)?;
+                let mut install = self.0.install.lock().map_err(|_| PortError::Io)?;
+                if install
+                    .as_ref()
+                    .is_some_and(|pending| pending.applying && !pending.installed)
+                {
+                    return Err(PortError::Busy);
+                }
+                install.take();
                 self.0.cut.lock().map_err(|_| PortError::Io)?.take();
             }
             wire::OBSERVE => {
@@ -2529,16 +2842,50 @@ impl LiveOwner {
                 let root = input.object().map_err(io)?;
                 let generation = input.u64().map_err(io)?;
                 input.done().map_err(io)?;
-                if self.0.cut.lock().map_err(|_| PortError::Io)?.is_none()
-                    || self.state()?.mutation_generation != generation
-                {
+                if self.0.cut.lock().map_err(|_| PortError::Io)?.is_none() {
                     return Err(PortError::Invalid);
                 }
                 let mut install = self.0.install.lock().map_err(|_| PortError::Io)?;
-                if install.is_some() {
-                    return Err(PortError::Busy);
+                let state = self.state()?;
+                if let Some(pending) = install.as_mut() {
+                    if pending.root != root || pending.generation != generation {
+                        return Err(PortError::Busy);
+                    }
+                    if pending.applying {
+                        // Host retries BEGIN after failed/uncertain END. Preserve the
+                        // immutable journal and accept only its byte-exact replay.
+                        if (!pending.installed && state.mutation_generation != generation)
+                            || (pending.installed
+                                && (state.mutation_generation != 0 || state.base_root != root))
+                        {
+                            return Err(PortError::Invalid);
+                        }
+                        pending.replay = Some(0);
+                    } else {
+                        if state.mutation_generation != generation {
+                            return Err(PortError::Invalid);
+                        }
+                        // No record has changed yet: release old scratch and its
+                        // permit before reserving the replacement, even at capacity.
+                        install.take();
+                        *install = Some(PendingCheckpoint::new(
+                            root,
+                            generation,
+                            &state,
+                            &self.0.scheduler,
+                        )?);
+                    }
+                } else {
+                    if state.mutation_generation != generation {
+                        return Err(PortError::Invalid);
+                    }
+                    *install = Some(PendingCheckpoint::new(
+                        root,
+                        generation,
+                        &state,
+                        &self.0.scheduler,
+                    )?);
                 }
-                *install = Some((root, generation, Default::default()));
             }
             wire::INSTALL_NODE => {
                 let mut count = 0;
@@ -2551,18 +2898,20 @@ impl LiveOwner {
                         wire::node_in(input.bytes().map_err(io)?, |_, _, _| Err(wire::invalid()))
                             .map_err(io)?;
                     let inode = node.canonical.ok_or(PortError::Invalid)?;
+                    let attr = node.attr(id);
                     self.state()?
-                        .validate_checkpoint_record(id, inode, node.attr(id))
+                        .validate_checkpoint_record(id, inode, attr)
                         .map_err(core)?;
                     let mut install = self.0.install.lock().map_err(|_| PortError::Io)?;
-                    let (_, _, records) = install.as_mut().ok_or(PortError::Invalid)?;
-                    if records.len() >= 16384 {
-                        return Err(PortError::NoSpace);
-                    }
-                    if records.contains_key(&id) {
-                        return Err(PortError::Invalid);
-                    }
-                    records.insert(id, (inode, content, node.attr(id)));
+                    install
+                        .as_mut()
+                        .ok_or(PortError::Invalid)?
+                        .push(CheckpointRecord {
+                            node: id,
+                            inode,
+                            content,
+                            attr,
+                        })?;
                     count += 1;
                 }
             }
@@ -2572,28 +2921,23 @@ impl LiveOwner {
                 let head = input.head().map_err(io)?;
                 input.done().map_err(io)?;
                 let mut install = self.0.install.lock().map_err(|_| PortError::Io)?;
-                let (expected, generation, records) = install.as_ref().ok_or(PortError::Invalid)?;
-                if *expected != root || records.len() as u64 != count {
-                    return Err(PortError::Invalid);
-                }
+                let pending = install.as_mut().ok_or(PortError::Invalid)?;
                 let mut state = self.state()?;
-                if state.mutation_generation != *generation {
-                    return Err(PortError::Invalid);
-                }
-                for (&id, &(inode, _, attr)) in records {
-                    state
-                        .validate_checkpoint_record(id, inode, attr)
-                        .map_err(core)?;
-                }
-                for (&id, &(inode, content, attr)) in records {
-                    state
-                        .install_checkpoint_record(id, inode, content, attr)
-                        .map_err(core)?;
-                }
-                state.finish_checkpoint(root).map_err(core)?;
-                *self.0.head.lock().map_err(|_| PortError::Io)? = head;
-                *install = None;
+                // Acquire the head lock before any record changes; publication of
+                // state/head then has no remaining fallible lock acquisition.
+                let mut installed_head = self.0.head.lock().map_err(|_| PortError::Io)?;
+                pending.finish(
+                    &mut state,
+                    root,
+                    count,
+                    head,
+                    #[cfg(test)]
+                    |_| Ok(()),
+                )?;
+                *installed_head = head;
+                // Retain the completed receipt until RESUME for a lost END reply.
             }
+
             _ => return Err(PortError::Invalid),
         }
         if opcode == wire::INSTALL_END {
@@ -2894,6 +3238,305 @@ mod immutable_acquisition_tests {
         out.extend(fact(b"old", 3));
         out.push(0);
         out
+    }
+
+    fn checkpoint_fixture(owner: &LiveOwner, count: usize) -> Vec<CheckpointRecord> {
+        let mut state = owner.state().unwrap();
+        let mut records = Vec::with_capacity(count);
+        for ordinal in 0..count {
+            let id = NodeId(ordinal as u64 + 2);
+            let mut file = node(
+                Data::File(FileData::Edited {
+                    base: None,
+                    spool_high_water: 0,
+                    pieces: layerfs_workspace_core::file_edit::PieceTree::empty(),
+                    edits: 0,
+                }),
+                false,
+            );
+            file.canonical = None;
+            file.paths.insert(format!("file-{ordinal}"));
+            let attr = file.attr(id);
+            state.nodes.insert(id, file);
+            state.edited_nodes.insert(id);
+            state.dirty.insert(id);
+            records.push(CheckpointRecord {
+                node: id,
+                inode: InodeId::allocate([79; 32], ordinal as u64),
+                content: identity(b"empty content"),
+                attr,
+            });
+        }
+        state.mutation_generation = 7;
+        records.sort_by_key(|record| record.inode);
+        records
+    }
+
+    fn checkpoint_begin(root: ObjectId, generation: u64) -> Vec<u8> {
+        let mut bytes = vec![wire::INSTALL_BEGIN];
+        bytes.extend_from_slice(root.as_bytes());
+        wire::u64_out(&mut bytes, generation);
+        bytes
+    }
+
+    fn checkpoint_page(owner: &LiveOwner, records: &[CheckpointRecord]) -> Vec<u8> {
+        let state = owner.state().unwrap();
+        let mut bytes = vec![wire::INSTALL_NODE];
+        for record in records {
+            let mut node = state.nodes[&record.node].clone();
+            node.canonical = Some(record.inode);
+            node.data = Data::File(FileData::Base {
+                root: FileStateRoot(record.content),
+                len: record.attr.size,
+            });
+            bytes.extend_from_slice(record.content.as_bytes());
+            wire::bytes_out(&mut bytes, &wire::node_out(record.node, &node).unwrap()).unwrap();
+        }
+        bytes
+    }
+
+    fn checkpoint_end(root: ObjectId, count: usize, head: Option<[u8; 33]>) -> Vec<u8> {
+        let mut bytes = vec![wire::INSTALL_END];
+        bytes.extend_from_slice(root.as_bytes());
+        wire::u64_out(&mut bytes, count as u64);
+        wire::bytes_out(
+            &mut bytes,
+            head.as_ref().map_or(&[][..], |head| head.as_slice()),
+        )
+        .unwrap();
+        bytes
+    }
+
+    fn checkpoint_cut(runtime: &LiveRuntime, owner: &LiveOwner) {
+        let cut = runtime.block_on(async { owner.0.gate.cache_flush().await.finish().await });
+        *owner.0.cut.lock().unwrap() = Some(cut);
+    }
+
+    #[test]
+    fn checkpoint_install_streams_beyond_old_node_cap_and_replays_lost_end_reply() {
+        use std::os::unix::fs::MetadataExt;
+        let runtime = LiveRuntime::new().unwrap();
+        let owner = kernel_owner(&runtime);
+        let records = checkpoint_fixture(&owner, 16_700);
+        assert!(records.windows(2).any(|pair| pair[0].node > pair[1].node));
+        checkpoint_cut(&runtime, &owner);
+        let root = identity(b"checkpoint root");
+        let begin = checkpoint_begin(root, 7);
+        runtime.block_on(owner.local_control(&begin)).unwrap();
+        for page in records.chunks(wire::FACT_PAGE_NODES) {
+            runtime
+                .block_on(owner.local_control(&checkpoint_page(&owner, page)))
+                .unwrap();
+        }
+        {
+            let pending = owner.0.install.lock().unwrap();
+            let journal = &pending.as_ref().unwrap().journal;
+            assert_eq!(journal.count, 16_700);
+            assert!(journal.writer.capacity() <= 64 * 1024);
+            assert!(journal.nodes.metadata().unwrap().len() <= journal.node_limit * 32);
+            assert_eq!(journal.nodes.metadata().unwrap().nlink(), 0);
+            assert_eq!(journal.writer.get_ref().metadata().unwrap().nlink(), 0);
+            assert_eq!(
+                journal.writer.get_ref().metadata().unwrap().mode() & 0o777,
+                0o600
+            );
+        }
+        let head = Some([0x12; 33]);
+        let end = checkpoint_end(root, records.len(), head);
+        runtime.block_on(owner.local_control(&end)).unwrap();
+        assert_eq!(owner.state().unwrap().base_root, root);
+        assert_eq!(*owner.0.head.lock().unwrap(), head);
+        // The END reply may be lost after installation. Same BEGIN + exact replay
+        // succeeds without changing the installed view or admitting new records.
+        runtime.block_on(owner.local_control(&begin)).unwrap();
+        for page in records.chunks(wire::FACT_PAGE_NODES) {
+            runtime
+                .block_on(owner.local_control(&checkpoint_page(&owner, page)))
+                .unwrap();
+        }
+        assert_eq!(
+            runtime.block_on(owner.local_control(&checkpoint_end(root, records.len(), None))),
+            Err(PortError::Invalid)
+        );
+        runtime.block_on(owner.local_control(&end)).unwrap();
+        runtime
+            .block_on(owner.local_control(&[wire::RESUME]))
+            .unwrap();
+        assert!(owner.0.install.lock().unwrap().is_none());
+        assert!(owner.0.cut.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn checkpoint_journal_rejects_duplicate_ids_inodes_order_and_scratch_overflow() {
+        let runtime = LiveRuntime::new().unwrap();
+        let owner = kernel_owner(&runtime);
+        let records = checkpoint_fixture(&owner, 3);
+        let mut journal = CheckpointJournal::new(2, 256).unwrap();
+        journal.push(records[0]).unwrap();
+        let mut duplicate_node = records[1];
+        duplicate_node.node = records[0].node;
+        duplicate_node.attr.node = records[0].node;
+        assert_eq!(journal.push(duplicate_node), Err(PortError::Invalid));
+        let mut duplicate_inode = records[1];
+        duplicate_inode.inode = records[0].inode;
+        assert_eq!(journal.push(duplicate_inode), Err(PortError::Invalid));
+        journal.push(records[1]).unwrap();
+        assert_eq!(journal.push(records[2]), Err(PortError::NoSpace));
+        assert_eq!(journal.count, 2);
+        journal.close().unwrap();
+        let mut visited = Vec::new();
+        journal
+            .visit(|record| {
+                visited.push(record);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(visited, records[..2]);
+        let mut journal = CheckpointJournal::new(2, 256).unwrap();
+        journal.push(records[1]).unwrap();
+        assert_eq!(journal.push(records[0]), Err(PortError::Invalid));
+    }
+
+    #[test]
+    fn checkpoint_full_validation_and_read_failure_leave_all_nodes_uninstalled() {
+        let runtime = LiveRuntime::new().unwrap();
+        let owner = kernel_owner(&runtime);
+        let records = checkpoint_fixture(&owner, 2);
+        let root = identity(b"validated root");
+        let mut pending =
+            PendingCheckpoint::new(root, 7, &owner.state().unwrap(), &runtime.scheduler()).unwrap();
+        for record in &records {
+            pending.push(*record).unwrap();
+        }
+        let mut state = owner.state().unwrap();
+        state.nodes.get_mut(&records[1].node).unwrap().mode ^= 1;
+        let before = state.nodes.clone();
+        assert!(pending
+            .finish(&mut state, root, 2, None, |_| panic!(
+                "validation must precede every install"
+            ))
+            .is_err());
+        assert_eq!(state.nodes, before);
+        assert!(!pending.applying);
+        state.nodes.get_mut(&records[1].node).unwrap().mode ^= 1;
+        let before = state.nodes.clone();
+        // A short private-journal read is rejected before installing any prefix.
+        pending.journal.writer.get_ref().set_len(1).unwrap();
+        assert!(pending
+            .finish(&mut state, root, 2, None, |_| panic!(
+                "read failure must precede install"
+            ))
+            .is_err());
+        assert_eq!(state.nodes, before);
+        assert!(!pending.applying);
+    }
+
+    #[test]
+    fn checkpoint_partial_install_stays_frozen_until_exact_retry_finishes() {
+        let runtime = LiveRuntime::new().unwrap();
+        let owner = kernel_owner(&runtime);
+        let records = checkpoint_fixture(&owner, 2);
+        checkpoint_cut(&runtime, &owner);
+        let root = identity(b"retry root");
+        let begin = checkpoint_begin(root, 7);
+        runtime.block_on(owner.local_control(&begin)).unwrap();
+        runtime
+            .block_on(owner.local_control(&checkpoint_page(&owner, &records)))
+            .unwrap();
+        let old_root = owner.state().unwrap().base_root;
+        {
+            let mut pending = owner.0.install.lock().unwrap();
+            assert_eq!(
+                pending.as_mut().unwrap().finish(
+                    &mut owner.state().unwrap(),
+                    root,
+                    2,
+                    None,
+                    |index| if index == 1 {
+                        Err(PortError::Io)
+                    } else {
+                        Ok(())
+                    }
+                ),
+                Err(PortError::Io)
+            );
+        }
+        assert_eq!(owner.state().unwrap().base_root, old_root);
+        assert_eq!(
+            runtime.block_on(owner.local_control(&[wire::RESUME])),
+            Err(PortError::Busy)
+        );
+        runtime.block_on(owner.local_control(&begin)).unwrap();
+        let mut changed = records[0];
+        changed.content = identity(b"different retry content");
+        assert_eq!(
+            runtime.block_on(owner.local_control(&checkpoint_page(&owner, &[changed]))),
+            Err(PortError::Invalid)
+        );
+        runtime
+            .block_on(owner.local_control(&checkpoint_page(&owner, &records)))
+            .unwrap();
+        runtime
+            .block_on(owner.local_control(&checkpoint_end(root, 2, None)))
+            .unwrap();
+        assert_eq!(owner.state().unwrap().base_root, root);
+        runtime
+            .block_on(owner.local_control(&[wire::RESUME]))
+            .unwrap();
+        assert!(owner.0.install.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn checkpoint_staging_retry_releases_old_scratch_and_checks_generation() {
+        let runtime = LiveRuntime::new().unwrap();
+        let owner = kernel_owner(&runtime);
+        let records = checkpoint_fixture(&owner, 2);
+        checkpoint_cut(&runtime, &owner);
+        let root = identity(b"staging root");
+        assert_eq!(
+            runtime.block_on(owner.local_control(&checkpoint_begin(root, 8))),
+            Err(PortError::Invalid)
+        );
+        let begin = checkpoint_begin(root, 7);
+        runtime.block_on(owner.local_control(&begin)).unwrap();
+        runtime
+            .block_on(owner.local_control(&checkpoint_page(&owner, &records[..1])))
+            .unwrap();
+        // Fill remaining permits. Replacement must release, not double-reserve.
+        let mut held = Vec::new();
+        for amount in [1024 * 1024, 1024, 1] {
+            while let Ok(charge) = runtime.scheduler().reserve_live(amount) {
+                held.push(charge);
+            }
+        }
+        runtime.block_on(owner.local_control(&begin)).unwrap();
+        assert_eq!(
+            owner
+                .0
+                .install
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .journal
+                .count,
+            0
+        );
+        drop(held);
+        runtime
+            .block_on(owner.local_control(&checkpoint_page(&owner, &records)))
+            .unwrap();
+        owner.state().unwrap().mutation_generation = 8;
+        assert_eq!(
+            runtime.block_on(owner.local_control(&checkpoint_end(root, 2, None))),
+            Err(PortError::Invalid)
+        );
+        assert!(owner.state().unwrap().nodes[&records[0].node]
+            .canonical
+            .is_none());
+        runtime
+            .block_on(owner.local_control(&[wire::RESUME]))
+            .unwrap();
     }
 
     #[test]
