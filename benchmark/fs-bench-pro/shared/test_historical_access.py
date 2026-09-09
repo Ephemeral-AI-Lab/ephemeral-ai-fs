@@ -7,7 +7,7 @@ import historical_access as access
 class AccessContract(unittest.TestCase):
     def test_oracle_and_cardinality_fail_closed(self):
         cases = access.definition()['cases']
-        self.assertEqual([c['full157_index'] for c in cases], [1,157,1,157,1,157,58,58,157,157])
+        self.assertEqual([c['full157_index'] for c in cases], [1,157,1,157,1,157,65,65,157,157,57])
         for case in cases:
             output = 'storage_smoke_mount=fuse\naccess_completed_count=1\naccess_operation_ns=1\naccess_returned_bytes=' + str(case['length']) + '\n'
             output += ''.join('access_' + k + '=' + str(v) + '\n' for k,v in case['expected'].items())

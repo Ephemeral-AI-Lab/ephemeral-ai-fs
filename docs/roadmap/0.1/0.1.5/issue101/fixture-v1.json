@@ -1,14 +1,14 @@
 {
-  "schema": "historical-access-v2",
-  "contract_commit": "2192797ec",
-  "store_sha256": "f323de0e0f9ae1030efc142402bc033ad427134dd8c69f21eb5b5d6ef7426eb7",
-  "branch_id": "1101a0877559737f07bccc2ffe2a82d9f3",
-  "history_result_sha256": "f476b688ff9f148ac8ca449053959d10680f569f72aa6482f5af88a9c5143581",
+  "schema": "historical-access-v1",
+  "contract_commit": "f40310328",
+  "store_sha256": "5c6ee04eee133539f043ee64d242c26769c77d30b434af2523666e326a8d999e",
+  "branch_id": "1101a087f7a8db72889a695875d7a70f91",
+  "history_result_sha256": "a0a4ad357e11a6b724125ca6f19076893442ebbfb3af3358a3170d2960a40339",
   "cases": [
     {
-      "id": "ha-stat-old-v2",
+      "id": "ha-stat-old-v1",
       "full157_index": 1,
-      "commit_id": "12b6073fe734d50c21bc13978d707b752667beb8a46c5d8203ed7b173e30c7993f",
+      "commit_id": "123dd9be1e92c411089fc9262e427b37d4805bd04db95d539f0b0cbbef0b1d399d",
       "source_commit": "ca4e1c3a1c61129bd95ee57dd744bc53c2e635bb",
       "original_oracle_sha256": "9ff51404fe3ea33de4b70d33c2f3241780ab866768d59b15c183b5211c327f02",
       "operation": "stat",
@@ -24,9 +24,9 @@
       }
     },
     {
-      "id": "ha-stat-head-v2",
+      "id": "ha-stat-head-v1",
       "full157_index": 157,
-      "commit_id": "125ddacd630de545f83ae37c41333970f39137334edfaaa46d3fd8a756596017e9",
+      "commit_id": "12906102e6e521179399d461781f2b33a30f9c2bd49ad23e8c6eff0920647686ce",
       "source_commit": "b0a7d2ce3b4c19d7452e364b2d7acbfa87e707ed",
       "original_oracle_sha256": "10e705a338baa86a1656c4b462aa27e9a3f6381d74b4f0fd31bd82c80d295e3c",
       "operation": "stat",
@@ -42,9 +42,9 @@
       }
     },
     {
-      "id": "ha-directory-old-v2",
+      "id": "ha-directory-old-v1",
       "full157_index": 1,
-      "commit_id": "12b6073fe734d50c21bc13978d707b752667beb8a46c5d8203ed7b173e30c7993f",
+      "commit_id": "123dd9be1e92c411089fc9262e427b37d4805bd04db95d539f0b0cbbef0b1d399d",
       "source_commit": "ca4e1c3a1c61129bd95ee57dd744bc53c2e635bb",
       "original_oracle_sha256": "9ff51404fe3ea33de4b70d33c2f3241780ab866768d59b15c183b5211c327f02",
       "operation": "directory",
@@ -57,9 +57,9 @@
       }
     },
     {
-      "id": "ha-directory-head-v2",
+      "id": "ha-directory-head-v1",
       "full157_index": 157,
-      "commit_id": "125ddacd630de545f83ae37c41333970f39137334edfaaa46d3fd8a756596017e9",
+      "commit_id": "12906102e6e521179399d461781f2b33a30f9c2bd49ad23e8c6eff0920647686ce",
       "source_commit": "b0a7d2ce3b4c19d7452e364b2d7acbfa87e707ed",
       "original_oracle_sha256": "10e705a338baa86a1656c4b462aa27e9a3f6381d74b4f0fd31bd82c80d295e3c",
       "operation": "directory",
@@ -72,9 +72,9 @@
       }
     },
     {
-      "id": "ha-small-old-v2",
+      "id": "ha-small-old-v1",
       "full157_index": 1,
-      "commit_id": "12b6073fe734d50c21bc13978d707b752667beb8a46c5d8203ed7b173e30c7993f",
+      "commit_id": "123dd9be1e92c411089fc9262e427b37d4805bd04db95d539f0b0cbbef0b1d399d",
       "source_commit": "ca4e1c3a1c61129bd95ee57dd744bc53c2e635bb",
       "original_oracle_sha256": "9ff51404fe3ea33de4b70d33c2f3241780ab866768d59b15c183b5211c327f02",
       "operation": "read",
@@ -83,17 +83,13 @@
       "length": 843,
       "cache": "cold",
       "expected": {
-        "mode": "100644",
-        "size": 843,
-        "mtime": 1000000000,
-        "mtime_nsec": 0,
         "sha256": "68c0908069a36db8a365836948cc864f77952b788e7bf3b2c8b42e429d448cee"
       }
     },
     {
-      "id": "ha-small-head-v2",
+      "id": "ha-small-head-v1",
       "full157_index": 157,
-      "commit_id": "125ddacd630de545f83ae37c41333970f39137334edfaaa46d3fd8a756596017e9",
+      "commit_id": "12906102e6e521179399d461781f2b33a30f9c2bd49ad23e8c6eff0920647686ce",
       "source_commit": "b0a7d2ce3b4c19d7452e364b2d7acbfa87e707ed",
       "original_oracle_sha256": "10e705a338baa86a1656c4b462aa27e9a3f6381d74b4f0fd31bd82c80d295e3c",
       "operation": "read",
@@ -102,55 +98,43 @@
       "length": 2201,
       "cache": "cold",
       "expected": {
-        "mode": "100644",
-        "size": 2201,
-        "mtime": 1000000000,
-        "mtime_nsec": 0,
         "sha256": "a51ca4bff273518c3f292b2e6800f5f2de76170ae6f5919fc48e4a0d82b0da1e"
       }
     },
     {
-      "id": "ha-range-history-cold-v2",
-      "full157_index": 65,
-      "commit_id": "12c8e2ac91e038177671b0a1fe12fbcb37960457b104f53c480bb6785e557d1254",
-      "source_commit": "c5d4f1b7e6d0c70ecbe1055c71cd38615b5ee69a",
-      "original_oracle_sha256": "176ab5785a6ee271e3c3dc62dd96de0ef141726bdb5d92f7079797ca067341e1",
+      "id": "ha-range-history-cold-v1",
+      "full157_index": 58,
+      "commit_id": "124422465e8ecaea1871a6915867a6227f19623249d434d57a9435d5492aaa9007",
+      "source_commit": "355975fbd5a95839826e934719d679da7af61205",
+      "original_oracle_sha256": "abe60c876f1ff62a29758896c535c24ed9b970ee3d75b73b683ff8373edc2626",
       "operation": "read",
       "path": "pnpm-lock.yaml",
-      "offset": 537371,
+      "offset": 528315,
       "length": 6421,
       "cache": "cold",
       "expected": {
-        "mode": "100644",
-        "size": 543792,
-        "mtime": 1000000000,
-        "mtime_nsec": 0,
         "sha256": "18c72f15e6995565d24cde3d6c0911aadbfa74d4276acb2f0f34c3ca1fd4253d"
       }
     },
     {
-      "id": "ha-range-history-warm-v2",
-      "full157_index": 65,
-      "commit_id": "12c8e2ac91e038177671b0a1fe12fbcb37960457b104f53c480bb6785e557d1254",
-      "source_commit": "c5d4f1b7e6d0c70ecbe1055c71cd38615b5ee69a",
-      "original_oracle_sha256": "176ab5785a6ee271e3c3dc62dd96de0ef141726bdb5d92f7079797ca067341e1",
+      "id": "ha-range-history-warm-v1",
+      "full157_index": 58,
+      "commit_id": "124422465e8ecaea1871a6915867a6227f19623249d434d57a9435d5492aaa9007",
+      "source_commit": "355975fbd5a95839826e934719d679da7af61205",
+      "original_oracle_sha256": "abe60c876f1ff62a29758896c535c24ed9b970ee3d75b73b683ff8373edc2626",
       "operation": "read",
       "path": "pnpm-lock.yaml",
-      "offset": 537371,
+      "offset": 528315,
       "length": 6421,
       "cache": "warm",
       "expected": {
-        "mode": "100644",
-        "size": 543792,
-        "mtime": 1000000000,
-        "mtime_nsec": 0,
         "sha256": "18c72f15e6995565d24cde3d6c0911aadbfa74d4276acb2f0f34c3ca1fd4253d"
       }
     },
     {
-      "id": "ha-full-head-cold-v2",
+      "id": "ha-full-head-cold-v1",
       "full157_index": 157,
-      "commit_id": "125ddacd630de545f83ae37c41333970f39137334edfaaa46d3fd8a756596017e9",
+      "commit_id": "12906102e6e521179399d461781f2b33a30f9c2bd49ad23e8c6eff0920647686ce",
       "source_commit": "b0a7d2ce3b4c19d7452e364b2d7acbfa87e707ed",
       "original_oracle_sha256": "10e705a338baa86a1656c4b462aa27e9a3f6381d74b4f0fd31bd82c80d295e3c",
       "operation": "read",
@@ -159,17 +143,13 @@
       "length": 841964,
       "cache": "cold",
       "expected": {
-        "mode": "100644",
-        "size": 841964,
-        "mtime": 1000000000,
-        "mtime_nsec": 0,
         "sha256": "b8ba1491db6390816b9df7d82a81c0c55514070ccc1d7f864b0468344607dd41"
       }
     },
     {
-      "id": "ha-full-head-warm-v2",
+      "id": "ha-full-head-warm-v1",
       "full157_index": 157,
-      "commit_id": "125ddacd630de545f83ae37c41333970f39137334edfaaa46d3fd8a756596017e9",
+      "commit_id": "12906102e6e521179399d461781f2b33a30f9c2bd49ad23e8c6eff0920647686ce",
       "source_commit": "b0a7d2ce3b4c19d7452e364b2d7acbfa87e707ed",
       "original_oracle_sha256": "10e705a338baa86a1656c4b462aa27e9a3f6381d74b4f0fd31bd82c80d295e3c",
       "operation": "read",
@@ -178,29 +158,7 @@
       "length": 841964,
       "cache": "warm",
       "expected": {
-        "mode": "100644",
-        "size": 841964,
-        "mtime": 1000000000,
-        "mtime_nsec": 0,
         "sha256": "b8ba1491db6390816b9df7d82a81c0c55514070ccc1d7f864b0468344607dd41"
-      }
-    },
-    {
-      "id": "ha-metadata-worst-v2",
-      "full157_index": 57,
-      "operation": "stat",
-      "path": ".agents/notes/implemented/architecture/2026-07-19-gui-layering-and-rpc-protocol.zh.md",
-      "offset": 0,
-      "length": 0,
-      "cache": "cold",
-      "commit_id": "129bc1010b818339c0abd5922f50259b2b509c2522c702c215cc517b9086c43f2e",
-      "source_commit": "6b4c26a1b9e480bf21add84d043848a029b13672",
-      "original_oracle_sha256": "f0b0c4d1e8a00351489fcce2e883bd758fbe716e382ef7584501f2023ea1a449",
-      "expected": {
-        "mode": "100644",
-        "size": 24108,
-        "mtime": 1000000000,
-        "mtime_nsec": 0
       }
     }
   ]

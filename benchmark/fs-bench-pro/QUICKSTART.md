@@ -95,21 +95,21 @@ constructs history or builds prerequisites during a selected test.
 ```bash
 python3 benchmark/fs-bench-pro/shared/runner.py --family historical_access --list
 python3 benchmark/fs-bench-pro/shared/runner.py --family historical_access \
-  --case ha-small-head-v1 --store /absolute/path/to/sealed/store.sqlite \
+  --case ha-small-head-v2 --store /absolute/path/to/sealed/store.sqlite \
   --image "$LAYERFS_BENCH_IMAGE" --output /absolute/path/to/new/performance
 python3 benchmark/fs-bench-pro/shared/runner.py --family historical_access \
-  --case ha-small-head-v1 --store /absolute/path/to/sealed/store.sqlite \
+  --case ha-small-head-v2 --store /absolute/path/to/sealed/store.sqlite \
   --image "$LAYERFS_BENCH_IMAGE" --mode verification \
   --performance /absolute/path/to/new/performance/result.json \
   --output /absolute/path/to/new/verification
 ```
 
-The v1 manifest pins the existing closed53-state schema9 Store and original
-checkpoints1/58/157. Any different Store fails compatibility validation; it is
+The v2 manifest pins the existing closed157-state schema9 Store and original
+checkpoints1/57/65/157. Any different Store fails compatibility validation; it is
 not silently rebuilt. See `families/historical_access/fixture.json` and the
-[contract](../../docs/roadmap/0.1/0.1.5/issue101/historical-access-v1.md).
+[contract](../../docs/roadmap/0.1/0.1.5/issue101/historical-access-v2.md).
 Each selected invocation has one15second deadline including preparation and
 teardown. Verification has its own15second watchdog. `--all` explicitly runs
-all ten performance cases serially with separate envelopes; verification binds
+all eleven performance cases serially with separate envelopes; verification binds
 one selected performance receipt. These are diagnostic qualifications, not
 release admission or a paired product speedup campaign. #102 owns that campaign.

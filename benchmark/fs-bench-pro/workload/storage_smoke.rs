@@ -384,13 +384,15 @@ fn access(root: &Path, op: &str, relative: &str, offset: u64, length: usize) -> 
         _ => return Err("unknown access operation".into()),
     }
     let ns = start.elapsed().as_nanos();
+    if op == "read" { metadata = Some(fs::symlink_metadata(root.join(relative))?); }
     println!("access_operation_ns={ns}\naccess_completed_count=1\naccess_returned_bytes={}", bytes.len());
     if let Some(m) = metadata {
         println!("access_mode={:o}\naccess_size={}\naccess_mtime={}\naccess_mtime_nsec={}", m.mode(), m.size(), m.mtime(), m.mtime_nsec());
-    } else if op == "directory" {
+    }
+    if op == "directory" {
         names.sort();
         println!("access_names={}", names.iter().map(|n| hex(n)).collect::<Vec<_>>().join(","));
-    } else {
+    } else if op == "read" {
         let mut hash = Sha256::new(); hash.update(&bytes);
         println!("access_sha256={}", hex(&hash.finish()));
     }

@@ -14,7 +14,7 @@ import runtime
 import runner
 
 FIXTURE = runner.BENCH / 'families/historical_access/fixture.json'
-SCHEMA = 'historical-access-v1'
+SCHEMA = 'historical-access-v2'
 LIMIT_NS = 15_000_000_000
 
 
@@ -28,7 +28,7 @@ def definition():
     value = json.loads(FIXTURE.read_text())
     assert value['schema'] == SCHEMA
     cases = value['cases']
-    assert len(cases) == len({c['id'] for c in cases}) == 10
+    assert len(cases) == len({c['id'] for c in cases}) == 11
     assert all(c['cache'] in ('cold', 'warm') and 0 <= c['length'] <= 1048576 for c in cases)
     return value
 
@@ -208,7 +208,7 @@ def main(argv=None, started_ns=None):
     args = parser.parse_args(argv)
     fixture = definition()
     if args.list or args.self_check:
-        print(json.dumps(fixture if args.list else {'status':'PASS', 'cases':10})); return 0
+        print(json.dumps(fixture if args.list else {'status':'PASS', 'cases':11})); return 0
     if not args.store or not args.image or not args.output or bool(args.case) == args.all:
         parser.error('explicit --store --image --output and exactly one of --case / --all required')
     if args.mode == 'verification' and (not args.performance or args.all):
