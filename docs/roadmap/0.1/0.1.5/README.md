@@ -38,6 +38,12 @@ now yields **54,382,592B on53 states /65,957,888B on157**, with all original sta
 These remain archive/reference layouts: cold-read amplification is substantial, and the public
 implementation below is unchanged. The1KiB page trial was not adopted.
 
+Benchmark-family expansion and the complete product rerun are tracked in
+[#101](https://github.com/Ephemeral-AI-Lab/layerfs/issues/101). Extend existing deduplication
+coverage, add explicit long-history and historical-read amplification cases, then qualify
+all registered families on the selected product candidate. [#100](https://github.com/Ephemeral-AI-Lab/layerfs/issues/100)
+remains open for format integration and the unresolved speed/read-cost disposition.
+
 ## Current implementation
 
 New or changed nonempty file content strictly below **131,072 bytes** uses one
