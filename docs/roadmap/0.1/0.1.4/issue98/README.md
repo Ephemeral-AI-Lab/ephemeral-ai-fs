@@ -27,3 +27,9 @@ All eight pair members passed exhaustive independent content/metadata readback a
 The new Workspace test covers coalesced bounds, exact collisions, rollback of both pending and committed objects while retaining baseline data, and a clean transaction handoff to staging. Existing selected-object spill-order coverage now crosses the read-ahead window; focused spill/authentication checks pass. Earlier compile and test-fixture failures are retained in [evidence](evidence/).
 
 [Paired results](paired-results.json) and raw per-arm commands, hashes, stdout and oracle receipts are included. During these host-only Store experiments the prior sealed daemon/FUSE image is reused because runtime sources/protocols remain unchanged. Final source/host/image sealing, complete native checks, full benchmark and full157 storage/history qualification follow before delivery. Original raw Stores and binaries remain under `/Users/yifanxu/Ephemeral-AI-Lab/layerfs-workspace-admission-runs`.
+
+## Independent review and strengthened boundaries
+
+A read-only independent review found no actionable correctness defect. Its coverage suggestions were incorporated into the Workspace cohort test: a concurrent reader authenticates an object from the still-open cohort, a subsequent duplicate is validated without another insertion, a deliberate equal-length collision targets that pending object, and a one-shot COMMIT veto restores baseline objects and leaves no Workspace stage. The strengthened test and Store test-target warning-denying Clippy pass.
+
+The full native suite (411 passes), explicit ignored large-spill run, doctests, formatting and workspace warning-denying Clippy passed at `211bc420f`. Only the strengthened test body and this evidence changed afterward; production source is identical. The changed test was rerun rather than repeating already-passing unrelated suites. Final source/binary/image and terminal campaign receipts follow separately.

@@ -4689,7 +4689,7 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&root).unwrap();
-        for outcome in ["publish", "drop", "collision"] {
+        for outcome in ["publish", "drop", "collision", "commit_failure"] {
             let store =
                 crate::LayerStackStore::create(root.join(format!("{outcome}.sqlite"))).unwrap();
             let baseline = AuthenticatedCanonicalObject::new(
@@ -4727,6 +4727,25 @@ mod tests {
                 store.db.read_object_row(baseline.id).unwrap(),
                 baseline.bytes
             );
+            let mut payload = vec![0; 65_500];
+            payload[..8].copy_from_slice(&71_u64.to_le_bytes());
+            let pending = AuthenticatedCanonicalObject::new(
+                layerfs_content::encode_bytes_object(&payload).unwrap(),
+                None,
+            )
+            .unwrap();
+            std::thread::scope(|scope| {
+                scope
+                    .spawn(|| {
+                        assert_eq!(store.db.read_object_row(pending.id).unwrap(), pending.bytes);
+                    })
+                    .join()
+                    .unwrap();
+            });
+            token.admission.admit_object(pending.clone()).unwrap();
+            token.admission.flush().unwrap();
+            assert_eq!(token.admission.checked.inserted_objects, 72);
+            assert!(!store.db.reader().unwrap().is_autocommit());
             if outcome == "publish" {
                 let (receipt, _, session) = token
                     .admit_remaining(DeferredObjectStore::new().unwrap())
@@ -4740,11 +4759,31 @@ mod tests {
                 session.retain();
                 drop(session);
                 assert_eq!(store.store_counts().unwrap().objects, 73);
+            } else if outcome == "commit_failure" {
+                let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let hook_fired = fired.clone();
+                store
+                    .db
+                    .writer()
+                    .unwrap()
+                    .commit_hook(Some(move || !hook_fired.swap(true, Ordering::SeqCst)))
+                    .unwrap();
+                assert!(token
+                    .admit_remaining(DeferredObjectStore::new().unwrap())
+                    .is_err());
+                assert!(fired.load(Ordering::SeqCst));
+                assert!(store.db.reader().unwrap().is_autocommit());
+                assert_eq!(store.store_counts().unwrap().objects, 1);
+                assert!(store.workspace_stage([1; 16]).unwrap().is_none());
+                assert_eq!(
+                    store.db.read_object_row(baseline.id).unwrap(),
+                    baseline.bytes
+                );
             } else {
                 if outcome == "collision" {
-                    let mut corrupt = baseline.clone();
-                    corrupt.0.bytes =
-                        layerfs_content::encode_bytes_object(b"retained baselinX").unwrap();
+                    let mut corrupt = pending.clone();
+                    payload[8] = 1;
+                    corrupt.0.bytes = layerfs_content::encode_bytes_object(&payload).unwrap();
                     let result = token
                         .admission
                         .admit_object(corrupt)

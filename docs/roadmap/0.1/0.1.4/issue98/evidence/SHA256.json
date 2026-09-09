@@ -41,5 +41,7 @@
   "profile-01/sample-command.log": "617871a5680f59d1caaeea91bbe860e244ce57bda896282533421c0342e543c6",
   "profile-01/sample.txt.gz": "4e568c5a9cad5e20fcfd285f0ed800201daa9c49c3274cbe235b82f62ab5d28f",
   "profile-01/verify.log": "10b7c91dd57f64f32149fc141f5fb4a67ed205f49f813beae1d57d260b8a433f",
+  "review-clippy-01.log.gz": "54e3b216f89903d32618f0d3830adc26c00e0c87c3b0ba5b0b7b264af92f0eb5",
+  "review-focused-01.log.gz": "b2d4cc8012b07808b517f9615eb59726a6be32bf080aa75e9bf836d53c353ead",
   "spill-focused-01.log.gz": "a24731764af0ac18dd81bc87e77f0ef733e192529ed6cc1a53902a99c3d970b8"
 }
