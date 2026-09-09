@@ -5,6 +5,13 @@
 > Both arms verified all 31 retained states; the candidate exercised 10 FULL and
 > 30 DELTA SmallContent objects. This is exploratory evidence, not release qualification.
 
+The current issue #100 follow-up has a [three-arm ten-snapshot baseline](issue100/ten-snapshot-baselines.md)
+for fast iteration: Git 38.22 MB, released v0.1.4 67.15 MB, existing v0.1.5 66.11 MB
+allocated, with all ten states verified. This smaller history does not supersede
+the initial full157 regression. See the [frozen smoke contract](issue100/ten-snapshot-contract.md)
+and [growth analysis](issue100/growth-estimate.md); no storage optimization or release
+qualification is claimed from the baselines.
+
 The ready-to-use [implementation prompt](implementation_prompt.md) combines this
 scope, fixed settings and fast smoke-only loop.
 

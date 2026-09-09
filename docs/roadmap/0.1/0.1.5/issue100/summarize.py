@@ -14,12 +14,14 @@ def distribution(values):
 
 
 def arm(root, name):
-    folder=root/name; case=folder/'deepseek-full'
+    folder=root/name
     identity=json.loads((folder/'identity.json').read_text())
+    case=folder/identity['smoke']
+    indices=[r['index'] for r in identity['fixtures'][identity['smoke']]['states']]
     perf=json.loads((case/'performance-result.json').read_text())
     proof=json.loads((case/'verification-result.json').read_text())
     assert perf['status']==proof['status']==perf['cleanup_status']==proof['cleanup_status']=='PASS'
-    assert [r['index'] for r in perf['records']]==[r['index'] for r in proof['records']]==list(range(1,158))
+    assert [r['index'] for r in perf['records']]==[r['index'] for r in proof['records']]==indices
     assert [r['identity'] for r in perf['records']]==[r['identity'] for r in proof['records']]
     initial=next(r for r in perf['ready'] if r['kind']=='storage-smoke-allocation')
     rows=[]; physical=collections.defaultdict(collections.Counter); phases=[]; reads=[]
@@ -62,7 +64,7 @@ def arm(root, name):
         cleanup=dict(performance=perf['cleanup_status'],verification=proof['cleanup_status']),source=identity['source'],host=identity['host_identity'],image=identity['image_id'],
         census=json.loads((folder/'census.json').read_text()),
         fixture_digest=hashlib.sha256(json.dumps(identity['fixtures'],sort_keys=True).encode()).hexdigest(),
-        contract_digest=identity['full_run_contract_sha256'])
+        contract_digest=identity['full_run_contract_sha256'] or identity['contract_sha256'])
     return summary,rows
 
 

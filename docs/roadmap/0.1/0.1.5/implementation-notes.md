@@ -31,3 +31,19 @@ The final smoke report records code/artifact seals, initial/final allocation, gr
 The first candidate performance pass created 30 commits and its post-measurement census found 10 FULL and 30 DELTA SmallContent records. The integrated verifier failed at genesis: batched inode acquisition still used the extent-only decoder while individual inode acquisition used the new dispatch. The shared batch length parser fixes this path without an extra object read or authentication. The failed attempt remains under `candidate`; the source-matched rerun is `candidate-2`. Schema-8 producer concurrency is bounded at four to fit simultaneous small operands/queues and static codec storage inside the existing ledgers; predecessor-bearing scheduling retains its tighter existing bound.
 
 Reusing one target directory across worktrees exposed Cargo's timestamp-based freshness behavior after rebuilding the control. Candidate build 5 selected a stale control dependency, producing missing-module/trait compile errors. Refreshing timestamps of the actually changed candidate sources invalidated those artifacts without deleting caches or changing source seals; build 6 succeeded.
+
+## Issue #100 follow-up
+
+The shared oversized exact-CAS comparison now dispatches pack-v3 SmallContent to
+its existing bounded authenticated reader and retains legacy streaming comparison.
+A 96-KiB FULL/DELTA/legacy exact-reuse regression reproduced the old failure and
+passed after the fix. The first release-mode unit compilation failed because
+existing tests reference debug-only failure hooks; the focused debug-mode check
+then ran alone. Original logs are retained in `layerfs-issue100-evidence`.
+
+Both matched full157 histories completed 157 Created outcomes, exhaustive same-Store
+historical verification and cleanup. The initial candidate allocated 201,371,648 B
+versus released control 184,582,144 B: a regression, not accepted storage optimization.
+At the owner's request, subsequent iteration uses the [ten-snapshot baseline](issue100/ten-snapshot-baselines.md)
+with matched Git/released/current arms. Its new fixture and verification passed;
+no new storage-policy change, broad suite or additional full157 replay was run.
