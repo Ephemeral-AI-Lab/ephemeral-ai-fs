@@ -207,6 +207,7 @@ def collect_row(args, family, row, output):
         "--product-timeout", str(PRODUCT_TIMEOUT), "--timeout", str(COMMAND_TIMEOUT),
         "--setup-timeout", str(SETUP_TIMEOUT),
         "--image", args.image, "--host-binary", args.host_binary,
+        "--source-arm", getattr(args, "source_arm", "candidate"),
         "--output", str(case_dir),
     ]
     started = time.monotonic()
@@ -334,6 +335,7 @@ def verify_row(args, family, row, output, identities):
         "--source", identities["source_identity"],
         "--input", identities["input_identity"],
         "--image", args.image, "--host-binary", args.host_binary,
+        "--source-arm", getattr(args, "source_arm", "candidate"),
         "--output", str(case_dir),
         "--setup-timeout", str(SETUP_TIMEOUT),
     ]
