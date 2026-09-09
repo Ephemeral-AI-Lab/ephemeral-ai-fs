@@ -5,7 +5,7 @@ Owner-directed scope, 2026-09-10. Split into two benchmark issues:
 - [#101: historical_access](https://github.com/Ephemeral-AI-Lab/layerfs/issues/101) owns the access family and its15-second test/verification requirements.
 - [#102: full benchmark run and optimization](https://github.com/Ephemeral-AI-Lab/layerfs/issues/102) owns optional repository-history profiles, the full campaign and optimization of measured regressions.
 
-This is the agreed family plan, not an implemented registry or a completed benchmark campaign.
+The `historical_access` v2 family is implemented and qualified:11 selected tests and11 separate proofs passed the15-second complete envelope on the supported public schema9 format. See [#101 results](issue101/results.md). The broader #102 benchmark campaign remains unrun.
 
 ## Exactly two new families
 

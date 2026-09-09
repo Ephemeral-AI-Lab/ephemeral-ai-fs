@@ -113,6 +113,8 @@ release publication is authorized by these results.
 
 ## Working documents
 
+- [Historical access qualification (#101)](issue101/results.md):11 public SDK/FUSE cases and11 independent proofs, all below15seconds including preparation and cleanup; #102 owns the full campaign.
+
 - [Specification](spec.md): canonical/physical grammar, compatibility and ownership.
 - [Workflow](workflow.md): shared public paths, history and size transitions.
 - [Implementation plan](implementation_plan.md): current continuation and measurement boundaries.
