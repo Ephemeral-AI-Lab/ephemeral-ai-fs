@@ -13,6 +13,9 @@
 > teardown. It saves27.27% versus released control but has31.13% higher paired
 > median latency. The issue remains open; no release-admission PASS or release.
 
+Use the [prioritized optimization checklist and experiment ledger](issue100/optimization-checklist-and-experiment-ledger.md)
+to track next experiments, measured and rejected approaches, and remaining product qualification.
+
 Read the [bounded predecessor amendment](issue100/bounded-predecessor-amendment.md),
 [the removed-name amendment](issue100/removed-base-amendment.md),
 [compact cache](issue100/compact-candidate-amendment.md),
