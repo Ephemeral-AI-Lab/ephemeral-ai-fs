@@ -30,6 +30,15 @@ fn selected_small_candidate_reuse_late_cas_and_rollback() {
     // Cache contains only a selected FULL, so this new-path target uses kind 1.
     assert_eq!(prepared.packs[0][32], 1);
     f.publish(prepare(target.clone()));
+    let mut next_raw = changed.clone();
+    next_raw[80000] ^= 1;
+    let next = small(&next_raw);
+    let chained = prepare(next.clone());
+    assert!(chained.objects[0].delta);
+    assert_eq!(chained.packs[0][32], 2);
+    f.publish(chained);
+    assert_eq!(f.db.small_physical_base(next.id).unwrap(), Some(target.id));
+    assert_eq!(f.db.read_object_row(next.id).unwrap(), next.bytes);
     let before = f.db.physical_storage_receipt();
     f.publish(prepared);
     assert_eq!(f.db.physical_storage_receipt().since(before).diag_selected_pack_count, 0);
