@@ -39,3 +39,9 @@ and documentation checks are recorded in `release-evidence.json` when complete.
 Those checks qualify packaging and source applicability; they do not manufacture
 new performance observations. Published source archives must bind to the final
 reviewed commit, not merely a version string.
+
+## Versioned preparation checks
+
+The workspace release build, 410 native tests, formatting, warning-denying Clippy, CLI `layerfs 0.1.4`, imported-dependency audit and documentation checks passed on `176e4e83863aa743298263235974413078016495`. The archive helper's runnable check is `python3 release-notes/0.1.4/check_artifact_helper.py`; run it under the shared measurement lock. It checks candidate archives, missing-tag rejection, overwrite rejection, untracked-file exclusion and checksum corruption.
+
+A clean matching host/image pair built from `70fdd839dd68c91491524590ed034b9b516431bd` passed the small-files mounted performance and independent verification smoke. Exact identities and receipts are in [release-evidence.json](release-evidence.json) and [qualification](qualification/). One image-build invocation was refused before launch while the host build held the measurement lock; the preserved retry ran after host completion. Subsequent changes add only documentation, artifact-tool checking and evidence. These are packaging checks, not a replacement full benchmark or new speedup claim.

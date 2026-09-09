@@ -1,0 +1,19 @@
+{
+  "argv": [
+    "python3",
+    "benchmark/fs-bench-pro/shared/runner.py",
+    "--storage-smoke",
+    "small-files",
+    "--source-arm",
+    "candidate",
+    "--repetition",
+    "1",
+    "--image",
+    "sha256:7679d908d50aa7cac722d0e5fe9f3c5dd1a8e54a1cb3f1728c97a26b26200974",
+    "--host-binary",
+    "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-release-v014/target/release/fs-benchmark-pro",
+    "--output",
+    "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-v014-release-preparation/small-files"
+  ],
+  "cwd": "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-release-v014"
+}

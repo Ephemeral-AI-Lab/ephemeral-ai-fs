@@ -43,3 +43,12 @@ Independent future durability/cloud/S3 work (#52, #69, #82), and separately
 scoped FUSE/dependency follow-ups (#70, #51), remain outside this closure.
 Existing closed milestone issues remain closed. Closure signifies accepted
 scope, not a fictitious performance pass or a published release.
+
+## Issue #83 finding-by-finding disposition
+
+- R1: the old higher-compression legacy-group trial is retired. Current native pack level 3 belongs to later native-format work; it does not establish that the original experiment passed.
+- R2: the proposed exact-capacity/framing estimator is not asserted implemented merely because final storage accounting is exact.
+- R3: measured page utilization does not establish a general placement or recoverability guarantee; further layout tuning is retired.
+- R4: the original reservation redesign is not claimed complete. Later bounded ownership and its validation are accepted; protective bounds remain.
+- R5: new Stores use 4 KiB pages. Schema consolidation is not implemented.
+- R6: the general cause and bounds of allocated-size excess remain unresolved. APFS preallocation is not established as the cause; every allocated byte remains charged, and historical misses remain misses.

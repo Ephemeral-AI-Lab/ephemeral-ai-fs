@@ -1,6 +1,6 @@
 {
   "schema": "layerfs-v014-release-preparation-v1",
-  "status": "SOURCE_PREPARATION_CHECKS_PASS_RUNTIME_SMOKE_PENDING",
+  "status": "PREPARED_NOT_PUBLISHED",
   "package_version": "0.1.4",
   "measured_product_source": "c48bb4903f456136ccbcdba78de38b9042d2755a",
   "accepted_evidence_head": "36a5d9da612211cf26f2a23370e9d59afdceb8e2",
@@ -33,5 +33,37 @@
       "docs"
     ]
   },
-  "artifact_helper_fixture_check": "PASS"
+  "artifact_helper_fixture_check": "PASS",
+  "runtime_source": "70fdd839dd68c91491524590ed034b9b516431bd",
+  "runtime_host_identity": {
+    "LAYERFS_PRODUCT_SEAL": "54e119cd73f8cba7548c7ee9e76f05beba7b3889f316ddff068314f608b41f52",
+    "LAYERFS_SOURCE_COMMIT": "70fdd839dd68c91491524590ed034b9b516431bd",
+    "LAYERFS_SOURCE_DIRTY": "false",
+    "LAYERFS_SOURCE_SEAL": "01d84f9017056a5f17a21ba3d9b9abb269f24c3961fd9d70c5077c7c3a2c9166",
+    "LAYERFS_SOURCE_TREE": "fab00a6d23d8a184be914cb6050c80cfc38c36d5",
+    "WORKLOAD_SOURCE_SHA256": "86a12224417d3972c29c62c134e019a0ce8e80cf5360df5394f3537e15901127",
+    "binary_sha256": "74f0e0731eaf7e75533c512f54d2be56df2984aea0def529e830f758d445d52b",
+    "platform": "macOS-26.4.1-arm64-arm-64bit-Mach-O",
+    "rust_toolchain": "1.85.1",
+    "schema_sha256": "20dc087510af5f10540b02df4c6c1c1eb72fdd59685e70167ef843e7ce42ebf5"
+  },
+  "runtime_smoke": {
+    "status": "PASS",
+    "image": "sha256:7679d908d50aa7cac722d0e5fe9f3c5dd1a8e54a1cb3f1728c97a26b26200974",
+    "records": [
+      {
+        "name": "performance",
+        "returncode": 0,
+        "wall_ns": 4841254542
+      },
+      {
+        "name": "verification",
+        "returncode": 0,
+        "wall_ns": 3666692500
+      }
+    ]
+  },
+  "qualification_directory": "qualification",
+  "archive_status": "Helper fixture passed; actual candidate archives prepared from final committed evidence head and validated separately before PR delivery",
+  "ci_status": "Checked on preparation PR; GitHub is authoritative"
 }
