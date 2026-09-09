@@ -476,7 +476,7 @@ def main(argv=None):
             saved = json.loads((output/"identity.json").read_text())
             if saved["host_identity"]["binary_sha256"] != host_identity["binary_sha256"] or saved["image_id"] != image["Id"] or saved["fixtures"] != fixtures:
                 raise ValueError("verification custody mismatch")
-            if args.storage_smoke == "small-file-delta-10x30-v1":
+            if args.storage_smoke in ("deepseek-full", "small-file-delta-10x30-v1"):
                 measured = json.loads((output / "performance-manifest.json").read_text())
                 for case in CASES[args.storage_smoke]:
                     name = case + "/host-runtime/store.sqlite"
@@ -485,10 +485,10 @@ def main(argv=None):
             mode = "verification"
         else:
             output.mkdir(parents=True,exist_ok=False)
-            save(output/"identity.json", {"schema":"deepseek-full-m45-v1" if args.storage_smoke == "deepseek-full" else "storage-smoke-v1","smoke":args.storage_smoke,"family":"small_file_delta_smoke" if args.storage_smoke == "small-file-delta-10x30-v1" else "storage-smoke-v1","source_arm":args.source_arm,"repetition":args.repetition,
+            save(output/"identity.json", {"schema":"deepseek-full-issue100-v1" if args.storage_smoke == "deepseek-full" else "storage-smoke-v1","smoke":args.storage_smoke,"family":"small_file_delta_smoke" if args.storage_smoke == "small-file-delta-10x30-v1" else "storage-smoke-v1","source_arm":args.source_arm,"repetition":args.repetition,
                 "host_identity":host_identity,"image_id":image["Id"],"source":current,"fixtures":fixtures,
                 "contract_sha256":runtime.file_sha256(runner.REPO/("docs/roadmap/0.1/0.1.5/delta-encoding-benchmarks.md" if args.storage_smoke == "small-file-delta-10x30-v1" else CONTRACT)),"preparation_ns":preparation_ns,
-                "full_run_contract_sha256":runtime.file_sha256(runner.REPO/"docs/roadmap/0.1/0.1.4/deepseek-full-157-m45-contract.md") if args.storage_smoke == "deepseek-full" else None,
+                "full_run_contract_sha256":runtime.file_sha256(runner.REPO/"docs/roadmap/0.1/0.1.5/full157-execution-contract.md") if args.storage_smoke == "deepseek-full" else None,
                 "phase_operation_verification_limits_seconds":LIMITS[args.storage_smoke],
                 "admission_eligible":False,"cache_profile":"fresh-store-existing-os-cache-uncontrolled",
                 "resource_profile":"host phase CPU and lifetime RSS; container lifetime/boundary categories; sampled disk"})

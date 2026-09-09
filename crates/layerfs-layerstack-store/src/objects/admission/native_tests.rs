@@ -605,3 +605,38 @@ fn streaming_absence_proofs_advance_only_over_disjoint_owned_batches() {
         assert_eq!(f.db.read_object_row(object.id).unwrap(), object.bytes);
     }
 }
+
+#[test]
+fn small_content_upper_range_exact_cas_reuse() {
+    let f = Fixture::new();
+    let mut raw = random().repeat(3);
+    let small = |raw: &[u8], prior| {
+        let mut object = AuthenticatedCanonicalObject::new(
+            layerfs_content::file::content::encode_small(raw).unwrap(), None,
+        ).unwrap();
+        object.1.prior_ids[0] = prior;
+        object
+    };
+    let full = small(&raw, None);
+    f.publish(f.prepare(vec![full.clone()]));
+    raw[70000] ^= 1;
+    let delta = small(&raw, Some(full.id));
+    let prepared = f.prepare(vec![delta.clone()]);
+    assert!(prepared.objects[0].delta);
+    f.publish(prepared);
+    let legacy = AuthenticatedCanonicalObject::new(
+        layerfs_content::encode_bytes_object(&raw).unwrap(), None,
+    ).unwrap();
+    f.publish(f.prepare(vec![legacy.clone()]));
+    for object in [full, delta, legacy] {
+        let before = f.db.physical_storage_receipt();
+        f.publish(f.prepare(vec![object.clone()]));
+        assert_eq!(f.db.physical_storage_receipt().since(before).diag_selected_pack_count, 0);
+        let known = f.db.object_locations(&[object.id]).unwrap();
+        let mut changed = object.bytes.clone();
+        *changed.last_mut().unwrap() ^= 1;
+        assert!(compare(&f.db, &known, &mut vec![(object.id, &changed)],
+            &mut ObjectInsertMetrics::default(), 0).is_err());
+        assert_eq!(f.db.read_object_row(object.id).unwrap(), object.bytes);
+    }
+}

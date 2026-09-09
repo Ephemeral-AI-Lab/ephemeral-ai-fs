@@ -899,7 +899,22 @@ impl StoreDb {
         location: Location,
         canonical: &[u8],
     ) -> Result<()> {
-        let (entry, _) = self.extract_group(location.pack, location.group)?;
+        // Canonical length does not identify the physical grammar: upper-range
+        // SmallContent uses pack v3, while legacy oversized objects stream below.
+        let entry = match self.extract_record_group(
+            location.pack, location.group, location.record, true, None,
+        )? {
+            Some(Extraction::Small(record)) => {
+                let object = self.read_small(id, location, record, &mut BTreeMap::new())?;
+                return if object.bytes == canonical {
+                    Ok(())
+                } else {
+                    Err(StoreError::Integrity("object collision"))
+                };
+            }
+            Some(Extraction::Legacy(entry, _)) => entry,
+            _ => return Err(StoreError::Integrity("oversized comparison group version")),
+        };
         let range = self.singleton_range(location, &entry)?;
         if range.len() != canonical.len() {
             return Err(StoreError::Integrity("object length collision"));
