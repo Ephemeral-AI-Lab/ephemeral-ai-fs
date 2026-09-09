@@ -215,7 +215,7 @@ def main():
             require(data.get('status')=='PASS','observer custody did not complete')
             if kind=='snapshot':
                 require(pathlib.Path(data['source']).resolve()==run/'deepseek-full/host-runtime/store.sqlite','snapshot observer source arm mismatch')
-                require(data['frozen_schedule_sha256']==sha(args.schedule),'snapshot observer schedule mismatch')
+                require(data['frozen_schedule_sha256']==sha(observer_schedule_path),'snapshot observer schedule mismatch')
             else:
                 require(data.get('arm')==arm and data.get('exit_code')==0,'census observer arm/exit mismatch')
                 reference=data['snapshot_custody']; custody_path=pathlib.Path(reference['path']).resolve()
