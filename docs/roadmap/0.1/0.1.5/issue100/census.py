@@ -20,10 +20,11 @@ def sha(path):
 
 def main(run):
     start = time.monotonic_ns()
-    store = run / 'deepseek-full/host-runtime/store.sqlite'
+    case = json.loads((run / 'identity.json').read_text())['smoke']
+    store = run / case / 'host-runtime/store.sqlite'
     manifest = json.loads((run / 'performance-manifest.json').read_text())
     digest = sha(store)
-    assert digest == manifest['deepseek-full/host-runtime/store.sqlite']
+    assert digest == manifest[case + '/host-runtime/store.sqlite']
     db = sqlite3.connect(store.as_uri() + '?mode=ro&immutable=1', uri=True)
     db.execute('pragma cache_size=-8192')
     libpath = ctypes.util.find_library('zstd')

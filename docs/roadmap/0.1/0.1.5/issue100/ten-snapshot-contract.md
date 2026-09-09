@@ -27,6 +27,8 @@ and transfer stay outside public operation timers.
 
 ## Operations and verification
 
+The Python deepseek-ten case schedules ten steps through the unchanged compiled
+deepseek-full host session; its accepted step range already covers 1..10.
 Reuse storage_smoke runner, compiled importer, host build and storage-smoke Linux
 image entrypoints. Native empty Store/LayerStack Init, then ten ordinary public
 Exec/FUSE full-file snapshot imports and public Commit attempts. Preserve changed
