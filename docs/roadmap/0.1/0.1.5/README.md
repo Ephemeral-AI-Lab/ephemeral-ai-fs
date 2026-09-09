@@ -1,9 +1,9 @@
 # LayerFS v0.1.5: bounded delta storage
 
-> **Status:** Implementation-ready roadmap, reviewed 2026-09-09. Documentation
-> does not claim implementation, smoke results, or release qualification.
-> First-round execution is **one ten-file/thirty-commit FUSE smoke only**, with
-> its 31-state verification. No settings sweeps or broad test/benchmark campaigns.
+> **Status:** Implementation and fixed smoke completed, 2026-09-09. See the
+> [implementation notes](implementation-notes.md) and [matched smoke report](smoke-report.md).
+> Both arms verified all 31 retained states; the candidate exercised 10 FULL and
+> 30 DELTA SmallContent objects. This is exploratory evidence, not release qualification.
 
 The ready-to-use [implementation prompt](implementation_prompt.md) combines this
 scope, fixed settings and fast smoke-only loop.
