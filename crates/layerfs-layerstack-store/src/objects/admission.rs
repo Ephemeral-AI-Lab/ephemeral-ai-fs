@@ -7,7 +7,7 @@ use super::{
 use crate::schema::StoreDb;
 use crate::{Result, StoreError};
 use layerfs_content::ObjectId;
-use rusqlite::{limits::Limit, params_from_iter, types::Value, Transaction, TransactionBehavior};
+use rusqlite::{limits::Limit, params_from_iter, types::Value, Connection};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::ops::Range;
@@ -786,7 +786,7 @@ impl PreparedAdmission {
         self,
         db: &StoreDb,
         statement_number: &mut u64,
-        publish: impl FnOnce(&Transaction<'_>, &ObjectInsertMetrics, &mut u64) -> Result<T>,
+        publish: impl FnOnce(&Connection, &ObjectInsertMetrics, &mut u64) -> Result<T>,
     ) -> Result<(T, super::AdmissionBatchMetrics)> {
         let session = self.session.clone();
         session.resolve(self.publish_inner(db, statement_number, publish))
@@ -796,7 +796,7 @@ impl PreparedAdmission {
         mut self,
         db: &StoreDb,
         statement_number: &mut u64,
-        publish: impl FnOnce(&Transaction<'_>, &ObjectInsertMetrics, &mut u64) -> Result<T>,
+        publish: impl FnOnce(&Connection, &ObjectInsertMetrics, &mut u64) -> Result<T>,
     ) -> Result<(T, super::AdmissionBatchMetrics)> {
         if !db.same_instance(&self.session.db) {
             return Err(StoreError::Integrity("admission Store ownership"));
@@ -845,12 +845,16 @@ impl PreparedAdmission {
                 winners[object.pack].push(object);
             }
         }
+        let connection = db.writer()?;
+        let canonical_bytes = self.objects.iter().map(|object| object.length as u64).sum();
+        self.session.begin_batch(
+            &connection,
+            self.metrics.submitted_rows,
+            canonical_bytes,
+            &mut self.metrics.sql,
+        )?;
         let started = Instant::now();
-        let mut connection = db.writer()?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let begin_ns = super::elapsed_ns(started);
-        let started = Instant::now();
-        let mut diagnostic_stats = self.insert(&transaction, &winners, statement_number)?;
+        let mut diagnostic_stats = self.insert(&connection, &winners, statement_number)?;
         self.metrics.insert_ns += super::elapsed_ns(started);
         self.metrics.objects = winners.iter().map(|objects| objects.len() as u64).sum();
         self.metrics.bytes = winners
@@ -859,9 +863,14 @@ impl PreparedAdmission {
             .map(|object| object.length as u64)
             .sum();
         self.metrics.returned_ids = self.metrics.objects;
-        let result = publish(&transaction, &self.metrics, statement_number)?;
-        let started = Instant::now();
-        transaction.commit()?;
+        let result = publish(&connection, &self.metrics, statement_number)?;
+        self.session
+            .note_published_ids(winners.iter().flatten().map(|object| &object.id))?;
+        if self.final_batch || !self.session.coalesce {
+            self.session
+                .commit_pending(&connection, &mut self.metrics.sql, self.final_batch)?;
+        }
+        // Epoch tracks connection-visible object publications, not disk commits.
         self.session
             .publication_epoch
             .fetch_update(
@@ -922,15 +931,15 @@ impl PreparedAdmission {
             result,
             super::AdmissionBatchMetrics {
                 insert: self.metrics,
-                begin_ns,
-                commit_ns: super::elapsed_ns(started),
+                begin_ns: self.metrics.sql.begin_ns,
+                commit_ns: self.metrics.sql.commit_ns,
             },
         ))
     }
 
     fn insert(
         &self,
-        transaction: &Transaction<'_>,
+        transaction: &Connection,
         winners: &[Vec<&PreparedObject>],
         statement_number: &mut u64,
     ) -> Result<crate::PhysicalStorageReceipt> {

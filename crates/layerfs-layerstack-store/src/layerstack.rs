@@ -340,7 +340,7 @@ fn serial_initialize(
     u64,
     crate::objects::FinishedOutputAdmission,
 )> {
-    let mut admission = CheckedOutputAdmission::new(db)?;
+    let mut admission = CheckedOutputAdmission::new_for_initialization(db)?;
     let session = admission.session();
     let result = (|| {
         let mut output = InitializationDirectAdmissionWriter::new(&mut admission);
@@ -792,6 +792,10 @@ impl InitializationDiagnostic {
             admission.sql_batch_count,
             admission.sql_commit_ns,
         );
+        eprintln!(
+            "layerfs-initialization-diagnostic-probes-v1 nonce={} fresh_probe_ids_skipped={} probe_ids_queried={}",
+            self.nonce, admission.fresh_probe_ids_skipped, admission.probe_ids_queried,
+        );
         for producer in fast.producers {
             eprintln!(
                 "layerfs-initialization-producer-v1 nonce={} producer={} wall_ns={} blocked_ns={} tasks={} files={} bytes={} completion_offset_ns={}",
@@ -1209,7 +1213,7 @@ fn direct_initialize_frontier(
         .div_ceil(workers.max(1))
         .max(64);
     let fallback = std::sync::atomic::AtomicBool::new(false);
-    let mut admission = CheckedOutputAdmission::new(db)?;
+    let mut admission = CheckedOutputAdmission::new_for_initialization(db)?;
     let session = admission.session();
     let result = (|| {
         let pipeline_started = std::time::Instant::now();
