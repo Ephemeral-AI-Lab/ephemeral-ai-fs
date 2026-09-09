@@ -4,7 +4,7 @@ Updated: **2026-09-10**. Working branch: `codex/issue100-40mb-experiments`.
 
 This is the working index for priorities, completed approaches, results, rejected ideas and remaining qualification. Update this file after each experiment. Keep the linked raw reports and manifests immutable; add a new run when the policy changes.
 
-**Current assessment:** historical reuse is the largest opportunity. The best verified offline full157 reference is **79,790,080 B**, still **23,416,832 B / 41.54% above recorded Git**. It uses extended reconstruction bounds and an offline Git-selected content graph. A useful intermediate saving is not completion. **STRUCT-01–03 completed:** metadata representation, whole-history content dependencies, and complete-copy integration recovered **18,878,464 B** with all157 original states verified. The smaller NEXT experiments below are candidate mechanisms, not the top-level strategy.
+**Current assessment:** historical reuse is the largest opportunity. The best verified offline full157 reference is **79,790,080 B**, still **23,416,832 B / 41.54% above recorded Git**. It uses extended reconstruction bounds and an offline Git-selected content graph. A useful intermediate saving is not completion. **STRUCT-01–03 completed:** metadata representation, whole-history content dependencies, and complete-copy integration recovered **18,878,464 B** with all157 original states verified. The smaller NEXT experiments below are candidate mechanisms, not the top-level strategy. The same improved policy now measures **59,760,640B on53states versus49,332,224B Git53**, with all53 original states verified ([result](stride3-structural-results.md)).
 
 ## 1. Current scorecard — preserve the measurement boundary
 
@@ -19,6 +19,8 @@ Decimal bytes throughout. The ten-state objective is **40,000,000 B**. Full157 i
 | Prior offline copy with depth-one metadata deltas | Not run | **98,668,544** | [History-delta report](history-scaling-and-metadata-deltas.md); 157 original-oracle checks PASS |
 | Matched chronological FULL control for depth-one deltas | Not run | 108,081,152 | Same canonical objects, chronology, groups and pack membership |
 | Latest structural offline reference, extended read bounds | Not run | **79,790,080** | [Structural investigation](structural-investigations.md); full database, all157 original oracles PASS |
+
+**Separate53-state result:** the [same improved structural policy](stride3-structural-results.md) occupies **59,760,640B**, versus matched Git53 **49,332,224B**. The older public53 implementation remains100,700,160B. These are explicitly different formats, not a regression.
 
 The latest ten-state and latest full157 winners use different metadata policies. Do not infer a scaling rate by comparing those two best numbers. The same-policy compact pair, 41,648,128→107,958,272 B, remains the measured scaling comparison. Git's full157 live allocation is now 56,197,120 B with unchanged apparent sizes and pack contents; keep that later observation separate from the recorded 56,373,248 B.
 
@@ -131,7 +133,7 @@ The reverse same-path trial also loses1,486,612B. These policies are rejected. G
 
 - [x] Freeze **53 states**, original indices **1, 4, 7, …, 157**, under the [stride3 contract](stride3-snapshot-contract.md).
 - [x] Add explicit `deepseek-stride3` harness profile; prepare and independently check all53 original fixture/oracle seals and direct transitions ([fixture result](stride3-fixture-results.md)).
-- [x] Establish the public LayerFS53 foundation and separate matched Git53 baseline: **100,700,160B vs49,332,224B allocated**, both53-state proofs PASS ([comparison](stride3-comparison-results.md)). A future structural candidate still needs its own53-state run.
+- [x] Establish the public LayerFS53 foundation and separate matched Git53 baseline: **100,700,160B vs49,332,224B allocated**, both53-state proofs PASS ([comparison](stride3-comparison-results.md)). The first improved structural53-state run now passes at **59,760,640B** ([result](stride3-structural-results.md)); later policy changes still require their own run.
 - [x] Run selected-state commits directly; all53 Created and original oracles PASS. Performance+verification wall330.023s vs968.760s for the historical157-state workload, **2.94× shorter**; not an identical-workload product speedup.
 - [ ] Advance promising designs to final all157 validation. Do not relabel the existing full157 measurements as53-state results.
 
@@ -155,6 +157,10 @@ Rows are grouped by the priority domain above. Within a domain, retained approac
 | [x] | STRUCT-CONTENT-04 — all-blob whole-file reference | Records/directories50,560,752B, all75,929blobs authenticate | REFERENCE-ONLY architectural reference; new roots/indexes/framing missing, large read costs | [Content report](experiments40/structural/content/report.md) |
 | [x] | STRUCT-CONTENT-05 — bounded Git-selected small graph | Records/directories53,825,229B;5,127,863B saving | OFFLINE-KEPT reference; original reconstruction ceilings, offline base selection | [Content report](experiments40/structural/content/report.md) |
 | [x] | STRUCT-VALID-01 — compatible combined copy | **79,790,080B**,18,878,464B saving; all157original states PASS | OFFLINE-KEPT reference; still23,416,832B above Git, extended read bounds | [Complete report](structural-investigations.md) |
+| [x] | STRIDE3-META-01 — same compact D + metadata chains | **6,877,152B** metadata packs;10,542canonical objects;all54roots verified | OFFLINE-KEPT; same16edge/128KiB policy | [Metadata53](experiments40/stride3-structural/metadata/report.md) |
+| [x] | STRIDE3-CONTENT-01 — same Git-selected small graph | **43,827,707B** actual packs;59,768objects authenticate;maxdepth32 | OFFLINE-KEPT; same extended reader policy | [Content53](experiments40/stride3-structural/content/report.md) |
+| [x] | STRIDE3-CDC-01 — same lockfile similarity policy | Native packs **5,696,523→4,996,438B**,700,085B saving including worse descendants | OFFLINE-KEPT;all1,998native objects and52large-file states verified | [CDC53](experiments40/stride3-structural/cdc/report.md) |
+| [x] | STRIDE3-VALID-01 — improved structural53 complete copy | **59,760,640B**,all53 original oracles PASS; **10,428,416B /21.14% above Git53** | OFFLINE-KEPT;24,309,760B saving versus matched84,070,400B offline control | [Improved53 result](stride3-structural-results.md) |
 
 Earlier rows below retain their historical baselines and scopes; their savings are not added again to the structural result.
 

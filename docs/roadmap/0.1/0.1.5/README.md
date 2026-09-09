@@ -20,7 +20,9 @@ with all157 original states verified, using extended read bounds. Future develop
 use the [53-state stride3 track](issue100/stride3-snapshot-contract.md); full157 remains final validation.
 The [first stride3 comparison](issue100/stride3-comparison-results.md) passes at100,700,160B
 for public LayerFS versus49,332,224B for matched Git; its performance+verification phases
-take330.023s versus968.760s for the earlier157-state workload.
+take330.023s versus968.760s for the earlier157-state workload. The subsequent [improved offline stride3 format](issue100/stride3-structural-results.md)
+measures **59,760,640B** against the same49,332,224B Git53 baseline, with all53original
+states verified; this is the same structural policy as the79,790,080B full157 reference.
 
 Read the [bounded predecessor amendment](issue100/bounded-predecessor-amendment.md),
 [the removed-name amendment](issue100/removed-base-amendment.md),
