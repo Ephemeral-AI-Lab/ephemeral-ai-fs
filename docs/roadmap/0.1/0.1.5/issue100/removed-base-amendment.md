@@ -95,3 +95,26 @@ owner-approved release gate. The preceding selected-FULL candidate already
 exceeded the Commit median/sum criterion; report actual tradeoffs. Correctness,
 resource bounds and cleanup failures cannot be accepted. Allocation 45–46 MB
 would be near-target, never an exact 45-MB achievement or release-admission PASS.
+
+## Implemented ownership before first measurement
+
+The implementation reserves entry and directory vectors once, each for 4,096
+elements, and refuses growth. Its catalogue/queue accounting is actual entry
+vector capacity times `size_of<(Vec<u8>, ObjectId)>`, directory vector capacity
+times `size_of<(DirectoryStateRoot, usize)>`, plus every retained name's actual
+capacity, capped at 1 MiB. On arm64 the two fixed arrays total 393,216 bytes.
+Names are validated canonical basenames, at most 255 bytes. Sorting is in-place;
+equal name/root pairs are deduplicated and differing roots remain ambiguous.
+There is no retained pathname or payload array. The traversal queue is dropped
+before task planning consumes the catalogue, and the catalogue drops before
+producers. Existing planning waves retain the `io_bytes / 16384`, 1..128 limit,
+at most 2 MiB of the existing directory-wave allowance at its largest setting,
+plus bounded key/inode/page and journal scratch within the 4-MiB eligibility
+floor. SnapshotReader's preexisting cache retains its separate existing owner.
+
+One focused workspace test passed before measurement: direct/removed-subtree
+discovery, ambiguous/absent names, low-budget and dirty-frontier refusal, exact
+physical hint with no fabricated before inode, moved-and-edited Commit, mode,
+and historical original bytes. This does not exhaustively qualify old schemas,
+POSIX operations or failure injection; the schema-9 capability check delegates
+to the unchanged Store format predicate. No decoder or CAS comparison changed.

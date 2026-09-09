@@ -644,6 +644,11 @@ fn workspace_snapshot_from_connection(
 }
 
 impl SnapshotReader {
+    #[doc(hidden)]
+    pub fn supports_small_predecessor_candidates(&self) -> bool {
+        self.db.small_chain_format()
+    }
+
     pub fn root(&self) -> ObjectId {
         self.root
     }

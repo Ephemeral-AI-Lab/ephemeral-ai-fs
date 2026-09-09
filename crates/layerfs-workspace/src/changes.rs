@@ -594,6 +594,7 @@ impl CandidateInputs<'_> {
             generation: self.live.mutation_generation,
             spool: self.spool,
             io_bytes: io_bytes / 2,
+            planning_bytes: self.live.policy.max_final_delta_memory_bytes,
             captured: std::sync::Mutex::new(captured),
         };
         note_commit_phase(WorkspaceCommitPhase::CandidatePlan, started);
@@ -941,6 +942,7 @@ struct StableFileInputs<'a> {
     generation: u64,
     spool: &'a std::path::Path,
     io_bytes: usize,
+    planning_bytes: u64,
     captured: std::sync::Mutex<Option<crate::capture::CapturedFile>>,
     base_root: ObjectId,
     correspondence_reserved: std::sync::Arc<std::sync::atomic::AtomicU64>,
@@ -1047,6 +1049,139 @@ fn add_build_counters(
     total.spill_count = total.spill_count.saturating_add(next.spill_count);
 }
 
+// ponytail: unique removed basenames only; add similarity ranking only if measured
+// remaining FULL bytes justify it. This catalogue never owns file payloads.
+#[derive(Default)]
+struct RemovedSmallCandidates {
+    entries: Vec<(Vec<u8>, ObjectId)>,
+}
+
+impl RemovedSmallCandidates {
+    const ENTRY_LIMIT: usize = 4096;
+    const MEMORY_LIMIT: usize = 1024 * 1024;
+
+    fn find(&self, name: &[u8]) -> Option<ObjectId> {
+        let index = self.entries.partition_point(|entry| entry.0.as_slice() < name);
+        let entry = self.entries.get(index)?;
+        if entry.0 != name || self.entries.get(index + 1).is_some_and(|next| next.0 == name) {
+            return None;
+        }
+        Some(entry.1)
+    }
+
+    fn discover(inputs: &StableFileInputs<'_>, limit: usize) -> Result<Self> {
+        if inputs.planning_bytes < 4 * 1024 * 1024
+            || !inputs.reader.supports_small_predecessor_candidates()
+            || inputs.dirty.len() > 16384
+        {
+            return Ok(Self::default());
+        }
+        let mut discovery = RemovedSmallDiscovery {
+            candidates: Self { entries: Vec::with_capacity(Self::ENTRY_LIMIT) },
+            directories: Vec::with_capacity(Self::ENTRY_LIMIT),
+            name_bytes: 0,
+            entries: 0,
+            calls: 0,
+        };
+        let core = CoreReader(&inputs.reader);
+        let mut changes = 0;
+        let mut pending = Vec::with_capacity(limit);
+        for id in inputs.dirty {
+            let node = inputs.nodes.get(id).ok_or(StorageError::Integrity("frozen removal node"))?;
+            let Data::Directory(directory) = &node.data else { continue; };
+            let Some(base) = directory.base else { continue; };
+            for (name, value) in &directory.changes {
+                changes += 1;
+                if changes > 32768 { return Ok(Self::default()); }
+                if value.is_some() { continue; }
+                pending.push((base, CanonicalName::from_bytes(name)?));
+                if pending.len() == limit {
+                    if !discovery.bindings(inputs, &pending, limit)? { return Ok(Self::default()); }
+                    pending.clear();
+                }
+            }
+        }
+        if !pending.is_empty() && !discovery.bindings(inputs, &pending, limit)? {
+            return Ok(Self::default());
+        }
+        drop(pending);
+        let mut visits = 0;
+        while let Some((root, depth)) = discovery.directories.pop() {
+            visits += 1;
+            if visits > Self::ENTRY_LIMIT { return Ok(Self::default()); }
+            let mut after = None;
+            loop {
+                if !discovery.charge(0, 1) { return Ok(Self::default()); }
+                let page = directory_page_after(&core, root, after.as_ref(), limit, limit * 512,
+                    &mut NamespaceCounters::default())?;
+                if !discovery.charge(page.entries.len(), 0)
+                    || !discovery.records(inputs, &page.entries, depth, limit)? {
+                    return Ok(Self::default());
+                }
+                after = page.continuation;
+                if after.is_none() { break; }
+            }
+        }
+        discovery.candidates.entries.sort_unstable();
+        discovery.candidates.entries.dedup();
+        Ok(discovery.candidates)
+    }
+}
+
+struct RemovedSmallDiscovery {
+    candidates: RemovedSmallCandidates,
+    directories: Vec<(DirectoryStateRoot, usize)>,
+    name_bytes: usize,
+    entries: usize,
+    calls: usize,
+}
+
+impl RemovedSmallDiscovery {
+    fn charge(&mut self, entries: usize, calls: usize) -> bool {
+        self.entries += entries;
+        self.calls += calls;
+        self.entries <= RemovedSmallCandidates::ENTRY_LIMIT && self.calls <= 8192
+    }
+
+    fn bindings(&mut self, inputs: &StableFileInputs<'_>, keys: &[(DirectoryStateRoot, CanonicalName)], limit: usize) -> Result<bool> {
+        if !self.charge(keys.len(), 1) { return Ok(false); }
+        let found = layerfs_content::tree::directory::directory_lookup_many(
+            &CoreReader(&inputs.reader), keys, &mut NamespaceCounters::default())?;
+        let records: Vec<_> = keys.iter().zip(found)
+            .filter_map(|((_, name), inode)| inode.map(|id| (name.clone(), id))).collect();
+        self.records(inputs, &records, 0, limit)
+    }
+
+    fn records(&mut self, inputs: &StableFileInputs<'_>, names: &[(CanonicalName, InodeId)], depth: usize, limit: usize) -> Result<bool> {
+        if names.is_empty() { return Ok(true); }
+        if !self.charge(0, 1) { return Ok(false); }
+        let ids: Vec<_> = names.iter().map(|(_, id)| *id).collect();
+        let records = FrontierInodes::base_records(&CoreReader(&inputs.reader), inputs.base_inodes, &ids, limit)?;
+        for ((name, _), record) in names.iter().zip(records) {
+            match record.kind {
+                InodeKind::RegularFile => {
+                    let fixed = self.candidates.entries.capacity() * std::mem::size_of::<(Vec<u8>, ObjectId)>()
+                        + self.directories.capacity() * std::mem::size_of::<(DirectoryStateRoot, usize)>();
+                    if self.candidates.entries.len() == self.candidates.entries.capacity()
+                        || fixed + self.name_bytes + name.as_bytes().len() > RemovedSmallCandidates::MEMORY_LIMIT {
+                        return Ok(false);
+                    }
+                    let name = name.as_bytes().to_vec();
+                    self.name_bytes += name.capacity();
+                    if fixed + self.name_bytes > RemovedSmallCandidates::MEMORY_LIMIT { return Ok(false); }
+                    self.candidates.entries.push((name, record.content_root));
+                }
+                InodeKind::Directory => {
+                    if depth == 64 || self.directories.len() == self.directories.capacity() { return Ok(false); }
+                    self.directories.push((DirectoryStateRoot(record.content_root), depth + 1));
+                }
+                _ => {}
+            }
+        }
+        Ok(true)
+    }
+}
+
 impl StableFileInputs<'_> {
     fn prepare(&self) -> Result<FileTaskPlan> {
         let mut writer = BufWriter::with_capacity(self.io_bytes, anonymous_journal(self.spool)?);
@@ -1055,6 +1190,7 @@ impl StableFileInputs<'_> {
         // One 8-KiB canonical directory page per lookup plus decoded/request
         // ownership; callbacks discard each decoded node before the next one.
         let limit = (self.io_bytes / (16 * 1024)).clamp(1, 128);
+        let removed = RemovedSmallCandidates::discover(self, limit)?;
         let mut page = Vec::with_capacity(limit);
         for &id in self.dirty {
             let node = self
@@ -1069,12 +1205,12 @@ impl StableFileInputs<'_> {
                 .checked_add(1)
                 .ok_or(StorageError::Integrity("file task count"))?;
             if page.len() == limit {
-                has_predecessor |= self.prepare_page(&page, &mut writer)?;
+                has_predecessor |= self.prepare_page(&page, &removed, &mut writer)?;
                 page.clear();
             }
         }
         if !page.is_empty() {
-            has_predecessor |= self.prepare_page(&page, &mut writer)?;
+            has_predecessor |= self.prepare_page(&page, &removed, &mut writer)?;
         }
         writer.flush()?;
         Ok(FileTaskPlan {
@@ -1085,7 +1221,7 @@ impl StableFileInputs<'_> {
         })
     }
 
-    fn prepare_page(&self, page: &[NodeId], writer: &mut impl Write) -> Result<bool> {
+    fn prepare_page(&self, page: &[NodeId], removed: &RemovedSmallCandidates, writer: &mut impl Write) -> Result<bool> {
         let core = CoreReader(&self.reader);
         let mut before = vec![None; page.len()];
         let known: Vec<_> = page
@@ -1191,9 +1327,18 @@ impl StableFileInputs<'_> {
         for (slot, id) in page.iter().enumerate() {
             let mut encoded = [0; FILE_TASK_BYTES as usize];
             encoded[..8].copy_from_slice(&id.0.to_le_bytes());
-            if let Some(record) = prior[slot].filter(|record| record.kind == InodeKind::RegularFile)
-            {
-                encoded[32..64].copy_from_slice(record.content_root.as_bytes());
+            let base = prior[slot].filter(|record| record.kind == InodeKind::RegularFile)
+                .map(|record| record.content_root)
+                .or_else(|| {
+                    let node = &self.nodes[id];
+                    let size = node.attr(*id).size;
+                    if before[slot].is_some() || size == 0 || size >= content::SMALL_LIMIT as u64 {
+                        return None;
+                    }
+                    removed.find(node.paths.first()?.rsplit('/').next()?.as_bytes())
+                });
+            if let Some(base) = base {
+                encoded[32..64].copy_from_slice(base.as_bytes());
                 has_predecessor = true;
             }
             if let Some(record) = before[slot] {
@@ -2565,6 +2710,80 @@ mod tests {
     }
 
     #[test]
+    fn removed_small_candidates_preserve_identity_history_and_bounds() {
+        for remove_parent in [false, true] {
+            let (root, mut workspace) = empty_workspace("removed-small");
+            let old_dir = workspace.mkdir(ROOT, b"old", 0o750).unwrap().node;
+            let old_file = workspace.create_file(old_dir, b"payload", 0o640).unwrap().node;
+            let data: Vec<_> = (0..8192_u32).flat_map(u32::to_le_bytes).collect();
+            workspace.write(old_file, 0, &data).unwrap();
+            let left = workspace.mkdir(ROOT, b"left", 0o700).unwrap().node;
+            let right = workspace.mkdir(ROOT, b"right", 0o700).unwrap().node;
+            for (dir, bytes) in [(left, b"left".as_slice()), (right, b"right".as_slice())] {
+                let file = workspace.create_file(dir, b"ambiguous", 0o600).unwrap().node;
+                workspace.write(file, 0, bytes).unwrap();
+            }
+            workspace.commit().unwrap();
+            let old = workspace.reader.clone();
+            let old_root = workspace.base_root;
+            let path = CanonicalPath::new("old/payload").unwrap();
+            let content_root = filesystem::resolve(&CoreReader(&old), old_root, &path,
+                &mut LogicalCounters::default()).unwrap().record.content_root;
+            workspace.unlink(old_dir, b"payload", false).unwrap();
+            if remove_parent { workspace.unlink(ROOT, b"old", true).unwrap(); }
+            workspace.unlink(left, b"ambiguous", false).unwrap();
+            workspace.unlink(right, b"ambiguous", false).unwrap();
+            let new_dir = workspace.mkdir(ROOT, b"new", 0o750).unwrap().node;
+            let new_file = workspace.create_file(new_dir, b"payload", 0o600).unwrap().node;
+            let mut changed = data.clone();
+            changed[100..104].copy_from_slice(b"edit");
+            workspace.write(new_file, 0, &changed).unwrap();
+            {
+                let mut inputs = StableFileInputs {
+                    nodes: &workspace.live.nodes, dirty: &workspace.live.dirty,
+                    reader: workspace.reader.clone(), base_inodes: workspace.base_inodes,
+                    generation: workspace.live.mutation_generation, spool: &workspace.spool,
+                    io_bytes: 32768, planning_bytes: 8 * 1024 * 1024,
+                    captured: std::sync::Mutex::new(None), base_root: workspace.base_root,
+                    correspondence_reserved: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                };
+                let candidates = RemovedSmallCandidates::discover(&inputs, 2).unwrap();
+                assert_eq!(candidates.find(b"payload"), Some(content_root));
+                assert_eq!(candidates.find(b"ambiguous"), None);
+                assert_eq!(candidates.find(b"absent"), None);
+                let plan = inputs.prepare().unwrap();
+                assert!(plan.has_predecessor);
+                assert_eq!(plan.count, 1);
+                let mut slot = [0; FILE_TASK_BYTES as usize];
+                plan.file.read_exact_at(&mut slot, 0).unwrap();
+                assert_eq!(&slot[32..64], content_root.as_bytes());
+                assert_eq!(&slot[64..68], &[0; 4], "compression hint must not become before inode");
+                inputs.planning_bytes = 1024;
+                assert!(RemovedSmallCandidates::discover(&inputs, 2).unwrap().entries.is_empty());
+                inputs.planning_bytes = 8 * 1024 * 1024;
+                let too_many: BTreeSet<_> = (0..16385).map(NodeId).collect();
+                inputs.dirty = &too_many;
+                assert!(RemovedSmallCandidates::discover(&inputs, 2).unwrap().entries.is_empty());
+            }
+            workspace.commit().unwrap();
+            assert_eq!(workspace.read(new_file, 0, changed.len()).unwrap(), changed);
+            assert_eq!(workspace.live.nodes[&new_file].mode, 0o600);
+            let mut retained = Vec::new();
+            filesystem::stream(&CoreReader(&old), old_root, &path, &mut retained).unwrap();
+            assert_eq!(retained, data);
+            drop(old);
+            drop(workspace);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+        let mut discovery = RemovedSmallDiscovery {
+            candidates: Default::default(), directories: Vec::new(), name_bytes: 0,
+            entries: 4096, calls: 8191,
+        };
+        assert!(discovery.charge(0, 1));
+        assert!(!discovery.charge(1, 0));
+    }
+
+    #[test]
     fn detached_changed_inputs_preserve_cut_without_a_live_workspace() {
         let (root, mut workspace) = empty_workspace("detached-changes");
         let file = workspace.create_file(ROOT, b"file", 0o640).unwrap().node;
@@ -2881,6 +3100,7 @@ mod tests {
             generation: workspace.live.mutation_generation,
             spool: &workspace.spool,
             io_bytes: 1024,
+            planning_bytes: workspace.live.policy.max_final_delta_memory_bytes,
             captured: std::sync::Mutex::new(None),
         };
         let plan = inputs.prepare().unwrap();
