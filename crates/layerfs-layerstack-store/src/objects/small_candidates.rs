@@ -14,7 +14,7 @@ struct Entry {
     signature: [u64; 8],
 }
 
-pub(super) struct Candidates {
+pub(crate) struct Candidates {
     slots: Box<[Option<Entry>]>,
     references: Box<[u16]>,
     next: usize,

@@ -107,3 +107,65 @@ fn selected_small_candidate_compact_references_and_eviction() {
     candidates.insert(ObjectId::for_bytes(b"collision"), pair(1026 + 8192));
     assert_eq!(candidates.find(target, &pair(1026)), None);
 }
+
+#[test]
+fn selected_small_candidate_retained_handoff_rollback_and_cold_reopen() {
+    let folder = Fixture::new();
+    let path = folder.folder.join("retained.sqlite");
+    let db = StoreDb::create(&path).unwrap();
+    let raw = random().repeat(3);
+    let base = small(&raw);
+    let mut changed = raw.clone();
+    changed[70000] ^= 1;
+    let target = small(&changed);
+    let private = small(&raw.iter().map(|byte| !byte).collect::<Vec<_>>());
+    {
+        let prepare = |object| {
+            let mut owner = CheckedOutputAdmission::new(&db).unwrap();
+            owner.admit_page(vec![object]).unwrap();
+            PreparedAdmission::prepare_missing(&db, owner.finish().unwrap().final_batch).unwrap()
+        };
+        let publish = |prepared: PreparedAdmission| {
+            prepared.publish(&db, &mut 0, |_, _, _| Ok(())).unwrap();
+        };
+        let mut initial = prepare(base.clone());
+        let session = initial.session.clone();
+        initial.final_batch = false;
+        publish(initial);
+        session.retain();
+        drop(session);
+        let next = prepare(target.clone());
+        assert!(next.objects[0].delta);
+        assert_eq!(next.packs[0][32], 1);
+        publish(next);
+        assert_eq!(db.small_physical_base(target.id).unwrap(), Some(base.id));
+        assert_eq!(db.read_object_row(target.id).unwrap(), target.bytes);
+
+        let mut pending = prepare(private.clone());
+        assert!(!pending.objects[0].delta);
+        let session = pending.session.clone();
+        pending.final_batch = false;
+        publish(pending);
+        session.rollback().unwrap();
+        drop(session);
+        assert!(db.take_small_candidates().is_none());
+        assert!(db.object_locations(&[private.id]).unwrap().is_empty());
+        assert_eq!(db.read_object_row(base.id).unwrap(), base.bytes);
+        assert_eq!(db.read_object_row(target.id).unwrap(), target.bytes);
+
+        let mut retained = prepare(private.clone());
+        let session = retained.session.clone();
+        retained.final_batch = false;
+        publish(retained);
+        session.retain();
+        drop(session);
+    }
+    let cache = db.take_small_candidates().expect("retained cache is warm");
+    db.return_small_candidates(cache);
+    drop(db);
+    let reopened = StoreDb::connect(&path).unwrap();
+    assert!(reopened.take_small_candidates().is_none());
+    assert_eq!(reopened.read_object_row(target.id).unwrap(), target.bytes);
+    assert_eq!(reopened.read_object_row(private.id).unwrap(), private.bytes);
+    drop(reopened);
+}

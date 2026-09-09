@@ -6,7 +6,7 @@ mod diagnostic;
 pub(crate) use admission::PreparedAdmission;
 mod pack;
 mod read;
-mod small_candidates;
+pub(crate) mod small_candidates;
 mod spill;
 #[cfg(test)]
 use spill::SeenStorage;
@@ -2003,7 +2003,9 @@ impl AdmissionSession {
             db: db.clone(),
             baseline_pack,
             fresh_ids,
-            small_candidates: db.small_chain_format().then(|| Mutex::new(small_candidates::Candidates::new())),
+            small_candidates: if db.small_chain_format() {
+                Some(Mutex::new(db.take_small_candidates().unwrap_or_else(small_candidates::Candidates::new)))
+            } else { None },
             coalesce,
             cohort: Mutex::new(AdmissionCohort::default()),
             publication_epoch: AtomicU64::new(0),
@@ -2199,6 +2201,13 @@ impl Drop for AdmissionSession {
         if let Err(error) = self.rollback() {
             self.db.quarantine_writes();
             eprintln!("LayerFS admission cleanup failed: {error}");
+        }
+        // The writer permit still belongs to this session. Move, never clone,
+        // only retained hints; rollback discards inherited and private entries.
+        if self.state.load(std::sync::atomic::Ordering::Acquire) == 1 {
+            if let Some(candidates) = self.small_candidates.take().and_then(|cache| cache.into_inner().ok()) {
+                self.db.return_small_candidates(candidates);
+            }
         }
     }
 }

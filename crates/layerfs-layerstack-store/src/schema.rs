@@ -74,6 +74,7 @@ struct StoreInner {
     connection: Mutex<Connection>,
     gate: Arc<TicketGate>,
     leases: Mutex<BTreeSet<BranchId>>,
+    idle_small_candidates: Mutex<Option<crate::objects::small_candidates::Candidates>>,
     path: PathBuf,
 }
 
@@ -242,6 +243,7 @@ impl StoreDb {
             connection: Mutex::new(connection),
             gate: Arc::new(TicketGate::default()),
             leases: Mutex::new(BTreeSet::new()),
+            idle_small_candidates: Mutex::new(None),
             path,
         }));
         if let Some(created) = &mut created {
@@ -252,6 +254,25 @@ impl StoreDb {
 
     pub(crate) fn note_physical(&self, receipt: crate::PhysicalStorageReceipt) {
         self.0.physical.note(receipt);
+    }
+
+    // Called under the existing admission writer permit. Poisoned optional hints
+    // are discarded; they are never an authentication or membership authority.
+    pub(crate) fn take_small_candidates(&self) -> Option<crate::objects::small_candidates::Candidates> {
+        match self.0.idle_small_candidates.lock() {
+            Ok(mut idle) => idle.take(),
+            Err(poisoned) => {
+                drop(poisoned.into_inner().take());
+                None
+            }
+        }
+    }
+
+    pub(crate) fn return_small_candidates(&self, candidates: crate::objects::small_candidates::Candidates) {
+        if let Ok(mut idle) = self.0.idle_small_candidates.lock() {
+            debug_assert!(idle.is_none());
+            if idle.is_none() { *idle = Some(candidates); }
+        }
     }
 
     pub(crate) fn physical_storage_receipt(&self) -> crate::PhysicalStorageReceipt {
