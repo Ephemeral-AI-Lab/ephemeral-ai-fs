@@ -41,6 +41,8 @@ const CANDIDATE_MEMORY_BYTES: usize = 8 * 1024 * 1024;
 const CANDIDATE_INDEX_BYTES: usize = 64 * 1024 * 1024;
 const FRESH_ADMISSION_FILTER_BYTES: usize = 4 * 1024 * 1024;
 const COMPARISON_REUSE_BYTES: usize = 2 * 1024 * 1024;
+// Covers a whole B-tree node even when it contains only one retained entry.
+const COMPARISON_REUSE_ENTRY_BYTES: usize = 2048;
 // C: cumulative metadata-lookup allowance, not resident memory. The frozen
 // full157 bound is 3763 attached flat-root cursors * 2 grants * 131136 bytes.
 const CORRESPONDENCE_OPERATION_RESERVATION_BYTES: u64 = 1024 * 1024 * 1024;
@@ -3572,12 +3574,14 @@ impl CheckedOutputAdmission {
             return;
         }
         // Charge payload capacity and conservative B-tree node/index ownership.
-        let charge = bytes.capacity().saturating_add(512);
+        let charge = bytes
+            .capacity()
+            .saturating_add(COMPARISON_REUSE_ENTRY_BYTES);
         if charge > self.compared_limit {
             return;
         }
         if let Some((_, previous)) = self.compared.remove(&id) {
-            self.compared_bytes -= previous.capacity() + 512;
+            self.compared_bytes -= previous.capacity() + COMPARISON_REUSE_ENTRY_BYTES;
         }
         if self.compared_bytes + charge > self.compared_limit {
             // ponytail: clear on saturation; use incremental eviction only if measured thrashing warrants it.

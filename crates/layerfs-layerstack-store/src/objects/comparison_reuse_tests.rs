@@ -182,7 +182,7 @@ fn comparison_reuse_bounds_resident_operands_and_eviction_keeps_exact_checks() {
             owner
                 .compared
                 .values()
-                .map(|(_, bytes)| bytes.capacity() + 512)
+                .map(|(_, bytes)| bytes.capacity() + COMPARISON_REUSE_ENTRY_BYTES)
                 .sum::<usize>()
         );
         saw_eviction |= !owner.compared.contains_key(&first.id);
@@ -201,6 +201,45 @@ fn comparison_reuse_bounds_resident_operands_and_eviction_keeps_exact_checks() {
             > 0
     );
     assert_eq!(owner.compared[&first.id].1, first.bytes);
+    owner.abort().unwrap();
+}
+
+#[test]
+fn comparison_reuse_single_operand_boundary_reserves_a_complete_tree_node() {
+    let fixture = Fixture::new();
+    let mut owner = CheckedOutputAdmission::new_for_initialization(&fixture.db).unwrap();
+    let payload_limit = COMPARISON_REUSE_BYTES - COMPARISON_REUSE_ENTRY_BYTES;
+    let first = ObjectId::for_bytes(b"comparison allocation boundary");
+    let second = ObjectId::for_bytes(b"comparison allocation overflow");
+    let location = read::Location {
+        canonical_length: payload_limit,
+        pack: 1,
+        group: 0,
+        record: 0,
+    };
+    // This private seam tests allocation accounting, not canonical admission.
+    let bytes = vec![0; payload_limit];
+    assert_eq!(bytes.capacity(), payload_limit);
+    owner.remember_comparison(first, location, bytes);
+    assert_eq!(owner.compared.len(), 1);
+    assert_eq!(owner.compared_bytes, COMPARISON_REUSE_BYTES);
+
+    owner.remember_comparison(second, location, vec![0; payload_limit + 1]);
+    assert_eq!(owner.compared.len(), 1);
+    assert!(owner.compared.contains_key(&first));
+    assert_eq!(owner.compared_bytes, COMPARISON_REUSE_BYTES);
+
+    // Spare Vec capacity is owned memory even when its logical length is tiny.
+    let mut spare_capacity = Vec::with_capacity(payload_limit + 1);
+    spare_capacity.push(0);
+    owner.remember_comparison(second, location, spare_capacity);
+    assert!(!owner.compared.contains_key(&second));
+    assert_eq!(owner.compared_bytes, COMPARISON_REUSE_BYTES);
+
+    owner.remember_comparison(second, location, vec![0]);
+    assert_eq!(owner.compared.len(), 1);
+    assert!(!owner.compared.contains_key(&first));
+    assert_eq!(owner.compared_bytes, COMPARISON_REUSE_ENTRY_BYTES + 1);
     owner.abort().unwrap();
 }
 
