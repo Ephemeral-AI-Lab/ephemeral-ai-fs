@@ -11,7 +11,7 @@
 - Current elapsed classifications: **49 SEVERE, 95 REVIEW, 31 OBSERVED_INCREASE, 19 NO_INCREASE, 4 INELIGIBLE**. Three absolute latency targets remain missed.
 - The unmodified comparison report remains **INCOMPLETE** for four Git fixtures whose historical identity incorporates the image. Execution success is not a performance-threshold pass. Owner acceptance does not reclassify historical outcomes.
 
-Each performance case has one sample. Family sums below are descriptive sums of case timers, not campaign wall time, throughput, paired estimates or latency distributions. Families can contain different operation timers. Historical family comparisons are shown only when every case is eligible. CPU/RSS scopes and full identities remain in the unchanged CSVs.
+Each performance case has one sample. Family sums below are descriptive sums of case timers, not campaign wall time, throughput, paired estimates or latency distributions. Families can contain different operation timers. Historical family comparisons are shown only when every case is eligible. CPU/RSS scopes and full identities remain in the CSV copies (values unchanged; line endings normalized to LF).
 
 ## Each family
 
@@ -367,8 +367,8 @@ Full157 case wall observations were **481.976 s performance / 613.815 s verifica
 
 ## Source data and identities
 
-- [Unchanged per-case performance CSV](benchmark-performance.csv), including CPU/RSS, their scopes, target status, raw evidence paths and identities.
-- [Unchanged per-case verification CSV](benchmark-verification.csv), including coverage, omissions and preparation status.
+- [Per-case performance CSV](benchmark-performance.csv), including CPU/RSS, their scopes, target status, raw evidence paths and identities.
+- [Per-case verification CSV](benchmark-verification.csv), including coverage, omissions and preparation status.
 - [Complete issue #98 report and lossless evidence](../../docs/roadmap/0.1/0.1.4/issue98/README.md).
 - Qualified source: `9cfb4be477116646258ea0621280ed13b1824c6d`.
 - Host benchmark SHA-256: `47b4d44e3e961f3b6a57d2c18dc6d195973133dbdfb87681a55f1b8e07abe3a2`.
