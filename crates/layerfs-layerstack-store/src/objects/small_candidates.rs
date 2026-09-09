@@ -1,4 +1,4 @@
-//! Session-local, content-keyed hints. Only selected FULL winners enter this cache.
+//! Session-local, content-keyed hints. Only selected SmallContent winners enter this cache.
 use layerfs_content::ObjectId;
 
 pub(super) const INDEX_BYTES: usize = 128 * 1024;
