@@ -1,4 +1,4 @@
-//! Session-local, content-keyed hints. Only selected SmallContent winners enter this cache.
+//! Bounded hints transferred only from retained admissions; selected SmallContent winners only.
 use layerfs_content::ObjectId;
 
 pub(super) const INDEX_BYTES: usize = 128 * 1024;

@@ -124,7 +124,10 @@ fn selected_small_candidate_retained_handoff_rollback_and_cold_reopen() {
     let db = StoreDb::create(&path).unwrap();
     let raw = random().repeat(3);
     let base = small(&raw);
-    let mut changed = raw.clone();
+    let mut middle_raw = raw.clone();
+    middle_raw[60000] ^= 1;
+    let middle = small(&middle_raw);
+    let mut changed = middle_raw;
     changed[70000] ^= 1;
     let target = small(&changed);
     let private = small(&raw.iter().map(|byte| !byte).collect::<Vec<_>>());
@@ -141,13 +144,17 @@ fn selected_small_candidate_retained_handoff_rollback_and_cold_reopen() {
         let session = initial.session.clone();
         initial.final_batch = false;
         publish(initial);
+        let intermediate = PreparedAdmission::prepare_missing(&db,
+            crate::objects::MissingBatch(vec![middle.clone()], session.clone(), false, None)).unwrap();
+        assert!(intermediate.objects[0].delta);
+        publish(intermediate);
         session.retain();
         drop(session);
         let next = prepare(target.clone());
         assert!(next.objects[0].delta);
-        assert_eq!(next.packs[0][32], 1);
+        assert_eq!(next.packs[0][32], 2);
         publish(next);
-        assert_eq!(db.small_physical_base(target.id).unwrap(), Some(base.id));
+        assert_eq!(db.small_physical_base(target.id).unwrap(), Some(middle.id));
         assert_eq!(db.read_object_row(target.id).unwrap(), target.bytes);
 
         let mut pending = prepare(private.clone());
