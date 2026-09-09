@@ -1,160 +1,115 @@
-# LayerFS 0.1.5
+# LayerFS v0.1.5: bounded delta storage
 
-> **Status:** Draft benchmark-completion release; no issues, harness, scenario
-> IDs, or release candidate are admitted yet.
->
-> **Compatibility:** Preserve the released 0.1.x contract and every previously
-> registered benchmark row.
+> **Status:** Implementation-ready roadmap, reviewed 2026-09-09. Documentation
+> does not claim implementation, smoke results, or release qualification.
+> First-round execution is **one ten-file/thirty-commit FUSE smoke only**, with
+> its 31-state verification. No settings sweeps or broad test/benchmark campaigns.
 
-> **Sequencing update (2026-09-08):** This is the multi-history plan previously
-> drafted for v0.1.4. [v0.1.4](../0.1.4/README.md) now focuses on storage
-> efficiency. This move admits no new scenarios and changes no historical evidence.
+The ready-to-use [implementation prompt](implementation_prompt.md) combines this
+scope, fixed settings and fast smoke-only loop.
 
-## Problem statement
+## What to implement
 
-The v0.1.3 matrix covers filesystem workloads and bounded retained-history
-storage growth on one Branch. v0.1.5 extends that evidence to multiple Layers
-and Branches, broader history queries, diffs, conflicts, and publication. LayerFS claims that
-Fork is zero-copy, history is immutable, and new states are incremental
-physically; those claims need one bounded multi-history benchmark matrix before
-1.0.0.
+New or changed nonempty file content below **131,072 bytes** becomes one
+whole-file canonical CAS payload, physically stored as FULL or a one-level DELTA
+against a FULL small-content object. Exactly 128 KiB and larger files retain the
+existing CDC/extent representation and known-range edit locality. Empty files
+retain their existing compact representation. Unchanged old objects and histories
+are not rewritten to adopt the new policy.
 
-## Goal
+Namespace Init and workspace Commit use the same content construction, admission,
+packing, dependency, and publication machinery. Init discovers source files;
+Commit captures live FUSE/SDK state and supplies predecessor/dirty-frontier facts.
+Those input adapters remain distinct; no duplicated storage pipeline is added.
 
-Create and run LayerFS-only benchmarks for multi-Layer and multi-Branch Commit
-history, Fork, Add, Diff, paged Query, conflict, resolution, head movement,
-historical reads, reopen, and storage reuse. Optimize each independent measured
-bottleneck while preserving the scenario meanings frozen in v0.1.0-v0.1.3.
+CAS identifies complete canonical content, independently of FULL/DELTA storage.
+Small-file length-changing edits may assemble/hash the complete bounded target;
+large-file known edits must not scan untouched content. Keep live POSIX semantics,
+trusted ownership, batching, rollback, and publication behavior intact.
 
-## Files to read
+## Read in this order
 
-- [0.1.x roadmap](../README.md)
-- [Append-only benchmark contract](../benchmarking.md)
-- [v0.1.3 completed Workspace and single-Branch checkpoint](../0.1.3/README.md)
-- [Public operation families](../../../../crates/layerfs-monitor/src/operation.rs)
-- [Public SDK client](../../../../crates/layerfs-sdk/src/client.rs)
-- [LayerStack Store lifecycle](../../../../crates/layerfs-layerstack-store/src/layerstack.rs)
-- [Workspace reconciliation](../../../../crates/layerfs-workspace/src/reconcile.rs)
-- [`fs-bench-pro` harness](../../../../benchmark/fs-bench-pro/src/main.rs)
-- [Store and Branch evaluator](../../../../tools/layerfs-eval/src/main.rs)
+1. [Workflow](workflow.md): user-facing architecture and ASCII workflows, including
+   live workspace state, shared Init/Commit, history, and size transitions.
+2. [Specification](spec.md): fixed representation, encoding, schema/compatibility,
+   ownership, transitions, and completion contract. This is the technical authority.
+3. [Implementation plan](implementation_plan.md): concrete file responsibilities,
+   order of work, fast builds, and smoke-only verification.
+4. [Delta-encoding benchmarks](delta-encoding-benchmarks.md): the fixed first-round
+   smoke and explicitly deferred broader qualification.
+5. [Past mistakes](past_mistake.md) and [benchmark success](benchmark_success.md):
+   source-bound performance pitfalls and existing-family contracts.
 
-## Inherited single-Branch coverage
+[Hybrid mental model](hybrid_mental_model.md) is the compact conceptual companion.
+[Existing architecture](existing_architecture.md) describes the released/historical
+baseline; [v0.1.4 benchmark report](benchmark-v0.1.4-report.md) records its results
+and later optimization backlog. Neither is a command to run a broad campaign now.
 
-Reuse the v0.1.3 [single-Branch history family](../0.1.3/dedup-branch-history.md)
-and [testing rules](../0.1.3/testing-rules.md). Do not recreate its localized,
-hot-set, recurring-content, metadata-only, or unique-rewrite storage trajectories
-under new identities. The families below add multi-Branch/multi-Layer semantics
-or query/scaling questions absent from that inherited storage family.
+The earlier chunk-member FILE_DELTA proposal has been replaced, including its
+multiple-member directory, base-part descriptor, and all-size extent-only policy.
+It is not an alternative implementation route.
 
-## Scale profiles
+## Fixed settings and scope
 
-Start with geometric profiles rather than a Cartesian matrix:
+- Small-file boundary: **128 KiB**, strictly below is small.
+- Existing CDC: **8 KiB minimum / 16 KiB target / 32 KiB maximum**.
+- SQLite: **4 KiB pages** for new Stores; preserve supported existing 64-KiB layouts.
+- Codec/depth/buffer parameters: fixed in the spec; no parameter search.
+- Use existing Zstandard, Store, ownership, transport, and runner facilities.
+- No global similarity index, delta chains for new small objects, background GC,
+  repacker, new storage service, or dependency hunt.
+- Multi-Branch/multi-Workspace scope remains [v0.1.6](../0.1.6/README.md).
 
-```text
-Commit-history depth: 1, 10, 100
-Branch fan-out:       1, 10, 100
-```
+Implement the complete v0.1.5 scope, including readers, transitions, compatibility,
+base lifetime, failure handling and documentation. A small verification campaign
+does not authorize omitting these production requirements.
 
-The 1,000-Commit or 1,000-Branch case is an extended diagnostic only when a
-smaller profile identifies a scaling question that it can answer. Do not run
-every history depth against every Branch count, namespace size, and payload
-size.
+## Baseline and repairs to preserve
 
-Use one fixed content fixture and a deterministic edit schedule with separate
-independent, identical, disjoint, and overlapping changes. Fixture construction
-stays outside measured operation boundaries.
+Start from released **v0.1.4**, commit
+`101fa273d815f3aaedb0e06ba0de7b0777d83def`, qualified product
+`9cfb4be477116646258ea0621280ed13b1824c6d`. Preserve other tasks' work and use an
+isolated checkout when necessary; do not overwrite this older main checkout with
+release files piecemeal.
 
-## Draft benchmark families
+Retain #95 Init's bounded authenticated comparison reuse, #98 Workspace SQL
+coalescing and staging handoff, and the 64-KiB ordered spill read-ahead cap. These
+are released optimizations, not gains attributable to v0.1.5.
 
-Exact scenario IDs, fixtures, edit schedules, and sample counts are frozen only
-when the parent benchmark issue is admitted.
+The release's [benchmark closeout](https://github.com/Ephemeral-AI-Lab/layerfs/blob/101fa273d815f3aaedb0e06ba0de7b0777d83def/release-notes/0.1.4/benchmark-closeout.md)
+records remaining regressions and ineligible comparisons. Do not infer universal
+speed gains from release acceptance or omit those limitations in future claims.
 
-| Family | Required cases | Question |
-| --- | --- | --- |
-| Commit history | depths 1, 10, 100 | Do Commit, reopen, head lookup, and historical reads remain bounded as history grows? |
-| Historical reads | early, middle, latest | Do later publications leave every retained state byte-exact and directly readable? |
-| Fork source | genesis Layer, later Layer, eligible Commit | Does Fork remain zero-copy and independent of represented payload size? |
-| Branch fan-out | 1, 10, 100 Branches | What are latency, memory, and physical storage costs per empty and changed Branch? |
-| Branch edits | independent, identical, disjoint, overlapping | Are reuse, isolation, and conflict results exact? |
-| Add | `Added`, `UpToDate`, `NoChanges`, `HeadMoved` | Are the distinct publication outcomes correct and separately measurable? |
-| LayerStack Diff | adjacent and distant Layers, empty Diff | Does cost follow changed results rather than complete represented state? |
-| Branch Diff | adjacent and distant Commits, Branch versus Layer | Are paged results exact and bounded? |
-| Query history | first page and continuation | Does pagination remain stable across growing Layers, Branches, and Commits? |
-| Conflict lifecycle | enumerate, paginate if needed, resolve, Commit | Are competing changes explicit, bounded, and byte-exact after resolution? |
-| Competing publication | controlled head movement | Does the losing operation report `HeadMoved` without corrupting either history? |
-| Storage reuse | identical and localized changes across Branches | Does physical growth follow unique changed content rather than logical history size? |
-| Fresh reopen | complete retained graph | Does a new Client recover exact heads, Layers, Commits, conflicts, and historical bytes? |
+## First-round implementation loop
 
-## Benchmark requirements
+Use the single ten-file/thirty-commit ordinary-FUSE smoke specified in
+[the benchmark document](delta-encoding-benchmarks.md#first-round-execution-scope).
+Collect a released control for the exact same fixture before measuring the
+candidate. Then implement, build the needed targets, run that smoke, verify its
+31 states, inspect the actual cost, and fix the measured cause.
 
-- Reuse the v0.1.3 runner, workload boundaries, result schema, and fixture
-  conventions; extend them only where multi-history facts require new fields.
-- Use public SDK operations and the ordinary Store/Workspace path.
-- Keep per-operation latency separate from complete history-construction wall.
-- Record history depth, Branch count, changed paths and bytes, queue/service
-  time, CPU, peak RSS, Store growth, semantic bytes, candidate/inserted/reused
-  objects and bytes, transaction maxima, result-page counts, and cleanup state.
-- Verify exact final bytes, canonical roots, Branch heads, Layer order, Commit
-  parents, Add outcome, Diff results, conflict choices, and fresh reopen.
-- Retain every valid sample and every failed tier; do not shorten the registered
-  population after observing a slow result.
-- Use LayerFS-only iteration; external products are not comparators for
-  LayerStack-specific Fork, Add, history, Diff, Query, or conflict semantics.
+Build incrementally and reuse valid host/image artifacts. Diagnose slow builds,
+lock waits, setup, or verification rather than repeatedly paying the same cost.
+Do not run already-passed checks again without a change that invalidates them.
+No Cargo test/Clippy/doctest suite, three-family matrix, full157, cutoff sweep,
+page-size experiment, or separate read campaign in this implementation round.
 
-## Proposed GitHub issue structure
+Keep the original [three-file tiny baseline](tiny-history-baseline-v1.md) immutable.
+Its 88-KiB initial / 216-KiB final allocation and 13.709125-ms observation are not
+ten-file results. Its 64-KiB-growth/15-ms candidate gates remain attached to that
+original case and are deferred with its rerun. The new smoke has its own matched
+comparison and evidence scope.
 
-Create one parent v0.1.5 benchmark issue, then these bounded subissues:
+## Completion versus release
 
-1. multi-history fixture, deterministic edit schedule, and runner extension;
-2. Commit depth, historical reads, and reopen;
-3. Fork sources and Branch fan-out;
-4. Add outcomes and controlled head movement;
-5. LayerStack and Branch Diff;
-6. Query pagination;
-7. conflict enumeration, resolution, and competing publication;
-8. storage reuse, resource scaling, and dedup analysis; and
-9. accumulated regression and release closure.
+Implementation completion requires all specified paths wired, the matching build
+and single smoke passing, its history verified, and a candid record of storage,
+latency, limitations and unrun qualification. It is not permission to publish a
+release or claim exhaustive correctness.
 
-Do not pre-create optimization issues. Run the baseline first and create one
-focused issue per independent measured root cause. Every issue must contain
-**Problem statement**, **Goal**, **Files to read**, and **Acceptance criteria**
-and be assigned to `@yifanxuaaa`.
-
-## Acceptance criteria
-
-- [ ] Freeze the smallest deterministic multi-history fixture, edit schedule,
-  scale profiles, and exact scenario table before release measurement.
-- [ ] Complete the admitted 1/10/100 Commit-depth and Branch-fan-out profiles
-  without a Cartesian matrix expansion.
-- [ ] Prove Fork from Layer and eligible Commit adds no canonical payload copy
-  solely because the Branch exists.
-- [ ] Measure and verify `Added`, `UpToDate`, `NoChanges`, and `HeadMoved`
-  separately.
-- [ ] Prove adjacent, distant, and empty LayerStack/Branch Diff results exactly,
-  including bounded pagination.
-- [ ] Prove conflict enumeration, resolution, losing-head behavior, and final
-  bytes without mutating retained losing history.
-- [ ] Prove early, middle, and latest historical states remain directly
-  readable after later Commits and Adds.
-- [ ] Prove fresh reconnect recovers the complete retained graph and exact
-  canonical state.
-- [ ] Report incremental semantic and physical growth per Commit and Branch,
-  including reuse for identical and localized changes.
-- [ ] Retain bounded CPU, RSS, transaction, result-page, Store, and cleanup
-  evidence for every applicable row.
-- [ ] Record an optimized or measured/no-change disposition for every admitted
-  family and add one focused regression check per retained optimization.
-- [ ] Preserve and rerun every registered v0.1.0-v0.1.4 scenario without an
-  unexplained regression.
-- [ ] Admit the v0.1.5 rows into the append-only registry only after source,
-  fixture, runner, and result identities are frozen together.
-- [ ] Move incompatible work to v0.2.0 rather than weakening the 0.1.x
-  contract.
-- [ ] Create the immutable versioned manual, release record, checksums, and
-  annotated tag only from a clean candidate that passes the release gates.
-
-## Handoff to 1.0.0
-
-After v0.1.5, the accumulated v0.1.0-v0.1.5 registry is the proposed benchmark
-contract v1 for 1.0.0. The 1.0.0 candidate reruns that union; it does not rename,
-retime, or weaken earlier rows to improve the final report.
+The v0.1.5 canonical/physical format extension is an explicit owner-authorized
+exception to the normal patch-format rule; see [release policy](../../../general/release-policy.md).
+Old bytes/identities stay readable, new format writes are fenced, and upgrade is
+explicit. Existing MEMORY-journal/synchronous-OFF acknowledgements do not become a
+power-loss durability guarantee. Broader format, failure, POSIX and performance
+qualification follows separately before release.

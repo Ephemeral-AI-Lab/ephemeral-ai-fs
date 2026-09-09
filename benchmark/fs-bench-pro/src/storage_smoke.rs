@@ -820,7 +820,8 @@ pub fn dispatch(args: &[OsString]) -> AnyResult<()> {
     }
     if !matches!(
         case,
-        "deepseek-five"
+        "small-file-delta-10x30-v1"
+            | "deepseek-five"
             | "deepseek-full"
             | "small-files"
             | "sdk-text-32k"
@@ -915,7 +916,9 @@ pub fn dispatch(args: &[OsString]) -> AnyResult<()> {
                     let index: usize = index.parse()?;
                     let id = active.ok_or("smoke Workspace")?;
                     let sdk = case.starts_with("sdk-");
-                    if !(1..=if case == "deepseek-full" {
+                    if !(1..=if case == "small-file-delta-10x30-v1" {
+                        30
+                    } else if case == "deepseek-full" {
                         157
                     } else if case == "small-files" {
                         3
@@ -928,7 +931,7 @@ pub fn dispatch(args: &[OsString]) -> AnyResult<()> {
                     }
                     let mut members = 0;
                     let mut execs = 0;
-                    if matches!(case, "deepseek-five" | "deepseek-full") {
+                    if matches!(case, "deepseek-five" | "deepseek-full" | "small-file-delta-10x30-v1") {
                         workload(
                             &store,
                             &client,

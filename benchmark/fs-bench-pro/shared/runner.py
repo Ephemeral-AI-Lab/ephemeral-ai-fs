@@ -606,6 +606,9 @@ def _timer(row):
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
+    if "--family" in argv and argv[argv.index("--family") + 1:][:1] == ["small_file_delta_smoke"]:
+        import small_file_delta_family
+        return small_file_delta_family.main(argv)
     if "--deepseek-full" in argv:
         import storage_smoke
         return storage_smoke.main(["--storage-smoke", "deepseek-full", *[arg for arg in argv if arg != "--deepseek-full"]])
