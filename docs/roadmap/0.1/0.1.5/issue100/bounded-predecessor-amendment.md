@@ -66,3 +66,31 @@ All three unchanged baselines remain immutable. Build and focused checks are
 serialized under the existing lock. Public ten-state performance, frozen census,
 exact same-Store verification and cleanup are required for substantive candidates.
 Full157 is final confirmation only after the short-loop design stabilizes.
+
+## Second diagnostic: bounded recent FULL candidates
+
+After chain-1's complete 56,668,160-byte result, inspect a **128-entry,
+16-KiB session-local ring of already selected SmallContent FULLs**, only when
+no eligible immediate predecessor exists. This targets the remaining FULL
+population; it is not a database-wide similarity index or history walk.
+Select at most one candidate by overlap of the eight smallest distinct hashes
+of lines >=16 bytes (hash each complete line with Rust's existing DefaultHasher).
+Require at least two matching hashes; ties prefer the most recently selected.
+No raw bytes remain cached. No parameter sweep or fixture-path rule.
+
+First test this bounded window on the same three actual file families, using
+read-only selected record order from chain-1. Report whether candidates were
+within the same snapshot/session, never treat an earlier-session ring member as
+available. Reconstruct only selected FULLs under the existing static decoder and
+assert identities/original target bytes. Compare complete FULL/base/DELTA cost;
+these diagnostic totals do not predict allocated Store bytes.
+
+Only if evidenced, a product ring would live exactly for AdmissionSession,
+include only selected FULL winners after publication (never speculative output),
+and clear with rollback/drop. Reserve 16 KiB from the existing seen-index allowance;
+no decoder/encoder or other data budget increases. Signature computation occurs
+outside the Store lock. The selected FULL must be authenticated at its actual
+location using the existing bounded owner. The fallback remains FULL and one
+DELTA trial. Use existing kind1 FULL-base grammar in schema9; schema8 writer
+policy remains unchanged. No new persisted interpretation or added retention
+rule is needed. Missing/corrupt required persisted bases remain errors.
