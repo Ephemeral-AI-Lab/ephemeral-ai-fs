@@ -32,10 +32,7 @@ synchronous-OFF profile is unchanged.
 
 ## Evidence and release decision
 
-Benchmarks were collected on product source
-`c48bb4903f456136ccbcdba78de38b9042d2755a`; package version metadata and release
-documents are prepared afterward. Original binary/image identities are retained.
-No timing is relabeled as a new measurement of version-bumped release artifacts.
+The current product was qualified at `9cfb4be477116646258ea0621280ed13b1824c6d` after the Workspace admission/spill follow-up. Its source, host binary and image have separate seals and fresh benchmark/full157 qualification. Earlier issue #95 and initial packaging observations retain their original identities and are not relabeled. See the [current qualification](../../docs/roadmap/0.1/0.1.4/issue98/README.md).
 
 The full family registry and independent routine coverage executed. The optional
 600-second proof remains not run. Four historical Git comparisons remain

@@ -2,9 +2,9 @@
 
 > **Status:** Release candidate for LayerFS 0.1.4.
 
-The authoritative measured product is
-`c48bb4903f456136ccbcdba78de38b9042d2755a`; its final evidence-only head is
-`36a5d9da612211cf26f2a23370e9d59afdceb8e2`. The
+The current qualified product is `9cfb4be477116646258ea0621280ed13b1824c6d`; see the [issue #98 terminal report](../../docs/roadmap/0.1/0.1.4/issue98/README.md). It passed 411 native tests, all 198 performance executions, 226 routine proofs, full157 and three final full `.venv` proofs.
+
+The earlier issue #95 product was `c48bb4903f456136ccbcdba78de38b9042d2755a`, with evidence head `36a5d9da612211cf26f2a23370e9d59afdceb8e2`. Its historical
 [terminal qualification](../../docs/roadmap/0.1/0.1.4/issue95/evidence/terminal-qualification.json)
 and [report](../../docs/roadmap/0.1/0.1.4/issue95/README.md) preserve:
 
@@ -49,3 +49,7 @@ A clean matching host/image pair built from `70fdd839dd68c91491524590ed034b9b516
 ## Completed Torch .venv Workspace acceptance
 
 The formerly paused full `.venv` Workspace proof is now complete: three fresh imports/Commits and three exhaustive independent content/metadata verifications passed on the unchanged v0.1.4 implementation. The frozen fixture contains 17,682 entries and 581,658,413 file bytes. Healthy presentation, clean End, zero active sessions/executions, no swap/OOM and owned-container cleanup passed. See the [full report and exact receipts](../../docs/roadmap/0.1/0.1.4/issue71-venv-acceptance/README.md). This is supplemental correctness acceptance with descriptive timings, not a new historical speedup claim or a change to the formal campaign counts.
+
+## Qualified Workspace follow-up
+
+Issue #98 adds bounded Workspace transaction coalescing and a 64-KiB cap on graph-ordered spill read-ahead. The adjacent original-control/candidate pair reduced Commit 6.671061 → 4.152412 seconds; final three-sample confirmations were 4.578398–4.643631 seconds. Full157 allocation remains exactly 184,582,144 B. Full157 historical wall observations increased and are explicitly reported without a paired causal claim. The current comparison report remains INCOMPLETE for four Git fixtures; [all current results and limitations](../../docs/roadmap/0.1/0.1.4/issue98/README.md) supersede no historical evidence.

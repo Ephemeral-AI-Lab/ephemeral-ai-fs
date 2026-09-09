@@ -18,10 +18,10 @@ rejected without migration. Preserve old Stores with matching old binaries;
 importing a filesystem snapshot into a new Store starts new history. See the
 [storage manual](../../docs/versioned/0.1.4/storage-format.md).
 
-**Known performance limits remain:** the frozen reporter retains 56 SEVERE,
-86 REVIEW, 35 OBSERVED_INCREASE, 17 NO_INCREASE and four INELIGIBLE elapsed
-comparisons. Three absolute latency targets miss. Four Git fixture-binding
-limitations leave the unchanged overall report INCOMPLETE. Owner acceptance
+**Known performance limits remain:** the current reporter records 49 SEVERE,
+95 REVIEW, 31 OBSERVED_INCREASE, 19 NO_INCREASE and four INELIGIBLE elapsed
+comparisons. Historical reports retain their original classifications. Three absolute latency targets miss. Four Git fixture-binding
+limitations leave the current overall report INCOMPLETE. Owner acceptance
 retires the optimization scope; it does not relabel these results as passes.
 
 - [Release contract and accepted exceptions](release-contract.md)
@@ -31,9 +31,12 @@ retires the optimization scope; it does not relabel these results as passes.
 - [GitHub release announcement draft](github-release.md)
 - [Versioned manual](../../docs/versioned/0.1.4/README.md)
 - [Changelog](../../docs/releases/v0.1.4/CHANGELOG.md)
-- [Complete benchmark/root-cause report](../../docs/roadmap/0.1/0.1.4/issue95/README.md)
+- [Current benchmark/root-cause report](../../docs/roadmap/0.1/0.1.4/issue98/README.md)
+- [Historical issue #95 report](../../docs/roadmap/0.1/0.1.4/issue95/README.md)
 
 This remains a source-only Developer Preview with no crash/power-loss durability
 promise. No crates.io package, prebuilt executable or public runtime image is
 claimed published. Merge, reviewed tag creation and GitHub publication are
 separate from this prepared candidate.
+
+The subsequent [issue #98 Workspace repair](../../docs/roadmap/0.1/0.1.4/issue98/README.md) is fully qualified and ready for review: adjacent Commit time improved 37.8%, final allocated storage is unchanged, and all benchmark/proof/full157 checks passed. Final `.venv` observations and higher unpaired full157 wall times are reported explicitly. Remaining historical performance misses and four ineligible Git comparisons stay visible.

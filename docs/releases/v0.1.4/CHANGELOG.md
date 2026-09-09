@@ -21,11 +21,13 @@
    without migration. Supported development schema 6 remains legacy; new Stores
    use schema 7. No downgrade or retained-history migration command is supplied.
 
-The measured product is `c48bb4903f456136ccbcdba78de38b9042d2755a`, with evidence
-at `36a5d9da612211cf26f2a23370e9d59afdceb8e2`. Version metadata and release
-packaging are subsequent changes, not newly measured performance code.
+The current measured product is `9cfb4be477116646258ea0621280ed13b1824c6d`, including the Workspace follow-up below. Earlier issue #95 measurements at `c48bb4903f456136ccbcdba78de38b9042d2755a` and evidence at `36a5d9da612211cf26f2a23370e9d59afdceb8e2` remain historical. Subsequent reporting and packaging do not relabel observations.
 
 Read the [release record](../../../release-notes/0.1.4/README.md),
 [acceptance](../../../release-notes/0.1.4/acceptance.md),
 [versioned manual](../../versioned/0.1.4/README.md) and
 [all-case evidence](../../roadmap/0.1/0.1.4/issue95/README.md).
+
+## Qualified Workspace admission follow-up
+
+Reuse bounded SQL cohorts for Workspace admission and cap graph-ordered candidate-spool read-ahead at 64 KiB. The adjacent `.venv` pair reduced Commit 6.671 → 4.152 seconds with unchanged allocated storage. Complete native, benchmark, independent verification, full157 and final `.venv` qualification passed. [Measured benefits, RSS tradeoff, historical misses and exact identities](../../roadmap/0.1/0.1.4/issue98/README.md).

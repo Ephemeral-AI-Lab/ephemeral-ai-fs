@@ -1,6 +1,6 @@
 # Issue #98: Workspace admission and spill readback
 
-Status: retained candidate frozen; terminal qualification pending. Follow-up to the accepted v0.1.4 preparation (#97), requested by the owner after completing the full Torch `.venv` correctness proof. The [original plan](plan.md) and all failed attempts remain recorded.
+**Status: terminal qualification PASS; retained implementation ready for review.** Follow-up to the accepted v0.1.4 preparation (#97), requested by the owner after completing the full Torch `.venv` correctness proof. The [original plan](plan.md) and all failed attempts remain recorded.
 
 ## Measured problem and repair
 
@@ -33,3 +33,36 @@ The new Workspace test covers coalesced bounds, exact collisions, rollback of bo
 A read-only independent review found no actionable correctness defect. Its coverage suggestions were incorporated into the Workspace cohort test: a concurrent reader authenticates an object from the still-open cohort, a subsequent duplicate is validated without another insertion, a deliberate equal-length collision targets that pending object, and a one-shot COMMIT veto restores baseline objects and leaves no Workspace stage. The strengthened test and Store test-target warning-denying Clippy pass.
 
 The full native suite (411 passes), explicit ignored large-spill run, doctests, formatting and workspace warning-denying Clippy passed at `211bc420f`. Only the strengthened test body and this evidence changed afterward; production source is identical. The changed test was rerun rather than repeating already-passing unrelated suites. Final source/binary/image and terminal campaign receipts follow separately.
+
+## Final terminal qualification
+
+- All 198 performance executions and 226 routine proofs passed. The optional 600-second endurance proof remains explicitly unrun.
+- Native suite: 411 passes, plus the explicitly run ignored large-spill check; doctests, formatting and warning-denying Clippy passed. The final strengthened transaction test and test-target Clippy also passed.
+- Matched-image small-files and all four SDK/FUSE frequent-edit variants passed execution and verification.
+- Full157: all 157 performance states, 157 retained-history proofs, 158 checkpoint/accounting records, authentication/dependency validation and cleanup passed.
+- Final allocated storage: **184,582,144 B**, identical to the prior qualified candidate and **15.374% below** the 218,116,096 B supplemental control. Logical database size is 176,152,576 B; no sidecar allocation or unexplained page residual. Native representations remain 58,306 PREFIX and 28,106 FULL.
+
+### Final .venv confirmation
+
+| Sample | Commit | Exec + Commit | Full byte/metadata proof |
+|---|---:|---:|---|
+| 1 | 4.643631 s | 10.891184 s | PASS |
+| 2 | 4.578398 s | 10.777544 s | PASS |
+| 3 | 4.620881 s | 10.774716 s | PASS |
+
+These final observations are separate from the earlier adjacent pair; the 37.8% paired improvement is not a guaranteed latency. All final samples preserve the original limits, healthy presentation, clean End, zero active sessions/executions, no swap/OOM, and container removal. The first confirmation wrapper stopped before workload launch because Cargo built the standalone probe into its manifest target directory while the wrapper expected the repository target. That setup failure and input-custody receipt are preserved; a fresh retry used the archived byte-identical built binary. No product changes or reruns of passing campaigns were needed.
+
+### Remaining performance limits
+
+The unmodified comparison reporter remains **INCOMPLETE solely for the four historical Git fixture comparisons**. Current elapsed classifications are **49 SEVERE, 95 REVIEW, 31 OBSERVED_INCREASE, 19 NO_INCREASE and 4 INELIGIBLE**. The unrelated-history 500 target and Git 100/500 absolute targets remain missed. Historical reports keep their original classifications.
+
+Full157 case wall times are **481.976 s performance** and **613.815 s verification**, versus previous historical observations of **447.247 s** and **545.827 s**. These are unpaired observations, not evidence of a whole-history speedup or a controlled estimate of regression caused by this patch. The retained benefit is established by the adjacent `.venv` comparisons; a universal speedup is not claimed.
+
+## Final identities and review evidence
+
+- Qualified source: `9cfb4be477116646258ea0621280ed13b1824c6d`. Subsequent edits are reporting/artifact preparation only.
+- Host benchmark SHA-256: `47b4d44e3e961f3b6a57d2c18dc6d195973133dbdfb87681a55f1b8e07abe3a2`.
+- Runtime image: `sha256:42eb806fcfe9db1dc28098eb423340de3e4eaf81fd487389128305e65606d347`.
+- [Terminal qualification](evidence/terminal/terminal-qualification.json), [final observations](final-results.json), [complete terminal evidence manifest](terminal-evidence-manifest.json), and [raw evidence references](evidence/terminal/raw-references.json). All 198 raw performance receipts and routine verification receipts are packaged losslessly; large files use gzip.
+
+The generation binding was materialized after performance collection and is explicitly labeled post-collection. It binds the already frozen source/build/campaign/registry/seed/limits from the pre-collection terminal declaration; neither observations nor benchmark rules were changed. The initial unused full157 schedule retained an old human-readable Issue95 label from reused tooling; the correctly labeled replacement schedule was frozen before full157 execution. Both are preserved.

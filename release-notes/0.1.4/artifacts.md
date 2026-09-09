@@ -21,7 +21,7 @@ publication, prebuilt executable or public runtime image is part of this scope.
 
 ## Publication sequence
 
-1. Review/integrate PR #94, then PR #96, then this preparation PR; preserve the
+1. Review/integrate PR #94, then PR #96, then PR #97 and the qualified issue #98 follow-up; preserve the
    measured source and immutable evidence references.
 2. Confirm the final reviewed tree has only the documented packaging delta from
    the accepted implementation, and that preparation checks/CI pass. A product

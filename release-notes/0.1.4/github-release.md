@@ -17,7 +17,7 @@ proofs. The optional 600-second endurance proof was not run.
 
 **Known tradeoffs:** substantial regressions versus v0.1.3 remain. Three absolute
 latency targets miss; the four historical Git comparisons are INELIGIBLE and
-the unchanged overall report remains INCOMPLETE. Owner acceptance does not turn
+the current overall report remains INCOMPLETE. Owner acceptance does not turn
 those outcomes into passes. Full157 historical verification also took longer
 than the prior candidate. Read the complete tables and measurement boundaries.
 
@@ -32,3 +32,5 @@ inserted from the reviewed publication, not guessed during preparation.
 
 See the versioned manual, accepted-tradeoff record and full terminal evidence
 in the accompanying source tree.
+
+The subsequent [issue #98 Workspace repair](../../docs/roadmap/0.1/0.1.4/issue98/README.md) is fully qualified and ready for review: adjacent Commit time improved 37.8%, final allocated storage is unchanged, and all benchmark/proof/full157 checks passed. Final `.venv` observations and higher unpaired full157 wall times are reported explicitly. Remaining historical performance misses and four ineligible Git comparisons stay visible.

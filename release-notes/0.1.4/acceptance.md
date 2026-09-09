@@ -56,3 +56,5 @@ scope, not a fictitious performance pass or a published release.
 ## Subsequent completion of the paused .venv proof
 
 After the owner requested finishing the exact pending proof, the frozen 581,658,413-byte Torch `.venv` Workspace workload passed all three samples and full independent readbacks on the unchanged v0.1.4 implementation. [Evidence](../../docs/roadmap/0.1/0.1.4/issue71-venv-acceptance/README.md). The broader historical 1.434 GB / 40,831-file aspiration remains a separate unclaimed scope.
+
+The subsequent [issue #98 Workspace repair](../../docs/roadmap/0.1/0.1.4/issue98/README.md) is fully qualified and ready for review: adjacent Commit time improved 37.8%, final allocated storage is unchanged, and all benchmark/proof/full157 checks passed. Final `.venv` observations and higher unpaired full157 wall times are reported explicitly. Remaining historical performance misses and four ineligible Git comparisons stay visible.
