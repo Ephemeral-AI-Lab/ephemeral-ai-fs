@@ -640,3 +640,9 @@ fn small_content_upper_range_exact_cas_reuse() {
         assert_eq!(f.db.read_object_row(object.id).unwrap(), object.bytes);
     }
 }
+
+#[path = "issue100_diagnostic.rs"]
+mod issue100_diagnostic;
+
+#[path = "small_chain_tests.rs"]
+mod small_chain_tests;

@@ -7,7 +7,7 @@ pub struct LayerStackStore {
 }
 
 impl LayerStackStore {
-    /// Promote a closed schema-7 Store without rewriting payloads or page layout.
+    /// Promote a closed schema-7/8 Store to schema 9 without rewriting payloads or page layout.
     pub fn upgrade_format(path: impl AsRef<Path>) -> Result<()> {
         crate::schema::upgrade_format(path.as_ref())
     }

@@ -4,7 +4,11 @@ use crate::{Result, StoreError};
 use layerfs_content::{file::content, ObjectId};
 
 pub(super) const FRAME_LIMIT: usize = 135168;
+pub(super) const CHAIN_EDGES: usize = 8;
+pub(super) const CHAIN_CANONICAL_LIMIT: usize = 512 * 1024;
+pub(super) const CHAIN_ENCODED_LIMIT: usize = 256 * 1024;
 pub(super) struct Record<'a> {
+    pub kind: u8,
     pub raw_length: usize,
     pub base: Option<ObjectId>,
     pub frame: &'a [u8],
@@ -25,7 +29,7 @@ pub(super) fn record(bytes: &[u8]) -> Result<Record<'_>> {
     }
     let (base, start) = match bytes[0] {
         0 => (None, 9),
-        1 => (
+        1 | 2 => (
             Some(ObjectId::from_bytes(bytes.get(9..41).ok_or_else(invalid)?)?),
             41,
         ),
@@ -36,22 +40,25 @@ pub(super) fn record(bytes: &[u8]) -> Result<Record<'_>> {
         return Err(invalid());
     }
     Ok(Record {
+        kind: bytes[0],
         raw_length,
         base,
         frame,
     })
 }
 pub(super) fn encode(
+    kind: u8,
     raw_length: usize,
     base: Option<ObjectId>,
     frame: Vec<u8>,
 ) -> Result<pack::EncodedGroup> {
-    if !(1..content::SMALL_LIMIT).contains(&raw_length) || !(1..=FRAME_LIMIT).contains(&frame.len())
+    if kind > 2 || (kind == 0) != base.is_none()
+        || !(1..content::SMALL_LIMIT).contains(&raw_length) || !(1..=FRAME_LIMIT).contains(&frame.len())
     {
         return Err(invalid());
     }
     let mut bytes = Vec::with_capacity(9 + usize::from(base.is_some()) * 32 + frame.len());
-    bytes.push(u8::from(base.is_some()));
+    bytes.push(kind);
     bytes.extend_from_slice(&(raw_length as u32).to_le_bytes());
     bytes.extend_from_slice(&(frame.len() as u32).to_le_bytes());
     if let Some(base) = base {

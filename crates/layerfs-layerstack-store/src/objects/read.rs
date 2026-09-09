@@ -88,6 +88,14 @@ enum Extraction {
     NativeUnsupported,
 }
 
+pub(super) struct SmallPredecessor {
+    pub canonical: CanonicalObject,
+    pub location: Location,
+    pub depth: usize,
+    pub canonical_closure: usize,
+    pub encoded_closure: usize,
+}
+
 struct NativeNode {
     id: ObjectId,
     location: Location,
@@ -224,6 +232,13 @@ impl StoreDb {
                 bytes
             };
             pack::validate_small_pack(&bytes)?;
+            if !self.small_chain_format() {
+                let count = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+                for directory in bytes[16..16 + 16 * count].chunks_exact(16) {
+                    let start = u32::from_le_bytes(directory[..4].try_into().unwrap()) as usize;
+                    if bytes[start] == 2 { return Err(StoreError::Integrity("SmallContent chain requires schema 9")); }
+                }
+            }
             after = id;
         }
     }
@@ -263,8 +278,102 @@ impl StoreDb {
         Ok(Some((self.read_small_full(predecessor, location, record)?, location)))
     }
 
+    /// The immediate predecessor is optional; selected physical dependencies are not.
+    pub(super) fn small_predecessor(&self, id: ObjectId, location: Option<Location>, target_canonical_length: usize) -> Result<Option<SmallPredecessor>> {
+        if !(24..content::SMALL_LIMIT + 23).contains(&target_canonical_length) {
+            return Err(StoreError::Integrity("SmallContent prospective target length"));
+        }
+        let Some(location) = location else { return Ok(None); };
+        let Some(Extraction::Small(record)) = self.extract_record_group(location.pack, location.group, location.record, true, None)? else { return Ok(None); };
+        let Some(prior) = self.small_chain(id, location, record, true, target_canonical_length)? else { return Ok(None); };
+        if prior.depth + 1 > super::delta::CHAIN_EDGES
+            || prior.canonical_closure.checked_add(target_canonical_length).is_none_or(|size| size > super::delta::CHAIN_CANONICAL_LIMIT)
+        { return Ok(None); }
+        Ok(Some(prior))
+    }
+
+    fn small_chain(&self, target: ObjectId, target_location: Location, initial: Vec<u8>, optional: bool, retained: usize) -> Result<Option<SmallPredecessor>> {
+        use super::delta::{CHAIN_CANONICAL_LIMIT, CHAIN_EDGES, CHAIN_ENCODED_LIMIT};
+        let legacy_hint = optional && super::delta::record(&initial)?.kind != 2;
+        let mut nodes = Vec::<NativeNode>::with_capacity(CHAIN_EDGES + 1);
+        let mut id = target;
+        let mut location = target_location;
+        let mut record = initial;
+        let mut canonical_closure = 0usize;
+        let mut encoded_closure = 0usize;
+        let mut owned_frames = 0usize;
+        let mut require_full = false;
+        loop {
+            let parsed = super::delta::record(&record)?;
+            if (parsed.kind == 2 && !self.small_chain_format())
+                || location.record != 0 || location.canonical_length != parsed.raw_length + 23
+                || (require_full && parsed.kind != 0)
+            { return Err(StoreError::Integrity("SmallContent chain role/locator")); }
+            let base = parsed.base;
+            require_full = parsed.kind == 1;
+            canonical_closure += location.canonical_length;
+            encoded_closure += record.len();
+            owned_frames += record.capacity();
+            // A valid old kind-1 predecessor may exceed the new chain budget.
+            // That only makes the optional new encoding ineligible.
+            if canonical_closure > CHAIN_CANONICAL_LIMIT || owned_frames > CHAIN_ENCODED_LIMIT {
+                if legacy_hint { return Ok(None); }
+                return Err(StoreError::Integrity("SmallContent chain closure bound"));
+            }
+            let associations = nodes.capacity() * std::mem::size_of::<NativeNode>();
+            if associations > 16 * 1024
+                || retained + owned_frames + associations + 1024 * 1024
+                    + 4 * (content::SMALL_LIMIT + 23) > 2 * 1024 * 1024
+            { return Err(StoreError::Integrity("SmallContent chain scratch bound")); }
+            nodes.push(NativeNode { id, location, record });
+            let Some(base) = base else { break; };
+            if nodes.len() > CHAIN_EDGES || nodes.iter().any(|node| node.id == base) {
+                return Err(StoreError::Integrity("SmallContent chain depth/cycle"));
+            }
+            let next = self.object_locations(&[base])?.remove(&base).ok_or(StoreError::Integrity("SmallContent base missing"))?;
+            if next.pack > location.pack {
+                return Err(StoreError::Integrity("SmallContent base chronology"));
+            }
+            // Acquisition has no live decoder or decoded operands. Reserve the
+            // largest selected group before fetching; the stricter retained-frame
+            // cap is checked on the next iteration before any reconstruction.
+            if retained + owned_frames + associations + 192 * 1024 + 16 * 1024 > 2 * 1024 * 1024 {
+                return Err(StoreError::Integrity("SmallContent chain acquisition bound"));
+            }
+            let Some(Extraction::Small(next_record)) = self.extract_record_group(next.pack, next.group, next.record, true, None)? else {
+                return Err(StoreError::Integrity("SmallContent base encoding"));
+            };
+            self.note_physical(PhysicalStorageReceipt { base_fetches: 1, ..Default::default() });
+            id = base;
+            location = next;
+            record = next_record;
+        }
+        let depth = nodes.len() - 1;
+        let mut canonical: Option<CanonicalObject> = None;
+        while let Some(node) = nodes.pop() {
+            let prefix = canonical.as_ref().map(|base| content::small_bytes(&base.bytes))
+                .transpose()?.flatten();
+            let bytes = super::delta::decode(&node.record, prefix)?;
+            if bytes.capacity() > content::SMALL_LIMIT + 23 {
+                return Err(StoreError::Integrity("SmallContent canonical capacity"));
+            }
+            authenticate(node.id, &bytes, node.location.canonical_length)?;
+            self.note_physical(PhysicalStorageReceipt { decompression_calls: 1, decoded_read_bytes: bytes.len() as u64, ..Default::default() });
+            canonical = Some(CanonicalObject { id: node.id, bytes });
+        }
+        Ok(Some(SmallPredecessor {
+            canonical: canonical.ok_or(StoreError::Integrity("SmallContent empty chain"))?,
+            location: target_location, depth, canonical_closure, encoded_closure,
+        }))
+    }
+
     fn read_small(&self, id: ObjectId, location: Location, record: Vec<u8>, bases: &mut BTreeMap<ObjectId, CanonicalObject>) -> Result<CanonicalObject> {
         let parsed = super::delta::record(&record)?;
+        if parsed.kind == 2 {
+            bases.clear();
+            return self.small_chain(id, location, record, false, 0)?
+                .map(|prior| prior.canonical).ok_or(StoreError::Integrity("SmallContent required chain"));
+        }
         if location.canonical_length != parsed.raw_length + 23 || location.record != 0 { return Err(StoreError::Integrity("SmallContent locator length")); }
         let Some(base) = parsed.base else { return self.read_small_full(id, location, record); };
         if base == id { return Err(StoreError::Integrity("SmallContent dependency cycle")); }
@@ -345,7 +454,9 @@ impl StoreDb {
             if budget.as_deref_mut().is_some_and(|b| !b.charge(entry.range.len(), entry.range.len())) { return Ok(None); }
             let mut record = vec![0; entry.range.len()];
             blob.read_at_exact(&mut record, entry.range.start)?;
-            super::delta::record(&record)?;
+            if super::delta::record(&record)?.kind == 2 && !self.small_chain_format() {
+                return Err(StoreError::Integrity("SmallContent chain requires schema 9"));
+            }
             self.note_physical(PhysicalStorageReceipt { encoded_read_bytes: record.len() as u64, blob_ranges: 1, ..Default::default() });
             return Ok(Some(Extraction::Small(record)));
         }
@@ -449,7 +560,9 @@ impl StoreDb {
             if !self.small_content_format() || targets.len() != 1 || targets[0].1.record != 0 { return Err(StoreError::Integrity("SmallContent selected locator")); }
             let mut record = vec![0; entry.range.len()];
             blob.read_at_exact(&mut record, entry.range.start)?;
-            super::delta::record(&record)?;
+            if super::delta::record(&record)?.kind == 2 && !self.small_chain_format() {
+                return Err(StoreError::Integrity("SmallContent chain requires schema 9"));
+            }
             self.note_physical(PhysicalStorageReceipt { encoded_read_bytes: record.len() as u64, blob_ranges: 1, ..Default::default() });
             return Ok(vec![Extraction::Small(record)]);
         }

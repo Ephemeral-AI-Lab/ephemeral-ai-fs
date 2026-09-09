@@ -4,6 +4,8 @@ pub const ALL: &[(&str, &str)] = &[
     ("schema/v6.sql", schema::V6),
     ("schema/v7.sql", schema::V7),
     ("schema/v8.sql", schema::V8),
+    ("schema/v9.sql", schema::V9),
+    ("schema/migrate_to_v9.sql", schema::MIGRATE_TO_V9),
     ("schema/migrate_v7_to_v8.sql", schema::MIGRATE_V7_TO_V8),
     ("schema/migrate_v4_to_v5.sql", schema::MIGRATE_V4_TO_V5),
     ("schema/schema_objects.sql", schema::SCHEMA_OBJECTS),
@@ -55,6 +57,8 @@ pub const ALL: &[(&str, &str)] = &[
 ];
 
 pub mod schema {
+    pub const V9: &str = include_str!("../sql/schema/v9.sql");
+    pub const MIGRATE_TO_V9: &str = include_str!("../sql/schema/migrate_to_v9.sql");
     pub const V4: &str = include_str!("../sql/schema/v4.sql");
     pub const V5: &str = include_str!("../sql/schema/v5.sql");
     pub const V6: &str = include_str!("../sql/schema/v6.sql");

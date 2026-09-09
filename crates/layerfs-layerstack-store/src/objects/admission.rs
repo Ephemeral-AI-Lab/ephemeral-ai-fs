@@ -226,9 +226,15 @@ impl PreparedAdmission {
             }
             let raw = layerfs_content::file::content::small_bytes(&object.bytes)?.ok_or(StoreError::Integrity("SmallContent role"))?;
             let anchor = if let Some(prior) = object.1.prior_ids[0] {
-                // Decoder and encoder never overlap. No predecessor decode to find a base ID.
+                // Decoder and encoder never overlap; carry authenticated closure facts forward.
                 drop(encoder.take());
-                db.small_anchor(prior, locations.get(&prior).copied())?
+                if db.small_chain_format() {
+                    db.small_predecessor(prior, locations.get(&prior).copied(), object.bytes.len())?
+                        .map(|p| (p.canonical, p.location, p.encoded_closure))
+                } else {
+                    db.small_anchor(prior, locations.get(&prior).copied())?
+                        .map(|(canonical, location)| (canonical, location, 0))
+                }
             } else { None };
             if encoder.is_none() { encoder = Some(pack::NativeEncoder::new_small()?); }
             let started = Instant::now();
@@ -237,13 +243,14 @@ impl PreparedAdmission {
             stats.full_alternative_bytes += (full.len() + 9 + 16) as u64;
             let mut base = None;
             let mut frame = full;
-            if let Some((anchor, location)) = anchor {
+            if let Some((anchor, location, encoded_closure)) = anchor {
                 let prefix = layerfs_content::file::content::small_bytes(&anchor.bytes)?.ok_or(StoreError::Integrity("SmallContent anchor role"))?;
                 stats.usable_bases += 1;
                 stats.candidate_trials += 1;
                 let delta = encoder.as_mut().unwrap().compress(raw, Some(prefix))?;
                 stats.encoding_calls += 1;
-                if delta.len() + 32 < frame.len() {
+                if delta.len() + 32 < frame.len()
+                    && (!db.small_chain_format() || encoded_closure + delta.len() + 41 <= super::delta::CHAIN_ENCODED_LIMIT) {
                     base = Some(anchor.id);
                     frame = delta;
                     self.native_base_max_pack = self.native_base_max_pack.max(location.pack);
@@ -251,7 +258,7 @@ impl PreparedAdmission {
             }
             stats.encoding_ns += started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
             let delta = base.is_some();
-            let group = super::delta::encode(raw.len(), base, frame)?;
+            let group = super::delta::encode(if !delta { 0 } else if db.small_chain_format() { 2 } else { 1 }, raw.len(), base, frame)?;
             if 16 + 16 * (groups.len() + 1) + group_bytes + group.bytes.len() > pack::PACK_LIMIT || groups.len() == pack::GROUP_COUNT_LIMIT {
                 self.packs.push(pack::assemble_small(&groups)?);
                 groups.clear();
