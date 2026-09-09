@@ -1,0 +1,15 @@
+{
+  "argv": [
+    "cargo",
+    "+1.96.0",
+    "clippy",
+    "--workspace",
+    "--locked",
+    "-j2",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "cwd": "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-release-v014",
+  "source": "176e4e83863aa743298263235974413078016495"
+}

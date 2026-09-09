@@ -1,4 +1,23 @@
-# LayerFS 0.1.4 — Storage efficiency
+# LayerFS 0.1.4 — accepted storage-efficiency scope
+
+> **Status:** Release candidate for LayerFS 0.1.4; owner accepted the measured stopping point on 2026-09-09. Not tagged or published.
+
+The implementation, complete benchmark and full157 qualification are finished.
+The owner accepts the remaining numerical regressions and requests closure of
+related optimization/experiment issues. This does not change historical gates,
+comparison eligibility or the unchanged reporter's INCOMPLETE status.
+
+- [Release preparation](../../../../release-notes/0.1.4/README.md)
+- [Acceptance and issue disposition](../../../../release-notes/0.1.4/acceptance.md)
+- [Complete final measurements and limitations](issue95/README.md)
+- [Prepared versioned manual](../../../versioned/0.1.4/README.md)
+
+The material below is historical planning, retained verbatim as dated context.
+Its old milestone statuses and stop instructions do not describe current work.
+
+---
+
+# Historical storage-efficiency planning
 
 > **Current owner direction (2026-09-08):** corrected M4 is checkpointed; small-file
 > storage acceptance remains unresolved. Proceed with the isolated

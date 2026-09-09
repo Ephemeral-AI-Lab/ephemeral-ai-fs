@@ -1,0 +1,10 @@
+{
+  "argv": [
+    "env",
+    "RUSTUP_TOOLCHAIN=1.85.1",
+    "CARGO_BUILD_JOBS=2",
+    "tools/test-fast.sh"
+  ],
+  "cwd": "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-release-v014",
+  "source": "176e4e83863aa743298263235974413078016495"
+}

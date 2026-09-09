@@ -1,0 +1,16 @@
+{
+  "status": "PASS",
+  "image": "sha256:7679d908d50aa7cac722d0e5fe9f3c5dd1a8e54a1cb3f1728c97a26b26200974",
+  "records": [
+    {
+      "name": "performance",
+      "returncode": 0,
+      "wall_ns": 4841254542
+    },
+    {
+      "name": "verification",
+      "returncode": 0,
+      "wall_ns": 3666692500
+    }
+  ]
+}

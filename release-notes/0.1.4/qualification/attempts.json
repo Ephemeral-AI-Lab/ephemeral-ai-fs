@@ -1,0 +1,4 @@
+{
+  "image_attempt_1": "Pre-launch lock refusal while host build held the lock; no image build executed. Preserved build-image.log; build-image-02 succeeded after host completion.",
+  "raw_evidence": "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-v014-release-preparation"
+}

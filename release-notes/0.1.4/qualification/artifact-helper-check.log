@@ -1,0 +1,11 @@
+{
+  "commit": "faa6a6c3bbf30b9d4797ce04b9859a7e4cf17426",
+  "candidate": true,
+  "assets": 6,
+  "source_members": 10,
+  "evidence_members": 7,
+  "validation": "PASS",
+  "raw_evidence_scope": "selected tracked receipts; external raw references remain external"
+}
+artifact helper fixture check: PASS
+fatal: Needed a single revision

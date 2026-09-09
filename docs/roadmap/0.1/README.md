@@ -43,7 +43,7 @@ allowed.
 - [v0.1.1 released history](0.1.1/README.md)
 - [v0.1.2 completed release plan](0.1.2/README.md)
 - [v0.1.3 completed benchmark checkpoint](0.1.3/checkpoint-evidence/README.md)
-- [v0.1.4 storage-efficiency plan](0.1.4/README.md)
+- [v0.1.4 accepted storage-efficiency scope](0.1.4/README.md)
 - [v0.1.5 multi-history draft](0.1.5/README.md)
 
 ## Release sequence
@@ -62,7 +62,7 @@ allowed.
 | v0.1.1 | Existing-directory initialization and namespace scaling through localized Commit and exact reopen. |
 | v0.1.2 | Adapt `fs-bench-pro`, implement the universal edit engine, complete same-count and count-changing Docker/FUSE performance families, and measure total durable Store footprint. |
 | v0.1.3 | **Closed:** 17 admitted families, 198 performance and 226 routine verification passes; one optional 600-second proof excluded. [Results and limitations](0.1.3/README.md). |
-| v0.1.4 | Storage efficiency for retained tool-call states, preserving checkpoint behavior; optimization design remains to be discussed. |
+| v0.1.4 | Storage efficiency for retained tool-call states, preserving checkpoint behavior; **Owner accepted; release preparation complete with documented regressions and compatibility exception.** |
 | v0.1.5 | Multi-Layer and multi-Branch Commit history, Fork, Add, Diff, conflict, and query scaling. |
 
 Benchmark each admitted operation, but optimize only measured defects or

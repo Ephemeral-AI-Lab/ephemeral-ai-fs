@@ -1,0 +1,11 @@
+{
+  "status": "PASS",
+  "checks": [
+    "build",
+    "native",
+    "fmt",
+    "clippy",
+    "version",
+    "docs"
+  ]
+}

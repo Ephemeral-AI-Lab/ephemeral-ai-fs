@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "cargo",
+    "+1.96.0",
+    "fmt",
+    "--all",
+    "--check"
+  ],
+  "cwd": "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-release-v014",
+  "source": "176e4e83863aa743298263235974413078016495"
+}
