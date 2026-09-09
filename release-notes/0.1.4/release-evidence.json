@@ -1,6 +1,6 @@
 {
   "schema": "layerfs-v014-release-preparation-v1",
-  "status": "PREPARATION_CHECKS_PENDING",
+  "status": "SOURCE_PREPARATION_CHECKS_PASS_RUNTIME_SMOKE_PENDING",
   "package_version": "0.1.4",
   "measured_product_source": "c48bb4903f456136ccbcdba78de38b9042d2755a",
   "accepted_evidence_head": "36a5d9da612211cf26f2a23370e9d59afdceb8e2",
@@ -14,8 +14,24 @@
   "historical_git_comparisons_ineligible": 4,
   "numerical_regressions_accepted_not_reclassified": true,
   "rust_schema_harness_changes_from_measured_source": [],
-  "packaging_changes": ["12 project-owned package versions", "release documentation"],
+  "packaging_changes": [
+    "12 project-owned package versions",
+    "release documentation"
+  ],
   "imported_dependency_changes": [],
   "tag_created": false,
-  "release_published": false
+  "release_published": false,
+  "preparation_check_source": "176e4e83863aa743298263235974413078016495",
+  "preparation_checks": {
+    "status": "PASS",
+    "checks": [
+      "build",
+      "native",
+      "fmt",
+      "clippy",
+      "version",
+      "docs"
+    ]
+  },
+  "artifact_helper_fixture_check": "PASS"
 }

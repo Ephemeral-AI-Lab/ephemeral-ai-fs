@@ -1,0 +1,54 @@
+{
+  "status": "PASS",
+  "workspace_packages": [
+    [
+      "fs-benchmark-pro",
+      "0.1.4"
+    ],
+    [
+      "layerfs-cli",
+      "0.1.4"
+    ],
+    [
+      "layerfs-content",
+      "0.1.4"
+    ],
+    [
+      "layerfs-daemon",
+      "0.1.4"
+    ],
+    [
+      "layerfs-eval",
+      "0.1.4"
+    ],
+    [
+      "layerfs-fuse",
+      "0.1.4"
+    ],
+    [
+      "layerfs-layerstack-store",
+      "0.1.4"
+    ],
+    [
+      "layerfs-materialization",
+      "0.1.4"
+    ],
+    [
+      "layerfs-monitor",
+      "0.1.4"
+    ],
+    [
+      "layerfs-sdk",
+      "0.1.4"
+    ],
+    [
+      "layerfs-workspace",
+      "0.1.4"
+    ],
+    [
+      "layerfs-workspace-core",
+      "0.1.4"
+    ]
+  ],
+  "imported_packages_unchanged": 112
+}

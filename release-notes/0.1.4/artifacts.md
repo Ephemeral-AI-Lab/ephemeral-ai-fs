@@ -38,3 +38,7 @@ This preparation intentionally leaves merge, tag creation, final archive
 construction and publication as explicit subsequent actions. Local benchmark
 binaries/images remain under their original seals; they are not mislabeled as
 new release binaries.
+
+## Reproducible preparation
+
+Run `python3 release-notes/0.1.4/prepare_artifacts.py FRESH_OUTPUT --candidate --ref COMMIT` under the shared measurement lock to prepare six clearly named candidate assets. The helper archives tracked Git content only and validates membership and checksums. Repeat with `--verify` to validate without writing. For the eventual authorized release, omit `--candidate` and use the actual `refs/tags/v0.1.4`; an absent tag is rejected. Candidate archives are not published release assets.
