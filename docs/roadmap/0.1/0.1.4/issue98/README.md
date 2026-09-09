@@ -1,9 +1,29 @@
-The owner requested a measured fix for slow full Torch .venv Workspace Commit after accepting v0.1.4 preparation.
+# Issue #98: Workspace admission and spill readback
 
-Current qualified source 1e3dce93547c4186484d75e1f9439a5491e0074a takes about 7.1–7.5 seconds for Commit. A diagnostic reported 2.923 s in content construction/admission, 3.582 s in remaining object admission, 0.220 s checkpoint, 164,150 inserted objects and 1,324 admission transactions. The original failed-workflow 3.240 s observation is not an eligible successful baseline.
+Status: retained candidate frozen; terminal qualification pending. Follow-up to the accepted v0.1.4 preparation (#97), requested by the owner after completing the full Torch `.venv` correctness proof. The [original plan](plan.md) and all failed attempts remain recorded.
 
-First bounded experiment: reuse existing SQL transaction coalescing in Workspace admission, retaining physical batches, strict <8192-object/<4-MiB SQL limits, exact collision/dependency checks, rollback, staging handoff and final-root atomicity. Keep Workspace comparison caching disabled to isolate this change. Preserve 4-KiB SQLite pages, encoding, dependencies, resource limits, fixtures and assertions.
+## Measured problem and repair
 
-Measure adjacent current-control/candidate full frozen .venv workloads under the shared measurement lock with the same daemon/FUSE image (runtime sources unchanged), fresh macOS-owned Stores and full independent readback. Record CPU/RSS, transaction diagnostics and allocated storage. Reuse the original archive/source identity and 2-CPU/2-GiB/no-swap/256-PID/480-second outer/180-second verification contract. No formal historical speedup claim: these are focused same-contract optimization observations.
+The unchanged control previously spent about 89% of its 7.299-second diagnostic Commit in content construction/admission and subsequent object admission. Checkpoint installation was only 0.220 seconds. The run inserted 164,150 objects, reused three, and committed 1,324 SQL admission transactions.
 
-Retain only measurable improvements with correctness/storage validation; profile remaining admission work before another change. Preserve rejected attempts. Freeze the final candidate before affected Store/Workspace/native checks, Clippy/formatting and terminal qualification. This follow-up does not reopen accepted #71/#93/#95 or change historical results. Release stack currently ends at #97; no merge/tag/release is authorized here.
+1. Workspace admission now uses the existing bounded SQL coalescer, closes its cohort before staging, and preserves rollback of pending and earlier committed batches. Physical batches and strict <8,192-object/<4-MiB transaction bounds are unchanged. Init's comparison cache remains disabled on Workspace.
+2. A short profile of the remaining late-Commit work located 1,431 of 1,816 sampled `admit_remaining` stacks in spill `read_exact`/`File::read`. Graph order can jump around a spool; the existing up-to-896-KiB read-ahead repeatedly copies large windows across those seeks. Ordered spill visitation now caps that buffer at the existing 64-KiB I/O bound. Sequential ID scanning retains its buffer. No frame order, hints, authentication, codec or file identity changes. Sampled stacks do not measure physical disk bytes or supply a complete elapsed-time decomposition.
+
+## Adjacent observations
+
+| Pair | Control Commit | Candidate Commit | Result |
+|---|---:|---:|---|
+| Coalescing, control first | 6.865396 s | 6.373749 s | 7.2% lower |
+| Coalescing, reversed order | 6.711595 s | 6.263154 s | 6.7% lower |
+| Smaller spill read-ahead, coalescing control | 6.265651 s | 4.194146 s | 33.1% lower |
+| Both changes against original control | 6.671061 s | 4.152412 s | 37.8% lower |
+
+The combined pair's Exec + Commit is 12.667237 → 10.178917 seconds (19.6% lower). Host CPU is 8.249865 → 5.714634 seconds. Peak RSS is 126,861,312 → 132,300,800 bytes (+5.1875 MiB). Both Stores allocate 218,107,904 bytes; logical sizes are 214,097,920 and 214,122,496 bytes. These focused samples use uncontrolled caches, fresh Stores and the same frozen input/image; no historical failed-workflow timing is a denominator.
+
+All eight pair members passed exhaustive independent content/metadata readback and cleanup. The selected profile run also passed full readback. The fixture has 16,395 files, 581,658,413 regular-file bytes, 1,283 subdirectories and three symlinks. No optional optimization remains planned before qualification.
+
+## Coverage and evidence
+
+The new Workspace test covers coalesced bounds, exact collisions, rollback of both pending and committed objects while retaining baseline data, and a clean transaction handoff to staging. Existing selected-object spill-order coverage now crosses the read-ahead window; focused spill/authentication checks pass. Earlier compile and test-fixture failures are retained in [evidence](evidence/).
+
+[Paired results](paired-results.json) and raw per-arm commands, hashes, stdout and oracle receipts are included. During these host-only Store experiments the prior sealed daemon/FUSE image is reused because runtime sources/protocols remain unchanged. Final source/host/image sealing, complete native checks, full benchmark and full157 storage/history qualification follow before delivery. Original raw Stores and binaries remain under `/Users/yifanxu/Ephemeral-AI-Lab/layerfs-workspace-admission-runs`.
