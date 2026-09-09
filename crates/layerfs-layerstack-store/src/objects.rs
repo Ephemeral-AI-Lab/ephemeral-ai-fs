@@ -1,4 +1,6 @@
 mod admission;
+#[cfg(test)]
+mod comparison_reuse_tests;
 mod diagnostic;
 pub(crate) use admission::PreparedAdmission;
 mod pack;
@@ -38,6 +40,9 @@ pub(crate) const INITIALIZATION_SLAB_QUEUE_SLOTS: usize = 4;
 const CANDIDATE_MEMORY_BYTES: usize = 8 * 1024 * 1024;
 const CANDIDATE_INDEX_BYTES: usize = 64 * 1024 * 1024;
 const FRESH_ADMISSION_FILTER_BYTES: usize = 4 * 1024 * 1024;
+const COMPARISON_REUSE_BYTES: usize = 2 * 1024 * 1024;
+// Covers a whole B-tree node even when it contains only one retained entry.
+const COMPARISON_REUSE_ENTRY_BYTES: usize = 2048;
 // C: cumulative metadata-lookup allowance, not resident memory. The frozen
 // full157 bound is 3763 attached flat-root cursors * 2 grants * 131136 bytes.
 const CORRESPONDENCE_OPERATION_RESERVATION_BYTES: u64 = 1024 * 1024 * 1024;
@@ -2168,6 +2173,9 @@ pub(crate) struct CheckedOutputAdmission {
     incoming_bytes: usize,
     batch: Vec<AuthenticatedCanonicalObject>,
     seen: SpillableObjectSet,
+    compared: BTreeMap<ObjectId, (read::Location, Vec<u8>)>,
+    compared_bytes: usize,
+    compared_limit: usize,
     pending: HashMap<ObjectId, usize>,
     batch_bytes: usize,
     batch_epoch: u64,
@@ -3306,8 +3314,14 @@ impl CheckedOutputAdmission {
         db: &crate::schema::StoreDb,
         session: std::sync::Arc<AdmissionSession>,
     ) -> Result<Self> {
-        // Repartition the existing 16MiB index allowance, never add a cache.
+        // Repartition the existing 16MiB allowance for owner-local comparison reuse.
+        let compared_limit = if session.coalesce {
+            COMPARISON_REUSE_BYTES
+        } else {
+            0
+        };
         let seen_limit = CANDIDATE_INDEX_BYTES / 4
+            - compared_limit
             - if session.fresh_ids.is_some() {
                 FRESH_ADMISSION_FILTER_BYTES
             } else {
@@ -3323,6 +3337,9 @@ impl CheckedOutputAdmission {
             // Only preexisting occurrences need a separate uniqueness index.
             // This session's published packs already identify its fresh output.
             seen: SpillableObjectSet::bounded(seen_limit)?,
+            compared: BTreeMap::new(),
+            compared_bytes: 0,
+            compared_limit,
             pending: HashMap::new(),
             batch_bytes: 0,
             batch_epoch: 0,
@@ -3380,6 +3397,7 @@ impl CheckedOutputAdmission {
         }
         let owned = transient
             .saturating_add(incoming)
+            .saturating_add(self.compared_bytes as u64)
             .saturating_add(self.incoming_bytes as u64)
             .saturating_add(
                 (self.incoming.capacity() * std::mem::size_of::<CanonicalObject>()) as u64,
@@ -3477,9 +3495,41 @@ impl CheckedOutputAdmission {
             .map(|object| (object.id, object.bytes.as_slice()))
             .collect::<Vec<_>>();
         let mut metrics = ObjectInsertMetrics::default();
-        // The watermark supplies occurrence provenance, never authentication.
-        // Every found object still compares its canonical length and actual bytes.
-        admission::compare(&self.db, &known, &mut supplied, &mut metrics, 0)?;
+        if self.compared_limit == 0 {
+            admission::compare(&self.db, &known, &mut supplied, &mut metrics, 0)?;
+        } else {
+            // Reuse only bytes already compared against an authenticated read at this
+            // exact immutable location. Every occurrence still checks actual bytes.
+            let mut unread = BTreeMap::new();
+            for object in &page {
+                if let Some(location) = known.get(&object.id) {
+                    if let Some((previous, bytes)) = self
+                        .compared
+                        .get(&object.id)
+                        .filter(|(previous, _)| previous == location)
+                    {
+                        if previous.canonical_length != object.bytes.len() {
+                            return Err(StoreError::Integrity("object length collision"));
+                        }
+                        if *bytes != object.bytes {
+                            return Err(StoreError::Integrity("object collision"));
+                        }
+                        self.diagnostics.collision_checks += 1;
+                    } else {
+                        unread.insert(object.id, *location);
+                    }
+                }
+            }
+            // The original locator map remains live beside the misses-only map.
+            admission::compare(
+                &self.db,
+                &unread,
+                &mut supplied,
+                &mut metrics,
+                known.len() * 512,
+            )?;
+            drop(unread);
+        }
         self.note_collision_reads(metrics);
         drop(supplied);
         let mut stats = crate::PhysicalStorageReceipt::default();
@@ -3503,6 +3553,7 @@ impl CheckedOutputAdmission {
                     self.diagnostics.cross_batch_skipped_bytes += object.bytes.len() as u64;
                     diagnostic::occurrence(&mut object, 2, &mut stats);
                 }
+                self.remember_comparison(object.id, *location, object.0.bytes);
             } else {
                 diagnostic::occurrence(&mut object, 1, &mut stats);
                 diagnostic::eligible(&object, &mut stats);
@@ -3512,6 +3563,33 @@ impl CheckedOutputAdmission {
         self.db.note_physical(stats);
         self.incoming = Vec::with_capacity(INITIALIZATION_SLAB_OBJECTS);
         Ok(())
+    }
+
+    fn remember_comparison(&mut self, id: ObjectId, location: read::Location, bytes: Vec<u8>) {
+        if self
+            .compared
+            .get(&id)
+            .is_some_and(|(previous, _)| *previous == location)
+        {
+            return;
+        }
+        // Charge payload capacity and conservative B-tree node/index ownership.
+        let charge = bytes
+            .capacity()
+            .saturating_add(COMPARISON_REUSE_ENTRY_BYTES);
+        if charge > self.compared_limit {
+            return;
+        }
+        if let Some((_, previous)) = self.compared.remove(&id) {
+            self.compared_bytes -= previous.capacity() + COMPARISON_REUSE_ENTRY_BYTES;
+        }
+        if self.compared_bytes + charge > self.compared_limit {
+            // ponytail: clear on saturation; use incremental eviction only if measured thrashing warrants it.
+            self.compared.clear();
+            self.compared_bytes = 0;
+        }
+        self.compared_bytes += charge;
+        self.compared.insert(id, (location, bytes));
     }
 
     fn note_collision_reads(&mut self, metrics: ObjectInsertMetrics) {
@@ -4309,7 +4387,7 @@ mod tests {
             * std::mem::size_of::<u64>();
         assert_eq!(bitmap_bytes, FRESH_ADMISSION_FILTER_BYTES);
         assert_eq!(
-            owner.seen.memory_limit + bitmap_bytes,
+            owner.seen.memory_limit + bitmap_bytes + owner.compared_limit,
             CANDIDATE_INDEX_BYTES / 4
         );
         let mut ids = vec![first.id, second.id];
@@ -4416,7 +4494,10 @@ mod tests {
             }
             let mut owner = CheckedOutputAdmission::new_for_initialization(&db).unwrap();
             assert!(owner.session.fresh_ids.is_none());
-            assert_eq!(owner.seen.memory_limit, CANDIDATE_INDEX_BYTES / 4);
+            assert_eq!(
+                owner.seen.memory_limit + owner.compared_limit,
+                CANDIDATE_INDEX_BYTES / 4
+            );
             let mut ids = vec![original.id, ObjectId::for_bytes(b"missing")];
             let expected = ids.clone();
             owner.session.retain_possible_ids(&mut ids).unwrap();

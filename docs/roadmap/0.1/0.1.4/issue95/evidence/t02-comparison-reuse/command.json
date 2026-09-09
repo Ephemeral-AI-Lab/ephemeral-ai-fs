@@ -1,0 +1,11 @@
+[
+  "cargo",
+  "+1.85.1",
+  "test",
+  "--locked",
+  "-j2",
+  "-p",
+  "layerfs-layerstack-store",
+  "--lib",
+  "comparison_reuse"
+]
