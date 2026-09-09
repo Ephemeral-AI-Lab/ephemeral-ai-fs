@@ -1,4 +1,4 @@
-"""Ten fixed original snapshots; prepare only their selected transitions."""
+"""Fixed original snapshot selections; prepare only selected transitions."""
 import hashlib
 import json
 import os
@@ -8,9 +8,15 @@ import uuid
 
 INDICES = (1, 18, 36, 53, 70, 88, 105, 122, 140, 157)
 CONTRACT = 'docs/roadmap/0.1/0.1.5/issue100/ten-snapshot-contract.md'
+PROFILES = {
+    'deepseek-ten': (INDICES, 'deepseek-ten-spread-v1', CONTRACT),
+    'deepseek-stride3': (tuple(range(1, 158, 3)), 'deepseek-stride3-v1',
+        'docs/roadmap/0.1/0.1.5/issue100/stride3-snapshot-contract.md'),
+}
 
 
-def inputs(data, cache, deadline):
+def inputs(data, cache, deadline, profile="deepseek-ten"):
+    indices, scenario, _ = PROFILES[profile]
     from storage_smoke import MANIFEST_SHA, SOURCE_TIP, entries, encode, git, save, seal
     import runtime
     raw = (data/'checkpoint-manifest.json').read_bytes()
@@ -19,17 +25,17 @@ def inputs(data, cache, deadline):
     manifest = json.loads(raw)
     if manifest['tip'] != SOURCE_TIP or len(manifest['checkpoints']) != 157:
         raise ValueError('original history identity')
-    assert len(INDICES) == 10 and tuple(sorted(set(INDICES))) == INDICES
-    rows = [manifest['checkpoints'][i-1] for i in INDICES]
+    assert indices[0] == 1 and indices[-1] == 157 and tuple(sorted(set(indices))) == indices
+    rows = [manifest['checkpoints'][i-1] for i in indices]
     trees = []
     for row in rows:
         raw_tree = git(data/'source.git', 'ls-tree', '-rlz', '--full-tree', row['sha'], deadline=deadline)
         if hashlib.sha256(raw_tree).hexdigest() != row['manifest_sha256']:
             raise ValueError('selected original tree identity')
         trees.append(entries(raw_tree))
-    key = hashlib.sha256(raw + repr(INDICES).encode() + Path(__file__).read_bytes()).hexdigest()
+    key = hashlib.sha256(raw + repr(indices).encode() + Path(__file__).read_bytes()).hexdigest()
     cache.mkdir(parents=True, exist_ok=True)
-    final = cache/('deepseek-ten-'+key[:20])
+    final = cache/(profile+'-'+key[:20])
     if not final.exists():
         temp = cache/('partial-'+uuid.uuid4().hex); temp.mkdir()
         previous = {}; digests = {}; result = []
@@ -41,7 +47,7 @@ def inputs(data, cache, deadline):
                 (folder/'manifest.tsv').write_text(encode(tree))
                 (folder/'previous.tsv').write_text(encode(previous))
                 for path,(mode,oid,size) in tree.items():
-                    deadline.require('ten-snapshot preparation')
+                    deadline.require(profile+' preparation')
                     if previous.get(path) == (mode,oid,size):
                         continue
                     dest = folder/'blobs'/oid
@@ -71,8 +77,8 @@ def inputs(data, cache, deadline):
             proc.stdin.close()
             if proc.wait(timeout=30):
                 raise RuntimeError(proc.stderr.read().decode())
-            save(temp/'fixture.json',{'deepseek-ten':{'input':'-','states':result,
-                 'scenario':'deepseek-ten-spread-v1','full157_indices':list(INDICES),
+            save(temp/'fixture.json',{profile:{'input':'-','states':result,
+                 'scenario':scenario,'full157_indices':list(indices),
                  'manifest_sha256':MANIFEST_SHA,'generator_sha256':runtime.file_sha256(Path(__file__))}})
             for p in temp.rglob('*'):
                 p.chmod(0o555 if p.is_dir() else 0o444)
@@ -82,8 +88,8 @@ def inputs(data, cache, deadline):
             proc.stdout.close(); proc.stderr.close()
             if not proc.stdin.closed: proc.stdin.close()
     fixture = json.loads((final/'fixture.json').read_text())
-    states = fixture['deepseek-ten']['states']
-    if [r['full157_index'] for r in states] != list(INDICES):
+    states = fixture[profile]['states']
+    if [r['full157_index'] for r in states] != list(indices):
         raise ValueError('cached selection changed')
     previous = {}
     for state,original,tree in zip(states,rows,trees):

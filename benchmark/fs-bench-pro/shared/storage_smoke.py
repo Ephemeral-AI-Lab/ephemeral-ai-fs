@@ -16,14 +16,15 @@ import time
 import uuid
 import runner
 import runtime
+from deepseek_ten import PROFILES as SELECTED_DEEPSEEK
 
 CONTRACT = "docs/roadmap/0.1/0.1.4/implementation-smoke-contract-v1.md"
 MANIFEST_SHA = "03f21acfb415907f521217e7a972ed512265c8d0c2da0f8034e2ff3014334271"
 SOURCE_TIP = "b0a7d2ce3b4c19d7452e364b2d7acbfa87e707ed"
 GIB = 1024**3
-CASES = {"deepseek-ten": ["deepseek-ten"], "small-file-delta-10x30-v1": ["small-file-delta-10x30-v1"], "deepseek-full": ["deepseek-full"], "deepseek-five": ["deepseek-five"], "small-files": ["small-files"],
+CASES = {"deepseek-stride3": ["deepseek-stride3"], "deepseek-ten": ["deepseek-ten"], "small-file-delta-10x30-v1": ["small-file-delta-10x30-v1"], "deepseek-full": ["deepseek-full"], "deepseek-five": ["deepseek-five"], "small-files": ["small-files"],
          "frequent-edits": ["sdk-text-32k", "sdk-binary-8m", "fuse-text-32k", "fuse-binary-8m"]}
-LIMITS = {"deepseek-ten": (600, 120, 600), "small-file-delta-10x30-v1": (600, 30, 600), "deepseek-full": (14400, 300, 14400), "deepseek-five": (600, 120, 600), "frequent-edits": (300, 30, 300), "small-files": (120, 30, 120)}
+LIMITS = {"deepseek-stride3": (14400, 300, 14400), "deepseek-ten": (600, 120, 600), "small-file-delta-10x30-v1": (600, 30, 600), "deepseek-full": (14400, 300, 14400), "deepseek-five": (600, 120, 600), "frequent-edits": (300, 30, 300), "small-files": (120, 30, 120)}
 
 
 def save(path, value):
@@ -277,7 +278,7 @@ def run_case(args, output, case, fixture, image, mode, remaining_phase_seconds, 
             session_mode = "compatibility" if args.storage_compat_run else mode
             # The existing DeepSeek session accepts explicit step commands; selection
             # and cardinality belong to this runner, not another compiled workload.
-            session_case = "deepseek-full" if case == "deepseek-ten" else case
+            session_case = "deepseek-full" if case in SELECTED_DEEPSEEK else case
             command = [args.host_binary, "storage-smoke-session", str(host), sample.id, session_mode, session_case, fixture["input"]]
             result["command"] = command
             proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr, text=True, bufsize=1, env=env, start_new_session=True)
@@ -296,7 +297,7 @@ def run_case(args, output, case, fixture, image, mode, remaining_phase_seconds, 
             if mode == "performance" and case == "small-files":
                 result["read_passes"] = [send("read\t"+name, "storage-smoke-read") for name in ("first", "repeat")]
             selected = fixture["states"] if mode == "performance" else performance["records"]
-            if mode == "verification" and case not in ("deepseek-five", "deepseek-full", "deepseek-ten"):
+            if mode == "verification" and case not in ("deepseek-five", "deepseek-full", "deepseek-ten", "deepseek-stride3"):
                 selected = [{"index":0, "identity":"initial", "oracle":fixture["initial_oracle"]}, *selected]
             for row in selected:
                 if time.monotonic() >= phase_end: raise TimeoutError("smoke complete phase budget")
@@ -305,23 +306,23 @@ def run_case(args, output, case, fixture, image, mode, remaining_phase_seconds, 
                 step_start = time.monotonic_ns()
                 if mode == "performance":
                     transfer = 0
-                    if case in ("deepseek-five", "deepseek-full", "deepseek-ten", "small-file-delta-10x30-v1"):
+                    if case in ("deepseek-five", "deepseek-full", "deepseek-ten", "deepseek-stride3", "small-file-delta-10x30-v1"):
                         t = time.monotonic_ns()
                         runtime.run(["docker", "exec", sample.id, "rm", "-rf", "/input/checkpoint"], deadline=runtime.Deadline.after(30))
-                        runtime.install_tree(sample.name, Path(row["input"]), "/input/checkpoint", runtime.Deadline.after(300 if case == "deepseek-full" else 120))
+                        runtime.install_tree(sample.name, Path(row["input"]), "/input/checkpoint", runtime.Deadline.after(300 if case in ("deepseek-full", "deepseek-stride3") else 120))
                         transfer = time.monotonic_ns()-t
                     values = send(f"step\t{row['index']}", "storage-smoke-step")
                     record = {**row, **values[-1], "receipts":values, "transfer_ns":transfer}
-                    if case not in ("deepseek-five", "deepseek-full", "deepseek-ten", "small-files", "small-file-delta-10x30-v1") and row["index"] == 5 and record["created"]:
+                    if case not in ("deepseek-five", "deepseek-full", "deepseek-ten", "deepseek-stride3", "small-files", "small-file-delta-10x30-v1") and row["index"] == 5 and record["created"]:
                         raise RuntimeError("unchanged Commit created a new state")
-                    if case == "small-file-delta-10x30-v1" and not record["created"]:
-                        raise RuntimeError("small-file history requires Created")
+                    if case in ("small-file-delta-10x30-v1", "deepseek-stride3") and not record["created"]:
+                        raise RuntimeError("selected history requires Created")
                     record["identity"] = record["commit_id"] or "initial"
                 else:
                     identity = row.get("identity") or row["commit_id"]
-                    values = send("verify\t"+identity, "storage-smoke-verified-read", LIMITS[args.storage_smoke][1 if case in ("deepseek-full", "deepseek-ten", "small-file-delta-10x30-v1") else 2])
+                    values = send("verify\t"+identity, "storage-smoke-verified-read", LIMITS[args.storage_smoke][1 if case in ("deepseek-full", "deepseek-ten", "deepseek-stride3", "small-file-delta-10x30-v1") else 2])
                     observed = output / f"observed-{row['index']}.tsv"
-                    runtime.run(["docker", "cp", sample.id+":/input/observed.tsv", str(observed)], deadline=runtime.Deadline.after(300 if case == "deepseek-full" else 120))
+                    runtime.run(["docker", "cp", sample.id+":/input/observed.tsv", str(observed)], deadline=runtime.Deadline.after(300 if case in ("deepseek-full", "deepseek-stride3") else 120))
                     actual = {}
                     for line in observed.read_text().splitlines():
                         kind, size, digest, path = line.split("\t")
@@ -466,14 +467,14 @@ def main(argv=None):
             raise ValueError("stale host/image/source identity")
         if shutil.disk_usage(args.output.parent if args.output and args.output.parent.exists() else runner.REPO).free < 50*GIB:
             raise RuntimeError("free disk reserve")
-        deadline = runtime.Deadline.after(14400 if args.storage_smoke == "deepseek-full" else 600 if args.storage_smoke in ("deepseek-five", "deepseek-ten") else 120)
+        deadline = runtime.Deadline.after(14400 if args.storage_smoke in ("deepseek-full", "deepseek-stride3") else 600 if args.storage_smoke in ("deepseek-five", "deepseek-ten") else 120)
         if args.storage_compat_run:
             fixtures, source_seal = prepare_compatibility(args, current, host_identity, image, deadline)
-        elif args.storage_smoke == "deepseek-ten":
+        elif args.storage_smoke in SELECTED_DEEPSEEK:
             from deepseek_ten import inputs
-            fixtures = inputs(args.data, args.fixtures, deadline)
+            fixtures = inputs(args.data, args.fixtures, deadline, args.storage_smoke)
         else:
-            fixtures = small_file_delta_inputs(args.fixtures) if args.storage_smoke == "small-file-delta-10x30-v1" else deepseek_inputs(args.data,deadline,157 if args.storage_smoke == "deepseek-full" else 5) if args.storage_smoke in ("deepseek-five", "deepseek-full", "deepseek-ten") else synthetic_inputs(args.fixtures,args.storage_smoke,deadline)
+            fixtures = small_file_delta_inputs(args.fixtures) if args.storage_smoke == "small-file-delta-10x30-v1" else deepseek_inputs(args.data,deadline,157 if args.storage_smoke == "deepseek-full" else 5) if args.storage_smoke in ("deepseek-five", "deepseek-full", "deepseek-ten", "deepseek-stride3") else synthetic_inputs(args.fixtures,args.storage_smoke,deadline)
         preparation_ns = time.monotonic_ns()-start
         output = args.storage_verify_run or args.output
         if args.storage_compat_run:
@@ -482,7 +483,7 @@ def main(argv=None):
             saved = json.loads((output/"identity.json").read_text())
             if saved["host_identity"]["binary_sha256"] != host_identity["binary_sha256"] or saved["image_id"] != image["Id"] or saved["fixtures"] != fixtures:
                 raise ValueError("verification custody mismatch")
-            if args.storage_smoke in ("deepseek-full", "deepseek-ten", "small-file-delta-10x30-v1"):
+            if args.storage_smoke in ("deepseek-full", "deepseek-ten", "deepseek-stride3", "small-file-delta-10x30-v1"):
                 measured = json.loads((output / "performance-manifest.json").read_text())
                 for case in CASES[args.storage_smoke]:
                     name = case + "/host-runtime/store.sqlite"
@@ -493,7 +494,7 @@ def main(argv=None):
             output.mkdir(parents=True,exist_ok=False)
             save(output/"identity.json", {"schema":"deepseek-full-issue100-v1" if args.storage_smoke == "deepseek-full" else "storage-smoke-v1","smoke":args.storage_smoke,"family":"small_file_delta_smoke" if args.storage_smoke == "small-file-delta-10x30-v1" else "storage-smoke-v1","source_arm":args.source_arm,"repetition":args.repetition,
                 "host_identity":host_identity,"image_id":image["Id"],"source":current,"fixtures":fixtures,
-                "contract_sha256":runtime.file_sha256(runner.REPO/("docs/roadmap/0.1/0.1.5/issue100/ten-snapshot-contract.md" if args.storage_smoke == "deepseek-ten" else "docs/roadmap/0.1/0.1.5/delta-encoding-benchmarks.md" if args.storage_smoke == "small-file-delta-10x30-v1" else CONTRACT)),"preparation_ns":preparation_ns,
+                "contract_sha256":runtime.file_sha256(runner.REPO/(SELECTED_DEEPSEEK[args.storage_smoke][2] if args.storage_smoke in SELECTED_DEEPSEEK else "docs/roadmap/0.1/0.1.5/delta-encoding-benchmarks.md" if args.storage_smoke == "small-file-delta-10x30-v1" else CONTRACT)),"preparation_ns":preparation_ns,
                 "full_run_contract_sha256":runtime.file_sha256(runner.REPO/"docs/roadmap/0.1/0.1.5/full157-execution-contract.md") if args.storage_smoke == "deepseek-full" else None,
                 "phase_operation_verification_limits_seconds":LIMITS[args.storage_smoke],
                 "admission_eligible":False,"cache_profile":"fresh-store-existing-os-cache-uncontrolled",

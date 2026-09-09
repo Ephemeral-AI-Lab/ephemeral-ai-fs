@@ -15,6 +15,9 @@
 
 Use the [prioritized optimization checklist and experiment ledger](issue100/optimization-checklist-and-experiment-ledger.md)
 to track next experiments, measured and rejected approaches, and remaining product qualification.
+The [structural offline reference](issue100/structural-investigations.md) now measures **79,790,080 B**
+with all157 original states verified, using extended read bounds. Future development campaigns
+use the [53-state stride3 track](issue100/stride3-snapshot-contract.md); full157 remains final validation.
 
 Read the [bounded predecessor amendment](issue100/bounded-predecessor-amendment.md),
 [the removed-name amendment](issue100/removed-base-amendment.md),

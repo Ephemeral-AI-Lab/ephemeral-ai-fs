@@ -4,7 +4,7 @@ Updated: **2026-09-10**. Working branch: `codex/issue100-40mb-experiments`.
 
 This is the working index for priorities, completed approaches, results, rejected ideas and remaining qualification. Update this file after each experiment. Keep the linked raw reports and manifests immutable; add a new run when the policy changes.
 
-**Current assessment:** historical reuse is the largest opportunity. The best verified offline full157 copy is **98,668,544 B**, still **42,295,296 B / 75.03% above recorded Git**. A useful intermediate saving is not completion. The next experiment is **NEXT-01: bounded metadata delta chains**.
+**Current assessment:** historical reuse is the largest opportunity. The best verified offline full157 reference is **79,790,080 B**, still **23,416,832 B / 41.54% above recorded Git**. It uses extended reconstruction bounds and an offline Git-selected content graph. A useful intermediate saving is not completion. **STRUCT-01–03 completed:** metadata representation, whole-history content dependencies, and complete-copy integration recovered **18,878,464 B** with all157 original states verified. The smaller NEXT experiments below are candidate mechanisms, not the top-level strategy.
 
 ## 1. Current scorecard — preserve the measurement boundary
 
@@ -16,52 +16,58 @@ Decimal bytes throughout. The ten-state objective is **40,000,000 B**. Full157 i
 | Latest measured supported product | 49,319,936 | 134,246,400 | Public save/Commit + same-Store verification; [ten](retained-candidate-1-results.md), [157](retained-full157-results.md) |
 | Same-policy compact D + framing B + CDC offline copies | 41,648,128 | 107,958,272 | Both measured; [compact10](40mb-experiment-results.md), [compact157](40mb-offline-full157-results.md) |
 | Matched offline controls for that compact experiment | 48,783,360 | 129,937,408 | Equally VACUUMed controls; do not blend with public allocation |
-| Latest offline copy with depth-one metadata deltas | Not run | **98,668,544** | [History-delta report](history-scaling-and-metadata-deltas.md); 157 original-oracle checks PASS |
+| Prior offline copy with depth-one metadata deltas | Not run | **98,668,544** | [History-delta report](history-scaling-and-metadata-deltas.md); 157 original-oracle checks PASS |
 | Matched chronological FULL control for depth-one deltas | Not run | 108,081,152 | Same canonical objects, chronology, groups and pack membership |
+| Latest structural offline reference, extended read bounds | Not run | **79,790,080** | [Structural investigation](structural-investigations.md); full database, all157 original oracles PASS |
 
 The latest ten-state and latest full157 winners use different metadata policies. Do not infer a scaling rate by comparing those two best numbers. The same-policy compact pair, 41,648,128→107,958,272 B, remains the measured scaling comparison. Git's full157 live allocation is now 56,197,120 B with unchanged apparent sizes and pack contents; keep that later observation separate from the recorded 56,373,248 B.
 
 | Remaining full157 category gap | Current offline B | Recorded Git B | Gap B |
 | --- | ---: | ---: | ---: |
-| Content packs / blob entries | 66,190,736 | 46,982,533 | **19,208,203** |
-| Metadata packs / trees and commits | 25,624,588 | 5,007,335 | **20,617,253** |
-| Indexes, structures and allocation | 6,853,220 | 4,383,380 | **2,469,840** |
-| **Total** | **98,668,544** | **56,373,248** | **42,295,296** |
+| Content packs / blob entries | 56,367,207 | 46,982,533 | **9,384,674** |
+| Metadata packs / trees and commits | 17,459,061 | 5,007,335 | **12,451,726** |
+| Indexes, structures and allocation | 5,963,812 | 4,383,380 | **1,580,432** |
+| **Total** | **79,790,080** | **56,373,248** | **23,416,832** |
 
-## 2. Optimization queue — highest to lowest priority
+## 2. Structural investigations — highest priority
 
-An unchecked item means the proposed experiment has not completed. Priority is based on measured relevance and implementation scope, not a promised saving. Validation and product qualification in section 5 are mandatory gates, not lower-priority optional work.
+The previous queue ranked narrow mechanisms too highly for the then-remaining **42,295,296 B** gap. The completed campaign reduced it to **23,416,832 B**; the following motivation preserves the starting measurement. At campaign start, metadata accounted for **20,617,253 B**, content **19,208,203 B**, and database/index/allocation remainder **2,469,840 B**. The objective is to establish a measured route to savings in the tens of megabytes. Category differences are accounting comparisons, not guaranteed recoverable bytes; LayerFS preserves additional metadata semantics.
 
-### Priority 1 — NEXT-01: bounded metadata delta chains
+| Order | ID / investigation | Required evidence | Status |
+| --- | --- | --- | --- |
+| 1 | STRUCT-01 — metadata cost that grows mainly with changes | Compare bounded historical page reuse with a structurally different sharing/change representation. Encode full157, include bases, checkpoints and index costs, and reconstruct exact metadata. Establish how much of the 20.62 MB gap each mechanism addresses and its read cost. | COMPLETE — measured reference |
+| 2 | STRUCT-02 — complete content dependency policy | Compare current histories with a better bounded base graph and an offline repacked reference where feasible. Charge FULL resets, shared bases, worse descendants and representation boundaries. Separate base-selection losses from the cost of read guarantees across the 19.21 MB gap. | COMPLETE — measured reference |
+| 3 | STRUCT-03 — complete-copy integration and feasibility | Combine compatible measured winners in a fresh database; include every locator, base, checkpoint and allocator row. Verify all157 original states and report remaining gap plus resource limitations. Reference-only encodings remain separate until they have an actual reader and layout. | COMPLETE — 79,790,080 B, all157 oracles PASS |
 
-**Evidence:** META-05 saved 9,412,608 B of matched complete-copy allocation, but **4,060 leaf targets fell back to FULL because their selected origin was already DELTA**. Current metadata still exceeds Git by 20,617,253 B.
+- [x] STRUCT-01: freeze protocol, run full-history encoded comparisons, verify and report.
+- [x] STRUCT-02: freeze protocol, run complete-history graph comparisons, verify and report.
+- [x] STRUCT-03: audit existing allocation and matched controls while the independent experiments run.
+- [x] STRUCT-03: assemble compatible winners, verify full157 and report the actual combined outcome.
+- [x] Re-rank mechanisms from the resulting evidence; do not declare success from a sequence of small improvements.
 
-**Hypothesis:** allowing a short, explicitly bounded metadata chain can retain successive small differences instead of periodically writing FULL pages. Keep canonical metadata, compact identities, candidate selection, matcher, codec and complete-group comparison fixed; change only permitted base roles/chain policy.
+Results and experiment protocols are collected in [the structural investigation report](structural-investigations.md). Earlier measured results in section 3 remain unchanged.
 
-- [ ] Write the fixed protocol: maximum edges, summed decoded closure including target, retained encoded capacity, live buffers, authentication, chronology and fallback.
-- [ ] Implement the smallest diagnostic reader/writer extension; use one policy, not a depth sweep.
-- [ ] Simulate the complete chronological metadata graph, charging every FULL reset, base and changed descendant.
-- [ ] Assemble matched complete copies and compare allocated bytes, not only delta records.
-- [ ] Verify all canonical metadata, negative dependency/boundary cases and all 157 original state oracles.
-- [ ] Record decision, work/resource costs and the exact new result under a new experiment ID.
+### Mechanism backlog — subordinate to the structural investigations
 
-**Stop/reject if:** complete storage does not improve, dependencies violate declared bounds, or apparent wins depend on omitted bases/old representations. The 4,060 fallbacks are a population, not estimated savings.
+Statuses below distinguish completed structural trials from remaining hypotheses. The next priorities are shared inode values with efficient historical lookup, practical discovery of better content bases, and a whole-file representation with explicit read limits. See the structural report for the measured remaining gap. NEXT-01/05 belong to STRUCT-01; NEXT-02/03/04/07 to STRUCT-02. Physical replacement moves into the main content investigation as a reference comparison, even though product implementation remains substantial work. NEXT-06/08 remain lower priority until the structural measurements justify them. Product qualification in section 5 remains mandatory.
 
-### Priority 2 — NEXT-02: newest eligible SmallContent ancestor
+### NEXT-01 — bounded metadata chains: measured, retained as a reference
 
-**Evidence:** full157 has **9,254,960 B of FULL frames** whose same-path predecessor cannot be extended within current bounds; 7,655,946 B hits only the eight-edge limit. These are structural eligibility facts, not delivered-hint telemetry or proven savings. See STUDY-02.
+- [x] Fixed16-edge/128KiB policy, complete chronology, grouping, FULL resets and bases counted.
+- [x] All24,748 canonical metadata objects and all158 roots verified; actual-copy all157 original states PASS.
+- [x] Actual metadata packs **25,624,588→17,459,061 B**, saving **8,165,527 B**; record read costs and product limitations.
 
-**Hypothesis:** one newest existing predecessor ancestor that fits the current limits may avoid a FULL reset without raising the limits or adding a new physical grammar.
+The structural checkpoint/change alternative is also measured at **14,032,896 B** of its own metadata database, including indexes. It has different historical lookup semantics and is not part of the79.79MB copy. Do not promote either without product read-cost qualification.
 
-- [ ] Freeze a small byte-ranked sample across the actual capped file families, with exact predecessor provenance.
-- [ ] Compare actual FULL against one newest eligible ancestor using the same codec and complete reference cost.
-- [ ] If useful, apply one fixed policy chronologically to complete original families, including larger accumulated deltas and worse descendants.
-- [ ] Measure the complete copy and all affected historical content; retain the current format/depth/byte ceilings.
-- [ ] Record results and whether a full157 integration experiment is justified.
+### NEXT-02 — eligible SmallContent ancestor: complete-history trial rejected
 
-**Stop/reject if:** older-base accumulation erases the initial savings. Do not repeat the old FULL-anchor failure while counting only the attractive targets.
+- [x] Supersede the proposed isolated sample with the complete75,398-object forward graph trial.
+- [x] Include all new FULL records and changed descendants; every object authenticates.
+- [x] Record **10,875,406 B growth**, despite6.72MB saving on the previously capped FULL subset.
 
-### Priority 3 — NEXT-03: large-file history attribution and one targeted mechanism
+The reverse same-path trial also loses1,486,612B. These policies are rejected. Git-selected graph references demonstrate **5,127,863 B** record/directory savings within original bounds and **9,803,145 B** with extended bounds. Practical base discovery is now the relevant question.
+
+### Mechanism rank 3 — NEXT-03: large-file history attribution and one targeted mechanism
 
 **Evidence:** optimized native packs are 7,211,036 B versus 2,006,385 B for the 523 corresponding large Git versions, a **5,204,651 B** difference. Existing lockfile similarity recovered 909,266 B in full157, so the remaining large-file gap needs separate attribution.
 
@@ -73,7 +79,7 @@ An unchecked item means the proposed experiment has not completed. Priority is b
 
 **Conditional alternative:** bounded whole-file physical encoding for medium-sized files. It needs explicit grammar, window/memory accounting and random-read analysis; changing a cutoff alone is not an implementation.
 
-### Priority 4 — NEXT-04: better alternative when a valid SmallContent predecessor compresses poorly
+### Mechanism rank 4 — NEXT-04: better alternative when a valid SmallContent predecessor compresses poorly
 
 **Evidence:** the writer consults its retained FULL candidate cache only when the predecessor is unavailable. It does not try that candidate after an eligible predecessor yields a poor delta. The full157 same-object frame gap is 11,487,177 B, but this specific restriction's contribution is unmeasured.
 
@@ -84,7 +90,7 @@ An unchecked item means the proposed experiment has not completed. Priority is b
 
 **Do not repeat:** the rejected selected/retained DELTA-cache variants without evidence that this policy differs in a material way.
 
-### Priority 5 — NEXT-05: compact-ID/shared-inode-value hybrid
+### Mechanism rank 5 — NEXT-05: compact-ID/shared-inode-value hybrid
 
 **Evidence:** full157 inline leaves repeat each distinct inode value 9.886 times. A separate value-CAS representation could share those values, but introduces approximately 89,576 CAS/index rows and replaces inline data with 32-byte references. The 27.53 MB raw-byte model is not a compressed-storage forecast.
 
@@ -93,7 +99,7 @@ An unchecked item means the proposed experiment has not completed. Priority is b
 - [ ] Compare complete metadata-plus-index and whole-copy costs on both ten-state and full157 histories.
 - [ ] Reject if random hash/reference or index costs exceed the sharing benefit.
 
-### Priority 6 — NEXT-06: remaining pack/index overhead
+### Mechanism rank 6 — NEXT-06: remaining pack/index overhead
 
 **Evidence:** simple compaction/locator experiments are sub-megabyte on the ten-state case. Compact framing already forms part of the current offline candidate. Only 2,469,840 B of the current full157 gap is in the entire residual category.
 
@@ -103,7 +109,7 @@ An unchecked item means the proposed experiment has not completed. Priority is b
 
 **Not pending quick wins:** deleting a redundant object index or a free-page backlog; neither exists in the inspected source. Do not truncate content hashes or remove preallocation/authentication length checks to improve a number.
 
-### Priority 7 — NEXT-07: reverse encoding / physical replacement
+### Mechanism rank 7 — NEXT-07: reverse encoding / physical replacement
 
 **Evidence:** Git has useful later-base graphs, but opposing FULL/DELTA assignments cancel large apparent target savings. No complete replacement graph or reclaimed-store result has been measured for LayerFS.
 
@@ -113,7 +119,7 @@ An unchecked item means the proposed experiment has not completed. Priority is b
 
 **Deferred:** this is a substantial storage-lifecycle change. Appending another encoding without reclaiming the original is not a saving.
 
-### Priority 8 — NEXT-08: codec / matcher replacement
+### Mechanism rank 8 — NEXT-08: codec / matcher replacement
 
 **Evidence:** the existing prefix encoder won four of five identical-base original-file tests; Git's matcher won the fifth by 49 B. That small study is not a universal codec ranking, but provides no basis for a wholesale replacement.
 
@@ -121,11 +127,36 @@ An unchecked item means the proposed experiment has not completed. Priority is b
 - [ ] Keep base graph, input bytes and compression parameters equal during that test.
 - [ ] Charge complete encoded records, reconstruction, dependencies and format/ownership costs.
 
+## Fast iteration track — default for subsequent development campaigns
+
+- [x] Freeze **53 states**, original indices **1, 4, 7, …, 157**, under the [stride3 contract](stride3-snapshot-contract.md).
+- [x] Add explicit `deepseek-stride3` harness profile; prepare and independently check all53 original fixture/oracle seals and direct transitions ([fixture result](stride3-fixture-results.md)).
+- [ ] Measure a fresh applicable LayerFS53 control and a separate matched Git53 baseline before comparative claims.
+- [ ] Use selected-state commits directly; preserve original oracles and record actual phase timings.
+- [ ] Advance promising designs to final all157 validation. Do not relabel the existing full157 measurements as53-state results.
+
+The selection reduces commit count by66.24%; a threefold wall-time speedup remains unmeasured. The already-running structural full157 proof finished and is retained.
+
 ## 3. Experiment ledger — completed approaches and their disposition
 
 Rows are grouped by the priority domain above. Within a domain, retained approaches appear together with their rejected alternatives and supporting studies. IDs remain stable; append a new row for a changed policy rather than overwriting a rejected result.
 
-**Status key:** `PUBLIC-KEPT` = measured runtime foundation, not release approval; `OFFLINE-KEPT` = useful diagnostic component, not product integration; `REJECTED` = tested but not retained; `MEASURED-OFFLINE` = measured diagnostic/control without a retained optimization; `DEFERRED` = measured or studied, with further work postponed; `STUDY-ONLY` = attribution/model without an alternative encoding; `INCOMPLETE` = unusable as final proof; `SUPERSEDED` = valid earlier result replaced by later evidence. A checked experiment means execution/reporting is complete, not that the idea won.
+**Status key:** `PUBLIC-KEPT` = measured runtime foundation, not release approval; `OFFLINE-KEPT` = useful diagnostic component, not product integration; `REJECTED` = tested but not retained; `MEASURED-OFFLINE` = measured diagnostic/control without a retained optimization; `DEFERRED` = measured or studied, with further work postponed; `REFERENCE-ONLY` = encoded architectural reference without complete Store integration; `STUDY-ONLY` = attribution/model without an alternative encoding; `INCOMPLETE` = unusable as final proof; `SUPERSEDED` = valid earlier result replaced by later evidence. A checked experiment means execution/reporting is complete, not that the idea won.
+
+### Structural campaign — completed after the original queue
+
+| Done | ID / approach | Measured result | Decision / scope | Evidence |
+| --- | --- | --- | --- | --- |
+| [x] | STRUCT-META-01 — bounded16-edge metadata graph | Metadata packs17,459,061B;8,165,527B smaller than depth1 | OFFLINE-KEPT; extended read cost, same canonical IDs | [Metadata report](experiments40/structural/metadata/report.md) |
+| [x] | STRUCT-META-02 — checkpoint/change metadata | Actual separate metadata database14,032,896B including indexes | REFERENCE-ONLY architectural reference; exact states, whole-table reconstruction | [Metadata report](experiments40/structural/metadata/report.md) |
+| [x] | STRUCT-CONTENT-01 — forward same-path graph | Records/directories69,828,498B;10,875,406B growth | REJECTED; isolated cap savings erased by complete history | [Content report](experiments40/structural/content/report.md) |
+| [x] | STRUCT-CONTENT-02 — reverse same-path graph | Records/directories60,439,704B;1,486,612B growth | REJECTED | [Content report](experiments40/structural/content/report.md) |
+| [x] | STRUCT-CONTENT-03 — extended Git-selected small graph | Records/directories49,149,947B;9,803,145B saving | OFFLINE-KEPT reference; max41edges/3,270,825B canonical closure | [Content report](experiments40/structural/content/report.md) |
+| [x] | STRUCT-CONTENT-04 — all-blob whole-file reference | Records/directories50,560,752B, all75,929blobs authenticate | REFERENCE-ONLY architectural reference; new roots/indexes/framing missing, large read costs | [Content report](experiments40/structural/content/report.md) |
+| [x] | STRUCT-CONTENT-05 — bounded Git-selected small graph | Records/directories53,825,229B;5,127,863B saving | OFFLINE-KEPT reference; original reconstruction ceilings, offline base selection | [Content report](experiments40/structural/content/report.md) |
+| [x] | STRUCT-VALID-01 — compatible combined copy | **79,790,080B**,18,878,464B saving; all157original states PASS | OFFLINE-KEPT reference; still23,416,832B above Git, extended read bounds | [Complete report](structural-investigations.md) |
+
+Earlier rows below retain their historical baselines and scopes; their savings are not added again to the structural result.
 
 ### Metadata and historical reuse — priority domain 1
 
@@ -235,7 +266,7 @@ Offline wins do not authorize a numerical product or release PASS. The supported
 - [ ] State target status and regressions honestly; an allocation win alone does not establish acceptable latency or release readiness.
 - [ ] Update issue #100 and this tracker with the qualified outcome, linking exact evidence.
 
-Current verification already completed for VALID-05: **157 states / 904,143 path states / 4,936,693,030 logical bytes**, exact original-oracle and custody PASS. That qualifies the offline copy/read path only; it does not check off the public integration tasks above.
+Historical verification completed for VALID-05; STRUCT-VALID-01 now independently passes the same scope: **157 states / 904,143 path states / 4,936,693,030 logical bytes**, exact original-oracle and custody PASS. That qualifies the offline copy/read path only; it does not check off the public integration tasks above.
 
 ## 6. Reusable experiment report entry
 
@@ -244,7 +275,7 @@ Current verification already completed for VALID-05: **157 states / 904,143 path
 
 - Priority / related backlog item:
 - Date / owner:
-- Status: TODO | PUBLIC-KEPT | OFFLINE-KEPT | MEASURED-OFFLINE | DEFERRED | REJECTED | STUDY-ONLY | INCOMPLETE | SUPERSEDED
+- Status: TODO | PUBLIC-KEPT | OFFLINE-KEPT | MEASURED-OFFLINE | DEFERRED | REJECTED | REFERENCE-ONLY | STUDY-ONLY | INCOMPLETE | SUPERSEDED
 - Hypothesis and measured motivation:
 - Exact source, fixture, input Store and hash:
 - Protocol / policy change / unchanged variables:
