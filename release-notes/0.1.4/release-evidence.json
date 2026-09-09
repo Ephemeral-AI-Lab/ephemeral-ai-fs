@@ -65,5 +65,15 @@
   },
   "qualification_directory": "qualification",
   "archive_status": "Helper fixture passed; actual candidate archives prepared from final committed evidence head and validated separately before PR delivery",
-  "ci_status": "Checked on preparation PR; GitHub is authoritative"
+  "ci_status": "Checked on preparation PR; GitHub is authoritative",
+  "torch_venv_workspace_acceptance": {
+    "status": "PASS",
+    "samples": 3,
+    "full_readbacks": 3,
+    "file_bytes": 581658413,
+    "entries": 17682,
+    "report": "../../docs/roadmap/0.1/0.1.4/issue71-venv-acceptance/README.md",
+    "source_commit": "da2d474afd2f0e4fcd11a5311481c6b7e68c1a6a",
+    "product_changes": []
+  }
 }

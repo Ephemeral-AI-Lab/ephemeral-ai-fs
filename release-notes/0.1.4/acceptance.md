@@ -52,3 +52,7 @@ scope, not a fictitious performance pass or a published release.
 - R4: the original reservation redesign is not claimed complete. Later bounded ownership and its validation are accepted; protective bounds remain.
 - R5: new Stores use 4 KiB pages. Schema consolidation is not implemented.
 - R6: the general cause and bounds of allocated-size excess remain unresolved. APFS preallocation is not established as the cause; every allocated byte remains charged, and historical misses remain misses.
+
+## Subsequent completion of the paused .venv proof
+
+After the owner requested finishing the exact pending proof, the frozen 581,658,413-byte Torch `.venv` Workspace workload passed all three samples and full independent readbacks on the unchanged v0.1.4 implementation. [Evidence](../../docs/roadmap/0.1/0.1.4/issue71-venv-acceptance/README.md). The broader historical 1.434 GB / 40,831-file aspiration remains a separate unclaimed scope.
