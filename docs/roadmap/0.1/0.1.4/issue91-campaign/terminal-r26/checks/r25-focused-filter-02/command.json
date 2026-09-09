@@ -1,0 +1,1 @@
+["cargo", "+1.85.1", "test", "--locked", "-p", "layerfs-layerstack-store", "--all-features", "fresh_filter_", "--", "--test-threads=1"]
