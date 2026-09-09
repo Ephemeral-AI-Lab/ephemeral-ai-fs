@@ -85,3 +85,31 @@ original timer, phases, setup/proof/cleanup wall, resources and coverage. Compar
 only matching workload profiles/topologies/timers. Mixed-v3/v4 and history-v2
 replaced older workloads; fewer files are not evidence of a product speedup.
 Previous campaign reports retain their original source and coverage limitations.
+
+### Bounded historical access (#101)
+
+`historical_access` opens explicitly supplied retained history through public
+SDK/FUSE. Build host and image separately with the commands above. It never
+constructs history or builds prerequisites during a selected test.
+
+```bash
+python3 benchmark/fs-bench-pro/shared/runner.py --family historical_access --list
+python3 benchmark/fs-bench-pro/shared/runner.py --family historical_access \
+  --case ha-small-head-v1 --store /absolute/path/to/sealed/store.sqlite \
+  --image "$LAYERFS_BENCH_IMAGE" --output /absolute/path/to/new/performance
+python3 benchmark/fs-bench-pro/shared/runner.py --family historical_access \
+  --case ha-small-head-v1 --store /absolute/path/to/sealed/store.sqlite \
+  --image "$LAYERFS_BENCH_IMAGE" --mode verification \
+  --performance /absolute/path/to/new/performance/result.json \
+  --output /absolute/path/to/new/verification
+```
+
+The v1 manifest pins the existing closed53-state schema9 Store and original
+checkpoints1/58/157. Any different Store fails compatibility validation; it is
+not silently rebuilt. See `families/historical_access/fixture.json` and the
+[contract](../../docs/roadmap/0.1/0.1.5/issue101/historical-access-v1.md).
+Each selected invocation has one15second deadline including preparation and
+teardown. Verification has its own15second watchdog. `--all` explicitly runs
+all ten performance cases serially with separate envelopes; verification binds
+one selected performance receipt. These are diagnostic qualifications, not
+release admission or a paired product speedup campaign. #102 owns that campaign.

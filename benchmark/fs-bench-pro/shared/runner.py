@@ -2,6 +2,9 @@
 """Host-owned SQLite benchmarks; Docker runs daemon/FUSE/workloads only."""
 from __future__ import annotations
 
+import time
+ENTRY_STARTED_NS = time.monotonic_ns()
+
 import argparse
 import fcntl
 import hashlib
@@ -605,7 +608,11 @@ def _timer(row):
 
 
 def main(argv=None):
+    access_started_ns = ENTRY_STARTED_NS
     argv = sys.argv[1:] if argv is None else argv
+    if "--family" in argv and argv[argv.index("--family") + 1:][:1] == ["historical_access"]:
+        import historical_access
+        return historical_access.main(argv, access_started_ns)
     if "--family" in argv and argv[argv.index("--family") + 1:][:1] == ["small_file_delta_smoke"]:
         import small_file_delta_family
         return small_file_delta_family.main(argv)

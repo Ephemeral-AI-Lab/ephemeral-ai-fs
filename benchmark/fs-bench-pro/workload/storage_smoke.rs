@@ -329,6 +329,9 @@ fn small_change(root: &Path, step: usize) -> Result<()> {
 
 pub fn dispatch(args: &[String]) -> Result<()> {
     match args {
+        [command, root, op, path, offset, length] if command == "storage-smoke-access" => {
+            access(Path::new(root), op, path, offset.parse()?, length.parse()?)
+        }
         [command, input, root] if command == "storage-smoke-import" => {
             mounted(Path::new(root))?;
             import(Path::new(input), Path::new(root))
@@ -351,4 +354,45 @@ pub fn dispatch(args: &[String]) -> Result<()> {
         }
         _ => Err("storage smoke workload arguments".into()),
     }
+}
+
+
+fn access(root: &Path, op: &str, relative: &str, offset: u64, length: usize) -> Result<()> {
+    use std::os::unix::fs::{FileExt, MetadataExt};
+    mounted(root)?;
+    let relative = Path::new(relative);
+    if relative != Path::new(".") && (relative.as_os_str().is_empty() || relative.components().any(|c| !matches!(c, Component::Normal(_)))) {
+        return Err("unsafe access path".into());
+    }
+    if length > 1024 * 1024 || offset.checked_add(length as u64).is_none() {
+        return Err("access range budget".into());
+    }
+    let path = root.join(relative);
+    let mut bytes = vec![0; if op == "read" { length } else { 0 }];
+    let mut names = Vec::new();
+    let mut metadata = None;
+    let start = std::time::Instant::now();
+    match op {
+        "stat" => metadata = Some(fs::symlink_metadata(path)?),
+        "directory" => {
+            for entry in fs::read_dir(path)? {
+                if names.len() == 128 { return Err("directory bound exceeded".into()); }
+                names.push(entry?.file_name().as_bytes().to_vec());
+            }
+        }
+        "read" => File::open(path)?.read_exact_at(&mut bytes, offset)?,
+        _ => return Err("unknown access operation".into()),
+    }
+    let ns = start.elapsed().as_nanos();
+    println!("access_operation_ns={ns}\naccess_completed_count=1\naccess_returned_bytes={}", bytes.len());
+    if let Some(m) = metadata {
+        println!("access_mode={:o}\naccess_size={}\naccess_mtime={}\naccess_mtime_nsec={}", m.mode(), m.size(), m.mtime(), m.mtime_nsec());
+    } else if op == "directory" {
+        names.sort();
+        println!("access_names={}", names.iter().map(|n| hex(n)).collect::<Vec<_>>().join(","));
+    } else {
+        let mut hash = Sha256::new(); hash.update(&bytes);
+        println!("access_sha256={}", hex(&hash.finish()));
+    }
+    Ok(())
 }

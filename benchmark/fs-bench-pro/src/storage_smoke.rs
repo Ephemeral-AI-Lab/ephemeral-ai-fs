@@ -805,6 +805,9 @@ fn commit(
 }
 
 pub fn dispatch(args: &[OsString]) -> AnyResult<()> {
+    if args.first().is_some_and(|a| a == "historical-access-session") {
+        return historical_access(args);
+    }
     let [_, root, container, mode, case, input] = args else {
         return Err(
             "storage-smoke-session ROOT CONTAINER performance|verification CASE INPUT".into(),
@@ -1088,5 +1091,43 @@ pub fn dispatch(args: &[OsString]) -> AnyResult<()> {
     if !clean {
         return Err("storage smoke runtime cleanup".into());
     }
+    Ok(())
+}
+
+
+// Reuse the history verifier's public fork/mount/execute lifecycle and receipts.
+fn historical_access(args: &[OsString]) -> AnyResult<()> {
+    let [_, root, container, commit, operation, path, offset, length, cache] = args else {
+        return Err("historical-access-session ROOT CONTAINER COMMIT OP PATH OFFSET LENGTH CACHE".into());
+    };
+    if cache != "cold" && cache != "warm" { return Err("access cache profile".into()); }
+    let root = Path::new(root);
+    let container = ContainerId(container.to_string_lossy().into_owned());
+    let binding = benchmark_container_binding(root, &container)?.ok_or("authenticated binding")?;
+    let store = Arc::new(LayerStackStore::connect(root.join("store.sqlite"))?);
+    let client = benchmark_client(store.clone(), Some(&binding))?;
+    let branch = timed(&store, "access-fork", || Ok(client.fork_branch(
+        EntityName::new("historical-access")?, LocalForkSource::Branch {
+            branch_id: std::fs::read_to_string(root.join("branch-id"))?.parse()?,
+            commit_id: commit.to_str().ok_or("commit encoding")?.parse()?,
+        })?))?;
+    let session = timed(&store, "access-mount", || Ok(client.create_workspace_session(request(branch, &container))?))?;
+    let action = || -> AnyResult<()> {
+        let argv = ["storage-smoke-access", MOUNT, operation.to_str().ok_or("operation encoding")?,
+            path.to_str().ok_or("path encoding")?, offset.to_str().ok_or("offset encoding")?,
+            length.to_str().ok_or("length encoding")?];
+        if cache == "warm" {
+            timed(&store, "access-warmup", || workload(&store, &client, session.id, &argv))?;
+        }
+        timed(&store, "access-measured", || workload(&store, &client, session.id, &argv))?;
+        Ok(())
+    };
+    let result = action();
+    let cleanup = timed(&store, "access-end", || Ok(client.end_workspace_session(session.id,
+        if result.is_ok() { EndWorkspaceMode::Clean } else { EndWorkspaceMode::Discard })?));
+    let clean = cleanup.is_ok() && client.active_workspace_count()? == 0 && client.active_execution_count()? == 0;
+    emit("historical-access-closed", &[("cleanup_ok", clean.to_string()), ("success", result.is_ok().to_string())]);
+    result?; cleanup?;
+    if !clean { return Err("historical access cleanup".into()); }
     Ok(())
 }

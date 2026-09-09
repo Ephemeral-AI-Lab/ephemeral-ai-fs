@@ -683,7 +683,7 @@ fn run() -> AnyResult<()> {
     }
     if args
         .first()
-        .is_some_and(|arg| arg == "storage-smoke-session")
+        .is_some_and(|arg| arg == "storage-smoke-session" || arg == "historical-access-session")
     {
         return storage_smoke::dispatch(&args);
     }
