@@ -4743,7 +4743,8 @@ mod tests {
             } else {
                 if outcome == "collision" {
                     let mut corrupt = baseline.clone();
-                    corrupt.0.bytes = layerfs_content::encode_bytes_object(b"retained baselinX").unwrap();
+                    corrupt.0.bytes =
+                        layerfs_content::encode_bytes_object(b"retained baselinX").unwrap();
                     let result = token
                         .admission
                         .admit_object(corrupt)
@@ -5399,8 +5400,9 @@ mod tests {
     fn spilled_candidate_visits_selected_objects_in_graph_order() {
         let mut segment = DeferredObjectStore::new_all_reachable().unwrap();
         let mut ids = Vec::new();
-        for payload in [b"first".as_slice(), b"discarded", b"last"] {
-            let bytes = layerfs_content::encode_bytes_object(payload).unwrap();
+        // The reversed selected order crosses the bounded read-ahead window.
+        for value in [1, 2, 3] {
+            let bytes = layerfs_content::encode_bytes_object(&vec![value; 40_000]).unwrap();
             let id = ObjectId::for_bytes(&bytes);
             segment.put(id, &bytes).unwrap();
             ids.push(id);
