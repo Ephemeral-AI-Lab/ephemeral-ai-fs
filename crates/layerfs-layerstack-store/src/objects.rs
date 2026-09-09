@@ -6,6 +6,7 @@ mod diagnostic;
 pub(crate) use admission::PreparedAdmission;
 mod pack;
 mod read;
+mod small_candidates;
 mod spill;
 #[cfg(test)]
 use spill::SeenStorage;
@@ -1956,6 +1957,7 @@ pub(crate) struct AdmissionSession {
     db: crate::schema::StoreDb,
     baseline_pack: i64,
     fresh_ids: Option<Mutex<Box<[u64]>>>,
+    small_candidates: Option<Mutex<small_candidates::Candidates>>,
     coalesce: bool,
     cohort: Mutex<AdmissionCohort>,
     publication_epoch: AtomicU64,
@@ -2001,6 +2003,7 @@ impl AdmissionSession {
             db: db.clone(),
             baseline_pack,
             fresh_ids,
+            small_candidates: db.small_chain_format().then(|| Mutex::new(small_candidates::Candidates::new())),
             coalesce,
             cohort: Mutex::new(AdmissionCohort::default()),
             publication_epoch: AtomicU64::new(0),
@@ -3384,9 +3387,10 @@ impl CheckedOutputAdmission {
         session: std::sync::Arc<AdmissionSession>,
         compared_limit: usize,
     ) -> Result<Self> {
-        // Repartition the existing 16MiB allowance for owner-local comparison reuse.
+        // Repartition the existing 16MiB allowance for owner-local caches.
         let seen_limit = CANDIDATE_INDEX_BYTES / 4
             - compared_limit
+            - if session.small_candidates.is_some() { small_candidates::INDEX_BYTES } else { 0 }
             - if session.fresh_ids.is_some() {
                 FRESH_ADMISSION_FILTER_BYTES
             } else {
@@ -4459,7 +4463,7 @@ mod tests {
             * std::mem::size_of::<u64>();
         assert_eq!(bitmap_bytes, FRESH_ADMISSION_FILTER_BYTES);
         assert_eq!(
-            owner.seen.memory_limit + bitmap_bytes + owner.compared_limit,
+            owner.seen.memory_limit + bitmap_bytes + owner.compared_limit + small_candidates::INDEX_BYTES,
             CANDIDATE_INDEX_BYTES / 4
         );
         let mut ids = vec![first.id, second.id];
@@ -4567,7 +4571,7 @@ mod tests {
             let mut owner = CheckedOutputAdmission::new_for_initialization(&db).unwrap();
             assert!(owner.session.fresh_ids.is_none());
             assert_eq!(
-                owner.seen.memory_limit + owner.compared_limit,
+                owner.seen.memory_limit + owner.compared_limit + small_candidates::INDEX_BYTES,
                 CANDIDATE_INDEX_BYTES / 4
             );
             let mut ids = vec![original.id, ObjectId::for_bytes(b"missing")];

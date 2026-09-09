@@ -91,7 +91,7 @@ Register cache entries only for actual FULL winners after publication, after
 releasing the Store connection; compute fingerprints outside both Store and cache
 locks. Losing prepared FULLs never enter it. Skip final-batch registration. Cache
 lifetime is the session; failed sessions cannot prepare new objects, and their
-cache is discarded with rollback/drop. Existing epoch/cohort/retention rules hold.
+cache is invalidated by rollback and discarded when the session drops. Existing epoch/cohort/retention rules hold.
 
 Emit existing kind1 for a cached selected-FULL base; no new persisted grammar or
 schema is needed. Schema8 retains its old policy; this candidate runs only under

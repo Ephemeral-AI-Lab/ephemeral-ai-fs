@@ -646,3 +646,36 @@ mod issue100_diagnostic;
 
 #[path = "small_chain_tests.rs"]
 mod small_chain_tests;
+
+#[test]
+#[ignore = "fixed external Git2.47.1 programs, identical original fixture pairs"]
+fn issue100_identical_base_git_matcher() {
+    let root = std::path::Path::new("/Users/yifanxu/Ephemeral-AI-Lab/layerfs-issue100-45mb-evidence/git-matcher-study");
+    for name in ["translation-growth", "catalog-growth", "icons-growth", "rename-ledger", "tool-schemas"] {
+        let base = std::fs::read(root.join(format!("{name}.base"))).unwrap();
+        let target = std::fs::read(root.join(format!("{name}.target"))).unwrap();
+        let program = std::fs::read(root.join(format!("{name}.gitdelta"))).unwrap();
+        assert!(base.len() < 131072 && target.len() < 131072 && program.len() < 131072);
+        let mut encoder = pack::NativeEncoder::new_small().unwrap();
+        let base_full = encoder.compress(&base, None).unwrap();
+        let started = Instant::now();
+        let full = encoder.compress(&target, None).unwrap();
+        let full_ns = started.elapsed().as_nanos();
+        let started = Instant::now();
+        let prefix = encoder.compress(&target, Some(&base)).unwrap();
+        let prefix_ns = started.elapsed().as_nanos();
+        let started = Instant::now();
+        let git = encoder.compress(&program, None).unwrap();
+        let git_compress_ns = started.elapsed().as_nanos();
+        drop(encoder);
+        assert_eq!(pack::small_decompress(&prefix, target.len(), Some(&base)).unwrap(), target);
+        assert_eq!(pack::small_decompress(&full, target.len(), None).unwrap(), target);
+        // Upstream patch_delta already replayed this exact program to target.
+        // Equality after decoding preserves that proof without another parser.
+        assert_eq!(pack::small_decompress(&git, program.len(), None).unwrap(), program);
+        println!("pair\t{name}\tbase_raw={}\ttarget_raw={}\tbase_FULL_cost={}\tFULL_target_cost={}\tprefix_DELTA_cost={}\tgit_program_raw={}\tgit_program_DELTA_cost={}\tFULL_encode_ns={full_ns}\tprefix_encode_ns={prefix_ns}\tgit_program_compress_ns={git_compress_ns}\tverified=true", base.len(),target.len(),base_full.len()+25,full.len()+25,prefix.len()+57,program.len(),git.len()+61);
+    }
+}
+
+#[path = "small_candidate_tests.rs"]
+mod small_candidate_tests;
