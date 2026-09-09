@@ -1,12 +1,19 @@
 # v0.1.5 benchmark family scope
 
-Owner-directed scope, 2026-09-10. Tracked in [#101](https://github.com/Ephemeral-AI-Lab/layerfs/issues/101). This is the agreed family plan, not an implemented registry or a completed benchmark campaign.
+Owner-directed scope, 2026-09-10. Split into two benchmark issues:
+
+- [#101: historical_access](https://github.com/Ephemeral-AI-Lab/layerfs/issues/101) owns the access family and its15-second test/verification requirements.
+- [#102: full benchmark run and optimization](https://github.com/Ephemeral-AI-Lab/layerfs/issues/102) owns optional repository-history profiles, the full campaign and optimization of measured regressions.
+
+This is the agreed family plan, not an implemented registry or a completed benchmark campaign.
 
 ## Exactly two new families
 
 Add only `historical_access` and `repository_history`. Existing deduplication and other families remain in the ordinary regression suite; extending their case matrices is outside this follow-up. Reuse the existing runner, fixture preparation, public operations and verification machinery.
 
 ## repository_history — optional, explicitly selected
+
+Owned by #102; it is not part of the #101 implementation scope.
 
 | Profile | Original checkpoint selection | Selected states |
 | --- | --- | ---: |
@@ -23,6 +30,8 @@ Reuse the existing DeepSeek history machinery. Measure public save/Commit and ac
 The15-second historical-access limit does not apply to repository-history construction or exhaustive history verification. Those long operations remain explicit optional work with separately frozen budgets.
 
 ## historical_access — 15-second end-to-end tests
+
+Owned by #101; hand the completed family and its known regressions to #102.
 
 **Every selected historical-access test must finish within15seconds total, including preparation.** This is a hard owner requirement, not merely an inner-operation latency target.
 
@@ -52,6 +61,6 @@ Verify the selected case's exact content, metadata and declared access semantics
 
 ## Regression campaign and implementation boundary
 
-After these two families and the selected product candidate are ready, rerun the existing mandatory registry plus mandatory historical-access cases. Repository-history profiles run only when explicitly selected and remain separately reported. Do not broaden existing dedup families in this scope.
+Under #102, after the selected product candidate and #101 access family are ready, rerun the existing mandatory registry plus mandatory historical-access cases. Diagnose measured regressions, optimize their shared causes through selected cases, then freeze the final candidate for a complete final campaign. Repository-history profiles run only when explicitly selected and remain separately reported. Do not broaden existing dedup families in this scope.
 
 The54.38MB/65.96MB offline archive/reference layouts remain evidence for design and fixture selection, not proof of a shipped public implementation. Freeze which supported product/surface is tested and applicable controls; preserve host-owned SQLite/coordinator and the registered SDK/FUSE operation boundaries. Read amplification and the15-second end-to-end limits must be measured on that actual implementation.
