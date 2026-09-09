@@ -3,6 +3,8 @@ use layerfs_content::ObjectId;
 
 pub(super) const INDEX_BYTES: usize = 128 * 1024;
 const SLOTS: usize = 1024;
+const REFERENCES: usize = 8192;
+const NO_ENTRY: u16 = u16::MAX;
 const WINDOW: usize = 16;
 const EMPTY: u64 = u64::MAX;
 
@@ -14,11 +16,15 @@ struct Entry {
 
 pub(super) struct Candidates {
     slots: Box<[Option<Entry>]>,
+    references: Box<[u16]>,
+    next: usize,
 }
 
 const _: () = {
     assert!(SLOTS.is_power_of_two());
+    assert!(REFERENCES.is_power_of_two() && SLOTS < NO_ENTRY as usize);
     assert!(SLOTS * std::mem::size_of::<Option<Entry>>()
+        + REFERENCES * std::mem::size_of::<u16>()
         + std::mem::size_of::<Option<std::sync::Mutex<Candidates>>>() <= INDEX_BYTES);
 };
 
@@ -59,20 +65,36 @@ pub(super) fn signature(raw: &[u8]) -> [u64; 8] {
 impl Candidates {
     pub(super) fn new() -> Self {
         // Boxed slices retain exactly the fixed slot count, with no spare capacity.
-        Self { slots: vec![None; SLOTS].into_boxed_slice() }
+        Self {
+            slots: vec![None; SLOTS].into_boxed_slice(),
+            references: vec![NO_ENTRY; REFERENCES].into_boxed_slice(),
+            next: 0,
+        }
     }
 
     pub(super) fn insert(&mut self, id: ObjectId, signature: [u64; 8]) {
-        for hash in signature.iter().copied().filter(|hash| *hash != EMPTY) {
-            self.slots[hash as usize & (SLOTS - 1)] = Some(Entry { id, signature });
+        if signature[0] == EMPTY { return; }
+        let slot = self.next;
+        if let Some(old) = self.slots[slot] {
+            for hash in old.signature.iter().copied().filter(|hash| *hash != EMPTY) {
+                let reference = &mut self.references[hash as usize & (REFERENCES - 1)];
+                if *reference == slot as u16 { *reference = NO_ENTRY; }
+            }
         }
+        self.slots[slot] = Some(Entry { id, signature });
+        for hash in signature.iter().copied().filter(|hash| *hash != EMPTY) {
+            self.references[hash as usize & (REFERENCES - 1)] = slot as u16;
+        }
+        self.next = (slot + 1) & (SLOTS - 1);
     }
 
     pub(super) fn find(&self, target_id: ObjectId, signature: &[u64; 8]) -> Option<ObjectId> {
         let mut best: Option<(usize, ObjectId)> = None;
         for hash in signature.iter().copied().filter(|hash| *hash != EMPTY) {
-            let Some(entry) = self.slots[hash as usize & (SLOTS - 1)] else { continue; };
-            if entry.id == target_id { continue; }
+            let reference = self.references[hash as usize & (REFERENCES - 1)];
+            if reference == NO_ENTRY { continue; }
+            let Some(entry) = self.slots[reference as usize] else { continue; };
+            if entry.id == target_id || !entry.signature.contains(&hash) { continue; }
             let overlap = signature.iter()
                 .filter(|hash| **hash != EMPTY && entry.signature.contains(hash))
                 .count();

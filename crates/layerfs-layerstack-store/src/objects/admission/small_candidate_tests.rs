@@ -85,3 +85,25 @@ fn selected_small_candidate_fingerprint_bounds() {
     assert_eq!(candidates.find(target, &signature(b"unrelated short literal")), None);
     assert_eq!(candidates.find(target, &signature(b"")), None);
 }
+
+#[test]
+fn selected_small_candidate_compact_references_and_eviction() {
+    use super::super::super::small_candidates::Candidates;
+    let pair = |a| [a, a + 1, u64::MAX, u64::MAX, u64::MAX, u64::MAX, u64::MAX, u64::MAX];
+    let base = ObjectId::for_bytes(b"base");
+    let target = ObjectId::for_bytes(b"target");
+    let mut candidates = Candidates::new();
+    candidates.insert(base, pair(2));
+    // These keys collided in the old duplicated 1024-slot representation.
+    candidates.insert(ObjectId::for_bytes(b"other"), pair(1026));
+    assert_eq!(candidates.find(target, &pair(2)), Some(base));
+    for i in 0..1022_u64 {
+        candidates.insert(ObjectId::for_bytes(&i.to_le_bytes()), pair((i + 10) * 8));
+    }
+    assert_eq!(candidates.find(target, &pair(2)), Some(base));
+    candidates.insert(ObjectId::for_bytes(b"replacement"), pair(6000));
+    assert_eq!(candidates.find(target, &pair(2)), None);
+    assert_eq!(candidates.find(target, &pair(1026)), Some(ObjectId::for_bytes(b"other")));
+    candidates.insert(ObjectId::for_bytes(b"collision"), pair(1026 + 8192));
+    assert_eq!(candidates.find(target, &pair(1026)), None);
+}
