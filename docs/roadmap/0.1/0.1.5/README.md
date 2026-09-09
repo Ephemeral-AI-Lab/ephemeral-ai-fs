@@ -10,7 +10,9 @@ for fast iteration: Git 38.22 MB, released v0.1.4 67.15 MB, existing v0.1.5 66.1
 allocated, with all ten states verified. This smaller history does not supersede
 the initial full157 regression. See the [frozen smoke contract](issue100/ten-snapshot-contract.md)
 and [growth analysis](issue100/growth-estimate.md); no storage optimization or release
-qualification is claimed from the baselines.
+qualification is claimed from the baselines. The subsequent [Git algorithm gap study](issue100/git-gap-directions.md)
+reconciles the measured storage gap and separates bounded online opportunities from
+Git's use of later-snapshot bases; no new encoding experiment was run.
 
 The ready-to-use [implementation prompt](implementation_prompt.md) combines this
 scope, fixed settings and fast smoke-only loop.
