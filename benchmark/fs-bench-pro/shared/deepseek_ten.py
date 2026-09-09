@@ -9,6 +9,8 @@ import uuid
 INDICES = (1, 18, 36, 53, 70, 88, 105, 122, 140, 157)
 CONTRACT = 'docs/roadmap/0.1/0.1.5/issue100/ten-snapshot-contract.md'
 PROFILES = {
+    'deepseek-stride10': (tuple(sorted(set(range(1,158,10)) | {157})), 'deepseek-stride10-v1',
+        'docs/roadmap/0.1/0.1.5/issue102/campaign-v1.md'),
     'deepseek-ten': (INDICES, 'deepseek-ten-spread-v1', CONTRACT),
     'deepseek-stride3': (tuple(range(1, 158, 3)), 'deepseek-stride3-v1',
         'docs/roadmap/0.1/0.1.5/issue100/stride3-snapshot-contract.md'),

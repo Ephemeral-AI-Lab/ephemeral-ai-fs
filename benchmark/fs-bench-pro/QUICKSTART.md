@@ -113,3 +113,22 @@ teardown. Verification has its own15second watchdog. `--all` explicitly runs
 all eleven performance cases serially with separate envelopes; verification binds
 one selected performance receipt. These are diagnostic qualifications, not
 release admission or a paired product speedup campaign. #102 owns that campaign.
+
+### Optional repository history (#102)
+
+`--family repository_history --list` lists the three optional profiles.
+Execution requires explicit `--profile stride-1`, `stride-3` or `stride-10`
+(157,53,17 retained states). It delegates to the existing sealed DeepSeek importer:
+
+```bash
+python3 benchmark/fs-bench-pro/shared/runner.py --family repository_history \
+  --profile stride-10 --image "$LAYERFS_BENCH_IMAGE" --output /absolute/new/history-run
+python3 benchmark/fs-bench-pro/shared/runner.py --family repository_history \
+  --profile stride-10 --image "$LAYERFS_BENCH_IMAGE" --storage-verify-run /absolute/new/history-run
+```
+
+The verifier uses that measured Store and its original state oracles. These long
+profiles never run by default and are reported NOT_RUN_OPTIONAL unless selected.
+Stride10 includes checkpoint157 and is17states; it is not the ten-state spread.
+Git/control comparisons must use the identical selection; no Git17 result is
+implied by registration. See the prospective #102 campaign contract.

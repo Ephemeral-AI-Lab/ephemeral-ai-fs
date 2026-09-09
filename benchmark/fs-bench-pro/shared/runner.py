@@ -610,6 +610,9 @@ def _timer(row):
 def main(argv=None):
     access_started_ns = ENTRY_STARTED_NS
     argv = sys.argv[1:] if argv is None else argv
+    if "--family" in argv and argv[argv.index("--family") + 1:][:1] == ["repository_history"]:
+        import repository_history
+        return repository_history.main(argv)
     if "--family" in argv and argv[argv.index("--family") + 1:][:1] == ["historical_access"]:
         import historical_access
         return historical_access.main(argv, access_started_ns)
