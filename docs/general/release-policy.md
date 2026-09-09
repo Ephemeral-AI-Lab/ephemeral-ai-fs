@@ -29,6 +29,7 @@ A release candidate is eligible only when:
   Canonical identity remains unchanged, but migration is one-way and runtime
   components must be version-matched. The [0.1.3 release contract](../../release-notes/0.1.3/release-contract.md)
   defines the upgrade boundary; do not infer downgrade or mixed-version support.
+- The owner-approved 0.1.4 Developer Preview is also an explicit Store-format exception: new Stores use schema 7, supported development schema 6 remains legacy, and released schema 5 is rejected without migration. Canonical identity is preserved. The [0.1.4 release contract](../../release-notes/0.1.4/release-contract.md) defines this boundary.
 - A pre-1.0 minor release such as `0.2.0` may define a revised public or
   storage contract and must document its compatibility boundary explicitly.
 - A 1.0-or-later major release follows ordinary stable semantic-versioning

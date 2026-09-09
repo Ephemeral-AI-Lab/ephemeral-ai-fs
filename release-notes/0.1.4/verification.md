@@ -1,6 +1,6 @@
 # v0.1.4 verification and source applicability
 
-> **Status:** Release candidate for LayerFS 0.1.4.
+> **Status:** LayerFS 0.1.4 release record.
 
 The current qualified product is `9cfb4be477116646258ea0621280ed13b1824c6d`; see the [issue #98 terminal report](../../docs/roadmap/0.1/0.1.4/issue98/README.md). It passed 411 native tests, all 198 performance executions, 226 routine proofs, full157 and three final full `.venv` proofs.
 

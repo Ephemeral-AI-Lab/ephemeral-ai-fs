@@ -1,6 +1,6 @@
 # Owner acceptance of the v0.1.4 stopping point
 
-> **Status:** Release candidate for LayerFS 0.1.4.
+> **Status:** LayerFS 0.1.4 release record.
 
 On 2026-09-09, after receiving every benchmark-family/case result, the owner said:
 
@@ -58,3 +58,7 @@ scope, not a fictitious performance pass or a published release.
 After the owner requested finishing the exact pending proof, the frozen 581,658,413-byte Torch `.venv` Workspace workload passed all three samples and full independent readbacks on the unchanged v0.1.4 implementation. [Evidence](../../docs/roadmap/0.1/0.1.4/issue71-venv-acceptance/README.md). The broader historical 1.434 GB / 40,831-file aspiration remains a separate unclaimed scope.
 
 The subsequent [issue #98 Workspace repair](../../docs/roadmap/0.1/0.1.4/issue98/README.md) is fully qualified and ready for review: adjacent Commit time improved 37.8%, final allocated storage is unchanged, and all benchmark/proof/full157 checks passed. Final `.venv` observations and higher unpaired full157 wall times are reported explicitly. Remaining historical performance misses and four ineligible Git comparisons stay visible.
+
+## Final release authorization
+
+The owner requested closing v0.1.4 using the existing benchmark results without rerunning them, then explicitly authorized: **“Also merge, tag, and publish v0.1.4.”** This ends optional optimization for v0.1.4. The [benchmark closeout](benchmark-closeout.md) reports all families and cases, failures of numerical targets, ineligible comparisons and omissions without reclassification. Actual publication identifiers are recorded by the GitHub tag/release; earlier preparation records remain historical.

@@ -1,6 +1,6 @@
 {
   "schema": "layerfs-v014-release-preparation-v2",
-  "status": "PREPARED_NOT_PUBLISHED",
+  "status": "QUALIFIED_RELEASE_SOURCE",
   "package_version": "0.1.4",
   "measured_product_source": "9cfb4be477116646258ea0621280ed13b1824c6d",
   "current_qualification": {
@@ -180,6 +180,7 @@
       "product_changes": []
     }
   },
-  "tag_created": false,
-  "release_published": false
+  "publication_authorization": "Owner explicitly authorized merge, tag and publish v0.1.4 using existing benchmark results; no benchmark rerun.",
+  "publication_record": "https://github.com/Ephemeral-AI-Lab/layerfs/releases/tag/v0.1.4",
+  "closeout_report": "benchmark-closeout.md"
 }

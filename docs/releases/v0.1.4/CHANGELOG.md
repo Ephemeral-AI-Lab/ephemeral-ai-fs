@@ -1,6 +1,6 @@
 # LayerFS v0.1.4 changelog
 
-> **Status:** Release candidate for LayerFS 0.1.4.
+> **Status:** LayerFS 0.1.4 release changelog.
 
 1. **Packed SQLite storage and authenticated native representations.** Immutable
    packs contain bounded groups; native FULL/PREFIX records preserve canonical

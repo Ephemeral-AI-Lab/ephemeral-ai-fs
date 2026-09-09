@@ -1,6 +1,6 @@
 # LayerFS 0.1.4 release contract
 
-> **Status:** Release candidate for LayerFS 0.1.4.
+> **Status:** LayerFS 0.1.4 release record.
 
 This is a source-only Developer Preview. The owner accepts the recorded
 storage/performance tradeoff; [acceptance](acceptance.md) limits release claims
@@ -41,6 +41,5 @@ claims exclude invalid historical Git speed comparisons. The complete reporter
 still says INCOMPLETE, and must not be advertised as an all-speed-gates pass.
 
 A release tag must identify reviewed source after the stacked implementation and
-preparation PRs are integrated. Preparation does not create a tag or publish a
-GitHub release. Final artifacts/checksums must be made from that exact reviewed
+preparation PRs are integrated. The owner has authorized merge, tag and GitHub publication using these existing results. Final artifacts/checksums must be made from that exact reviewed
 commit as described in [artifacts](artifacts.md).

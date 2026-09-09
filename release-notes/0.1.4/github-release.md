@@ -1,6 +1,6 @@
 # LayerFS v0.1.4 — storage efficiency Developer Preview
 
-> **Status:** Release candidate announcement draft; not published.
+> **Status:** LayerFS 0.1.4 release announcement.
 
 v0.1.4 adds packed SQLite storage, native FULL/PREFIX representations, bounded
 shared Init/Commit publication, and reuse of authenticated Init comparison bytes.
@@ -27,10 +27,11 @@ not migrated or opened; preserve them with their original binaries. Directory
 import starts new history. Use matching SDK/owner/daemon builds.
 
 This is a source-only Developer Preview, not production storage. Crash and
-power-loss durability are not promised. Final asset and tag links must be
-inserted from the reviewed publication, not guessed during preparation.
+power-loss durability are not promised. The source assets and checksums are attached to the GitHub release.
 
 See the versioned manual, accepted-tradeoff record and full terminal evidence
 in the accompanying source tree.
 
 The subsequent [issue #98 Workspace repair](../../docs/roadmap/0.1/0.1.4/issue98/README.md) is fully qualified and ready for review: adjacent Commit time improved 37.8%, final allocated storage is unchanged, and all benchmark/proof/full157 checks passed. Final `.venv` observations and higher unpaired full157 wall times are reported explicitly. Remaining historical performance misses and four ineligible Git comparisons stay visible.
+
+[Every benchmark family and case](https://github.com/Ephemeral-AI-Lab/layerfs/blob/v0.1.4/release-notes/0.1.4/benchmark-closeout.md). Existing qualified results were reused; no benchmark was rerun for publication.

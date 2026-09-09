@@ -1,6 +1,6 @@
 # LayerFS 0.1.4 storage format
 
-> **Status:** Release candidate for LayerFS 0.1.4.
+> **Status:** LayerFS 0.1.4 Developer Preview manual.
 
 ## File and connection
 
@@ -43,7 +43,7 @@ write legacy version-1 packs. Research schema-6 Stores containing native packs
 without the schema-7 writer fence are rejected during preflight. Schema 7 can
 contain native version-2 packs alongside legacy packs used by fallback routes.
 
-Published v0.1.3 uses schema 5, which this candidate rejects. Schema 4 and other
+Published v0.1.3 uses schema 5, which v0.1.4 rejects. Schema 4 and other
 unsupported versions, unexpected schema objects and WAL-mode Stores are also
 rejected. There is no in-place migration, downgrade or retained-history transfer
 command. Retain the original Store with its matching binaries; directory import

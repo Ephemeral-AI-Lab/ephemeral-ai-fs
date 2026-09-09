@@ -1,10 +1,10 @@
 # LayerFS 0.1.4 Developer Preview
 
-> **Status:** Release candidate for LayerFS 0.1.4. Prepared; not tagged or published.
+> **Status:** LayerFS 0.1.4 Developer Preview release record. [Tag and downloads](https://github.com/Ephemeral-AI-Lab/layerfs/releases/tag/v0.1.4).
 
 The owner accepted the measured storage/performance tradeoff on 2026-09-09 and
 requested honest reporting, release preparation and closure of related work.
-This candidate contains packed SQLite storage, native FULL/PREFIX encoding,
+This release contains packed SQLite storage, native FULL/PREFIX encoding,
 bounded shared Init/Commit publication and authenticated Init comparison reuse.
 
 The measured full157 Store uses **184,582,144 allocated bytes versus 218,116,096
@@ -34,9 +34,8 @@ retires the optimization scope; it does not relabel these results as passes.
 - [Current benchmark/root-cause report](../../docs/roadmap/0.1/0.1.4/issue98/README.md)
 - [Historical issue #95 report](../../docs/roadmap/0.1/0.1.4/issue95/README.md)
 
-This remains a source-only Developer Preview with no crash/power-loss durability
-promise. No crates.io package, prebuilt executable or public runtime image is
-claimed published. Merge, reviewed tag creation and GitHub publication are
-separate from this prepared candidate.
+This is a source-only Developer Preview with no crash/power-loss durability promise. No crates.io package, prebuilt executable or public runtime image is part of this release. The GitHub release records the actual tag, commit and asset checksums.
+
+- [Benchmark closeout: every family and case](benchmark-closeout.md)
 
 The subsequent [issue #98 Workspace repair](../../docs/roadmap/0.1/0.1.4/issue98/README.md) is fully qualified and ready for review: adjacent Commit time improved 37.8%, final allocated storage is unchanged, and all benchmark/proof/full157 checks passed. Final `.venv` observations and higher unpaired full157 wall times are reported explicitly. Remaining historical performance misses and four ineligible Git comparisons stay visible.

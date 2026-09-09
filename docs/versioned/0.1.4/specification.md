@@ -1,6 +1,6 @@
 # LayerFS 0.1.4 specification
 
-> **Status:** Release candidate for LayerFS 0.1.4.
+> **Status:** LayerFS 0.1.4 Developer Preview manual.
 
 ## Product model
 

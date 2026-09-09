@@ -1,16 +1,16 @@
 # LayerFS 0.1.4 — accepted storage-efficiency scope
 
-> **Status:** Release candidate for LayerFS 0.1.4; owner accepted the measured stopping point on 2026-09-09. Not tagged or published.
+> **Status:** v0.1.4 work closed at the owner-accepted stopping point; merge, tag and publication authorized using existing qualified results.
 
 The implementation, complete benchmark and full157 qualification are finished.
 The owner accepts the remaining numerical regressions and requests closure of
 related optimization/experiment issues. This does not change historical gates,
 comparison eligibility or the unchanged reporter's INCOMPLETE status.
 
-- [Release preparation](../../../../release-notes/0.1.4/README.md)
+- [Release record](../../../../release-notes/0.1.4/README.md)
 - [Acceptance and issue disposition](../../../../release-notes/0.1.4/acceptance.md)
-- [Complete final measurements and limitations](issue95/README.md)
-- [Prepared versioned manual](../../../versioned/0.1.4/README.md)
+- [Every family/case and final limitations](../../../../release-notes/0.1.4/benchmark-closeout.md)
+- [Versioned manual](../../../versioned/0.1.4/README.md)
 
 The material below is historical planning, retained verbatim as dated context.
 Its old milestone statuses and stop instructions do not describe current work.
