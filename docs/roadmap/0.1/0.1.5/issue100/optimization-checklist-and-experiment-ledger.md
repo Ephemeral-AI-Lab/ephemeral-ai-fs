@@ -131,11 +131,11 @@ The reverse same-path trial also loses1,486,612B. These policies are rejected. G
 
 - [x] Freeze **53 states**, original indices **1, 4, 7, …, 157**, under the [stride3 contract](stride3-snapshot-contract.md).
 - [x] Add explicit `deepseek-stride3` harness profile; prepare and independently check all53 original fixture/oracle seals and direct transitions ([fixture result](stride3-fixture-results.md)).
-- [ ] Measure a fresh applicable LayerFS53 control and a separate matched Git53 baseline before comparative claims.
-- [ ] Use selected-state commits directly; preserve original oracles and record actual phase timings.
+- [x] Establish the public LayerFS53 foundation and separate matched Git53 baseline: **100,700,160B vs49,332,224B allocated**, both53-state proofs PASS ([comparison](stride3-comparison-results.md)). A future structural candidate still needs its own53-state run.
+- [x] Run selected-state commits directly; all53 Created and original oracles PASS. Performance+verification wall330.023s vs968.760s for the historical157-state workload, **2.94× shorter**; not an identical-workload product speedup.
 - [ ] Advance promising designs to final all157 validation. Do not relabel the existing full157 measurements as53-state results.
 
-The selection reduces commit count by66.24%; a threefold wall-time speedup remains unmeasured. The already-running structural full157 proof finished and is retained.
+The selection reduces commit count by66.24%; the first completed public run measures2.94× shorter performance+verification wall against the earlier157-state workload. First-use builds and outer fixture preparation are separate. The already-running structural full157 proof finished and is retained.
 
 ## 3. Experiment ledger — completed approaches and their disposition
 
@@ -229,6 +229,7 @@ These public ten-state rows are **cumulative candidates**, not independent savin
 | [x] | VALID-04 — exact same compact policies, full157 | Matched compact **129,937,408→107,958,272 B**; **21,979,136 B saving** | OFFLINE-KEPT evidence; all 157 original oracles PASS; **51,585,024 B above Git** | [Compact157](40mb-offline-full157-results.md) |
 | [x] | VALID-05 — add depth-one metadata deltas, full157 | Matched chronological **108,081,152→98,668,544 B**; **9,412,608 B saving** | Latest OFFLINE-KEPT; all 157 original oracles PASS; **42,295,296 B above Git** | [Current result](history-scaling-and-metadata-deltas.md) |
 | [x] | VALID-06 — earlier premature chain full157 | Performance allocation **151,031,808 B**; historical verification interrupted at **150/157** | INCOMPLETE; forced shutdown/diagnostic cleanup, container removed; not final proof, superseded by VALID-02 for the retained product | [Correction](followup-disposition.md) |
+| [x] | VALID-07 — public stride3 / matched Git53 | **100,700,160B vs49,332,224B allocated**;53Created, all53 original states and cleanup PASS | PUBLIC-KEPT development foundation;2.94× shorter phase wall versus historical157 workload, not structural format qualification | [Stride3 comparison](stride3-comparison-results.md) |
 
 ## 4. Checklist for every new experiment
 
