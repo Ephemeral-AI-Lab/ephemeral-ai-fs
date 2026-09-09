@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Native Git storage control for the ten selected LayerFS snapshot states."""
+"""Native Git storage controls for fixed selected LayerFS snapshot profiles."""
 import argparse
 import collections
 import fcntl
@@ -42,7 +42,7 @@ def pack_types(repo):
 def verify(repo,mapping,objects,out,phase):
     assert not (repo/'objects/info/alternates').exists()
     commits=git(repo,'rev-list','--reverse','refs/heads/main').decode().splitlines()
-    assert commits==[r['git_commit'] for r in mapping] and len(commits)==10
+    assert commits==[r['git_commit'] for r in mapping] and len(commits)==len(mapping)
     log=git(repo,'log','--reverse','--format=%H %T %P','refs/heads/main').decode().splitlines()
     for i,line in enumerate(log):
         fields=line.split();assert fields[:2]==[mapping[i]['git_commit'],mapping[i]['tree']]
@@ -52,7 +52,7 @@ def verify(repo,mapping,objects,out,phase):
     fsck=git(repo,'fsck','--full','--strict','--no-reflogs')
     (out/(phase+'-fsck.txt')).write_bytes(fsck)
     content = verify_contents(repo,mapping) if phase=='pack_delta' else None
-    return dict(status='PASS',commits=10,trees_matched=10,object_count=len(actual),no_alternates=True,exact_object_membership=True,content=content)
+    return dict(status='PASS',commits=len(mapping),trees_matched=len(mapping),object_count=len(actual),no_alternates=True,exact_object_membership=True,content=content)
 
 def verify_contents(repo,mapping):
     started=time.monotonic_ns();digests={};entries_checked=bytes_checked=0
@@ -82,14 +82,15 @@ def verify_contents(repo,mapping):
     return dict(status='PASS',states=len(mapping),verified_entries=entries_checked,verified_bytes=bytes_checked,unique_blobs_hashed=len(digests),elapsed_ns=time.monotonic_ns()-started)
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--data',type=Path,required=True);parser.add_argument('--output',type=Path,required=True);parser.add_argument('--fixture',type=Path,required=True);args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--data',type=Path,required=True);parser.add_argument('--output',type=Path,required=True);parser.add_argument('--fixture',type=Path,required=True);parser.add_argument('--profile',choices=['deepseek-ten','deepseek-stride3'],default='deepseek-ten');args=parser.parse_args()
     raw=(args.data/'checkpoint-manifest.json').read_bytes();assert hashlib.sha256(raw).hexdigest()==MANIFEST_SHA
-    manifest=json.loads(raw);fixture=json.loads(args.fixture.read_text())['deepseek-ten'];rows=fixture['states'];assert len(rows)==10
-    assert fixture['full157_indices']==[1,18,36,53,70,88,105,122,140,157]
+    manifest=json.loads(raw);fixture=json.loads(args.fixture.read_text())[args.profile];rows=fixture['states'];indices=[1,18,36,53,70,88,105,122,140,157] if args.profile=='deepseek-ten' else list(range(1,158,3));assert len(rows)==len(indices)
+    assert fixture['full157_indices']==indices and [r['index'] for r in rows]==list(range(1,len(rows)+1))
+    assert [r['full157_index'] for r in rows]==indices
     assert all(r['tree']==manifest['checkpoints'][r['full157_index']-1]['tree'] and r['sha']==manifest['checkpoints'][r['full157_index']-1]['sha'] for r in rows)
     args.output.mkdir(parents=True,exist_ok=False)
     source=args.data/'source.git';repo=args.output/'snapshots.git'
-    result={'schema':'matched-git-ten-snapshots-v1','status':'INCOMPLETE','manifest_sha256':MANIFEST_SHA,'source_tip':manifest['tip'],'checkpoints':10,'logical_bytes':sum(r['logical_bytes'] for r in rows),'fixture_sha256':hashlib.sha256(args.fixture.read_bytes()).hexdigest(),'git_version':subprocess.check_output(['git','--version']).decode().strip(),'policies':{'compression':6,'delta_window':10,'delta_depth':50,'threads':2,'gc_auto':False,'bare':True,'working_tree':False},'phases':{}}
+    result={'schema':'matched-git-ten-snapshots-v1' if args.profile=='deepseek-ten' else 'matched-git-stride3-snapshots-v1','profile':args.profile,'status':'INCOMPLETE','manifest_sha256':MANIFEST_SHA,'source_tip':manifest['tip'],'checkpoints':len(rows),'logical_bytes':sum(r['logical_bytes'] for r in rows),'fixture_sha256':hashlib.sha256(args.fixture.read_bytes()).hexdigest(),'git_version':subprocess.check_output(['git','--version']).decode().strip(),'policies':{'compression':6,'delta_window':10,'delta_depth':50,'threads':2,'gc_auto':False,'bare':True,'working_tree':False},'phases':{}}
     with (Path(os.environ.get('TMPDIR','/tmp'))/'layerfs-infra-measurement.lock').open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         total_started=time.monotonic_ns()
@@ -124,14 +125,14 @@ def main():
             save(args.output/'mapping.json',mapping)
             result['construction_ns']=time.monotonic_ns()-started
             result['phases']['loose']={'storage':storage(repo),'verification':verify(repo,mapping,objects,args.output,'loose')}
-            assert result['phases']['loose']['storage']['loose_object_count']==len(objects)+10
+            assert result['phases']['loose']['storage']['loose_object_count']==len(objects)+len(rows)
             save(args.output/'results.json',result);print(json.dumps({'phase':'loose',**result['phases']['loose']['storage']}),flush=True)
             for name,window,depth in [('pack_delta',10,50)]:
                 command=['repack','-a','-d','-f','-F','--window='+str(window),'--depth='+str(depth),'--threads=2']
                 print('Starting '+name,flush=True);started=time.monotonic_ns();output=git(repo,*command);elapsed=time.monotonic_ns()-started
                 (args.output/(name+'.stdout')).write_bytes(output)
                 measure=storage(repo);types=pack_types(repo)
-                assert measure['loose_object_count']==0 and types['object_count']==len(objects)+10
+                assert measure['loose_object_count']==0 and types['object_count']==len(objects)+len(rows)
                 if name=='pack_no_delta':assert types['delta_objects']==0
                 assert measure['allocated_bytes']<16*1024**3
                 result['phases'][name]=dict(command=command,storage=measure,pack_types=types,repack_ns=elapsed,verification=verify(repo,mapping,objects,args.output,name))
