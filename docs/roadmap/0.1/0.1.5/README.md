@@ -39,9 +39,10 @@ These remain archive/reference layouts: cold-read amplification is substantial, 
 implementation below is unchanged. The1KiB page trial was not adopted.
 
 Benchmark-family expansion and the complete product rerun are tracked in
-[#101](https://github.com/Ephemeral-AI-Lab/layerfs/issues/101). Extend existing deduplication
-coverage, add explicit long-history and historical-read amplification cases, then qualify
-all registered families on the selected product candidate. [#100](https://github.com/Ephemeral-AI-Lab/layerfs/issues/100)
+[#101](https://github.com/Ephemeral-AI-Lab/layerfs/issues/101). Add only `historical_access`
+and optional `repository_history` strides1/3/10. Historical-access tests have a hard15-second
+end-to-end limit including preparation, with a15-second target for separate verification.
+See the [agreed family plan](benchmark-family-plan.md); long history profiles require explicit selection. [#100](https://github.com/Ephemeral-AI-Lab/layerfs/issues/100)
 remains open for format integration and the unresolved speed/read-cost disposition.
 
 ## Current implementation
