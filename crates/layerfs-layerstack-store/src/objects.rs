@@ -4353,7 +4353,7 @@ mod tests {
         assert_eq!(owner.diagnostics.collision_checks, 1);
 
         let mut corrupt = first;
-        corrupt.0.bytes = second.bytes; // Test-only violation of private authenticated ownership.
+        corrupt.0.bytes = second.bytes.clone(); // Test-only violation of private authenticated ownership.
         assert!(matches!(
             owner
                 .session()
