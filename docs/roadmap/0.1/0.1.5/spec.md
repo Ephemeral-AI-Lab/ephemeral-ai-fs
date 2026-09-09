@@ -1,16 +1,22 @@
 # v0.1.5 specification: whole-file CAS and bounded delta storage
 
-> **Status:** Reconciled implementation contract, 2026-09-09. No runtime changes
-> or new measurements are claimed. Implement the complete scope below; execute
-> only the ten-file/thirty-commit smoke and its 31-state verifier in this round.
-> [Implementation plan](implementation_plan.md) assigns files and sequencing;
-> [workflow](workflow.md) explains the architecture to users.
+> **Issue #100 measured outcome, 2026-09-10:** The retained implementation allocates
+> **49,319,936 bytes**, with **49,250,304 bytes** growth, ten Created outcomes,
+> exact same-Store verification and clean teardown. It is **4,319,936 bytes above
+> 45,000,000** and is **not near-target**. Commit median/sum exceed the prospective
+> 10% working criterion; save/paired medians and historical-read wall remain close
+> to the original baseline. See [the consolidated results](issue100/storage-optimization-results.md)
+> and [complete retained-candidate evidence](issue100/retained-candidate-1-results.md).
+> Final full157 is deferred because the near-target gate has not been met. The
+> issue remains open; no release-admission PASS, release or tag is claimed.
 
 ## 1. Baseline, scope and fixed settings
 
-Start from released v0.1.4 commit `101fa273d815f3aaedb0e06ba0de7b0777d83def`,
-qualified product `9cfb4be477116646258ea0621280ed13b1824c6d`. Preserve other tasks'
-changes and the released #95/#98 behavior described in section 8.
+Continue the current v0.1.5 implementation in `codex/issue100-full157`, including
+its upper-range exact-CAS repair. Released v0.1.4 commit
+`101fa273d815f3aaedb0e06ba0de7b0777d83def` is the immutable comparison product,
+not a replacement starting point. Preserve other tasks' changes and the released
+#95/#98 behavior described in section 8.
 
 | Setting | Fixed value |
 | --- | --- |
@@ -21,7 +27,9 @@ changes and the released #95/#98 behavior described in section 8.
 | New SQLite pages | 4096 bytes; supported existing 65536-byte layouts retained |
 | New small codec | Existing Zstandard, level 3, windowLog 18, workers 0 |
 | Frame flags | Content size and checksum enabled; dictionary ID disabled |
-| New delta depth | One edge to a FULL small-content base |
+| Schema-9 new delta depth | At most 8 SmallContent dependency edges |
+| Schema-9 decoded closure | At most 512 KiB canonical bytes, including target |
+| Schema-9 retained encoded records | At most 256 KiB actual capacity |
 | Candidate bases | At most one known eligible anchor per new small object |
 | Ordinary pack limit | 256 KiB; existing maximum 256 groups |
 | New small group / encoded-frame cap | 192 KiB / 132 KiB |
@@ -137,15 +145,21 @@ group byte length. Dispatch version 3 before legacy 64-KiB group checks. Apply t
 Group payload, no padding, little-endian integer fields:
 
 ```text
-u8 kind                 0 = FULL, 1 = DELTA
+u8 kind                 0 = FULL, 1 = FULL-base DELTA, 2 = bounded-chain DELTA
 u32 raw_length          1..131071
 u32 frame_length        1..135168
 [32 bytes base ObjectId] DELTA only
 frame_length bytes      exactly one Zstandard frame
 ```
 
-FULL frames decode without a dictionary. DELTA frames decode using the raw bytes
-of their named FULL SmallContent base. The reconstructed canonical object uses
+FULL frames decode without a dictionary. Kind 1 retains exactly its original
+one-edge FULL SmallContent base interpretation, including in schema 9. Kind 2 is
+admitted only in schema 9 and uses the raw bytes of its named SmallContent base,
+FULL or bounded DELTA. A bounded removed-name hint can name another path's retained
+SmallContent; this changes base discovery without changing canonical identity. Its complete closure has at most
+8 edges, 512 KiB summed canonical bytes including the target, and 256 KiB retained
+encoded record capacity. Unknown kinds and kind 2 in schema 8 are rejected.
+The reconstructed canonical object uses
 the fixed framing in section 2; its length must match the locator and its digest
 must equal the requested ObjectId. Raw file length is not canonical length.
 
@@ -171,30 +185,57 @@ Resolve exact CAS reuse through existing batched membership/equality first. If
 the target exists, use its selected representation and emit no duplicate payload.
 Do not encode first and then reread the target simply to rediscover that hit.
 
-Only the already known predecessor's selected representation supplies a candidate:
+Schema 9 selects at most one eligible base for encoding:
 
-- Predecessor SmallContent stored as v3 FULL: use it as the sole candidate base.
-- Predecessor SmallContent stored as v3 DELTA: use its directly named FULL base;
-  validate that the selected base really is v3 FULL SmallContent.
-- Chunked, empty, unavailable or otherwise ineligible predecessor: emit FULL.
+- Schema 9: authenticate/reconstruct the immediate SmallContent predecessor and
+  retain its depth, summed canonical closure and encoded closure facts. Select a
+  new kind-2 DELTA only when adding the target satisfies all three fixed limits.
+- Schema 8: keep the original FULL predecessor/direct FULL-anchor selection and
+  kind-1 writer policy. Opening schema 8 does not enable kind 2.
+- Before file production, schema-9 Workspace task planning may resolve frozen
+  removed names and bounded removed subtrees into a temporary basename/root
+  catalogue. A new nonempty small target with no genuine predecessor may use a
+  unique distinct root for its basename. Ambiguities/cap exhaustion/low budgets
+  skip discovery. Never fabricate a before inode. The [amendment](issue100/removed-base-amendment.md)
+  fixes 16384 dirty-node, 32768 change-entry, 4096 removed-entry, 64-depth and
+  8192 metadata-call bounds, <=1-MiB catalogue/queue ownership, and a 4-MiB
+  planning allowance floor. Existing batched readers authenticate metadata.
+- With no eligible hint, query the compact selected-FULL cache: 1024 records stored
+  once plus 8192 u16 references, charged within the existing 128-KiB reservation
+  from admission index ownership. Eight rolling 16-byte fingerprints produce at
+  most eight probes and one chosen candidate with at least two matches. Preserve
+  ObjectId tie-breaking, authenticate the exact selected FULL and emit kind 1
+  only if economical. There is no second candidate encoding trial.
+- Register only actual FULL winners after publication, outside Store locks, from
+  already-owned canonical bytes; omit final-batch registration. A retained session
+  moves the cache to one idle StoreDb slot while holding its writer permit; the
+  next admission takes it without cloning. At most the same 128 KiB survives
+  while idle. Rollback discards inherited/private hints; reopening starts empty.
+  See [index ownership](issue100/compact-candidate-amendment.md) and
+  [retained handoff](issue100/retained-candidate-amendment.md).
+- Cached DELTA registration is not retained in the product: both tested variants
+  increased content storage and Commit cost. CDC predecessor reuse remains
+  unimplemented. No eligible base means FULL.
 
-An optional predecessor hint that cannot establish eligibility may fall back to
-FULL. Once a persisted DELTA record is selected, its named base is a required
-dependency: missing, corrupt, wrong-role or non-FULL base is an integrity error,
-not a reason to silently fall back. Apply that rule to reads, exact collision
-comparison and candidate-anchor reuse.
+An optional hint whose eligibility cannot be established may fall back to the
+prepared FULL. Missing/corrupt/wrong-role dependencies of a selected persisted
+DELTA are integrity errors. Kind 1 still requires its directly named base to be
+FULL. Kind 2 validates the entire bounded chain and authenticates each decoded
+canonical object before using its raw bytes for the next step.
 
-No predecessor decoding just to find a base ID, no multi-part chunk anchor, no
-recursive ancestry search, and no new base copy to create an artificial candidate.
-A dependent base must already have a stable selected location or be selected
-before its dependent under the same admission ownership. Never rewrite a globally
-selected object to make it FULL. A locator claiming FULL must be verified through
-the real selected record; ObjectId alone does not prove its encoding or integrity.
+Acquire at most nine selected records iteratively, checking locator lengths,
+cycles, chronological dependencies, complete decoded closure and actual encoded
+capacities before reconstruction. There is no recursive history walk, copied
+physical base, global similarity index, or rewrite of selected representations.
+A base already has a stable selected location under the existing admission owner;
+carry those verified facts forward without a second readback. At a prospective
+size/depth/encoded ceiling, FULL is the complete fallback.
 
 Reuse scoped predecessor facts from the existing workspace provenance/batched
 lookup, including supported replace-by-rename relations. Do not infer relationships
 through a new global path/similarity index or add a per-file transport negotiation.
-If those facts do not provide an eligible base, FULL is the complete fallback.
+If neither scoped facts nor the bounded selected-FULL cache provide an eligible
+base, FULL is the complete fallback.
 
 Prepare one compressed FULL alternative and at most one DELTA alternative, using
 already owned target/base bytes. Choose DELTA only for strictly smaller complete
@@ -209,12 +250,13 @@ needed in the encoding hot path to speculate about future reclamation.
 
 ## 6. Reads, retention and transitions
 
-Read small FULL directly or reconstruct small DELTA with its FULL base, then
-validate the complete canonical object at the storage trust boundary. A short
-range can require decoding the bounded complete object. Batch and deduplicate
-base acquisition within valid read ownership; cache reuse never substitutes for
-initial authentication. New-format dependency depth is one. Legacy v2 PREFIX
-read support and its existing depth rules remain unchanged.
+Read small FULL directly; preserve the kind-1 authenticated FULL-base fast path.
+Read kind 2 through the shared iterative bounded reader, authenticating each node
+and the complete target. Exact-CAS comparison, including targets above 64 KiB,
+uses that same reader. A short range may require reconstructing the bounded
+complete object. Clear the old read-wave small-base cache before a kind-2 chain;
+no unbounded raw cache or recursive history walk is introduced. Legacy v2 PREFIX
+read support and its existing depth/codec rules remain unchanged.
 
 Physical base closure must be included in admission/staging, integrity traversal,
 accounting, rollback and any future reclamation. Canonical reachability alone is
@@ -255,12 +297,21 @@ within the existing 6-MiB data and 2-MiB physical-output ledgers alongside actua
 producer/queue ownership; do not add those amounts as uncharged global buffers.
 Existing pure-new Init scheduling stays bounded and does not reserve a base.
 
-For small reconstruction, reserve at most 2 MiB per active owned decoder: 1 MiB
-static decoder workspace and 1 MiB combined operands/output. Validate static
-estimates against the fixed pinned codec configuration in the implementation;
-reset borrowed references on success and failure. A failed budget check is an
-implementation error to solve through reuse/lifetime/allocation structure, not
-permission for a setting sweep or hidden heap fallback.
+For small reconstruction reserve at most 2 MiB per active owner: <=1 MiB static
+DCtx/DDict storage, <=256 KiB retained encoded records, four simultaneously live
+raw/canonical-sized buffers of at most `131071 + 23` bytes, and <=16 KiB chain
+associations. Four buffers account for the previous canonical base, decoded raw,
+intermediate SmallContent framing and final canonical output. Admission's incoming
+target is also charged while it survives predecessor reconstruction. The reader
+checks actual Vec capacities and separately bounds acquisition of the next
+<=192-KiB group before any decoder or raw operands are live. Existing read-wave
+and producer/output ledgers retain their separate ownership charges.
+
+Decoder and encoder never overlap during base acquisition. The encoding operation
+keeps its existing 3-MiB total: an actual 2-MiB static encoder plus <=1 MiB combined
+target/base/FULL/DELTA/output/handoff ownership. Validate pinned static estimates,
+reset borrowed references on success/failure, and reject resource violations;
+there is no heap codec fallback or parameter sweep.
 
 Preserve authenticated canonical owners through private handoffs. Fresh persisted
 or spilled operands are authenticated; a trusted in-flight buffer need not be
@@ -294,54 +345,56 @@ See [past mistakes](past_mistake.md) and the source-bound [release report](bench
 
 ## 9. Store capability and explicit upgrade
 
-New Stores use schema 8 with the same seven SQL tables and 4-KiB pages. Schema 8
-fences both the new canonical role and pack grammar. New binaries continue to
-read supported schema 6/7 data using the old encodings. Opening old Stores does
-not silently promote them; writes in those schemas stay on their supported old
-construction policy. Expose format capability to the shared builder once per
-operation, not through a database query for every file.
+New Stores use schema 9 with the same seven SQL tables and 4-KiB pages. Schema 8
+continues to fence the SmallContent canonical role and original pack-v3 kinds;
+schema 9 additionally fences kind 2. Supported schema 6/7/8 opens do not promote,
+and writes retain each schema's supported construction/encoding policy. Carry the
+format capability once per operation, not through a query for every file.
 
-Implement explicit offline `LayerStackStore::upgrade_format(path) -> Result<()>`
-for schema 7 to 8. Read-only preflight checks compatibility/metadata, then exclusive
-access revalidates before changing only the format version. Use a real SQLite
-transaction with DELETE journal and FULL synchronous during the upgrade; require
-no live owners, do not rewrite payload/history or change page size. Restore the
-normal Store connection profile when reopening. Failure before COMMIT leaves
-schema 7; failure after COMMIT must report that promotion occurred. Schema 8 is
-an idempotent no-op; unsupported schema 5 and schema-6 upgrade requests return
-clear errors. Existing schema-6 compatibility behavior is otherwise retained.
+`LayerStackStore::upgrade_format(path)` explicitly upgrades schema 7 or 8 to 9.
+Read-only preflight precedes exclusive revalidation and a real SQLite transaction
+using DELETE journal/FULL synchronous. Require no live owners; change format
+capability without rewriting payload/history or page size. Failure before COMMIT
+preserves the original schema; failure after COMMIT reports promotion. Schema 9
+is an idempotent no-op. Unsupported schema 5 and schema-6 upgrade requests remain
+errors; existing supported schema-6 reads/writes retain their compatibility policy.
 
-Old binaries reject schema 8 before mutation. There is no header-only downgrade
-once new objects may exist. Reverting requires a pre-upgrade backup, not changing
-a version integer. This task does not add a history-export service or silently
-claim compatibility with released v0.1.3's unsupported schema 5.
+Pre-amendment binaries reject schema 9 before normal mutable connection setup.
+A downgrade requires a pre-upgrade backup; changing the version integer is not a
+supported rollback once new records may exist. Normal MEMORY/OFF acknowledgement
+and durability semantics remain unchanged when the Store is reopened.
 
 The owner-authorized canonical/Store evolution is a scoped v0.1.5 exception in
 [release policy](../../../general/release-policy.md). Ordinary write/fsync/Commit
 acknowledgements do not gain crash/power-loss durability; MEMORY journal and
 synchronous-OFF normal operation remain their documented contract.
 
-## 10. Implementation completion and verification scope
+## 10. Current measurement and completion boundary
 
-Implement all paths above, compile the required product/harness targets, and run
-only `small_file_delta_smoke / small-file-delta-10x30-v1` as specified in
-[delta-encoding benchmarks](delta-encoding-benchmarks.md#first-round-execution-scope).
-Its integrated verification reopens the same retained Store and checks every byte,
-path, mode and length in all 31 states. Runtime parser/budget checks are production
-requirements even when malformed cases are not exercised by this smoke.
+Use the [ten-snapshot contract](issue100/ten-snapshot-contract.md): `deepseek-ten`
+with the exact retained full157 indices 1, 18, 36, 53, 70, 88, 105, 122, 140, 157.
+Reuse the applicable immutable Git, released-v0.1.4 and existing-v0.1.5 baselines.
+Run focused changed-owner checks and matched public performance, freeze allocation
+and Store identity, collect the census, then reopen the same Store in a fresh
+coordinator for exhaustive original-oracle verification and cleanup. Do not
+rebuild a second history to substitute for that verification.
 
-Do not run Cargo test/Clippy/doctest suites, separate codec/compatibility/failure
-suites, old three-file reruns, SDK/FUSE matrices, 56-case campaigns or full157 in
-this round. Do not repeatedly run a passed smoke on an unchanged relevant build.
-Keep a matching baseline, source-bound observations, actual FULL/DELTA selection,
-storage/latency changes, and a list of unexercised paths. A path silently falling
-back to old small chunking does not count as implementation completion.
+The [chain1 result](issue100/chain-1-results.md) is 56,668,160 B final allocation,
+11,668,160 B above the 45,000,000-B objective. It is an improvement, not near-target
+or task completion. The selected-FULL cache is a later measured implementation;
+its separate report above supersedes chain-only status. Cross-CDC reuse remains
+unimplemented. Final full157 confirmation is pending and
+belongs after the short-loop design stabilizes; its objective is separate from
+the ten-snapshot 45-MB target. Preserve the earlier full157 regression evidence.
 
-The smoke is local exploratory evidence, not release admission. Broader tests and
-benchmarks remain later qualification; do not publish/tag a release or represent
-smoke-only verification as exhaustive compatibility/POSIX/corruption assurance.
+The original ten-file/thirty-commit smoke and its 31-state verifier are historical
+first-round evidence in [smoke-report.md](smoke-report.md), not current execution
+instructions. Broad Cargo/Clippy/doctest, unrelated qualification, parameter sweeps
+and repeated unchanged measurements remain out of this issue's exploratory loop.
+The smoke and focused checks do not establish exhaustive compatibility, POSIX,
+corruption, failure or release qualification. No release is published or tagged.
 
-## Source anchors
+## Released source anchors (historical control)
 
 [Canonical roles and codec](https://github.com/Ephemeral-AI-Lab/layerfs/tree/101fa273d815f3aaedb0e06ba0de7b0777d83def/crates/layerfs-content/src/object),
 [existing file formats](https://github.com/Ephemeral-AI-Lab/layerfs/tree/101fa273d815f3aaedb0e06ba0de7b0777d83def/crates/layerfs-content/src/file),

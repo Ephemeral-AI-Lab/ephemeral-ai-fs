@@ -1,18 +1,14 @@
 # v0.1.5: workspace storage and history workflows
 
-> **First-round scope (owner update, 2026-09-09):** Use only one **10-file,
-> 30-commit smoke test** for the initial implementation/measurement loop, including
-> verification of its 31 retained states. Broader benchmark matrices and release
-> qualification follow after that loop is stable. The original three-file tiny
-> baseline remains unchanged and is not the new smoke or its numerical control.
-> See [the current execution scope](delta-encoding-benchmarks.md#first-round-execution-scope).
-
-> **Status:** Proposed architecture, 2026-09-09; not implemented or benchmarked.
-> This document records the agreed small-file whole-content CAS model and the
-> requirement that namespace Init and workspace Commit use one shared pipeline.
-> The [spec](spec.md) and [implementation plan](implementation_plan.md) now match
-> this whole-file small-content model. No implementation or measurements are
-> claimed by these documents.
+> **Issue #100 measured outcome, 2026-09-10:** The retained implementation allocates
+> **49,319,936 bytes**, with **49,250,304 bytes** growth, ten Created outcomes,
+> exact same-Store verification and clean teardown. It is **4,319,936 bytes above
+> 45,000,000** and is **not near-target**. Commit median/sum exceed the prospective
+> 10% working criterion; save/paired medians and historical-read wall remain close
+> to the original baseline. See [the consolidated results](issue100/storage-optimization-results.md)
+> and [complete retained-candidate evidence](issue100/retained-candidate-1-results.md).
+> Final full157 is deferred because the near-target gate has not been met. The
+> issue remains open; no release-admission PASS, release or tag is claimed.
 
 Your workspace behaves like a normal filesystem. Applications and coding agents
 read and edit files; a successful commit saves a workspace version. Small files
@@ -202,30 +198,23 @@ changes to the shared inode, as before.
 Before publication succeeds, preparation must not expose a partially published
 version. A failed preparation does not replace the previous published root;
 cleanup follows the existing lifecycle. Publication, live-write acknowledgement,
-`fsync`, and crash/power-loss durability remain distinct. This proposal does not
+`fsync`, and crash/power-loss durability remain distinct. This implementation does not
 strengthen v0.1.4's durability contract.
 
 ## 4. Small files: whole-content identity, compact physical differences
 
 Each distinct small-file content is **one logical CAS payload object**. Small
-files do not first become CDC members in this proposed representation.
+files do not first become CDC members in this representation.
 
 ```text
- Logical history                   Physical storage in packs
+ Logical history                   Physical storage in schema-9 packs
  ---------------------             ---------------------------------
  Commit 1 -> object A ------------> A: FULL complete content
-                                            ^
-                                            | base
  Commit 2 -> object B ------------> B: DELTA(A -> B)
-                                            
- Commit 3 -> object C ------------> C: DELTA(A -> C)
-                                            | base
-                                            +---------> A
-
- Commit 4 -> object B ------------> Reuse the existing B object
-                                   No additional file payload
-
- Commit 5 -> object D ------------> D: FULL, when a new anchor is needed
+ Commit 3 -> object C ------------> C: DELTA(B -> C)
+                                   C -> B -> A is the authenticated closure
+ Commit 4 -> object B ------------> Reuse existing B; no new file payload
+ Commit 5 -> object D ------------> D: FULL when bounds/cost require fallback
  Commit 6 -> object E ------------> E: DELTA(D -> E)
 ```
 
@@ -234,11 +223,22 @@ gets B by decoding its delta using A, then validating the resulting canonical
 object. The encoding can reuse matching byte sequences from the base; it does
 not require storing a new 8-32 KiB chunk for a one-line change.
 
-New small-file deltas have **one dependency level against a FULL base**. B and C
-can both depend on A; C does not extend a chain through B. If no eligible bounded
-base is available, or a delta does not save enough after accounting for its
-physical overhead, store FULL. Existing supported legacy encodings retain their
-own decoding rules.
+New schema-9 kind-2 deltas may follow the already selected immediate small
+predecessor through at most **8 dependency edges**. Complete closure, including
+the target, is also bounded to **512 KiB canonical bytes** and **256 KiB retained
+encoded capacity**. Each decoded node is authenticated before becoming the next
+base. If eligibility or any prospective bound fails, or complete DELTA cost is
+not strictly smaller, the prepared FULL wins.
+
+Kind 1 keeps its original one-edge FULL-only meaning. Existing schema-8 Stores
+remain on that writer policy and are not promoted on open. Kind 2 is rejected
+there; explicit offline upgrade to schema 9 is required. Old native/legacy formats
+retain their own decoding rules. When no eligible predecessor exists, schema 9
+can select one actual FULL from its bounded fingerprint cache and emit kind 1.
+Retained admissions move the same cache to the next admission on the same Store;
+rollback discards it and reopen starts empty. Frozen removed-name facts can also
+supply a unique physical hint without changing the real inode or metadata. The older recent-128 ring was diagnostic only; logical CDC predecessor
+reuse remains unimplemented.
 
 Exact deduplication and delta encoding provide different benefits:
 
@@ -338,7 +338,7 @@ small-file versions. Untouched history is never converted just to match policy.
 
 For example, truncating 200 MiB to 20 KiB needs the retained 20 KiB and its
 necessary chunk/decode dependencies, not a scan of 200 MiB or its history. Without
-an eligible small FULL base already available, the new small object starts FULL.
+an eligible SmallContent predecessor already available, the new small object starts FULL.
 Later small versions can use deltas.
 
 ```text
@@ -367,7 +367,7 @@ the two representations do not automatically share physical storage. The fixed
                         |               |                         the requested range
                        FULL            DELTA                               |
                         |               |                         Read needed chunks
-                        |        Read FULL base                            |
+                        |        Read bounded base closure                 |
                         |        + reconstruct target                      |
                         +-------+-------+----------------------------------+
                                 |
@@ -406,17 +406,34 @@ Shared code still respects operation-specific resource budgets and lifecycle
 rules; it does not erase the qualified Init and Commit optimizations. SQLite
 creation stays at 4 KiB pages, with supported existing 64 KiB layouts readable.
 
-The expected benefit is smaller retained small-file histories with bounded
-foreground and read work. The first implementation round uses only the ten-file/30-commit smoke and its
-31-state verification. The original, separately retained three-file benchmark
-also has 30 commits; its candidate goals are at most **64 KiB allocated growth**, **152 KiB
-final allocation**, **88 KiB initial allocation**, and **15 ms median paired
-save + Commit**, with all 31 states verified. These are targets, not results;
-allocation includes more than delta payload bytes. See the
-[frozen tiny case](tiny-history-baseline-v1.md) and
-[benchmark guidance](benchmark_success.md) for evidence boundaries. The separate
-[delta benchmark plan](delta-encoding-benchmarks.md) covers mixed-length histories,
-read costs, and bounded work; its new scenarios do not inherit these tiny gates.
+New Stores retain 4-KiB pages and the same seven tables under schema 9. Supported
+schema 6/7/8 opens do not promote; explicit offline 7/8→9 upgrade revalidates with
+exclusive access and transactional DELETE/FULL promotion, without rewriting old
+payloads. Rollback to an old binary requires a pre-upgrade backup.
+
+The active reconstruction allowance stays 2 MiB, including static decoder and
+dictionary storage, retained encoded records, four simultaneous base/raw/framing/
+canonical buffers and any surviving admission target. Admission encoding stays
+3 MiB including its actual 2-MiB static encoder and bounded operands/output.
+Decoder and encoder do not overlap; neither may fall back to hidden heap growth.
+Existing producer, index and read-wave ownership budgets remain authoritative.
+
+
+The earlier schema-9 chain-only measurement reduces ten-snapshot allocation from the existing
+v0.1.5 baseline's 66,105,344 B to **56,668,160 B**. This remains **11,668,160 B above**
+the 45,000,000-B target, not near-target or a release PASS. The same measured Store
+passed exhaustive historical verification and cleanup. See the
+[chain-1 report](issue100/chain-1-results.md) for exact timing, resource and custody
+scopes rather than transferring claims from an isolated codec diagnostic.
+
+The current [ten-snapshot contract](issue100/ten-snapshot-contract.md) retains ten
+complete selected snapshots, not ten consecutive upstream commits. Original
+[tiny-case](tiny-history-baseline-v1.md) and [31-state smoke](smoke-report.md)
+observations keep their separate fixtures and historical thresholds. The initial
+full157 regression remains recorded; final full157 confirmation is pending after
+short-loop stabilization. Its target is not 45 MB. Broader release qualification
+is unrun, and the current target miss does not rule out all authorized bounded
+designs.
 
 For released behavior, consult [existing architecture](existing_architecture.md).
 For performance lessons, read [past mistakes](past_mistake.md). The

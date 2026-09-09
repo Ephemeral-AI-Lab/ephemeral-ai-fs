@@ -1,124 +1,101 @@
 # LayerFS v0.1.5: bounded delta storage
 
-> **Status:** Implementation and fixed smoke completed, 2026-09-09. See the
-> [implementation notes](implementation-notes.md) and [matched smoke report](smoke-report.md).
-> Both arms verified all 31 retained states; the candidate exercised 10 FULL and
-> 30 DELTA SmallContent objects. This is exploratory evidence, not release qualification.
+> **Issue #100 measured outcome, 2026-09-10:** The retained implementation allocates
+> **49,319,936 bytes**, with **49,250,304 bytes** growth, ten Created outcomes,
+> exact same-Store verification and clean teardown. It is **4,319,936 bytes above
+> 45,000,000** and is **not near-target**. Commit median/sum exceed the prospective
+> 10% working criterion; save/paired medians and historical-read wall remain close
+> to the original baseline. See [the consolidated results](issue100/storage-optimization-results.md)
+> and [complete retained-candidate evidence](issue100/retained-candidate-1-results.md).
+> Final full157 is deferred because the near-target gate has not been met. The
+> issue remains open; no release-admission PASS, release or tag is claimed.
 
-The current issue #100 follow-up has a [three-arm ten-snapshot baseline](issue100/ten-snapshot-baselines.md)
-for fast iteration: Git 38.22 MB, released v0.1.4 67.15 MB, existing v0.1.5 66.11 MB
-allocated, with all ten states verified. This smaller history does not supersede
-the initial full157 regression. See the [frozen smoke contract](issue100/ten-snapshot-contract.md)
-and [growth analysis](issue100/growth-estimate.md); no storage optimization or release
-qualification is claimed from the baselines. The subsequent [Git algorithm gap study](issue100/git-gap-directions.md)
-reconciles the measured storage gap and separates bounded online opportunities from
-Git's use of later-snapshot bases; no new encoding experiment was run.
+Read the [bounded predecessor amendment](issue100/bounded-predecessor-amendment.md),
+[the removed-name amendment](issue100/removed-base-amendment.md),
+[compact cache](issue100/compact-candidate-amendment.md),
+[retained cache handoff](issue100/retained-candidate-amendment.md), and
+[frozen ten-snapshot contract](issue100/ten-snapshot-contract.md) for the current
+work. The earlier [31-state smoke report](smoke-report.md) remains historical
+first-round evidence. Its restrictions and the old [implementation prompt](implementation_prompt.md)
+do not supersede the current issue #100 owner instructions.
 
-The ready-to-use [implementation prompt](implementation_prompt.md) combines this
-scope, fixed settings and fast smoke-only loop.
+## Current implementation
 
-## What to implement
+New or changed nonempty file content strictly below **131,072 bytes** uses one
+whole-file canonical SmallContent CAS object. Empty files retain their compact
+representation; files at/above the boundary retain CDC **8/16/32 KiB**, the existing
+extent tree and known-range edit locality. Canonical identity stays independent
+of physical FULL/DELTA representation. Existing objects and histories are not
+rewritten.
 
-New or changed nonempty file content below **131,072 bytes** becomes one
-whole-file canonical CAS payload, physically stored as FULL or a one-level DELTA
-against a FULL small-content object. Exactly 128 KiB and larger files retain the
-existing CDC/extent representation and known-range edit locality. Empty files
-retain their existing compact representation. Unchanged old objects and histories
-are not rewritten to adopt the new policy.
+New Stores use **schema 9** and unchanged 4-KiB pages/seven-table layout. Pack-v3
+kind 0 is FULL; kind 1 still means one DELTA edge to FULL. New kind 2 permits an
+immediate SmallContent predecessor chain bounded by **8 edges**, **512 KiB total
+canonical closure including target**, and **256 KiB retained encoded capacity**.
+The iterative reader authenticates each reconstructed node. Exact CAS runs before
+encoding, FULL is prepared once, and one eligible DELTA wins only on strictly
+smaller complete encoded cost.
 
-Namespace Init and workspace Commit use the same content construction, admission,
-packing, dependency, and publication machinery. Init discovers source files;
-Commit captures live FUSE/SDK state and supplies predecessor/dirty-frontier facts.
-Those input adapters remain distinct; no duplicated storage pipeline is added.
+Supported schema 6/7/8 opens remain nonpromoting and retain their respective
+writer policies, including schema 8's one-level FULL-anchor grammar. Explicit
+offline upgrade accepts schema 7/8 to 9; old binaries reject schema 9 before normal
+mutable open. Reverting requires a pre-upgrade backup, not a header downgrade.
 
-CAS identifies complete canonical content, independently of FULL/DELTA storage.
-Small-file length-changing edits may assemble/hash the complete bounded target;
-large-file known edits must not scan untouched content. Keep live POSIX semantics,
-trusted ownership, batching, rollback, and publication behavior intact.
+Init and Commit retain their shared construction/admission/publication pipeline,
+authoritative live FUSE/SDK state, POSIX behavior, retained physical dependencies,
+rollback and actual publication outcomes. Preserve #95 Init comparison reuse,
+#98 Workspace SQL coalescing/staging handoff and ordered spill read-ahead <=64 KiB.
+The existing 2-MiB active reconstruction and 3-MiB encoding allowances include
+static codec storage and simultaneous operands; there is no hidden heap fallback.
 
-## Read in this order
+## Evidence and remaining work
 
-1. [Workflow](workflow.md): user-facing architecture and ASCII workflows, including
-   live workspace state, shared Init/Commit, history, and size transitions.
-2. [Specification](spec.md): fixed representation, encoding, schema/compatibility,
-   ownership, transitions, and completion contract. This is the technical authority.
-3. [Implementation plan](implementation_plan.md): concrete file responsibilities,
-   order of work, fast builds, and smoke-only verification.
-4. [Delta-encoding benchmarks](delta-encoding-benchmarks.md): the fixed first-round
-   smoke and explicitly deferred broader qualification.
-5. [Past mistakes](past_mistake.md) and [benchmark success](benchmark_success.md):
-   source-bound performance pitfalls and existing-family contracts.
+| Ten-snapshot arm | Final allocated bytes |
+| --- | ---: |
+| Git | 38,223,872 |
+| Released v0.1.4 | 67,145,728 |
+| Existing one-level v0.1.5 | 66,105,344 |
+| Schema-9 chain candidate | 56,668,160 |
+| Chains plus session-local selected-FULL cache | 54,562,816 |
+| Removed-name discovery | 50,372,608 |
+| Compact cache | 50,368,512 |
+| Retained FULL cache (kept) | 49,319,936 |
 
-[Hybrid mental model](hybrid_mental_model.md) is the compact conceptual companion.
-[Existing architecture](existing_architecture.md) describes the released/historical
-baseline; [v0.1.4 benchmark report](benchmark-v0.1.4-report.md) records its results
-and later optimization backlog. Neither is a command to run a broad campaign now.
+Chain allocation is **11,668,160 B above the target**. All values are allocated
+bytes, not compressed-frame totals. The detailed report retains exact growth,
+per-state timings, resource scopes, attribution and custody. Ten dependent history
+steps do not establish tail confidence or a release-admission PASS.
 
-The earlier chunk-member FILE_DELTA proposal has been replaced, including its
-multiple-member directory, base-part descriptor, and all-size extent-only policy.
-It is not an alternative implementation route.
+The initial full157 candidate regressed to **201,371,648 B**, versus released
+control **184,582,144 B**, with both histories verified. The ten-state improvement
+does not erase that result. Final full157 confirmation belongs after short-loop
+stabilization and has no 45-MB target. It remains pending.
 
-## Fixed settings and scope
+The earlier recent-128 ring was diagnostic only. The compact content-keyed
+selected-FULL cache is implemented and measured. It stores 1024 candidate records
+and 8192 u16 references within 128 KiB from the existing admission index allowance,
+with no raw content. Retained admissions transfer this same cache to the next
+admission on the same StoreDb; failed admissions discard it and reopen starts
+empty. Both session-only and retained DELTA-cache expansions were measured and
+reverted because they increased content packs and Commit cost.
+Cross-CDC predecessor reuse also remains unimplemented. The target miss does not
+prove every owner-authorized bounded design impossible. No global similarity
+index, GC/repacker, reverse rewrite, new dependency, codec/page/cutoff sweep or
+release publication is authorized by these results.
 
-- Small-file boundary: **128 KiB**, strictly below is small.
-- Existing CDC: **8 KiB minimum / 16 KiB target / 32 KiB maximum**.
-- SQLite: **4 KiB pages** for new Stores; preserve supported existing 64-KiB layouts.
-- Codec/depth/buffer parameters: fixed in the spec; no parameter search.
-- Use existing Zstandard, Store, ownership, transport, and runner facilities.
-- No global similarity index, delta chains for new small objects, background GC,
-  repacker, new storage service, or dependency hunt.
-- Multi-Branch/multi-Workspace scope remains [v0.1.6](../0.1.6/README.md).
+## Working documents
 
-Implement the complete v0.1.5 scope, including readers, transitions, compatibility,
-base lifetime, failure handling and documentation. A small verification campaign
-does not authorize omitting these production requirements.
+- [Specification](spec.md): canonical/physical grammar, compatibility and ownership.
+- [Workflow](workflow.md): shared public paths, history and size transitions.
+- [Implementation plan](implementation_plan.md): current continuation and measurement boundaries.
+- [Implementation notes](implementation-notes.md): accepted paths and retained historical attempts.
+- [Ten-snapshot baselines](issue100/ten-snapshot-baselines.md) and
+  [Git gap study](issue100/git-gap-directions.md): immutable controls and measured opportunities.
+- [Past mistakes](past_mistake.md), [benchmark success](benchmark_success.md), and
+  [released closeout](benchmark-v0.1.4-report.md): invariants and qualification limitations.
 
-## Baseline and repairs to preserve
-
-Start from released **v0.1.4**, commit
-`101fa273d815f3aaedb0e06ba0de7b0777d83def`, qualified product
-`9cfb4be477116646258ea0621280ed13b1824c6d`. Preserve other tasks' work and use an
-isolated checkout when necessary; do not overwrite this older main checkout with
-release files piecemeal.
-
-Retain #95 Init's bounded authenticated comparison reuse, #98 Workspace SQL
-coalescing and staging handoff, and the 64-KiB ordered spill read-ahead cap. These
-are released optimizations, not gains attributable to v0.1.5.
-
-The release's [benchmark closeout](https://github.com/Ephemeral-AI-Lab/layerfs/blob/101fa273d815f3aaedb0e06ba0de7b0777d83def/release-notes/0.1.4/benchmark-closeout.md)
-records remaining regressions and ineligible comparisons. Do not infer universal
-speed gains from release acceptance or omit those limitations in future claims.
-
-## First-round implementation loop
-
-Use the single ten-file/thirty-commit ordinary-FUSE smoke specified in
-[the benchmark document](delta-encoding-benchmarks.md#first-round-execution-scope).
-Collect a released control for the exact same fixture before measuring the
-candidate. Then implement, build the needed targets, run that smoke, verify its
-31 states, inspect the actual cost, and fix the measured cause.
-
-Build incrementally and reuse valid host/image artifacts. Diagnose slow builds,
-lock waits, setup, or verification rather than repeatedly paying the same cost.
-Do not run already-passed checks again without a change that invalidates them.
-No Cargo test/Clippy/doctest suite, three-family matrix, full157, cutoff sweep,
-page-size experiment, or separate read campaign in this implementation round.
-
-Keep the original [three-file tiny baseline](tiny-history-baseline-v1.md) immutable.
-Its 88-KiB initial / 216-KiB final allocation and 13.709125-ms observation are not
-ten-file results. Its 64-KiB-growth/15-ms candidate gates remain attached to that
-original case and are deferred with its rerun. The new smoke has its own matched
-comparison and evidence scope.
-
-## Completion versus release
-
-Implementation completion requires all specified paths wired, the matching build
-and single smoke passing, its history verified, and a candid record of storage,
-latency, limitations and unrun qualification. It is not permission to publish a
-release or claim exhaustive correctness.
-
-The v0.1.5 canonical/physical format extension is an explicit owner-authorized
-exception to the normal patch-format rule; see [release policy](../../../general/release-policy.md).
-Old bytes/identities stay readable, new format writes are fenced, and upgrade is
-explicit. Existing MEMORY-journal/synchronous-OFF acknowledgements do not become a
-power-loss durability guarantee. Broader format, failure, POSIX and performance
-qualification follows separately before release.
+Continue the current `codex/issue100-full157` implementation and upper-range exact-CAS
+fix. Released v0.1.4 is the immutable control, not a replacement starting point.
+The original [tiny baseline](tiny-history-baseline-v1.md) and first-round reports
+retain their own fixtures and numerical scopes. Broader release qualification
+remains unrun; ordinary MEMORY/OFF acknowledgements gain no power-loss guarantee.
