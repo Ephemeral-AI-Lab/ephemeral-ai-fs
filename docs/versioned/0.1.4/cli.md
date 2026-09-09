@@ -1,6 +1,6 @@
 # LayerFS 0.1.4 CLI reference
 
-> **Status:** Release candidate for LayerFS 0.1.4.
+> **Status:** LayerFS 0.1.4 Developer Preview manual.
 
 The `layerfs` binary is a thin adapter over the public Rust SDK. It stores no
 application SQL and has no alternate storage path.

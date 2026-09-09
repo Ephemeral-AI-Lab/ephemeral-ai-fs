@@ -16,11 +16,11 @@
 </p>
 
 
-> **v0.1.4 release preparation:** the owner has accepted the storage/performance
-> tradeoff. Read the [prepared release record](release-notes/0.1.4/README.md)
-> and [schema compatibility boundary](docs/versioned/0.1.4/storage-format.md).
-> No v0.1.4 tag or release assets have been published yet; v0.1.3 remains the
-> latest published release. This candidate checkout reports package version 0.1.4.
+> **v0.1.4 Developer Preview:** [release and downloads](https://github.com/Ephemeral-AI-Lab/layerfs/releases/tag/v0.1.4),
+> [every benchmark family and case](release-notes/0.1.4/benchmark-closeout.md), and
+> [schema compatibility boundary](docs/versioned/0.1.4/storage-format.md).
+> Storage savings are qualified; known performance regressions remain explicit.
+
 
 ## 🚀 What is LayerFS?
 
@@ -37,7 +37,7 @@ The filesystem remains load-bearing for recursive multi-agent exploration
 without multiplying storage.
 
 > [!WARNING]
-> LayerFS 0.1.4 is a prepared Developer Preview candidate. It is intended
+> LayerFS 0.1.4 is a Developer Preview. It is intended
 > for local evaluation, agent-runtime integration, and performance research—not
 > production storage. It does not provide crash- or power-loss-durability
 > guarantees. Keep an independent copy of important data.
@@ -102,7 +102,7 @@ allocation, equations, source identity, and raw evidence.
 ### 🧩 LayerFS components
 
 The storage engine, SDK, CLI, and filesystem projection are implemented in the
-0.1.4 Developer Preview candidate. They remain separate public boundaries so callers do
+0.1.4 Developer Preview. They remain separate public boundaries so callers do
 not depend on private CAS handles or storage formats.
 
 | **Status** | **Component** | **Role** |
@@ -119,7 +119,7 @@ Each `workspace exec` starts a fresh process. `commit` publishes the Workspace s
 
 ## 🛠️ Quickstart
 
-The candidate and published releases are built from source. You need **macOS or Linux** and **Rust 1.85 or newer**. Docker, `/dev/fuse`, and `CAP_SYS_ADMIN` are needed only for managed container-FUSE workspaces. No packages are published to crates.io for this candidate.
+Releases are built from source. You need **macOS or Linux** and **Rust 1.85 or newer**. Docker, `/dev/fuse`, and `CAP_SYS_ADMIN` are needed only for managed container-FUSE workspaces. No packages are published to crates.io for this release.
 
 From the repository root:
 
@@ -167,7 +167,7 @@ benchmark/                     filesystem and end-to-end benchmarks
 containers/layerfs-fuse        managed Linux FUSE runtime image
 docs/versioned/0.1.2          previous versioned product manual
 release-notes/0.1.2            previous release record
-docs/versioned/0.1.4          prepared candidate manual
+docs/versioned/0.1.4          v0.1.4 manual
 release-notes/0.1.3            release contract, evidence, and limitations
 ```
 
@@ -216,7 +216,7 @@ The [first-principles learning site](https://learn.layerfs.ai/) is educational m
 | **0.1.1** | Measure and harden existing-directory initialization through localized Commit, with focused FUSE and Docker proof. | **Released** as source under `v0.1.1`; see the [release record](release-notes/0.1.1/README.md). |
 | **0.1.2** | Three SDK-only 1/10/100/500 MiB edit families, namespace and Store refresh, and universal regular-file editing. | **Released** as source under `v0.1.2`; see the [release record](release-notes/0.1.2/README.md). |
 | **0.1.3** | Shared live Workspaces, optimized Commit and reads, and the 198-case/226-proof checkpoint. | **Released** as source under `v0.1.3`; see the [release record](release-notes/0.1.3/README.md). |
-| **0.1.4** | Packed storage and bounded Init/Commit improvements; measured tradeoffs accepted. | **Prepared, not published**; [release record and limitations](release-notes/0.1.4/README.md). |
+| **0.1.4** | Packed storage and bounded Init/Commit improvements; measured tradeoffs accepted. | **Closed; release qualified**; [release record and limitations](release-notes/0.1.4/README.md). |
 | **0.1.5** | Benchmark multi-Layer and multi-Branch Commit history, Fork, Add, Diff, conflict, and query scaling. | **Draft moved from v0.1.4**; [release README](docs/roadmap/0.1/0.1.5/README.md). |
 | **0.2.0** | Establish a portable projection foundation, including capability-detected reflink/clonefile paths and a future OverlayFS projection. | **Planned**; requires a new compatibility contract. |
 | **Later** | Add platform/runtime expansion and verified Store export, import, and synchronization. | **Research**; no cross-host synchronization is part of 0.1.0. |

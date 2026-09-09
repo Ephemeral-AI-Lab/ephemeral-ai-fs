@@ -3303,23 +3303,23 @@ impl crate::schema::StoreDb {
 
 impl CheckedOutputAdmission {
     pub(crate) fn new(db: &crate::schema::StoreDb) -> Result<Self> {
-        Self::with_session(db, AdmissionSession::new(db)?)
+        Self::with_session(db, AdmissionSession::new(db)?, 0)
     }
 
     pub(crate) fn new_for_initialization(db: &crate::schema::StoreDb) -> Result<Self> {
-        Self::with_session(db, AdmissionSession::with_coalescing(db, true)?)
+        Self::with_session(
+            db,
+            AdmissionSession::with_coalescing(db, true)?,
+            COMPARISON_REUSE_BYTES,
+        )
     }
 
     fn with_session(
         db: &crate::schema::StoreDb,
         session: std::sync::Arc<AdmissionSession>,
+        compared_limit: usize,
     ) -> Result<Self> {
         // Repartition the existing 16MiB allowance for owner-local comparison reuse.
-        let compared_limit = if session.coalesce {
-            COMPARISON_REUSE_BYTES
-        } else {
-            0
-        };
         let seen_limit = CANDIDATE_INDEX_BYTES / 4
             - compared_limit
             - if session.fresh_ids.is_some() {
@@ -3834,7 +3834,11 @@ impl crate::LayerStackStore {
         Ok(WorkspaceAdmission {
             db: self.db.clone(),
             workspace_id,
-            admission: CheckedOutputAdmission::new(&self.db)?,
+            admission: CheckedOutputAdmission::with_session(
+                &self.db,
+                AdmissionSession::with_coalescing(&self.db, true)?,
+                0,
+            )?,
         })
     }
 
@@ -3920,7 +3924,7 @@ impl WorkspaceAdmission {
         objects.consume_prevalidated_pages(|page| self.admission.admit_page(page))?;
         self.admission.flush()?;
         // Workspace staging starts a separate transaction and retains the session.
-        // Default Workspace admission is immediate; keep the handoff explicit.
+        // Close the bounded cohort before handing the connection to staging.
         self.admission.commit_pending()?;
         let finished = self.admission.finish()?;
         let admission = finished.checked;
@@ -4675,6 +4679,133 @@ mod tests {
     }
 
     #[test]
+    fn workspace_cohorts_flush_for_staging_and_rollback_pending_and_committed_objects() {
+        let root = std::env::temp_dir().join(format!(
+            "layerfs-workspace-cohorts-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        for outcome in ["publish", "drop", "collision", "commit_failure"] {
+            let store =
+                crate::LayerStackStore::create(root.join(format!("{outcome}.sqlite"))).unwrap();
+            let baseline = AuthenticatedCanonicalObject::new(
+                layerfs_content::encode_bytes_object(b"retained baseline").unwrap(),
+                None,
+            )
+            .unwrap();
+            let mut initial = CheckedOutputAdmission::new(&store.db).unwrap();
+            initial.admit_object(baseline.clone()).unwrap();
+            finish_segment_admission(&store.db, initial);
+            let mut token = store.workspace_admission([1; 16]).unwrap();
+            assert_eq!(token.admission.compared_limit, 0);
+            for batch in 0..9_u64 {
+                for index in 0..8_u64 {
+                    let mut payload = vec![0; 65_500];
+                    payload[..8].copy_from_slice(&(batch * 8 + index).to_le_bytes());
+                    token
+                        .admission
+                        .admit_object(
+                            AuthenticatedCanonicalObject::new(
+                                layerfs_content::encode_bytes_object(&payload).unwrap(),
+                                None,
+                            )
+                            .unwrap(),
+                        )
+                        .unwrap();
+                }
+                token.admission.flush().unwrap();
+            }
+            assert!(token.admission.checked.transactions > 0);
+            assert!(!store.db.reader().unwrap().is_autocommit());
+            assert!(token.admission.checked.max_transaction_objects < 8192);
+            assert!(token.admission.checked.max_transaction_bytes < 4 * 1024 * 1024);
+            assert_eq!(
+                store.db.read_object_row(baseline.id).unwrap(),
+                baseline.bytes
+            );
+            let mut payload = vec![0; 65_500];
+            payload[..8].copy_from_slice(&71_u64.to_le_bytes());
+            let pending = AuthenticatedCanonicalObject::new(
+                layerfs_content::encode_bytes_object(&payload).unwrap(),
+                None,
+            )
+            .unwrap();
+            std::thread::scope(|scope| {
+                scope
+                    .spawn(|| {
+                        assert_eq!(store.db.read_object_row(pending.id).unwrap(), pending.bytes);
+                    })
+                    .join()
+                    .unwrap();
+            });
+            token.admission.admit_object(pending.clone()).unwrap();
+            token.admission.flush().unwrap();
+            assert_eq!(token.admission.checked.inserted_objects, 72);
+            assert!(!store.db.reader().unwrap().is_autocommit());
+            if outcome == "publish" {
+                let (receipt, _, session) = token
+                    .admit_remaining(DeferredObjectStore::new().unwrap())
+                    .unwrap();
+                assert!(
+                    store.db.reader().unwrap().is_autocommit(),
+                    "staging must start outside admission transaction"
+                );
+                assert_eq!(receipt.inserted_objects, 72);
+                assert_eq!(receipt.transactions, 2);
+                session.retain();
+                drop(session);
+                assert_eq!(store.store_counts().unwrap().objects, 73);
+            } else if outcome == "commit_failure" {
+                let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let hook_fired = fired.clone();
+                store
+                    .db
+                    .writer()
+                    .unwrap()
+                    .commit_hook(Some(move || !hook_fired.swap(true, Ordering::SeqCst)))
+                    .unwrap();
+                assert!(token
+                    .admit_remaining(DeferredObjectStore::new().unwrap())
+                    .is_err());
+                assert!(fired.load(Ordering::SeqCst));
+                assert!(store.db.reader().unwrap().is_autocommit());
+                assert_eq!(store.store_counts().unwrap().objects, 1);
+                assert!(store.workspace_stage([1; 16]).unwrap().is_none());
+                assert_eq!(
+                    store.db.read_object_row(baseline.id).unwrap(),
+                    baseline.bytes
+                );
+            } else {
+                if outcome == "collision" {
+                    let mut corrupt = pending.clone();
+                    payload[8] = 1;
+                    corrupt.0.bytes = layerfs_content::encode_bytes_object(&payload).unwrap();
+                    let result = token
+                        .admission
+                        .admit_object(corrupt)
+                        .and_then(|_| token.admission.flush());
+                    assert!(matches!(
+                        result,
+                        Err(StoreError::Integrity("object collision"))
+                    ));
+                }
+                drop(token);
+                assert!(store.db.reader().unwrap().is_autocommit());
+                assert_eq!(store.store_counts().unwrap().objects, 1);
+                assert_eq!(
+                    store.db.read_object_row(baseline.id).unwrap(),
+                    baseline.bytes
+                );
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn workspace_delivery_selects_before_admission_and_deduplicates_across_phases() {
         let root = std::env::temp_dir().join(format!(
             "layerfs-output-{}-{}",
@@ -5308,8 +5439,9 @@ mod tests {
     fn spilled_candidate_visits_selected_objects_in_graph_order() {
         let mut segment = DeferredObjectStore::new_all_reachable().unwrap();
         let mut ids = Vec::new();
-        for payload in [b"first".as_slice(), b"discarded", b"last"] {
-            let bytes = layerfs_content::encode_bytes_object(payload).unwrap();
+        // The reversed selected order crosses the bounded read-ahead window.
+        for value in [1, 2, 3] {
+            let bytes = layerfs_content::encode_bytes_object(&vec![value; 40_000]).unwrap();
             let id = ObjectId::for_bytes(&bytes);
             segment.put(id, &bytes).unwrap();
             ids.push(id);

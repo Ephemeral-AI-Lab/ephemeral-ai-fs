@@ -556,7 +556,9 @@ impl SpillObjects {
             .lock()
             .map_err(|_| StoreError::Integrity("candidate spool lock"))?;
         file.seek(SeekFrom::Start(0))?;
-        let mut file = BufReader::with_capacity(self.buffer_bytes, &mut *file);
+        // Graph order can jump between distant frames. Bound read-ahead separately
+        // from sequential writes so each seek does not copy a nearly 1-MiB window.
+        let mut file = BufReader::with_capacity(self.buffer_bytes.min(ID_BUFFER_BYTES), &mut *file);
         let mut position = 0_u64;
         let mut canonical = Vec::new();
         order.visit_pages(|ids| {

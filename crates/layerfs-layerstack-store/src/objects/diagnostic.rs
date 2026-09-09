@@ -531,7 +531,7 @@ mod tests {
         let first = PreparedAdmission::prepare_missing(&db, first_batch).unwrap();
         // Two prepared cohorts deliberately share one writer owner. This preserves
         // the late CAS race without trying to acquire a second independent permit.
-        let mut owner = CheckedOutputAdmission::with_session(&db, session.clone()).unwrap();
+        let mut owner = CheckedOutputAdmission::with_session(&db, session.clone(), 0).unwrap();
         owner.admit_page(vec![a, b.clone()]).unwrap();
         let second =
             PreparedAdmission::prepare_missing(&db, owner.finish().unwrap().final_batch).unwrap();

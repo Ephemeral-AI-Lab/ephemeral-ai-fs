@@ -1,14 +1,14 @@
 # LayerFS documentation
 
-> **Status:** Current documentation entry point; v0.1.3 is released and v0.1.4 is prepared.
+> **Status:** Current documentation entry point; v0.1.4 release documentation.
 
-## Evaluate the v0.1.4 release candidate
+## Use LayerFS v0.1.4
 
-- [Prepared manual](versioned/0.1.4/README.md)
-- [Release preparation and accepted limitations](../release-notes/0.1.4/README.md)
+- [Manual](versioned/0.1.4/README.md)
+- [Release record and accepted limitations](../release-notes/0.1.4/README.md)
 - [Schema compatibility and no-migration boundary](versioned/0.1.4/storage-format.md)
 
-## Use LayerFS 0.1.3
+## Historical LayerFS 0.1.3
 
 - [Manual](versioned/0.1.3/README.md)
 - [Quickstart](versioned/0.1.3/quickstart.md)
@@ -19,6 +19,8 @@
 - [Storage format](versioned/0.1.3/storage-format.md)
 - [Limitations](versioned/0.1.3/limitations.md)
 - [Release record](../release-notes/0.1.3/README.md)
+
+- [Every v0.1.4 benchmark family and case](../release-notes/0.1.4/benchmark-closeout.md)
 
 ## Plan and build
 

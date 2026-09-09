@@ -1,12 +1,12 @@
 # LayerFS 0.1.4 manual
 
-> **Status:** Release candidate for LayerFS 0.1.4.
+> **Status:** LayerFS 0.1.4 Developer Preview manual.
 
 This manual prepares the 0.1.4 Developer Preview. It does not assert that a
 release tag, packages, binaries or runtime image have been published.
 
 LayerFS provides local versioned Workspaces, shared FUSE/SDK editing and
-explicit snapshot publication. This candidate adds packed native object storage
+explicit snapshot publication. This release adds packed native object storage
 and bounded reuse of authenticated comparison bytes during directory Init.
 Canonical identities remain unchanged; the SQLite format boundary changes.
 

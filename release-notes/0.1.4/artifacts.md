@@ -1,8 +1,8 @@
 # v0.1.4 artifact preparation
 
-> **Status:** Release candidate for LayerFS 0.1.4. No final release assets published.
+> **Status:** Source-only v0.1.4 artifact contract. [Published assets](https://github.com/Ephemeral-AI-Lab/layerfs/releases/tag/v0.1.4).
 
-The candidate follows the source-only v0.1.3 distribution model. After the
+The release follows the source-only v0.1.3 distribution model. After the
 stacked PRs are reviewed and integrated, use their exact accepted commit for
 an annotated `v0.1.4` tag and the following release assets:
 
@@ -21,7 +21,7 @@ publication, prebuilt executable or public runtime image is part of this scope.
 
 ## Publication sequence
 
-1. Review/integrate PR #94, then PR #96, then this preparation PR; preserve the
+1. Review/integrate PR #94, then PR #96, then PR #97 and the qualified issue #98 follow-up; preserve the
    measured source and immutable evidence references.
 2. Confirm the final reviewed tree has only the documented packaging delta from
    the accepted implementation, and that preparation checks/CI pass. A product
@@ -34,11 +34,10 @@ publication, prebuilt executable or public runtime image is part of this scope.
    schema compatibility, performance regressions, optional omission and the
    INCOMPLETE comparison report visible.
 
-This preparation intentionally leaves merge, tag creation, final archive
-construction and publication as explicit subsequent actions. Local benchmark
+The owner has authorized this publication sequence using the existing qualified results. Local benchmark
 binaries/images remain under their original seals; they are not mislabeled as
 new release binaries.
 
 ## Reproducible preparation
 
-Run `python3 release-notes/0.1.4/prepare_artifacts.py FRESH_OUTPUT --candidate --ref COMMIT` under the shared measurement lock to prepare six clearly named candidate assets. The helper archives tracked Git content only and validates membership and checksums. Repeat with `--verify` to validate without writing. For the eventual authorized release, omit `--candidate` and use the actual `refs/tags/v0.1.4`; an absent tag is rejected. Candidate archives are not published release assets.
+Run `python3 release-notes/0.1.4/prepare_artifacts.py FRESH_OUTPUT --candidate --ref COMMIT` under the shared measurement lock to prepare six clearly named candidate assets. The helper archives tracked Git content only and validates membership and checksums. Repeat with `--verify` to validate without writing. For the authorized release, omit `--candidate` and use the actual `refs/tags/v0.1.4`; an absent tag is rejected. Candidate archives are not published release assets.

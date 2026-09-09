@@ -1,6 +1,6 @@
 # LayerFS 0.1.4 quickstart
 
-> **Status:** Release candidate for LayerFS 0.1.4.
+> **Status:** LayerFS 0.1.4 Developer Preview manual.
 
 This guide creates one Store, one LayerStack, one Branch, and one
 host-materialized Workspace. This path needs Rust but not Docker.
@@ -11,8 +11,7 @@ host-materialized Workspace. This path needs Rust but not Docker.
 - Rust 1.85 or newer;
 - a local checkout of the LayerFS repository.
 
-Use a reviewed candidate checkout. No v0.1.4 tag or published download is
-assumed by this prepared manual.
+Use the `v0.1.4` tag or its source archive from the [GitHub release](https://github.com/Ephemeral-AI-Lab/layerfs/releases/tag/v0.1.4).
 
 ## Build
 

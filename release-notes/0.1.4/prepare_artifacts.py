@@ -20,6 +20,7 @@ import zipfile
 REPO = Path(__file__).resolve().parents[2]
 TAG = "refs/tags/v0.1.4"
 EVIDENCE = (
+    "docs/roadmap/0.1/0.1.4/issue98",
     "docs/roadmap/0.1/0.1.4/issue71-venv-acceptance",
     "docs/roadmap/0.1/0.1.4/issue95",
     "docs/roadmap/0.1/0.1.4/issue91-campaign",

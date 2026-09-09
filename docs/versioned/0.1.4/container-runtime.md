@@ -1,6 +1,6 @@
 # LayerFS 0.1.4 container runtime
 
-> **Status:** Release candidate for LayerFS 0.1.4.
+> **Status:** LayerFS 0.1.4 Developer Preview manual.
 
 LayerFS projects live Workspaces through real FUSE inside a prepared Linux
 container. In this placement, the Linux daemon owns the shared live Workspace
@@ -36,7 +36,7 @@ container start alone does not prove backing connectivity or FUSE readiness.
 
 ## Build a local matched image
 
-From the reviewed v0.1.4 candidate checkout with Docker running and Python 3 available:
+From the v0.1.4 checkout with Docker running and Python 3 available:
 
 ```bash
 cargo build --locked --release -p layerfs-cli
