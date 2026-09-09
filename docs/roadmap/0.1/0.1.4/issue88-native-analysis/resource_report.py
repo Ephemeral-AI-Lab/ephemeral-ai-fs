@@ -193,6 +193,20 @@ def main():
         for mode in ('performance','verification'):
             found,report=mode_report(arm,mode,run,inputs);rows.extend(found);summaries[arm][mode]=report
         trajectories[arm]=rows
+        observer_schedule=schedule; observer_schedule_path=args.schedule.resolve()
+        reused=schedule.get('reused_arm_schedules',{})
+        require(set(reused)<= {'control'},'only an explicitly reused control arm is supported')
+        if arm in reused:
+            reference=reused[arm]; observer_schedule_path=pathlib.Path(reference['path']).resolve()
+            require(pathlib.Path(reference['path']).is_absolute(),'reused schedule path must be absolute')
+            require(sha(observer_schedule_path)==reference['sha256'],'reused schedule seal mismatch')
+            inputs[str(observer_schedule_path)]=reference['sha256']
+            observer_schedule=load(observer_schedule_path)
+            require(observer_schedule['schema']=='issue88-SP-full157-frozen-v1','reused schedule schema')
+            require([r for r in observer_schedule['order'] if r['arm']==arm]==[frozen],'reused producer/output/commands differ from original arm')
+            require(observer_schedule['workload_manifest_sha256']==schedule['workload_manifest_sha256'],'reused workload differs')
+            require(observer_schedule['contract']['sha256']==schedule['contract']['sha256'],'reused contract differs')
+        summaries[arm]['observation_schedule']={'path':str(observer_schedule_path),'sha256':sha(observer_schedule_path),'reused':arm in reused}
         observers={}
         for kind,key in (('snapshot','observer_copy_hash_ns'),('census','elapsed_ns')):
             path=getattr(args,arm+'_'+kind+'_custody')
@@ -209,9 +223,9 @@ def main():
                 inputs[str(custody_path)]=reference['sha256']; custody=load(custody_path)
                 require(custody.get('status')=='PASS' and custody.get('snapshot_phase')=='final-pre-verification','census snapshot custody phase/status')
                 require(pathlib.Path(custody['source']).resolve()==run/'deepseek-full/host-runtime/store.sqlite','census timing belongs to another run')
-                require(custody['frozen_schedule_sha256']==sha(args.schedule),'census timing schedule mismatch')
+                require(custody['frozen_schedule_sha256']==sha(observer_schedule_path),'census timing schedule mismatch')
                 decoder=data['decoder_binary']
-                require(decoder['sha256']==schedule['census']['sha256'] and pathlib.Path(decoder['path']).resolve()==pathlib.Path(schedule['census']['binary']).resolve(),'census timing decoder differs from frozen census')
+                require(decoder['sha256']==observer_schedule['census']['sha256'] and pathlib.Path(decoder['path']).resolve()==pathlib.Path(observer_schedule['census']['binary']).resolve(),'census timing decoder differs from frozen census')
                 snapshot_path=custody_path.parent/'store.sqlite'
                 require(pathlib.Path(data['snapshot']['path']).resolve()==snapshot_path and data['snapshot']['sha256']==custody['copy_sha256']==custody['source_sha256'],'census timing snapshot link mismatch')
                 inventory_path=pathlib.Path(data['inventory']['path']).resolve()
