@@ -27,6 +27,8 @@ DEFAULT_OUTPUT_LIMIT = 1024 * 1024
 OWNER_LABEL = "dev.layerfs.fs-bench.owner"
 ROLE_LABEL = "dev.layerfs.fs-bench.role"
 OWNER = "benchmark-infrastructure-v1"
+# Enabled only inside a dedicated worker whose entire process group has an outer watchdog.
+PARENT_SUPERVISED = False
 
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
 _IMAGE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_./:@+-]{0,254}\Z")
@@ -132,7 +134,7 @@ def run(
         stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        start_new_session=True,
+        start_new_session=not PARENT_SUPERVISED,
     )
     capture = _Capture(output_limit)
     stdout = bytearray()
@@ -175,7 +177,10 @@ def run(
     except (subprocess.TimeoutExpired, DeadlineExpired):
         timed_out = True
         try:
-            os.killpg(process.pid, signal.SIGKILL)
+            if PARENT_SUPERVISED:
+                process.kill()
+            else:
+                os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
         process.wait()

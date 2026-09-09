@@ -17,6 +17,17 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(result.timed_out)
         self.assertNotEqual(result.returncode, 0)
 
+    def test_supervised_worker_commands_keep_parent_group(self):
+        import os
+        try:
+            runtime.PARENT_SUPERVISED = True
+            result = runtime.run([sys.executable, "-c", "import os;print(os.getpgrp())"], deadline=runtime.Deadline.after(2))
+            self.assertEqual(int(result.stdout), os.getpgrp())
+            result = runtime.run([sys.executable, "-c", "import time;time.sleep(2)"], deadline=runtime.Deadline.after(.05), check=False)
+            self.assertTrue(result.timed_out)
+        finally:
+            runtime.PARENT_SUPERVISED = False
+
     def test_closed_store_isolation_and_sidecar_rejection(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -56,6 +56,7 @@ def check_output(records, case):
 
 
 def worker(config):
+    runtime.PARENT_SUPERVISED = True
     args = json.loads(Path(config).read_text())
     output = Path(args['output']); deadline = runtime.Deadline(args['work_end'])
     result = {'status': 'INCOMPLETE', 'admission_eligible': False}
