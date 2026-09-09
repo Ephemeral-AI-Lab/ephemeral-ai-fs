@@ -50,7 +50,7 @@ mod tests {
 
     #[test]
     fn directories_symlinks_and_acquired_aliases_use_the_same_live_nodes() {
-        use layerfs_content::file::rope::FileStateRoot;
+        use layerfs_content::file::content::FileContentRoot;
         use layerfs_content::tree::inode::InodeId;
         let mut live = fixture();
         let NameLookup::Ready(name) = live.prepare_name(ROOT, b"dir").unwrap() else {
@@ -71,7 +71,7 @@ mod tests {
             mtime_seconds: 0,
             mtime_nanoseconds: 0,
             data: Data::File(FileData::Base {
-                root: FileStateRoot(layerfs_content::ObjectId::for_bytes(b"base")),
+                root: FileContentRoot(layerfs_content::ObjectId::for_bytes(b"base")),
                 len: 8,
             }),
         };

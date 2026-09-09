@@ -1,4 +1,5 @@
 mod admission;
+mod delta;
 #[cfg(test)]
 mod comparison_reuse_tests;
 mod diagnostic;
@@ -37,6 +38,11 @@ pub(crate) const INITIALIZATION_ADMISSION_BATCH_COUNT: usize = ADMISSION_BATCH_C
 pub(crate) const INITIALIZATION_SLAB_BYTES: usize = 256 * 1024;
 pub(crate) const INITIALIZATION_SLAB_OBJECTS: usize = 512;
 pub(crate) const INITIALIZATION_SLAB_QUEUE_SLOTS: usize = 4;
+// Four producer slabs plus two bounded raw buffers each: 2 MiB; queued slabs:
+// 1 MiB; admission input/pack ownership: <=1 MiB; static encoder: 2 MiB.
+// These fit the existing 6-MiB data ledger; operand/handoff scratch uses the
+// existing 2-MiB physical ledger. Predecessor-bearing work remains at one worker.
+pub(crate) const SMALL_CONTENT_WORKERS: usize = 4;
 const CANDIDATE_MEMORY_BYTES: usize = 8 * 1024 * 1024;
 const CANDIDATE_INDEX_BYTES: usize = 64 * 1024 * 1024;
 const FRESH_ADMISSION_FILTER_BYTES: usize = 4 * 1024 * 1024;
@@ -195,17 +201,22 @@ impl AsRef<CanonicalObject> for CanonicalObject {
     }
 }
 impl AuthenticatedCanonicalObject {
+    fn is_small_content(&self) -> bool { layerfs_content::decode_bytes_object(&self.bytes).is_ok_and(|v| v.starts_with(layerfs_content::file::content::MAGIC)) }
+
     /// Real file-owner provenance, independent of diagnostic outcome counters.
     fn is_file_payload(&self) -> bool {
         self.1.diagnostic & diagnostic::FILE != 0
-            && diagnostic::chunk(&self.bytes)
-            && self.bytes.len() + 9 <= pack::GROUP_LIMIT
+            && (self.is_small_content() || (diagnostic::chunk(&self.bytes)
+            && self.bytes.len() + 9 <= pack::GROUP_LIMIT))
     }
 
     pub(crate) fn prior_ids(&self) -> &[Option<ObjectId>; 4] {
         &self.1.prior_ids
     }
     fn new(bytes: Vec<u8>, expected: Option<ObjectId>) -> CoreResult<Self> {
+        if layerfs_content::decode_bytes_object(&bytes).is_ok_and(|v| v.starts_with(layerfs_content::file::content::MAGIC)) {
+            layerfs_content::file::content::small_bytes(&bytes)?;
+        }
         let id = match expected {
             Some(id) => {
                 layerfs_content::authenticate_identity(&bytes, id)?;
@@ -489,6 +500,8 @@ where
 }
 
 pub struct FinalizedOutputWriter {
+    small_predecessor: Option<ObjectId>,
+    small_content_format: bool,
     file_payload_context: bool,
     sender: std::sync::mpsc::SyncSender<FinalizedObjectSlab>,
     queue: std::sync::Arc<OutputQueueMetrics>,
@@ -556,6 +569,8 @@ impl<'admission> InitializationDirectAdmissionWriter<'admission> {
 }
 
 impl ObjectStore for InitializationDirectAdmissionWriter<'_> {
+    fn small_content_format(&self) -> bool { self.admission.db.small_content_format() }
+
     fn set_file_payload_context(&mut self, enabled: bool) -> bool {
         std::mem::replace(&mut self.file_payload_context, enabled)
     }
@@ -603,11 +618,22 @@ impl ObjectStore for InitializationDirectAdmissionWriter<'_> {
 }
 
 impl FinalizedOutputWriter {
+    pub fn set_small_content_format(&mut self, enabled: bool) { self.small_content_format = enabled; }
+    pub fn supports_small_content(&self) -> bool { self.small_content_format }
+    pub fn build_small_file(&mut self, source: impl Read, len: u64, predecessor: Option<ObjectId>) -> Result<(ObjectId, BuildCounters)> {
+        if !self.small_content_format || len == 0 || len >= layerfs_content::file::content::SMALL_LIMIT as u64 { return Err(StoreError::InvalidInput("small file construction")); }
+        let previous = std::mem::replace(&mut self.small_predecessor, predecessor);
+        let result = self.build_complete_file(source, len);
+        self.small_predecessor = previous;
+        result
+    }
     pub(crate) fn new(
         sender: std::sync::mpsc::SyncSender<FinalizedObjectSlab>,
         queue: std::sync::Arc<OutputQueueMetrics>,
     ) -> Self {
         Self {
+            small_predecessor: None,
+            small_content_format: false,
             file_payload_context: false,
             sender,
             queue,
@@ -750,6 +776,8 @@ impl FinalizedOutputWriter {
 }
 
 impl ObjectStore for FinalizedOutputWriter {
+    fn small_content_format(&self) -> bool { self.small_content_format }
+
     fn set_file_payload_context(&mut self, enabled: bool) -> bool {
         std::mem::replace(&mut self.file_payload_context, enabled)
     }
@@ -761,6 +789,10 @@ impl ObjectStore for FinalizedOutputWriter {
         len: u32,
     ) -> CoreResult<ObjectId> {
         let mut object = AuthenticatedCanonicalObject::new(canonical, None)?;
+        if object.is_small_content() {
+            object.1.prior_ids[0] = self.small_predecessor;
+            object.1.has_predecessor = self.small_predecessor.is_some();
+        }
         object.1.first_span = Some((start, len));
         if self.file_payload_context {
             object.1.diagnostic = diagnostic::FILE;
@@ -785,6 +817,8 @@ impl ObjectStore for FinalizedOutputWriter {
 }
 
 pub trait ObjectSource: Send + Sync {
+    fn small_content_format(&self) -> bool { false }
+
     fn read_object(&self, id: ObjectId) -> Result<Vec<u8>>;
 
     fn read_authenticated_objects(&self, ids: &[ObjectId]) -> Result<Vec<CanonicalObject>> {
@@ -957,6 +991,7 @@ pub fn apply_reconcile_choices(
 }
 
 pub struct DeferredObjectStore {
+    small_predecessor: Option<ObjectId>,
     storage: DeferredObjects,
     reachable: IdOrder,
     references: Option<BTreeMap<ObjectId, Vec<ObjectId>>>,
@@ -2240,6 +2275,7 @@ impl DeferredObjectStore {
             spill_buffer_bytes: CANDIDATE_SPILL_BUFFER_BYTES - 2 * spill::ID_BUFFER_BYTES,
             order_memory_bytes: CANDIDATE_MEMORY_BYTES,
             diagnostic_file_context: false,
+            small_predecessor: None,
             predecessor: None,
         })
     }
@@ -2375,13 +2411,14 @@ impl DeferredObjectStore {
         let page_limit = self.memory_limit.min(INITIALIZATION_SLAB_BYTES);
         let mut page = Vec::with_capacity(capacity);
         let mut page_bytes = 0_usize;
+        let small_predecessor = self.small_predecessor.or_else(|| self.predecessor.as_ref().map(|(_, root, _, _)| root.0));
         let mut predecessor = self
             .predecessor
             .take()
             .map(|(reader, root, budget, available)| {
                 (
                     reader,
-                    layerfs_content::file::rope::PredecessorCursor::new(root),
+                    layerfs_content::file::rope::PredecessorCursor::new(layerfs_content::file::rope::FileStateRoot(root.0)),
                     budget,
                     available,
                 )
@@ -2394,6 +2431,11 @@ impl DeferredObjectStore {
         };
         let mut push = |mut object: AuthenticatedCanonicalObject| {
             object.1.has_predecessor |= predecessor.is_some();
+            if object.is_small_content() {
+                object.1.prior_ids[0] = small_predecessor.or(object.1.prior_ids[0]);
+                object.1.has_predecessor |= small_predecessor.is_some();
+                object.1.first_span = None;
+            }
             if let (Some((reader, cursor, operation_reserved, available)), Some((start, len))) =
                 (&mut predecessor, object.1.first_span)
             {
@@ -2778,13 +2820,19 @@ impl DeferredObjectStore {
     }
 }
 
+pub(crate) struct CompletedContent {
+    pub root: layerfs_content::file::content::FileContentRoot,
+    pub logical_len: u64,
+    pub counters: layerfs_content::file::rope::RopeCounters,
+}
+
 /// The same full-file completion check serves direct native output and private
 /// Workspace candidates; persistence/finality policy remains with the owner.
 pub(crate) fn build_checked_file(
     objects: &mut impl ObjectStore,
     source: impl Read,
     expected_len: u64,
-) -> Result<layerfs_content::file::rope::CompletedFile> {
+) -> Result<CompletedContent> {
     let previous = objects.set_file_payload_context(true);
     let result = build_checked_file_inner(objects, source, expected_len);
     objects.set_file_payload_context(previous);
@@ -2795,7 +2843,14 @@ fn build_checked_file_inner(
     objects: &mut impl ObjectStore,
     mut source: impl Read,
     expected_len: u64,
-) -> Result<layerfs_content::file::rope::CompletedFile> {
+) -> Result<CompletedContent> {
+    if objects.small_content_format() && expected_len > 0 && expected_len < layerfs_content::file::content::SMALL_LIMIT as u64 {
+        let mut bytes = vec![0; expected_len as usize];
+        source.read_exact(&mut bytes)?;
+        if source.read(&mut [0; 1])? != 0 { return Err(StoreError::Integrity("completed file length")); }
+        let (root, counters) = layerfs_content::file::content::build_bytes(objects, &bytes)?;
+        return Ok(CompletedContent { root, logical_len: expected_len, counters });
+    }
     if expected_len < layerfs_content::file::cdc::MINIMUM_CHUNK_BYTES as u64 {
         // One extra byte detects growth; no canonical output precedes the EOF check.
         let mut bytes = vec![0; expected_len as usize + 1];
@@ -2818,8 +2873,8 @@ fn build_checked_file_inner(
             return Err(StoreError::Integrity("completed file length"));
         }
         let (root, counters) = layerfs_content::file::rope::build_bytes(objects, &bytes[..length])?;
-        return Ok(layerfs_content::file::rope::CompletedFile {
-            root,
+        return Ok(CompletedContent {
+            root: layerfs_content::file::content::FileContentRoot(root.0),
             logical_len: expected_len,
             counters,
         });
@@ -2828,7 +2883,7 @@ fn build_checked_file_inner(
     if completed.logical_len != expected_len {
         return Err(StoreError::Integrity("completed file length"));
     }
-    Ok(completed)
+    Ok(CompletedContent { root: layerfs_content::file::content::FileContentRoot(completed.root.0), logical_len: completed.logical_len, counters: completed.counters })
 }
 
 pub struct ObjectBuffer<'a> {
@@ -2848,9 +2903,14 @@ impl<'a> ObjectBuffer<'a> {
     pub fn set_physical_predecessor(
         &mut self,
         reader: crate::SnapshotReader,
-        root: layerfs_content::file::rope::FileStateRoot,
+        root: impl Into<layerfs_content::file::content::FileContentRoot>,
         operation_reserved: std::sync::Arc<std::sync::atomic::AtomicU64>,
     ) -> Result<()> {
+        let root = root.into();
+        self.objects.small_predecessor = Some(root.0);
+        if matches!(layerfs_content::file::content::inspect(&CoreReader(&reader), root)?, layerfs_content::file::content::Content::Small { .. }) {
+            return Ok(());
+        }
         // Producer correspondence may overlap admission and other producers.
         // Reserve its cursor (64 KiB) plus one bounded physical metadata read
         // (512 KiB) from this producer's existing partition, never the encoder's
@@ -2877,7 +2937,7 @@ impl<'a> ObjectBuffer<'a> {
                 self.objects.spill()?;
             }
         }
-        self.objects.predecessor = Some((reader, root, operation_reserved, available));
+        self.objects.predecessor = Some((reader, layerfs_content::file::rope::FileStateRoot(root.0), operation_reserved, available));
         Ok(())
     }
 
@@ -3065,6 +3125,7 @@ impl<'a> ObjectBuffer<'a> {
         I: Iterator + Send,
         I::Item: Send,
     {
+        let worker_limit = if self.source.is_some_and(ObjectSource::small_content_format) { worker_limit.min(SMALL_CONTENT_WORKERS) } else { worker_limit };
         let cancelled = std::sync::atomic::AtomicBool::new(false);
         let (output, _) = run_finalized_output(
             worker_limit,
@@ -3072,7 +3133,7 @@ impl<'a> ObjectBuffer<'a> {
             tasks,
             &cancelled,
             initialize,
-            step,
+            |state, ordinal, task, writer| { writer.set_small_content_format(self.source.is_some_and(ObjectSource::small_content_format)); step(state, ordinal, task, writer) },
             finish,
             |page| {
                 for object in page {
@@ -3097,6 +3158,8 @@ impl<'a> ObjectBuffer<'a> {
 }
 
 impl ObjectStore for ObjectBuffer<'_> {
+    fn small_content_format(&self) -> bool { self.source.is_some_and(ObjectSource::small_content_format) }
+
     fn set_file_payload_context(&mut self, enabled: bool) -> bool {
         std::mem::replace(&mut self.objects.diagnostic_file_context, enabled)
     }
@@ -3182,6 +3245,8 @@ impl ObjectStore for ObjectBuffer<'_> {
 }
 
 impl ObjectSource for ObjectBuffer<'_> {
+    fn small_content_format(&self) -> bool { ObjectStore::small_content_format(self) }
+
     fn read_object(&self, id: ObjectId) -> Result<Vec<u8>> {
         ObjectStore::get(self, id).map_err(StoreError::from)
     }
@@ -3858,6 +3923,7 @@ impl crate::LayerStackStore {
         I: Iterator + Send,
         I::Item: Send,
     {
+        let worker_limit = if self.db.small_content_format() { worker_limit.min(SMALL_CONTENT_WORKERS) } else { worker_limit };
         let mut token = self.workspace_admission(workspace_id)?;
         let cancelled = std::sync::atomic::AtomicBool::new(false);
         let mut admission_ns = 0_u64;
@@ -3867,7 +3933,7 @@ impl crate::LayerStackStore {
             tasks,
             &cancelled,
             initialize,
-            step,
+            |state, ordinal, task, writer| { writer.set_small_content_format(self.db.small_content_format()); step(state, ordinal, task, writer) },
             finish,
             |page| {
                 let started = Instant::now();
@@ -3956,6 +4022,8 @@ fn consume_checked_owned_page(
 }
 
 impl ObjectSource for crate::schema::StoreDb {
+    fn small_content_format(&self) -> bool { self.small_content_format() }
+
     fn read_object(&self, id: ObjectId) -> Result<Vec<u8>> {
         self.read_object_row(id)
     }
@@ -4071,7 +4139,7 @@ mod tests {
                 size as u64,
             )
             .unwrap();
-            assert_eq!(completed.root, streamed.root);
+            assert_eq!(completed.root.0, streamed.root.0);
             assert_eq!(completed.logical_len, streamed.logical_len);
             assert_eq!(completed.counters, streamed.counters);
             let expected = expected.finish(streamed.root.0, size as u64).unwrap();

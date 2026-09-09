@@ -7,7 +7,7 @@ mod limits;
 pub mod namespace;
 pub use limits::ResourcePolicy;
 
-use layerfs_content::file::rope::FileStateRoot;
+use layerfs_content::file::content::FileContentRoot;
 use layerfs_content::tree::directory::DirectoryStateRoot;
 use layerfs_content::tree::inode::InodeId;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -67,11 +67,11 @@ pub enum Data {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FileData {
     Base {
-        root: FileStateRoot,
+        root: FileContentRoot,
         len: u64,
     },
     Edited {
-        base: Option<(FileStateRoot, u64)>,
+        base: Option<(FileContentRoot, u64)>,
         spool_high_water: u64,
         pieces: crate::file_edit::PieceTree,
         edits: u32,
@@ -160,7 +160,7 @@ pub struct ReadPlan {
 }
 
 pub enum ReadSource {
-    Base(FileStateRoot, u64, u64),
+    Base(FileContentRoot, u64, u64),
     Edited(Vec<file_edit::Piece>),
 }
 
@@ -374,7 +374,7 @@ mod tests {
 
     #[test]
     fn reads_at_and_beyond_eof_are_empty_for_base_and_edited_files() {
-        let root = FileStateRoot(layerfs_content::ObjectId::for_bytes(b"base"));
+        let root = FileContentRoot(layerfs_content::ObjectId::for_bytes(b"base"));
         let edited = FileData::Edited {
             base: None,
             spool_high_water: 0,

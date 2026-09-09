@@ -3174,7 +3174,7 @@ fn ns(started: Instant) -> u64 {
 mod immutable_acquisition_tests {
     use super::*;
     use layerfs_content::{
-        file::rope::FileStateRoot, tree::directory::DirectoryStateRoot, tree::inode::InodeId,
+        file::content::FileContentRoot, tree::directory::DirectoryStateRoot, tree::inode::InodeId,
         ObjectId,
     };
     use layerfs_workspace_core::{DirectoryData, FileData, Node};
@@ -3219,7 +3219,7 @@ mod immutable_acquisition_tests {
     fn fact(content: &[u8], declared_len: u64) -> Vec<u8> {
         let file = node(
             Data::File(FileData::Base {
-                root: FileStateRoot(identity(b"file root")),
+                root: FileContentRoot(identity(b"file root")),
                 len: declared_len,
             }),
             false,
@@ -3286,7 +3286,7 @@ mod immutable_acquisition_tests {
             let mut node = state.nodes[&record.node].clone();
             node.canonical = Some(record.inode);
             node.data = Data::File(FileData::Base {
-                root: FileStateRoot(record.content),
+                root: FileContentRoot(record.content),
                 len: record.attr.size,
             });
             bytes.extend_from_slice(record.content.as_bytes());
@@ -3953,7 +3953,7 @@ mod immutable_acquisition_tests {
         let file = owner.create_file(ROOT, b"prefill", 0o600).unwrap().node;
         let root = identity(b"prefill file");
         owner.state().unwrap().nodes.get_mut(&file).unwrap().data = Data::File(FileData::Base {
-            root: FileStateRoot(root),
+            root: FileContentRoot(root),
             len: 3,
         });
         let (_, references) = runtime
@@ -4077,7 +4077,7 @@ mod immutable_acquisition_tests {
         assert!(owner.0.active_prefill.lock().unwrap().is_none());
         let prefill = owner.begin_kernel_prefill(file).unwrap();
         owner.state().unwrap().nodes.get_mut(&file).unwrap().data = Data::File(FileData::Base {
-            root: FileStateRoot(identity(b"replacement root")),
+            root: FileContentRoot(identity(b"replacement root")),
             len: 3,
         });
         prefill.record_success();
@@ -4087,7 +4087,7 @@ mod immutable_acquisition_tests {
         );
         drop(prefill);
         owner.state().unwrap().nodes.get_mut(&file).unwrap().data = Data::File(FileData::Base {
-            root: FileStateRoot(root),
+            root: FileContentRoot(root),
             len: 3,
         });
         let prefill = owner.begin_kernel_prefill(file).unwrap();

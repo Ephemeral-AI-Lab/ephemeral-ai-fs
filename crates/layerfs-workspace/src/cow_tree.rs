@@ -1,6 +1,6 @@
+use layerfs_content::file::content::{self, FileContentRoot};
 use crate::{ResourcePolicy, WorkspaceState};
-use layerfs_content::file::extent_codec::decode_file_state;
-use layerfs_content::file::rope::{read_all_bounded, state, FileStateRoot, RopeCounters};
+use layerfs_content::file::rope::{read_all_bounded, FileStateRoot};
 use layerfs_content::filesystem::{self as logical, LogicalCounters};
 use layerfs_content::object::access::ObjectRead;
 use layerfs_content::tree::directory::codec::decode_symlink;
@@ -434,13 +434,17 @@ pub(crate) fn acquire_inodes(
         .map(|record| record.content_root)
         .collect::<Vec<_>>();
     let mut file_lengths = BTreeMap::new();
-    core.get_authenticated_batch(&file_states, |id, payload| {
-        file_lengths.insert(
-            id,
-            decode_file_state(&layerfs_content::encode_bytes_object(payload)?)?.logical_len,
-        );
-        Ok(())
-    })?;
+    // A regular root can now own up to 128 KiB, not only a 106-byte extent state.
+    // Preserve the existing 4-MiB acquisition bound without paging each file separately.
+    let page = if layerfs_layerstack_store::ObjectSource::small_content_format(reader) {
+        layerfs_layerstack_store::OBJECT_PAGE_BYTES / (content::SMALL_LIMIT + 23)
+    } else { layerfs_layerstack_store::OBJECT_PAGE_COUNT };
+    for roots in file_states.chunks(page) {
+        core.get_authenticated_batch(roots, |id, payload| {
+            file_lengths.insert(id, content::length_from_payload(payload)?);
+            Ok(())
+        })?;
+    }
     // This batch owns at most 128 typed values; immutable metadata roots and
     // inode kind identify the validation result without any retained cache.
     let mut metadata = BTreeMap::new();
@@ -497,16 +501,11 @@ fn acquire_inode_record(
             let len = match file_len {
                 Some(len) => len,
                 None => {
-                    state(
-                        &reader,
-                        FileStateRoot(record.content_root),
-                        &mut RopeCounters::default(),
-                    )?
-                    .logical_len
+                    content::length(&reader, FileContentRoot(record.content_root))?
                 }
             };
             Data::File(FileData::Base {
-                root: FileStateRoot(record.content_root),
+                root: FileContentRoot(record.content_root),
                 len,
             })
         }

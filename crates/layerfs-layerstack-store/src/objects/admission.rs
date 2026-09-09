@@ -132,6 +132,8 @@ impl PreparedAdmission {
             input_associations,
             ..Default::default()
         };
+        let (small, objects): (Vec<_>, Vec<_>) = objects.into_iter().partition(|object| object.is_small_content());
+        self.prepare_small(db, small, stats)?;
         // Native and legacy lanes preserve canonical input order independently.
         // Publish the native lane first; no prepared record can become a base.
         let (native, objects): (Vec<_>, Vec<_>) = objects
@@ -204,6 +206,71 @@ impl PreparedAdmission {
                 "native scratch reservation",
             )));
         }
+        Ok(())
+    }
+
+    fn prepare_small(&mut self, db: &StoreDb, objects: Vec<AuthenticatedCanonicalObject>, stats: &mut crate::PhysicalStorageReceipt) -> Result<()> {
+        if objects.is_empty() { return Ok(()); }
+        if !db.small_content_format() { return Err(StoreError::Integrity("SmallContent write requires schema 8")); }
+        let predecessors = objects.iter().filter_map(|o| o.1.prior_ids[0]).collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>();
+        let locations = db.object_locations(&predecessors)?;
+        drop(predecessors);
+        let mut groups = Vec::new();
+        let mut group_bytes = 0;
+        let mut encoder = None;
+        for object in objects {
+            // Static codec workspace is charged to data; operands and handoff to physical output.
+            self.data_reserve(3 * 1024 * 1024)?;
+            if self.physical_backing() + group_bytes * 2 + 1024 * 1024 > 2 * 1024 * 1024 {
+                return Err(StoreError::Integrity("SmallContent physical output budget"));
+            }
+            let raw = layerfs_content::file::content::small_bytes(&object.bytes)?.ok_or(StoreError::Integrity("SmallContent role"))?;
+            let anchor = if let Some(prior) = object.1.prior_ids[0] {
+                // Decoder and encoder never overlap. No predecessor decode to find a base ID.
+                drop(encoder.take());
+                db.small_anchor(prior, locations.get(&prior).copied())?
+            } else { None };
+            if encoder.is_none() { encoder = Some(pack::NativeEncoder::new_small()?); }
+            let started = Instant::now();
+            let full = encoder.as_mut().unwrap().compress(raw, None)?;
+            stats.encoding_calls += 1;
+            stats.full_alternative_bytes += (full.len() + 9 + 16) as u64;
+            let mut base = None;
+            let mut frame = full;
+            if let Some((anchor, location)) = anchor {
+                let prefix = layerfs_content::file::content::small_bytes(&anchor.bytes)?.ok_or(StoreError::Integrity("SmallContent anchor role"))?;
+                stats.usable_bases += 1;
+                stats.candidate_trials += 1;
+                let delta = encoder.as_mut().unwrap().compress(raw, Some(prefix))?;
+                stats.encoding_calls += 1;
+                if delta.len() + 32 < frame.len() {
+                    base = Some(anchor.id);
+                    frame = delta;
+                    self.native_base_max_pack = self.native_base_max_pack.max(location.pack);
+                }
+            }
+            stats.encoding_ns += started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+            let delta = base.is_some();
+            let group = super::delta::encode(raw.len(), base, frame)?;
+            if 16 + 16 * (groups.len() + 1) + group_bytes + group.bytes.len() > pack::PACK_LIMIT || groups.len() == pack::GROUP_COUNT_LIMIT {
+                self.packs.push(pack::assemble_small(&groups)?);
+                groups.clear();
+                group_bytes = 0;
+            }
+            stats.eligible_targets += 1;
+            stats.full_selected += u64::from(!delta);
+            stats.delta_selected += u64::from(delta);
+            stats.selected_encoded_bytes += group.bytes.len() as u64;
+            self.objects.push(PreparedObject {
+                id: object.id, length: object.bytes.len(), pack: self.packs.len(), group: groups.len(), record: 0,
+                canonical: 0..0, retained: Some(object.0.bytes), delta,
+                diagnostic_terminal: if delta { diagnostic::DELTA } else { diagnostic::NO_DELTA },
+            });
+            group_bytes += group.bytes.len();
+            groups.push(group);
+        }
+        drop(encoder);
+        if !groups.is_empty() { self.packs.push(pack::assemble_small(&groups)?); }
         Ok(())
     }
 

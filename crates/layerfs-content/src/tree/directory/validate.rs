@@ -120,7 +120,7 @@ pub fn validate_inode_record<S: ObjectRead>(
 ) -> CoreResult<()> {
     validate_inode_record_metadata(store, record, root)?;
     match record.kind {
-        InodeKind::RegularFile => validate_file(store, FileStateRoot(record.content_root)),
+        InodeKind::RegularFile => crate::file::content::validate_file(store, crate::file::content::FileContentRoot(record.content_root)),
         InodeKind::Symlink => store
             .with_authenticated_canonical(record.content_root, |canonical| {
                 decode_symlink(canonical).map(drop)

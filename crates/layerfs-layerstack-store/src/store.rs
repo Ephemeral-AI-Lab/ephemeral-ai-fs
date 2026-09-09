@@ -7,6 +7,11 @@ pub struct LayerStackStore {
 }
 
 impl LayerStackStore {
+    /// Promote a closed schema-7 Store without rewriting payloads or page layout.
+    pub fn upgrade_format(path: impl AsRef<Path>) -> Result<()> {
+        crate::schema::upgrade_format(path.as_ref())
+    }
+
     pub fn create(path: impl AsRef<Path>) -> Result<Self> {
         Ok(Self {
             db: crate::schema::StoreDb::create(path)?,

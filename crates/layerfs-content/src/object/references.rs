@@ -66,6 +66,7 @@ pub fn referenced_objects(canonical: &[u8]) -> CoreResult<Vec<ObjectId>> {
                 }
             }
         }
+        b"LFS5SML\0" => { crate::file::content::small_bytes(canonical)?; Vec::new() },
         b"LFS4CHK\0" => Vec::new(),
         b"LFS4LNK\0" => Vec::new(),
         _ => Vec::new(),

@@ -43,7 +43,7 @@ impl LiveWorkspace {
         match &mut node.data {
             Data::File(data) => {
                 *data = FileData::Base {
-                    root: layerfs_content::file::rope::FileStateRoot(content),
+                    root: layerfs_content::file::content::FileContentRoot(content),
                     len: attr.size,
                 }
             }

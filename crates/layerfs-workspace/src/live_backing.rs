@@ -2,7 +2,7 @@
 use crate::cow_tree::{acquire_inode, acquire_inodes, WorkspaceSnapshot};
 use crate::file_io::{spool_segment, HostSpool};
 use crate::ResourcePolicy;
-use layerfs_content::file::rope::{read_range, FileStateRoot};
+use layerfs_content::file::content::{read_range, FileContentRoot};
 use layerfs_content::tree::directory::{
     DirectoryLookupCache, DirectoryStateRoot, NamespaceCounters,
 };
@@ -431,7 +431,7 @@ impl BackingOwner {
                 physical.file.read_exact_at(&mut out, offset)?;
             }
             wire::READ_BASE => {
-                let root = FileStateRoot(input.object()?);
+                let root = FileContentRoot(input.object()?);
                 let offset = input.u64()?;
                 let len = input.u32()? as usize;
                 input.done()?;
@@ -1408,7 +1408,7 @@ pub(crate) fn install_checkpoint(
                 match &mut node.data {
                     layerfs_workspace_core::Data::File(data) => {
                         *data = layerfs_workspace_core::FileData::Base {
-                            root: FileStateRoot(content),
+                            root: FileContentRoot(content),
                             len: attr.size,
                         }
                     }

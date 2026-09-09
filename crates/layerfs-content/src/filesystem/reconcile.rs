@@ -1,7 +1,7 @@
 use super::apply::{apply_directory_changes, CandidateRoot, InodeMutation};
 use super::apply_inode_mutations;
 use super::resolve::{namespace, resolve_parent, LogicalCounters};
-use crate::file::rope::{read_all, state, FileStateRoot, RopeCounters};
+use crate::file::content::{read_all, length, FileContentRoot};
 use crate::object::access::{ObjectRead, ObjectStore};
 use crate::object::ContentDigestWriter;
 use crate::tree::directory::codec::encode_namespace_root;
@@ -615,10 +615,7 @@ fn semantic_eq<S: ObjectRead>(
     {
         return Ok(false);
     }
-    let mut counters = RopeCounters::default();
-    let left_state = state(store, FileStateRoot(left.content_root), &mut counters)?;
-    let right_state = state(store, FileStateRoot(right.content_root), &mut counters)?;
-    if left_state.logical_len != right_state.logical_len {
+    if length(store, FileContentRoot(left.content_root))? != length(store, FileContentRoot(right.content_root))? {
         return Ok(false);
     }
     Ok(file_digest(store, left.content_root, digests)?
@@ -634,7 +631,7 @@ fn file_digest<S: ObjectRead>(
         return Ok(*digest);
     }
     let mut writer = ContentDigestWriter::new();
-    read_all(store, FileStateRoot(root), &mut writer)?;
+    read_all(store, FileContentRoot(root), &mut writer)?;
     let digest = writer.finish();
     digests.insert(root, digest);
     Ok(digest)

@@ -56,6 +56,10 @@ pub fn read_plan<S: ObjectRead>(
     counters: &mut RopeCounters,
 ) -> CoreResult<ReadPlan> {
     let state = state(store, root, counters)?;
+    read_plan_from_state(store, state, counters)
+}
+
+pub fn read_plan_from_state<S: ObjectRead>(store: &S, state: FileStateV3, counters: &mut RopeCounters) -> CoreResult<ReadPlan> {
     let summary = Summary {
         id: state.mapping_root,
         bytes: state.logical_len,

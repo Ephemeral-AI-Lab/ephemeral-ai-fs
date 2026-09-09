@@ -837,6 +837,8 @@ impl SnapshotReader {
 }
 
 impl ObjectSource for SnapshotReader {
+    fn small_content_format(&self) -> bool { self.db.small_content_format() }
+
     fn read_object(&self, id: ObjectId) -> Result<Vec<u8>> {
         let started = Instant::now();
         if let Some(bytes) = self.cached_object(id)? {

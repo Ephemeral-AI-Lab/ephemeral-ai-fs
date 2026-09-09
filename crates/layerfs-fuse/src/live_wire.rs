@@ -1,5 +1,5 @@
 //! Live-owner transport values. These carry resolved facts, never host-side POSIX edits.
-use layerfs_content::file::rope::FileStateRoot;
+use layerfs_content::file::content::FileContentRoot;
 use layerfs_content::tree::directory::DirectoryStateRoot;
 use layerfs_content::tree::inode::InodeId;
 use layerfs_content::{CanonicalName, CanonicalPath, ObjectId};
@@ -278,13 +278,13 @@ pub fn node_in(
     }
     let data = match input.byte()? {
         0 => Data::File(FileData::Base {
-            root: FileStateRoot(input.object()?),
+            root: FileContentRoot(input.object()?),
             len: input.u64()?,
         }),
         1 => {
             let base = match input.byte()? {
                 0 => None,
-                1 => Some((FileStateRoot(input.object()?), input.u64()?)),
+                1 => Some((FileContentRoot(input.object()?), input.u64()?)),
                 _ => return Err(invalid()),
             };
             let spool_high_water = input.u64()?;
@@ -300,7 +300,7 @@ pub fn node_in(
             for _ in 0..count {
                 pieces.push(match input.byte()? {
                     0 => Piece::Base {
-                        root: FileStateRoot(input.object()?),
+                        root: FileContentRoot(input.object()?),
                         offset: input.u64()?,
                         len: input.u64()?,
                     },

@@ -1,5 +1,5 @@
 use super::resolve::{resolve, LogicalCounters};
-use crate::file::rope::{self, FileStateRoot};
+use crate::file::content::{self, FileContentRoot};
 use crate::object::access::ObjectRead;
 use crate::tree::directory::codec::decode_symlink;
 use crate::tree::directory::{directory_page_after, DirectoryPage, DirectoryStateRoot};
@@ -88,9 +88,9 @@ pub fn read_range<S: ObjectRead, W: Write>(
     if resolved.record.kind != InodeKind::RegularFile {
         return Err(CoreError::WrongLogicalRole);
     }
-    counters.rope = rope::read_range(
+    counters.rope = content::read_range(
         store,
-        FileStateRoot(resolved.record.content_root),
+        FileContentRoot(resolved.record.content_root),
         range,
         sink,
     )?;
@@ -108,7 +108,7 @@ pub fn stream<S: ObjectRead, W: Write>(
     if resolved.record.kind != InodeKind::RegularFile {
         return Err(CoreError::WrongLogicalRole);
     }
-    counters.rope = rope::read_all(store, FileStateRoot(resolved.record.content_root), sink)?;
+    counters.rope = content::read_all(store, FileContentRoot(resolved.record.content_root), sink)?;
     Ok(counters)
 }
 

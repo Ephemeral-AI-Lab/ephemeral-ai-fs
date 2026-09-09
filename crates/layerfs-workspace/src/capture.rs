@@ -1,5 +1,6 @@
+use layerfs_content::file::content::{self, FileContentRoot};
 use crate::cow_tree::{Data, FileData, NodeId, Workspace};
-use layerfs_content::file::rope::{self, FileStateRoot, RopeCounters};
+use layerfs_content::file::rope::RopeCounters;
 use layerfs_layerstack_store::{DeferredObjectStore, ObjectBuffer, Result};
 use std::io::{Cursor, Read};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
@@ -21,13 +22,13 @@ pub(crate) enum CaptureState {
 pub(crate) struct CapturedFile {
     pub(crate) node: NodeId,
     pub(crate) len: u64,
-    pub(crate) root: FileStateRoot,
+    pub(crate) root: FileContentRoot,
     pub(crate) counters: RopeCounters,
     pub(crate) objects: DeferredObjectStore,
 }
 
 pub(crate) struct CapturedContent {
-    root: FileStateRoot,
+    root: FileContentRoot,
     counters: RopeCounters,
     objects: DeferredObjectStore,
 }
@@ -155,9 +156,10 @@ impl Workspace {
 
     fn start_capture(&mut self, node: NodeId) -> std::io::Result<()> {
         let (sender, receiver) = sync_channel(1);
+        let reader = self.reader.clone();
         let thread = std::thread::Builder::new()
             .name("layerfs-capture".to_owned())
-            .spawn(move || build_capture(receiver))?;
+            .spawn(move || build_capture(receiver, reader))?;
         self.capture = CaptureState::Running {
             node,
             next_offset: 0,
@@ -192,15 +194,15 @@ impl Read for CaptureReader {
     }
 }
 
-fn build_capture(receiver: Receiver<CaptureMessage>) -> Result<CapturedContent> {
-    let mut objects = ObjectBuffer::bounded_output(None)?;
+fn build_capture(receiver: Receiver<CaptureMessage>, reader: layerfs_layerstack_store::SnapshotReader) -> Result<CapturedContent> {
+    let mut objects = ObjectBuffer::bounded_output(Some(&reader))?;
     objects.diagnostic_file_payloads();
     let reader = CaptureReader {
         receiver,
         current: Cursor::new(Vec::new()),
         done: false,
     };
-    let (root, counters) = rope::build(&mut objects, reader)?;
+    let (root, counters) = content::build(&mut objects, reader)?;
     Ok(CapturedContent {
         root,
         counters,

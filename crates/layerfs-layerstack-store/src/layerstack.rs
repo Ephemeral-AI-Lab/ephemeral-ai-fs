@@ -1208,7 +1208,7 @@ fn direct_initialize_frontier(
     // Conservative reserved planning capacity, including unused allowance for vectors.
     let task_state_bytes = owned_bytes as u64;
     attempted.merge(discovery_source);
-    let workers = worker_limit.min(tasks.len());
+    let workers = worker_limit.min(tasks.len()).min(if db.small_content_format() { crate::objects::SMALL_CONTENT_WORKERS } else { usize::MAX });
     let pair_pending_bytes = INITIALIZATION_PAIR_PENDING_BYTES
         .div_ceil(workers.max(1))
         .max(64);
@@ -1233,6 +1233,7 @@ fn direct_initialize_frontier(
                 })
             },
             |worker, index, task, objects| {
+                objects.set_small_content_format(db.small_content_format());
                 #[cfg(test)]
                 task_hook(index, true);
                 let pair_checkpoint = worker.pairs.checkpoint();

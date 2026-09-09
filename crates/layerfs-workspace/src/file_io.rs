@@ -2,7 +2,7 @@ use crate::cow_tree::{Data, FileData, Node, NodeId, Workspace};
 use crate::file_edit::{Piece, PieceTree, SpoolSlice};
 #[cfg(test)]
 use crate::file_edit::{MAX_EDITS_PER_FILE, MAX_INLINE_PER_WORKSPACE};
-use layerfs_content::file::rope::read_range;
+use layerfs_content::file::content::read_range;
 use layerfs_layerstack_store::{CoreReader, Result, SnapshotReader, StoreError};
 use layerfs_workspace_core::backing::{BackingId, BackingRef};
 use layerfs_workspace_core::ReadSource;
@@ -644,7 +644,7 @@ thread_local! {
 }
 fn read_base(
     reader: &SnapshotReader,
-    root: layerfs_content::file::rope::FileStateRoot,
+    root: layerfs_content::file::content::FileContentRoot,
     start: u64,
     end: u64,
 ) -> Result<Vec<u8>> {

@@ -45,6 +45,8 @@ pub trait ObjectRead {
 }
 
 pub trait ObjectStore {
+    fn small_content_format(&self) -> bool { false }
+
     fn get(&self, id: ObjectId) -> CoreResult<Vec<u8>>;
     fn put(&mut self, canonical: &[u8]) -> CoreResult<ObjectId>;
 

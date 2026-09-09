@@ -101,6 +101,7 @@ pub(super) fn entry(
 pub(super) enum Version {
     Legacy,
     Native,
+    Small,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -115,7 +116,7 @@ pub(super) fn versioned_header(bytes: &[u8; 16], blob_length: usize) -> Result<H
             version: Version::Legacy,
             group_count: header(bytes, blob_length)?,
         }),
-        2 => {
+        version @ (2 | 3) => {
             let count = u32_at(bytes, 12)?;
             if &bytes[..8] != MAGIC
                 || blob_length > PACK_LIMIT
@@ -125,7 +126,7 @@ pub(super) fn versioned_header(bytes: &[u8; 16], blob_length: usize) -> Result<H
                 return Err(invalid());
             }
             Ok(Header {
-                version: Version::Native,
+                version: if version == 3 { Version::Small } else { Version::Native },
                 group_count: count,
             })
         }
@@ -138,6 +139,17 @@ pub(super) fn versioned_entry(
     header: Header,
     blob_length: usize,
 ) -> Result<GroupEntry> {
+    if header.version == Version::Small {
+        let start = u32_at(bytes, 0)?;
+        let encoded = u32_at(bytes, 4)?;
+        let decoded = u32_at(bytes, 8)?;
+        let end = start.checked_add(encoded).ok_or_else(invalid)?;
+        if bytes[12..] != [0; 4] || encoded != decoded || !(10..=192 * 1024).contains(&encoded)
+            || start < 16 + 16 * header.group_count || end > blob_length || blob_length > PACK_LIMIT {
+            return Err(invalid());
+        }
+        return Ok(GroupEntry { range: start..end, decoded_length: decoded, codec: Codec::Raw, oversized: false });
+    }
     let parsed = entry(bytes, header.group_count, blob_length)?;
     if header.version == Version::Native
         && (parsed.oversized || parsed.codec != Codec::Raw || blob_length > PACK_LIMIT)
@@ -295,6 +307,7 @@ pub(super) fn assemble_native(groups: &[EncodedGroup]) -> Result<Vec<u8>> {
 /// One bounded encoder scratch allocation, owned by one admission preparation.
 /// The cached context points only into owned scratch; borrowed inputs reset on every call.
 pub(super) struct NativeEncoder {
+    small: bool,
     memory: Vec<u64>,
     context: Option<zstandard::NativeContext>,
 }
@@ -302,13 +315,18 @@ pub(super) struct NativeEncoder {
 impl NativeEncoder {
     pub(super) fn new() -> Result<Self> {
         Ok(Self {
+            small: false,
             memory: zstandard::native_workspace()?,
             context: None,
         })
     }
 
+    pub(super) fn new_small() -> Result<Self> {
+        Ok(Self { small: true, memory: zstandard::small_workspace()?, context: None })
+    }
+
     pub(super) fn compress(&mut self, raw: &[u8], prefix: Option<&[u8]>) -> Result<Vec<u8>> {
-        zstandard::native_compress_in(&mut self.memory, &mut self.context, raw, prefix)
+        zstandard::native_compress_in(&mut self.memory, &mut self.context, raw, prefix, self.small)
     }
 }
 
@@ -322,7 +340,48 @@ pub(super) fn native_decompress(
     raw_length: usize,
     prefix: Option<&[u8]>,
 ) -> Result<Vec<u8>> {
-    zstandard::native_decompress(frame, raw_length, prefix)
+    zstandard::decompress_profile(frame, raw_length, prefix, false)
+}
+
+pub(super) fn small_decompress(frame: &[u8], raw_length: usize, prefix: Option<&[u8]>) -> Result<Vec<u8>> {
+    zstandard::decompress_profile(frame, raw_length, prefix, true)
+}
+
+pub(super) fn validate_small_pack(bytes: &[u8]) -> Result<()> {
+    let header_bytes: &[u8; 16] = bytes.get(..16).ok_or_else(invalid)?.try_into().map_err(|_| invalid())?;
+    let header = versioned_header(header_bytes, bytes.len())?;
+    if header.version != Version::Small { return Err(invalid()); }
+    let mut offset = 16 + 16 * header.group_count;
+    for index in 0..header.group_count {
+        let directory: &[u8; 16] = bytes.get(16 + 16 * index..32 + 16 * index).ok_or_else(invalid)?.try_into().map_err(|_| invalid())?;
+        let entry = versioned_entry(directory, header, bytes.len())?;
+        if entry.range.start != offset { return Err(invalid()); }
+        offset = entry.range.end;
+        super::delta::record(&bytes[entry.range])?;
+    }
+    if offset != bytes.len() { return Err(invalid()); }
+    Ok(())
+}
+
+pub(super) fn assemble_small(groups: &[EncodedGroup]) -> Result<Vec<u8>> {
+    let len = 16 + 16 * groups.len() + groups.iter().map(|g| g.bytes.len()).sum::<usize>();
+    if groups.is_empty() || groups.len() > GROUP_COUNT_LIMIT || len > PACK_LIMIT { return Err(invalid()); }
+    let mut bytes = Vec::with_capacity(len);
+    bytes.extend_from_slice(MAGIC);
+    put_u32(&mut bytes, 3)?;
+    put_u32(&mut bytes, groups.len())?;
+    let mut offset = 16 + 16 * groups.len();
+    for group in groups {
+        super::delta::record(&group.bytes)?;
+        if group.records != 1 || group.codec != Codec::Raw || group.decoded_length != group.bytes.len() { return Err(invalid()); }
+        put_u32(&mut bytes, offset)?;
+        put_u32(&mut bytes, group.bytes.len())?;
+        put_u32(&mut bytes, group.bytes.len())?;
+        bytes.extend_from_slice(&[0; 4]);
+        offset += group.bytes.len();
+    }
+    for group in groups { bytes.extend_from_slice(&group.bytes); }
+    Ok(bytes)
 }
 
 pub(super) enum Record<'a> {
@@ -881,7 +940,7 @@ mod zstandard {
 
     /// Exact S2 requested setter sequence, shared with the dynamic-equivalence
     /// test. No CParams substitution or parameter adjustment to fit workspace.
-    unsafe fn native_parameters(context: *mut ZSTD_CCtx) -> Result<()> {
+    unsafe fn native_parameters(context: *mut ZSTD_CCtx, small: bool) -> Result<()> {
         // SAFETY: Caller supplies a live initialized context, exclusively owned.
         unsafe {
             checked(ZSTD_CCtx_reset(
@@ -890,7 +949,7 @@ mod zstandard {
             ))?;
             for (parameter, value) in [
                 (ZSTD_cParameter::ZSTD_c_compressionLevel, 3),
-                (ZSTD_cParameter::ZSTD_c_windowLog, 20),
+                (ZSTD_cParameter::ZSTD_c_windowLog, if small { 18 } else { 20 }),
                 (ZSTD_cParameter::ZSTD_c_contentSizeFlag, 1),
                 (ZSTD_cParameter::ZSTD_c_checksumFlag, 1),
                 (ZSTD_cParameter::ZSTD_c_dictIDFlag, 0),
@@ -900,6 +959,18 @@ mod zstandard {
             }
         }
         Ok(())
+    }
+
+    pub(super) fn small_workspace() -> Result<Vec<u64>> {
+        // Validate the pinned level/window estimate and frame bound before allocating.
+        // The static context cannot grow or fall back to an allocator.
+        unsafe {
+            let mut parameters = ZSTD_getCParams(3, 131071, 131071);
+            parameters.windowLog = 18;
+            let size = checked(ZSTD_estimateCCtxSize_usingCParams(parameters))?;
+            if size > 2 * 1024 * 1024 || checked(ZSTD_compressBound(131071))? > 135168 { return Err(resource()); }
+        }
+        workspace(2 * 1024 * 1024, 2 * 1024 * 1024)
     }
 
     pub(super) fn native_workspace() -> Result<Vec<u64>> {
@@ -925,9 +996,12 @@ mod zstandard {
         cached: &mut Option<NativeContext>,
         raw: &[u8],
         prefix: Option<&[u8]>,
+        small: bool,
     ) -> Result<Vec<u8>> {
+        let raw_limit = if small { 131071 } else { NATIVE_RAW_LIMIT };
+        let frame_limit = if small { 135168 } else { NATIVE_FRAME_LIMIT };
         let prefix = prefix.unwrap_or(&[]);
-        if raw.len() > NATIVE_RAW_LIMIT || prefix.len() > NATIVE_RAW_LIMIT {
+        if raw.len() > raw_limit || prefix.len() > raw_limit {
             return Err(invalid());
         }
         // SAFETY: All workspaces are live, aligned and disjoint. Prefix is a
@@ -957,7 +1031,7 @@ mod zstandard {
             // Reset settings and borrowed operands, while preserving the bounded
             // context/workspace allocations and the exact frozen frame parameters.
             let result = (|| {
-                native_parameters(context)?;
+                native_parameters(context, small)?;
                 checked(ZSTD_CCtx_refPrefix(
                     context,
                     if prefix.is_empty() {
@@ -968,11 +1042,11 @@ mod zstandard {
                     prefix.len(),
                 ))?;
                 let bound = checked(ZSTD_compressBound(raw.len()))?;
-                if bound > NATIVE_FRAME_LIMIT {
+                if bound > frame_limit {
                     return Err(resource());
                 }
                 let mut encoded = output(bound)?;
-                if encoded.capacity() > NATIVE_FRAME_LIMIT {
+                if encoded.capacity() > frame_limit {
                     return Err(resource());
                 }
                 let length = native_encode_checked(ZSTD_compress2(
@@ -1008,16 +1082,24 @@ mod zstandard {
         }
     }
 
-    pub(super) fn native_decompress(
+    #[cfg(test)]
+    fn native_decompress(encoded: &[u8], length: usize, prefix: Option<&[u8]>) -> Result<Vec<u8>> {
+        decompress_profile(encoded, length, prefix, false)
+    }
+
+    pub(super) fn decompress_profile(
         encoded: &[u8],
         length: usize,
         prefix: Option<&[u8]>,
+        small: bool,
     ) -> Result<Vec<u8>> {
+        let raw_limit = if small { 131071 } else { NATIVE_RAW_LIMIT };
+        let frame_limit = if small { 135168 } else { NATIVE_FRAME_LIMIT };
         let prefix = prefix.unwrap_or(&[]);
-        if length > NATIVE_RAW_LIMIT
-            || prefix.len() > NATIVE_RAW_LIMIT
+        if length > raw_limit
+            || prefix.len() > raw_limit
             || encoded.is_empty()
-            || encoded.len() > NATIVE_FRAME_LIMIT
+            || encoded.len() > frame_limit
             || encoded.get(..4) != Some(&[0x28, 0xb5, 0x2f, 0xfd])
             || encoded
                 .get(4)
@@ -1042,7 +1124,7 @@ mod zstandard {
             let header = header.assume_init();
             if header.frameType != ZSTD_FrameType_e::ZSTD_frame
                 || header.frameContentSize != length as u64
-                || header.windowSize > 1_048_576
+                || header.windowSize > if small { 262144 } else { 1_048_576 }
                 || header.dictID != 0
                 || header.checksumFlag != 1
                 || checked(ZSTD_findFrameCompressedSize(
@@ -1052,7 +1134,7 @@ mod zstandard {
             {
                 return Err(invalid());
             }
-            let mut memory = workspace(ZSTD_estimateDCtxSize(), NATIVE_DECODE_WORKSPACE)?;
+            let mut memory = workspace(ZSTD_estimateDCtxSize(), if small { 1024 * 1024 } else { NATIVE_DECODE_WORKSPACE })?;
             let context = ZSTD_initStaticDCtx(memory.as_mut_ptr().cast(), memory.len() * 8);
             if context.is_null() {
                 return Err(resource());
@@ -1064,9 +1146,9 @@ mod zstandard {
             checked(ZSTD_DCtx_setParameter(
                 context,
                 ZSTD_dParameter::ZSTD_d_windowLogMax,
-                20,
+                if small { 18 } else { 20 },
             ))?;
-            let remaining = NATIVE_DECODE_WORKSPACE
+            let remaining = (if small { 1024 * 1024 } else { NATIVE_DECODE_WORKSPACE })
                 .checked_sub(memory.capacity() * 8)
                 .ok_or_else(resource)?;
             let mut dictionary = if prefix.is_empty() {
@@ -1094,7 +1176,7 @@ mod zstandard {
                 ptr
             };
             let mut decoded = output(length)?;
-            if decoded.capacity() > NATIVE_RAW_LIMIT {
+            if decoded.capacity() > raw_limit {
                 return Err(resource());
             }
             if checked(ZSTD_decompress_usingDDict(
@@ -1236,7 +1318,7 @@ mod zstandard {
             unsafe {
                 let context = Context(ZSTD_createCCtx());
                 assert!(!context.0.is_null());
-                native_parameters(context.0).unwrap();
+                native_parameters(context.0, false).unwrap();
                 checked(ZSTD_CCtx_refPrefix(
                     context.0,
                     prefix.as_ptr().cast(),
@@ -1273,7 +1355,7 @@ mod zstandard {
                     !context.is_null(),
                     "fixture must initialize before encoding exhausts workspace"
                 );
-                native_parameters(context).unwrap();
+                native_parameters(context, false).unwrap();
                 checked(ZSTD_CCtx_refPrefix(context, std::ptr::null(), 0)).unwrap();
                 let raw = vec![b'x'; NATIVE_RAW_LIMIT];
                 let mut frame = vec![0; ZSTD_compressBound(raw.len())];
@@ -1356,7 +1438,8 @@ mod zstandard {
                         &mut encoder.memory[..128 * 1024 / 8],
                         &mut encoder.context,
                         &large,
-                        Some(&prefix)
+                        Some(&prefix),
+                        false
                     ),
                     Err(StoreError::Io(_))
                 ));

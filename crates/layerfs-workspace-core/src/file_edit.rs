@@ -1,5 +1,5 @@
 use crate::{Data, Error, FileData, LiveWorkspace, NodeId, Result};
-use layerfs_content::file::rope::FileStateRoot;
+use layerfs_content::file::content::FileContentRoot;
 use std::sync::Arc;
 
 pub const MAX_EDITS_PER_FILE: u32 = 4_096;
@@ -383,7 +383,7 @@ pub fn check_logical_allocation_charge(bytes: u64) -> Result<()> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Piece {
     Base {
-        root: FileStateRoot,
+        root: FileContentRoot,
         offset: u64,
         len: u64,
     },
@@ -540,7 +540,7 @@ impl PieceTree {
         }
     }
 
-    pub fn base(root: FileStateRoot, len: u64) -> Result<Self> {
+    pub fn base(root: FileContentRoot, len: u64) -> Result<Self> {
         let mut tree = Self::empty();
         if len != 0 {
             let priority = tree.priority()?;
@@ -1137,7 +1137,7 @@ mod tests {
 
     #[test]
     fn implicit_piece_tree_splices_without_rekeying_later_pieces() {
-        let root = FileStateRoot(ObjectId::for_bytes(b"base"));
+        let root = FileContentRoot(ObjectId::for_bytes(b"base"));
         let tree = PieceTree::base(root, 10).unwrap();
         let tree = tree.replace(3, 2, [Piece::Zero { len: 4 }]).unwrap();
         assert_eq!(tree.len(), 12);
@@ -1173,7 +1173,7 @@ mod tests {
             root.as_ref()
                 .map_or(0, |node| 1 + depth(&node.left).max(depth(&node.right)))
         }
-        let root = FileStateRoot(ObjectId::for_bytes(b"fragmented-base"));
+        let root = FileContentRoot(ObjectId::for_bytes(b"fragmented-base"));
         let mut tree = PieceTree::base(root, 8_193).unwrap();
         for offset in (1..8_192).step_by(2) {
             tree = tree.replace(offset, 1, [Piece::Zero { len: 1 }]).unwrap();
@@ -1215,7 +1215,7 @@ mod tests {
 
     #[test]
     fn result_length_ceiling_accepts_exact_and_rejects_plus_one() {
-        let root = FileStateRoot(ObjectId::for_bytes(b"large-base"));
+        let root = FileContentRoot(ObjectId::for_bytes(b"large-base"));
         let exact = PieceTree::base(root, MAX_RESULT_BYTES).unwrap();
         assert_eq!(exact.len(), MAX_RESULT_BYTES);
         assert!(exact

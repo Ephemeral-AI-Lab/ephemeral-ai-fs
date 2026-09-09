@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 
 pub const APPLICATION_ID: i64 = 0x4c46_534c;
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 pub const LEGACY_SCHEMA_VERSION: i64 = 6;
 // Creation policy is independent of supported existing schema-6 layouts.
 pub const NEW_STORE_PAGE_SIZE_BYTES: i64 = 4096;
@@ -163,8 +163,10 @@ impl Drop for BranchLease {
 
 impl StoreDb {
     pub(crate) fn native_format(&self) -> bool {
-        self.0.format_version == SCHEMA_VERSION
+        self.0.format_version >= 7
     }
+
+    pub(crate) fn small_content_format(&self) -> bool { self.0.format_version == 8 }
 
     pub(crate) fn same_instance(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
@@ -219,7 +221,7 @@ impl StoreDb {
         }
         configure_connection(&connection)?;
         if mode == OpenMode::Create {
-            connection.execute_batch(statements::schema::V7)?;
+            connection.execute_batch(statements::schema::V8)?;
         }
         acquire_exclusive_lock(&mut connection)?;
         verify_schema(&connection, format_version)?;
@@ -346,7 +348,7 @@ fn preflight_connect(path: &Path) -> Result<i64> {
         return Err(StoreError::WrongStoreSchema);
     }
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if !matches!(version, LEGACY_SCHEMA_VERSION | SCHEMA_VERSION) {
+    if !matches!(version, LEGACY_SCHEMA_VERSION | 7 | SCHEMA_VERSION) {
         return Err(StoreError::WrongStoreSchema);
     }
     verify_schema(&connection, version)?;
@@ -427,6 +429,8 @@ fn prepare_manifest(connection: &Connection) -> Result<()> {
                 | "schema/v5.sql"
                 | "schema/v6.sql"
                 | "schema/v7.sql"
+                | "schema/v8.sql"
+                | "schema/migrate_v7_to_v8.sql"
                 | "schema/migrate_v4_to_v5.sql"
         ) {
             continue;
@@ -451,7 +455,8 @@ fn expected_schema_objects(version: i64) -> Result<Vec<SchemaObject>> {
     let expected = Connection::open_in_memory()?;
     expected.execute_batch(match version {
         LEGACY_SCHEMA_VERSION => statements::schema::V6,
-        SCHEMA_VERSION => statements::schema::V7,
+        7 => statements::schema::V7,
+        SCHEMA_VERSION => statements::schema::V8,
         _ => return Err(StoreError::WrongStoreSchema),
     })?;
     schema_objects(&expected)
@@ -758,3 +763,31 @@ fn verification_store_fault_boundary_is_one_shot() {
 
 #[cfg(test)]
 mod compatibility;
+
+/// Offline promotion never acquires a normal MEMORY/OFF connection.
+pub(crate) fn upgrade_format(path: &Path) -> Result<()> {
+    let version = preflight_connect(path)?;
+    if !matches!(version, 7 | 8) { return Err(StoreError::InvalidInput("format upgrade requires schema 7 or 8")); }
+    let mut connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
+    connection.busy_timeout(std::time::Duration::ZERO)?;
+    connection.pragma_update(None, "locking_mode", "EXCLUSIVE")?;
+    connection.pragma_update(None, "journal_mode", "DELETE")?;
+    connection.pragma_update(None, "synchronous", "FULL")?;
+    let journal: String = connection.pragma_query_value(None, "journal_mode", |r| r.get(0))?;
+    let synchronous: i64 = connection.pragma_query_value(None, "synchronous", |r| r.get(0))?;
+    if journal != "delete" || synchronous != 2 { return Err(StoreError::WrongStoreSchema); }
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Exclusive)?;
+    let current: i64 = transaction.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    if !matches!(current, 7 | 8) { return Err(StoreError::WrongStoreSchema); }
+    verify_schema(&transaction, current)?;
+    if current == 7 { transaction.execute_batch(statements::schema::MIGRATE_V7_TO_V8)?; }
+    match transaction.commit() {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let promoted = connection.is_autocommit() && connection.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).ok() == Some(8);
+            if promoted {
+                Err(StoreError::Io(std::io::Error::other(format!("schema 8 promotion occurred; commit reported: {error}"))))
+            } else { Err(error.into()) }
+        }
+    }
+}

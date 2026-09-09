@@ -316,7 +316,7 @@ def run_case(args, output, case, fixture, image, mode, remaining_phase_seconds, 
                     record["identity"] = record["commit_id"] or "initial"
                 else:
                     identity = row.get("identity") or row["commit_id"]
-                    values = send("verify\t"+identity, "storage-smoke-verified-read", LIMITS[args.storage_smoke][1 if case == "deepseek-full" else 2])
+                    values = send("verify\t"+identity, "storage-smoke-verified-read", LIMITS[args.storage_smoke][1 if case in ("deepseek-full", "small-file-delta-10x30-v1") else 2])
                     observed = output / f"observed-{row['index']}.tsv"
                     runtime.run(["docker", "cp", sample.id+":/input/observed.tsv", str(observed)], deadline=runtime.Deadline.after(300 if case == "deepseek-full" else 120))
                     actual = {}
@@ -476,6 +476,12 @@ def main(argv=None):
             saved = json.loads((output/"identity.json").read_text())
             if saved["host_identity"]["binary_sha256"] != host_identity["binary_sha256"] or saved["image_id"] != image["Id"] or saved["fixtures"] != fixtures:
                 raise ValueError("verification custody mismatch")
+            if args.storage_smoke == "small-file-delta-10x30-v1":
+                measured = json.loads((output / "performance-manifest.json").read_text())
+                for case in CASES[args.storage_smoke]:
+                    name = case + "/host-runtime/store.sqlite"
+                    if runtime.file_sha256(output / name) != measured.get(name):
+                        raise ValueError("measured Store changed before historical reopen")
             mode = "verification"
         else:
             output.mkdir(parents=True,exist_ok=False)

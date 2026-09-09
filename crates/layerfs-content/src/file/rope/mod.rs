@@ -9,7 +9,7 @@ pub use build::{build, build_bytes, build_complete, CompletedFile};
 pub use diff::diff_ranges;
 pub use edit::{replace, FileMutationBatch, FILE_MUTATION_BATCH_MAX_DEFERRED_BYTES};
 pub use read::{
-    read_all, read_all_bounded, read_plan, read_range, read_range_with_plan, state, validate_file,
+    read_all, read_all_bounded, read_plan, read_plan_from_state, read_range, read_range_with_plan, state, validate_file,
     visit_extents, PredecessorCursor,
 };
 pub use state::{FileStateRoot, ObjectRead, ObjectStore, ReadPlan, RopeCounters};

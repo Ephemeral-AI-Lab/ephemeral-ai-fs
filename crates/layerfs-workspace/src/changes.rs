@@ -1,6 +1,7 @@
+use layerfs_content::file::content::{self, FileContentRoot};
 use crate::cow_tree::{portable_metadata, Attr, Data, FileData, Kind, NodeId, Workspace, ROOT};
 use layerfs_content::file::rope::{
-    self, FileMutationBatch, FileStateRoot, ObjectStore, RopeCounters,
+    self, FileMutationBatch, ObjectStore, RopeCounters,
 };
 use layerfs_content::filesystem::{self, InodeMutation, LogicalCounters, PortableMetadataCache};
 use layerfs_content::object::access::ObjectRead;
@@ -1252,7 +1253,7 @@ impl StableFileInputs<'_> {
         let predecessor = if prepared[32..64].iter().all(|byte| *byte == 0) {
             None
         } else {
-            Some(FileStateRoot(ObjectId::from_bytes(&prepared[32..64])?))
+            Some(FileContentRoot(ObjectId::from_bytes(&prepared[32..64])?))
         };
         let captured = {
             let mut captured = self
@@ -1268,7 +1269,13 @@ impl StableFileInputs<'_> {
                 None
             }
         };
-        let (root, counters) = if before.is_none() && predecessor.is_none() && captured.is_none() {
+        let (root, counters) = if writer.supports_small_content() && input.len > 0 && input.len < content::SMALL_LIMIT as u64 && captured.is_none() {
+            if let Some(record) = before.filter(|r| matches!(&input.data, FileData::Base { root, .. } if root.0 == r.content_root)) {
+                (record.content_root, Default::default())
+            } else {
+                writer.build_small_file(input.reader(), input.len, predecessor.map(|r| r.0).or(before.map(|r| r.content_root)))?
+            }
+        } else if before.is_none() && predecessor.is_none() && captured.is_none() {
             // Complete new-file prefixes are final; keep the root private until
             // EOF/length validation and the enclosing task coverage both succeed.
             writer.build_complete_file(input.reader(), input.len)?
@@ -1459,7 +1466,7 @@ impl FrozenFile {
     fn build(
         &self,
         before: Option<InodeRecordV1>,
-        predecessor: Option<FileStateRoot>,
+        predecessor: Option<FileContentRoot>,
         correspondence_reserved: std::sync::Arc<std::sync::atomic::AtomicU64>,
         captured: Option<crate::capture::CapturedFile>,
         partitions: usize,
@@ -1486,16 +1493,24 @@ impl FrozenFile {
             )?;
         }
 
+        let small_result = ObjectStore::small_content_format(&objects) && self.len > 0 && self.len < content::SMALL_LIMIT as u64;
+        let small_base = if let Some(record) = before { matches!(content::inspect(&CoreReader(&self.reader), FileContentRoot(record.content_root))?, content::Content::Small { .. }) } else { false };
+        if captured_root.is_none() && (small_result || small_base) {
+            if let Some(record) = before {
+                if !self.file_may_differ(record.content_root)? { return objects.finish(record.content_root, 0); }
+            }
+            return objects.build_complete_with_predecessor(self.reader(), self.len);
+        }
         let (root, counters) = if let Some(captured) = captured_root {
             captured
         } else if let Some(record) = before {
             if !self.file_may_differ(record.content_root)? {
-                (FileStateRoot(record.content_root), RopeCounters::default())
+                (FileContentRoot(record.content_root), RopeCounters::default())
             } else {
                 match self.mutate_existing_file(&mut objects, BaseEntry { record })? {
                     Some(changed) => changed,
                     None if self.incremental_file_supported(record.content_root) => {
-                        (FileStateRoot(record.content_root), RopeCounters::default())
+                        (FileContentRoot(record.content_root), RopeCounters::default())
                     }
                     None => {
                         return objects.build_complete_with_predecessor(self.reader(), self.len)
@@ -1505,7 +1520,7 @@ impl FrozenFile {
         } else {
             return objects.build_complete_with_predecessor(self.reader(), self.len);
         };
-        if rope::state(&objects, root, &mut RopeCounters::default())?.logical_len != self.len {
+        if content::length(&objects, root)? != self.len {
             return Err(StorageError::Integrity("completed file length"));
         }
         objects.finish(root.0, counters.cdc_bytes_scanned)
@@ -1538,7 +1553,7 @@ impl FrozenFile {
         &self,
         objects: &mut ObjectBuffer<'_>,
         base: BaseEntry,
-    ) -> Result<Option<(FileStateRoot, RopeCounters)>> {
+    ) -> Result<Option<(FileContentRoot, RopeCounters)>> {
         let FileData::Edited {
             base: Some((file_root, _)),
             pieces,
@@ -1551,11 +1566,11 @@ impl FrozenFile {
             return Ok(None);
         }
         let (file_root, pieces) = (*file_root, pieces.pieces());
-        let mut batch = FileMutationBatch::new(objects, Some(file_root))?;
+        let mut batch = FileMutationBatch::new(objects, Some(rope::FileStateRoot(file_root.0)))?;
         let mut changed = false;
         let original_len = layerfs_content::file::rope::state(
             &CoreReader(&self.reader),
-            file_root,
+            rope::FileStateRoot(file_root.0),
             &mut RopeCounters::default(),
         )?
         .logical_len;
@@ -1621,12 +1636,13 @@ impl FrozenFile {
         if !changed {
             return Ok(None);
         }
-        Ok(Some(batch.finish()?))
+        let (root, counters) = batch.finish()?;
+        Ok(Some((FileContentRoot(root.0), counters)))
     }
 
     fn workspace_range_matches_base(
         &self,
-        base: FileStateRoot,
+        base: FileContentRoot,
         start: u64,
         end: u64,
     ) -> Result<bool> {
@@ -1635,7 +1651,7 @@ impl FrozenFile {
             let count = (end - offset).min(64 * 1024) as usize;
             let final_bytes = self.read(offset, count)?;
             let mut base_bytes = Vec::with_capacity(count);
-            rope::read_range(
+            content::read_range(
                 &CoreReader(&self.reader),
                 base,
                 offset..offset + count as u64,
@@ -1668,9 +1684,9 @@ impl FrozenFile {
         let mut input = self.reader();
         std::io::copy(&mut input, &mut final_digest)?;
         let mut base_digest = ContentDigestWriter::new();
-        rope::read_all(
+        content::read_all(
             &CoreReader(&self.reader),
-            FileStateRoot(base),
+            FileContentRoot(base),
             &mut base_digest,
         )?;
         Ok(final_digest.finish() == base_digest.finish())
@@ -2741,7 +2757,7 @@ mod tests {
                 crate::capture::CaptureState::Ready(Box::new(crate::capture::CapturedFile {
                     node: files[0].0,
                     len: files[0].1.len() as u64,
-                    root,
+                    root: root.into(),
                     counters,
                     objects: objects.into_resumable().unwrap(),
                 }));
@@ -3943,7 +3959,7 @@ mod tests {
             _ => panic!("base file"),
         };
         let mut base_payloads = BTreeSet::new();
-        rope::visit_extents(&CoreReader(&workspace.reader), base_root, |extents| {
+        rope::visit_extents(&CoreReader(&workspace.reader), rope::FileStateRoot(base_root.0), |extents| {
             base_payloads.extend(extents.iter().map(|extent| extent.payload_object_id));
             Ok(())
         })
@@ -3991,7 +4007,7 @@ mod tests {
         let mut final_payloads = BTreeSet::new();
         rope::visit_extents(
             &CoreReader(&reader),
-            FileStateRoot(resolved.record.content_root),
+            rope::FileStateRoot(resolved.record.content_root),
             |extents| {
                 final_payloads.extend(extents.iter().map(|extent| extent.payload_object_id));
                 Ok(())

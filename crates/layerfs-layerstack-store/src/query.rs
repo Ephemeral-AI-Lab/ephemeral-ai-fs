@@ -295,6 +295,7 @@ impl LayerStackStore {
     }
 
     pub fn reachable_storage(&self) -> Result<CanonicalStorage> {
+        self.db.validate_small_packs()?;
         let mut seen = crate::SpillableObjectSet::empty()?;
         let mut active = BTreeSet::new();
         let mut objects = 0_u64;
@@ -470,6 +471,9 @@ fn traverse_root(
     *objects = objects.saturating_add(1);
     *encoded_bytes = encoded_bytes.saturating_add(canonical.len() as u64);
     let mut children = layerfs_content::object::references::referenced_objects(&canonical)?;
+    if layerfs_content::file::content::small_bytes(&canonical).ok().flatten().is_some() {
+        children.extend(store.db.small_physical_base(id)?);
+    }
     children.sort();
     children.dedup();
     for child in children {

@@ -1,5 +1,5 @@
 use super::resolve::{namespace, resolve, resolve_parent, LogicalCounters};
-use crate::file::rope::{build, replace, FileStateRoot};
+use crate::file::content::{build, replace, FileContentRoot};
 use crate::object::access::ObjectStore;
 use crate::tree::directory::codec::{encode_namespace_root, encode_symlink, profile_id};
 use crate::tree::directory::SymlinkStateV1;
@@ -106,7 +106,7 @@ pub fn replace_range_with_metadata<S: ObjectStore, R: Read>(
     let previous = store.set_file_payload_context(true);
     let result = replace(
         store,
-        FileStateRoot(resolved.record.content_root),
+        FileContentRoot(resolved.record.content_root),
         start,
         delete_len,
         replacement,

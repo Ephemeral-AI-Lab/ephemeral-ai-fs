@@ -30,6 +30,7 @@ A release candidate is eligible only when:
   components must be version-matched. The [0.1.3 release contract](../../release-notes/0.1.3/release-contract.md)
   defines the upgrade boundary; do not infer downgrade or mixed-version support.
 - The owner-approved 0.1.4 Developer Preview is also an explicit Store-format exception: new Stores use schema 7, supported development schema 6 remains legacy, and released schema 5 is rejected without migration. Canonical identity is preserved. The [0.1.4 release contract](../../release-notes/0.1.4/release-contract.md) defines this boundary.
+- The owner-authorized v0.1.5 implementation is a scoped canonical/Store-format exception: new Stores use schema 8 and whole-file SmallContent below 128 KiB; supported schema 6/7 opens do not promote. Offline schema-7 promotion is explicit and preserves old payloads/page layouts. Schema 5 and schema-6 upgrade requests are unsupported. The [v0.1.5 specification](../roadmap/0.1/0.1.5/spec.md) defines the boundary. Smoke-only implementation evidence does not satisfy the release requirements above.
 - A pre-1.0 minor release such as `0.2.0` may define a revised public or
   storage contract and must document its compatibility boundary explicitly.
 - A 1.0-or-later major release follows ordinary stable semantic-versioning
