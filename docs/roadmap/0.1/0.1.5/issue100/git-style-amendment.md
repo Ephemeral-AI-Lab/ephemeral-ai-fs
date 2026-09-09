@@ -54,3 +54,56 @@ retained prepared FULL; it must not name an unlocated private FULL or assume the
 winning base has the same depth. Any chosen implementation must prospectively
 specify shortlist selection, actual buffer/index charges, output grouping and
 late-base fallback before encoding or measuring that changed candidate.
+
+## Selected product candidate: bounded content-keyed FULL reuse
+
+The identical-base diagnostic found current prefix frames smaller in four of five
+pairs; Git COPY/INSERT won only49B on icons. For tool schemas the same available
+base reduces the current6402B FULL record+directory to85B with our existing codec
+(Git program88B). Implement candidate discovery, not a new program format.
+
+Use a **session-local1024-slot direct-mapped fingerprint cache**, reserving
+**128KiB from the existing16MiB admission index budget**. It contains only IDs
+and eight64-bit fingerprints of actual selected SmallContent FULL winners from
+this AdmissionSession. No raw cache, persisted/global index, past-session search,
+namespace scan, artificial base or in-flight candidate. This differs from the
+rejected recent128-entry long-line ring: content-derived lookup addresses at most
+eight slots directly and does not require a candidate in the last128 publications.
+The fixed1024-slot policy is not a size/window sweep.
+
+Fingerprint the eight smallest distinct mixed polynomial hashes of all16-byte
+windows, using a rolling257-base hash modulo2^64. This is bounded generic byte
+matching, including shifted/binary content, not a fixture-path or line heuristic.
+Use fixed arrays; no allocation proportional to file size for fingerprinting.
+At most eight cache probes and at most eight candidate IDs; rank by shared
+fingerprint count, require two matches, and use ObjectId order to break ties.
+Pick one candidate; no trial of additional candidates after an uneconomical delta.
+
+Preserve real predecessor priority. Only when no eligible immediate predecessor
+exists, query this cache. Release its mutex before SQL/codec work, resolve the
+candidate's selected location and authenticate its FULL bytes once. Require the
+returned FULL ID to equal the selected ID; a stale/different-role entry is not
+permission to silently choose a different base. Exclude the target's own ID.
+Exact CAS remains first, and the usual late-CAS comparison still handles targets
+which another same-session batch selected after the initial membership check.
+
+Register cache entries only for actual FULL winners after publication, after
+releasing the Store connection; compute fingerprints outside both Store and cache
+locks. Losing prepared FULLs never enter it. Skip final-batch registration. Cache
+lifetime is the session; failed sessions cannot prepare new objects, and their
+cache is discarded with rollback/drop. Existing epoch/cohort/retention rules hold.
+
+Emit existing kind1 for a cached selected-FULL base; no new persisted grammar or
+schema is needed. Schema8 retains its old policy; this candidate runs only under
+schema9. FULL-vs-DELTA cost still includes32B reference; FULL wins ties. Decoder
+and encoder never overlap, and existing2MiB/3MiB per-active allowances remain.
+The cache uses index ownership, not additional codec buffers. Missing/corrupt
+persisted dependencies remain integrity errors. No per-object transport or SQL
+transaction is added; optional selected-base acquisition uses the existing reader.
+
+Focused checks must cover shifted fingerprints, an unrelated negative, bounds,
+actual selected-FULL reuse under one session, late target reuse, and private
+rollback. Then build affected artifacts and run one new ten-state performance,
+frozen census, exact same-Store verification and cleanup with actual outcomes.
+Compare the whole Store and speed/resources to all three controls and chain-1.
+Do not run full157 unless a verified stable result is near45MB.
