@@ -1,6 +1,12 @@
 # LayerFS documentation
 
-> **Status:** Current documentation entry point for the LayerFS 0.1.3 Developer Preview.
+> **Status:** Current documentation entry point; v0.1.3 is released and v0.1.4 is prepared.
+
+## Evaluate the v0.1.4 release candidate
+
+- [Prepared manual](versioned/0.1.4/README.md)
+- [Release preparation and accepted limitations](../release-notes/0.1.4/README.md)
+- [Schema compatibility and no-migration boundary](versioned/0.1.4/storage-format.md)
 
 ## Use LayerFS 0.1.3
 

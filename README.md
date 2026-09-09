@@ -16,6 +16,12 @@
 </p>
 
 
+> **v0.1.4 release preparation:** the owner has accepted the storage/performance
+> tradeoff. Read the [prepared release record](release-notes/0.1.4/README.md)
+> and [schema compatibility boundary](docs/versioned/0.1.4/storage-format.md).
+> No v0.1.4 tag or release assets have been published yet; v0.1.3 remains the
+> latest published release. This candidate checkout reports package version 0.1.4.
+
 ## 🚀 What is LayerFS?
 
 ### Ephemeral Workspaces. Durable Shared History.
@@ -31,7 +37,7 @@ The filesystem remains load-bearing for recursive multi-agent exploration
 without multiplying storage.
 
 > [!WARNING]
-> LayerFS 0.1.3 is a Developer Preview. It is intended
+> LayerFS 0.1.4 is a prepared Developer Preview candidate. It is intended
 > for local evaluation, agent-runtime integration, and performance research—not
 > production storage. It does not provide crash- or power-loss-durability
 > guarantees. Keep an independent copy of important data.
@@ -96,7 +102,7 @@ allocation, equations, source identity, and raw evidence.
 ### 🧩 LayerFS components
 
 The storage engine, SDK, CLI, and filesystem projection are implemented in the
-0.1.3 Developer Preview. They remain separate public boundaries so callers do
+0.1.4 Developer Preview candidate. They remain separate public boundaries so callers do
 not depend on private CAS handles or storage formats.
 
 | **Status** | **Component** | **Role** |
@@ -113,7 +119,7 @@ Each `workspace exec` starts a fresh process. `commit` publishes the Workspace s
 
 ## 🛠️ Quickstart
 
-The current release is built from source. You need **macOS or Linux** and **Rust 1.85 or newer**. Docker, `/dev/fuse`, and `CAP_SYS_ADMIN` are needed only for managed container-FUSE workspaces. Packages are not published to crates.io in 0.1.3.
+The candidate and published releases are built from source. You need **macOS or Linux** and **Rust 1.85 or newer**. Docker, `/dev/fuse`, and `CAP_SYS_ADMIN` are needed only for managed container-FUSE workspaces. No packages are published to crates.io for this candidate.
 
 From the repository root:
 
@@ -132,7 +138,7 @@ mkdir -p "$PWD/.layerfs"
 "$LAYERFS_BIN" query layerstacks
 ```
 
-This creates a SQLite Store and an empty LayerStack with a genesis Layer. Continue with the [complete quickstart](docs/versioned/0.1.3/quickstart.md) for Branch creation, Workspace execution, commits, cleanup, directory imports, managed containers, and real FUSE.
+This creates a SQLite Store and an empty LayerStack with a genesis Layer. Continue with the [complete quickstart](docs/versioned/0.1.4/quickstart.md) for Branch creation, Workspace execution, commits, cleanup, directory imports, managed containers, and real FUSE.
 
 When importing an existing directory, keep the Store file **outside** the directory being imported or projected:
 
@@ -161,7 +167,7 @@ benchmark/                     filesystem and end-to-end benchmarks
 containers/layerfs-fuse        managed Linux FUSE runtime image
 docs/versioned/0.1.2          previous versioned product manual
 release-notes/0.1.2            previous release record
-docs/versioned/0.1.3          current versioned product manual
+docs/versioned/0.1.4          prepared candidate manual
 release-notes/0.1.3            release contract, evidence, and limitations
 ```
 
@@ -169,19 +175,19 @@ release-notes/0.1.3            release contract, evidence, and limitations
 
 LayerFS is suitable for evaluation and integration work, but the preview boundary matters:
 
-- 0.1.3 operates against one Store per Client; there is no cross-host synchronization;
+- 0.1.4 operates against one Store per Client; there is no cross-host synchronization;
 - live-process transaction visibility does not imply crash or power-loss durability;
 - the SDK is consumed from this repository; there is no published crates.io package or default runtime image;
 - managed FUSE requires Docker, `/dev/fuse`, and `CAP_SYS_ADMIN`;
 - the managed container is not a complete hostile-code security boundary;
 - owner-side range-edit batches must target one Workspace and one regular file;
 - the retained SQLite Store misses the 600 MB primary-control goal; authenticated
-  storage efficiency is prioritized for [v0.1.4](docs/roadmap/0.1/0.1.4/README.md)
+  storage-efficiency tradeoffs are accepted for [v0.1.4](docs/roadmap/0.1/0.1.4/README.md)
   in [#18](https://github.com/Ephemeral-AI-Lab/layerfs/issues/18), with optimization design still to be discussed;
 - the detached CLI context owner does not forward an interactive PTY; and
 - CLI JSON output is a preview text envelope, not a stable machine API.
 
-Read the full [limitations](docs/versioned/0.1.3/limitations.md) before using LayerFS with important data.
+Read the full [limitations](docs/versioned/0.1.4/limitations.md) before using LayerFS with important data.
 
 ## 📚 Documentation
 
@@ -190,11 +196,11 @@ Start with the [documentation index](docs/README.md), or jump directly to a focu
 | Goal | Guide |
 | --- | --- |
 | Learn the concepts | [Core concepts](docs/general/concepts.md) |
-| Run the CLI and SDK | [Quickstart](docs/versioned/0.1.3/quickstart.md) |
-| Find a CLI command | [CLI reference](docs/versioned/0.1.3/cli.md) |
-| Integrate with Rust | [Rust SDK reference](docs/versioned/0.1.3/sdk.md) |
-| Configure container FUSE | [Container runtime](docs/versioned/0.1.3/container-runtime.md) |
-| Understand storage | [Storage format](docs/versioned/0.1.3/storage-format.md) |
+| Run the CLI and SDK | [Quickstart](docs/versioned/0.1.4/quickstart.md) |
+| Find a CLI command | [CLI reference](docs/versioned/0.1.4/cli.md) |
+| Integrate with Rust | [Rust SDK reference](docs/versioned/0.1.4/sdk.md) |
+| Configure container FUSE | [Container runtime](docs/versioned/0.1.4/container-runtime.md) |
+| Understand storage | [Storage format](docs/versioned/0.1.4/storage-format.md) |
 | Review v0.1.3 changes | [Numbered changelog](docs/releases/v0.1.3/CHANGELOG.md) |
 | Review released evidence | [0.1.3 release record](release-notes/0.1.3/README.md) |
 | Review completed 0.1.2 work | [0.1.2 checklist](docs/roadmap/0.1/0.1.2/README.md) |
@@ -210,14 +216,14 @@ The [first-principles learning site](https://learn.layerfs.ai/) is educational m
 | **0.1.1** | Measure and harden existing-directory initialization through localized Commit, with focused FUSE and Docker proof. | **Released** as source under `v0.1.1`; see the [release record](release-notes/0.1.1/README.md). |
 | **0.1.2** | Three SDK-only 1/10/100/500 MiB edit families, namespace and Store refresh, and universal regular-file editing. | **Released** as source under `v0.1.2`; see the [release record](release-notes/0.1.2/README.md). |
 | **0.1.3** | Shared live Workspaces, optimized Commit and reads, and the 198-case/226-proof checkpoint. | **Released** as source under `v0.1.3`; see the [release record](release-notes/0.1.3/README.md). |
-| **0.1.4** | Reduce retained storage cost while preserving checkpoint behavior and correctness. | **Planned**; [scope and supporting evidence](docs/roadmap/0.1/0.1.4/README.md). Optimization approach remains open. |
+| **0.1.4** | Packed storage and bounded Init/Commit improvements; measured tradeoffs accepted. | **Prepared, not published**; [release record and limitations](release-notes/0.1.4/README.md). |
 | **0.1.5** | Benchmark multi-Layer and multi-Branch Commit history, Fork, Add, Diff, conflict, and query scaling. | **Draft moved from v0.1.4**; [release README](docs/roadmap/0.1/0.1.5/README.md). |
 | **0.2.0** | Establish a portable projection foundation, including capability-detected reflink/clonefile paths and a future OverlayFS projection. | **Planned**; requires a new compatibility contract. |
 | **Later** | Add platform/runtime expansion and verified Store export, import, and synchronization. | **Research**; no cross-host synchronization is part of 0.1.0. |
 
 See the [roadmap checklist](docs/roadmap/README.md) and
 [roadmap architecture notes](docs/roadmap/architecture.md) for acceptance gates,
-ownership boundaries, and sequencing. Use the [Rust SDK reference](docs/versioned/0.1.3/sdk.md)
+ownership boundaries, and sequencing. Use the [Rust SDK reference](docs/versioned/0.1.4/sdk.md)
 to integrate the current public SDK.
 
 ## 🤝 Contributing

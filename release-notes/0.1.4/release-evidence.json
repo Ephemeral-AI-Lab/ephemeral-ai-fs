@@ -1,0 +1,21 @@
+{
+  "schema": "layerfs-v014-release-preparation-v1",
+  "status": "PREPARATION_CHECKS_PENDING",
+  "package_version": "0.1.4",
+  "measured_product_source": "c48bb4903f456136ccbcdba78de38b9042d2755a",
+  "accepted_evidence_head": "36a5d9da612211cf26f2a23370e9d59afdceb8e2",
+  "owner_acceptance_date": "2026-09-09",
+  "benchmark_performance_pass": 198,
+  "routine_proof_pass": 226,
+  "optional_endurance_not_run": 1,
+  "full157_performance_states": 157,
+  "full157_historical_proofs": 157,
+  "original_comparison_status": "INCOMPLETE",
+  "historical_git_comparisons_ineligible": 4,
+  "numerical_regressions_accepted_not_reclassified": true,
+  "rust_schema_harness_changes_from_measured_source": [],
+  "packaging_changes": ["12 project-owned package versions", "release documentation"],
+  "imported_dependency_changes": [],
+  "tag_created": false,
+  "release_published": false
+}
