@@ -7,8 +7,11 @@
 > 10% working criterion; save/paired medians and historical-read wall remain close
 > to the original baseline. See [the consolidated results](issue100/storage-optimization-results.md)
 > and [complete retained-candidate evidence](issue100/retained-candidate-1-results.md).
-> Final full157 is deferred because the near-target gate has not been met. The
-> issue remains open; no release-admission PASS, release or tag is claimed.
+> The owner subsequently authorized full157 despite the ten-state target miss.
+> [Full157 confirmation](issue100/retained-full157-results.md) completed at
+> **134,246,400 B**, with157 Created outcomes, same-Store verification and clean
+> teardown. It saves27.27% versus released control but has31.13% higher paired
+> median latency. The issue remains open; no release-admission PASS or release.
 
 Read the [bounded predecessor amendment](issue100/bounded-predecessor-amendment.md),
 [the removed-name amendment](issue100/removed-base-amendment.md),
@@ -68,8 +71,10 @@ steps do not establish tail confidence or a release-admission PASS.
 
 The initial full157 candidate regressed to **201,371,648 B**, versus released
 control **184,582,144 B**, with both histories verified. The ten-state improvement
-does not erase that result. Final full157 confirmation belongs after short-loop
-stabilization and has no 45-MB target. It remains pending.
+does not erase that result. The subsequently owner-authorized full157 run
+verified the retained implementation at **134,246,400 B**, reversing the storage
+regression while showing higher foreground latency. Its45-MB target remains
+inapplicable; see [full157 results](issue100/retained-full157-results.md).
 
 The earlier recent-128 ring was diagnostic only. The compact content-keyed
 selected-FULL cache is implemented and measured. It stores 1024 candidate records

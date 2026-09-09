@@ -7,8 +7,11 @@
 > 10% working criterion; save/paired medians and historical-read wall remain close
 > to the original baseline. See [the consolidated results](issue100/storage-optimization-results.md)
 > and [complete retained-candidate evidence](issue100/retained-candidate-1-results.md).
-> Final full157 is deferred because the near-target gate has not been met. The
-> issue remains open; no release-admission PASS, release or tag is claimed.
+> The owner subsequently authorized full157 despite the ten-state target miss.
+> [Full157 confirmation](issue100/retained-full157-results.md) completed at
+> **134,246,400 B**, with157 Created outcomes, same-Store verification and clean
+> teardown. It saves27.27% versus released control but has31.13% higher paired
+> median latency. The issue remains open; no release-admission PASS or release.
 
 Your workspace behaves like a normal filesystem. Applications and coding agents
 read and edit files; a successful commit saves a workspace version. Small files
@@ -430,8 +433,9 @@ The current [ten-snapshot contract](issue100/ten-snapshot-contract.md) retains t
 complete selected snapshots, not ten consecutive upstream commits. Original
 [tiny-case](tiny-history-baseline-v1.md) and [31-state smoke](smoke-report.md)
 observations keep their separate fixtures and historical thresholds. The initial
-full157 regression remains recorded; final full157 confirmation is pending after
-short-loop stabilization. Its target is not 45 MB. Broader release qualification
+full157 regression remains recorded; the subsequently owner-authorized
+[full157 confirmation](issue100/retained-full157-results.md) is complete with
+157 same-Store historical proofs and disclosed latency regressions. Its target is not 45 MB. Broader release qualification
 is unrun, and the current target miss does not rule out all authorized bounded
 designs.
 

@@ -7,8 +7,11 @@
 > 10% working criterion; save/paired medians and historical-read wall remain close
 > to the original baseline. See [the consolidated results](issue100/storage-optimization-results.md)
 > and [complete retained-candidate evidence](issue100/retained-candidate-1-results.md).
-> Final full157 is deferred because the near-target gate has not been met. The
-> issue remains open; no release-admission PASS, release or tag is claimed.
+> The owner subsequently authorized full157 despite the ten-state target miss.
+> [Full157 confirmation](issue100/retained-full157-results.md) completed at
+> **134,246,400 B**, with157 Created outcomes, same-Store verification and clean
+> teardown. It saves27.27% versus released control but has31.13% higher paired
+> median latency. The issue remains open; no release-admission PASS or release.
 
 The retained product is byte-identical to measured source `ee78028ba`. Later
 revert commits remove the two rejected DELTA-cache experiments; reporting changes
@@ -44,7 +47,9 @@ The first-round `small_file_delta_smoke / small-file-delta-10x30-v1` and 31-stat
 verifier are historical evidence below. The current issue #100 scope uses the
 [frozen ten-snapshot contract](issue100/ten-snapshot-contract.md), focused changed-owner
 checks, public performance, frozen census and exact same-Store verification and
-cleanup. Final full157 confirmation follows short-loop stabilization and is pending.
+cleanup. The subsequently owner-authorized full157 confirmation is complete; see the
+[current full157 report](issue100/retained-full157-results.md) for storage gains
+and public-latency regressions.
 No broad Cargo/Clippy/doctest, unrelated family or release qualification campaign
 is claimed. Detailed focused-check/measurement receipts belong to the chain report.
 
@@ -82,5 +87,7 @@ The current chain candidate's 56,668,160-B allocation improves on both LayerFS
 baselines but does not satisfy the owner's objective. The [chain report](issue100/chain-1-results.md)
 preserves exact source/binary/image/fixture seals, command receipts, FULL/DELTA/
 metadata/index attribution and timing/resource/cleanup evidence. The original
-full157 regression remains unresolved until final candidate confirmation. This
-target miss is not proof that every permitted bounded design is impossible.
+full157 regression is preserved as historical evidence. The subsequent
+[full157 confirmation](issue100/retained-full157-results.md) reverses its storage
+regression but shows foreground-latency costs. The ten-state target miss is not
+proof that every permitted bounded design is impossible.

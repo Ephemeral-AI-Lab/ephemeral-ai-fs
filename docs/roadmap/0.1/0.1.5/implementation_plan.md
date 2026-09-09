@@ -7,8 +7,11 @@
 > 10% working criterion; save/paired medians and historical-read wall remain close
 > to the original baseline. See [the consolidated results](issue100/storage-optimization-results.md)
 > and [complete retained-candidate evidence](issue100/retained-candidate-1-results.md).
-> Final full157 is deferred because the near-target gate has not been met. The
-> issue remains open; no release-admission PASS, release or tag is claimed.
+> The owner subsequently authorized full157 despite the ten-state target miss.
+> [Full157 confirmation](issue100/retained-full157-results.md) completed at
+> **134,246,400 B**, with157 Created outcomes, same-Store verification and clean
+> teardown. It saves27.27% versus released control but has31.13% higher paired
+> median latency. The issue remains open; no release-admission PASS or release.
 
 The original ten-file/thirty-commit implementation loop is historical; its
 [31-state report](smoke-report.md) and retained attempts remain valid for that case.
@@ -86,9 +89,10 @@ semantics do not change; downgrade requires a pre-upgrade backup.
    Report exact allocation/growth, per-step save/Commit/paired timings and sums,
    historical verification, CPU/RSS, container/staging/spool scopes, and separate
    build/setup/transfer/cleanup. Retain failed/rejected patches and evidence.
-7. Only after a verified ten-state candidate stabilizes near 45 MB, collect final full157 confirmation
-   once. Reuse its released control only if applicability is demonstrated. Its
-   allocation objective is separate: 45 MB belongs only to ten retained states.
+7. The owner explicitly superseded the near-target gate and requested full157.
+   That confirmation is now complete with qualified released-control reuse; see
+   [the report](issue100/retained-full157-results.md). Do not repeat unchanged
+   passing history. The45-MB objective remains specific to ten retained states.
 
 Keep the smoke's 600-second phase/preparation and 120-second operation/setup/
 cleanup watchdogs; full157 retains its separate current bounds. Diagnose the real
@@ -98,8 +102,9 @@ rerun unchanged passing evidence for a better observation.
 ## Evidence and qualification boundary
 
 The chain improvement is material but insufficient for this target. Preserve the
-initial full157 regression (201,371,648 B versus 184,582,144 B) until the final
-candidate is independently confirmed; a ten-state result cannot replace it.
+initial full157 regression (201,371,648 B versus184,582,144 B) as historical
+evidence. The new independent full157 confirmation is134,246,400 B; its
+foreground speed regressions remain explicit. A ten-state result cannot replace it.
 No claim is made that all other bounded designs are incapable of meeting the goal.
 
 The [chain result](issue100/chain-1-results.md) owns raw timing/resource/custody

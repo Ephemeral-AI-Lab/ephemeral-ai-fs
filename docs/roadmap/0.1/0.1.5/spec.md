@@ -7,8 +7,11 @@
 > 10% working criterion; save/paired medians and historical-read wall remain close
 > to the original baseline. See [the consolidated results](issue100/storage-optimization-results.md)
 > and [complete retained-candidate evidence](issue100/retained-candidate-1-results.md).
-> Final full157 is deferred because the near-target gate has not been met. The
-> issue remains open; no release-admission PASS, release or tag is claimed.
+> The owner subsequently authorized full157 despite the ten-state target miss.
+> [Full157 confirmation](issue100/retained-full157-results.md) completed at
+> **134,246,400 B**, with157 Created outcomes, same-Store verification and clean
+> teardown. It saves27.27% versus released control but has31.13% higher paired
+> median latency. The issue remains open; no release-admission PASS or release.
 
 ## 1. Baseline, scope and fixed settings
 
@@ -383,9 +386,10 @@ The [chain1 result](issue100/chain-1-results.md) is 56,668,160 B final allocatio
 11,668,160 B above the 45,000,000-B objective. It is an improvement, not near-target
 or task completion. The selected-FULL cache is a later measured implementation;
 its separate report above supersedes chain-only status. Cross-CDC reuse remains
-unimplemented. Final full157 confirmation is pending and
-belongs after the short-loop design stabilizes; its objective is separate from
-the ten-snapshot 45-MB target. Preserve the earlier full157 regression evidence.
+unimplemented. The subsequently owner-authorized full157 confirmation is
+complete at134,246,400 B with exact same-Store verification. Its objective is
+separate from the ten-snapshot45-MB target; preserve the earlier regression and
+the new foreground-latency tradeoffs in [the report](issue100/retained-full157-results.md).
 
 The original ten-file/thirty-commit smoke and its 31-state verifier are historical
 first-round evidence in [smoke-report.md](smoke-report.md), not current execution
