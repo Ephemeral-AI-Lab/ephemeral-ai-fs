@@ -246,10 +246,12 @@ impl PreparedAdmission {
                         drop(encoder.take());
                         let location = db.object_locations(&[id])?.remove(&id)
                             .ok_or(StoreError::Integrity("selected small candidate missing"))?;
-                        if let Some(base) = db.small_predecessor(id, Some(location), object.bytes.len())? {
-                            let kind = if base.depth == 0 { 1 } else { 2 };
-                            anchor = Some((base.canonical, base.location, base.encoded_closure, kind));
+                        let (canonical, location) = db.small_anchor(id, Some(location))?
+                            .ok_or(StoreError::Integrity("selected small candidate role"))?;
+                        if canonical.id != id {
+                            return Err(StoreError::Integrity("selected small candidate is not FULL"));
                         }
+                        anchor = Some((canonical, location, 0, 1));
                     }
                 }
             }
@@ -978,7 +980,7 @@ impl PreparedAdmission {
         drop(connection);
         if !self.final_batch {
             if let Some(candidates) = &self.session.small_candidates {
-                for object in winners.iter().flatten() {
+                for object in winners.iter().flatten().filter(|object| !object.delta) {
                     if self.packs[object.pack][8..12] != [3, 0, 0, 0] { continue; }
                     let canonical = object.retained.as_ref()
                         .ok_or(StoreError::Integrity("selected small candidate ownership"))?;
