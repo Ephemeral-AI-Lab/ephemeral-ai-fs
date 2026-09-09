@@ -132,7 +132,7 @@ fn native_admission_late_races_compare_canonical_full_and_prefix() {
         prefix.final_batch = false;
         let full = PreparedAdmission::prepare_missing(
             &f.db,
-            super::super::MissingBatch(vec![object(&changed, None)], session.clone(), false),
+            super::super::MissingBatch(vec![object(&changed, None)], session.clone(), false, None),
         )
         .unwrap();
         assert!(!full.objects[0].delta);
@@ -177,6 +177,148 @@ fn native_admission_peak_reservations_reject_unowned_buffers() {
     // An already assembled ordinary pack remains charged in the next lane.
     prepared.packs.push(vec![0; 2 * 1024 * 1024]);
     assert!(prepared.native_scratch(&Vec::new(), &groups, 0, 1).is_err());
+}
+
+#[test]
+fn native_admission_batches_bound_output_and_stream_late_collision_waves() {
+    for corrupt in [false, true] {
+        let f = Fixture::new();
+        let base = object(b"preexisting retained witness", None);
+        f.publish(f.prepare(vec![base.clone()]));
+        let raw = random();
+        let objects = (0_u64..120)
+            .map(|index| {
+                let mut bytes = raw[..4096].to_vec();
+                bytes[..8].copy_from_slice(&index.to_le_bytes());
+                object(&bytes, None)
+            })
+            .collect::<Vec<_>>();
+        assert!(objects.iter().map(|o| o.bytes.len()).sum::<usize>() < 512 * 1024);
+        assert!(
+            objects
+                .iter()
+                .map(|o| read::validation_reserve(o.bytes.len()))
+                .sum::<usize>()
+                > read::VALIDATION_RESERVE
+        );
+        let prepared = f.prepare(objects.clone());
+        assert_eq!(
+            prepared.objects.len(),
+            objects.len(),
+            "a bounded output batch is not a single collision-read wave"
+        );
+        let session = prepared.session.clone();
+        let other = PreparedAdmission::prepare_missing(
+            &f.db,
+            super::super::MissingBatch(objects.clone(), session.clone(), false, None),
+        )
+        .unwrap();
+        f.publish(other);
+        if corrupt {
+            let id = objects.last().unwrap().id;
+            let location = f.db.object_locations(&[id]).unwrap()[&id];
+            let db = f.db.writer().unwrap();
+            let mut packed: Vec<u8> = db
+                .query_row(
+                    "SELECT data FROM object_packs WHERE pack_id=?1",
+                    [location.pack],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let header =
+                pack::versioned_header(packed[..16].try_into().unwrap(), packed.len()).unwrap();
+            let start = 16 + 16 * location.group;
+            let entry = pack::versioned_entry(
+                packed[start..start + 16].try_into().unwrap(),
+                header,
+                packed.len(),
+            )
+            .unwrap();
+            let count = u32::from_le_bytes(
+                packed[entry.range.start..entry.range.start + 4]
+                    .try_into()
+                    .unwrap(),
+            ) as usize;
+            let ends = &packed[entry.range.start + 4..entry.range.start + 4 + 4 * count];
+            let range =
+                pack::native_record_range(count, ends, entry.range.len(), location.record).unwrap();
+            packed[entry.range.start + range.end - 1] ^= 1;
+            assert_eq!(
+                db.execute(
+                    "UPDATE object_packs SET data=?1 WHERE pack_id=?2",
+                    rusqlite::params![packed, location.pack]
+                )
+                .unwrap(),
+                1
+            );
+        }
+        let result = prepared.publish(&f.db, &mut 0, |_, _, _| Ok(()));
+        if corrupt {
+            assert!(
+                result.is_err(),
+                "later-wave corruption must fail authentication"
+            );
+            assert_eq!(
+                f.db.reader()
+                    .unwrap()
+                    .query_row("SELECT count(*) FROM objects", [], |row| row
+                        .get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
+        } else {
+            let (_, metrics) = result.unwrap();
+            assert_eq!(metrics.insert.skipped_ids, objects.len() as u64);
+            for object in objects {
+                assert_eq!(f.db.read_object_row(object.id).unwrap(), object.bytes);
+            }
+        }
+        assert_eq!(f.db.read_object_row(base.id).unwrap(), base.bytes);
+        drop(session);
+    }
+}
+
+#[test]
+fn collision_comparison_preserves_the_physical_reserve_and_unique_operands() {
+    let f = Fixture::new();
+    let object = object(b"authenticated comparison operand", None);
+    f.publish(f.prepare(vec![object.clone()]));
+    let known = f.db.object_locations(&[object.id]).unwrap();
+    let mut supplied = vec![(object.id, object.bytes.as_slice())];
+    assert!(matches!(
+        compare(
+            &f.db,
+            &known,
+            &mut supplied,
+            &mut ObjectInsertMetrics::default(),
+            read::VALIDATION_RESERVE
+        ),
+        Err(StoreError::Integrity("comparison physical reservation"))
+    ));
+    let mut locations = known
+        .iter()
+        .map(|(&id, &location)| (id, location))
+        .collect::<Vec<_>>();
+    assert!(f
+        .db
+        .visit_locations_with_reserve(&mut locations, read::VALIDATION_RESERVE + 1, |_| Ok(()))
+        .is_err());
+    assert!(f
+        .db
+        .visit_locations_with_reserve(&mut locations, 0, |_| Ok(()))
+        .is_err());
+    supplied.push(supplied[0]);
+    assert!(matches!(
+        compare(
+            &f.db,
+            &known,
+            &mut supplied,
+            &mut ObjectInsertMetrics::default(),
+            0
+        ),
+        Err(StoreError::Integrity("duplicate comparison operand"))
+    ));
+    assert_eq!(f.db.read_object_row(object.id).unwrap(), object.bytes);
 }
 
 #[test]
@@ -289,4 +431,177 @@ fn failed_cleanup_quarantines_writes_and_keeps_preexisting_reads() {
         ))
     ));
     assert_eq!(f.db.read_object_row(base.id).unwrap(), base.bytes);
+}
+
+#[test]
+fn admission_watermark_preserves_preexisting_counts_and_dependency_authentication() {
+    for missing_dependency in [false, true] {
+        let f = Fixture::new();
+        let base = object(b"preexisting witness", None);
+        f.publish(f.prepare(vec![base.clone()]));
+        let fresh = object(b"new owned payload", None);
+        let mut owner = CheckedOutputAdmission::new(&f.db).unwrap();
+        for _ in 0..3 {
+            owner.admit_page(vec![base.clone(), fresh.clone()]).unwrap();
+            owner.flush().unwrap();
+        }
+        assert_eq!(owner.seen.count, 1);
+        assert_eq!(
+            (
+                owner.checked.candidate_objects,
+                owner.checked.inserted_objects,
+                owner.checked.reused_objects
+            ),
+            (2, 1, 1)
+        );
+        assert_eq!(owner.receipt.preexisting_reused_objects, 1);
+        let invalid = if missing_dependency {
+            use layerfs_content::file::{extent::FileStateV3, extent_codec};
+            AuthenticatedCanonicalObject::new(
+                extent_codec::encode_file_state(FileStateV3 {
+                    logical_len: 1,
+                    extent_count: 1,
+                    tree_level: 0,
+                    profile_id: extent_codec::profile_id(),
+                    mapping_root: ObjectId::for_bytes(b"missing dependency"),
+                })
+                .unwrap(),
+                None,
+            )
+            .unwrap()
+        } else {
+            let mut corrupt = fresh.clone();
+            *corrupt.0.bytes.last_mut().unwrap() ^= 1;
+            corrupt
+        };
+        let result = owner
+            .admit_page(vec![invalid])
+            .and_then(|_| owner.finish().map(|_| ()));
+        assert!(
+            matches!(result, Err(StoreError::Integrity(message)) if message == if missing_dependency { "new object dependency missing" } else { "object collision" })
+        );
+        assert_eq!(f.db.read_object_row(base.id).unwrap(), base.bytes);
+        assert!(f.db.read_object_row(fresh.id).is_err());
+    }
+}
+
+#[test]
+fn locator_publication_is_sorted_without_changing_native_pack_bytes() {
+    let f = Fixture::new();
+    let random = random();
+    let objects = (0_u64..200)
+        .map(|i| {
+            let mut raw = random[..1024].to_vec();
+            raw[..8].copy_from_slice(&i.to_be_bytes());
+            object(&raw, None)
+        })
+        .collect::<Vec<_>>();
+    let prepared = f.prepare(objects.clone());
+    let packs = prepared.packs.clone();
+    f.db.writer().unwrap().execute_batch("CREATE TEMP TABLE insertion_order(id BLOB); CREATE TEMP TRIGGER capture_order AFTER INSERT ON main.objects BEGIN INSERT INTO insertion_order VALUES (new.object_id); END;").unwrap();
+    f.publish(prepared);
+    let inserted: Vec<Vec<u8>> =
+        f.db.reader()
+            .unwrap()
+            .prepare("SELECT id FROM insertion_order ORDER BY rowid")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+    let mut expected = objects
+        .iter()
+        .map(|o| o.id.as_bytes().to_vec())
+        .collect::<Vec<_>>();
+    expected.sort_unstable();
+    assert_eq!(
+        inserted, expected,
+        "locator insertion must retain canonical-key locality"
+    );
+    let stored: Vec<Vec<u8>> =
+        f.db.reader()
+            .unwrap()
+            .prepare("SELECT data FROM object_packs ORDER BY pack_id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+    assert_eq!(
+        stored, packs,
+        "sorting SQL locators must not change physical encoding"
+    );
+    for object in objects {
+        assert_eq!(f.db.read_object_row(object.id).unwrap(), object.bytes);
+    }
+}
+
+#[cfg(feature = "test-instrumentation")]
+#[test]
+fn unchanged_absence_proof_avoids_reprobe_but_intervening_publication_rechecks() {
+    for stage in 0..3 {
+        let f = Fixture::new();
+        f.publish(f.prepare(vec![object(b"preexisting witness", None)]));
+        let objects = (0_u64..200)
+            .map(|i| object(&i.to_le_bytes(), None))
+            .collect::<Vec<_>>();
+        let mut owner = CheckedOutputAdmission::new(&f.db).unwrap();
+        owner.admit_page(objects.clone()).unwrap();
+        owner.probe_incoming().unwrap();
+        let publish_other = |session| {
+            let other = PreparedAdmission::prepare_missing(
+                &f.db,
+                super::super::MissingBatch(objects.clone(), session, false, None),
+            )
+            .unwrap();
+            f.publish(other);
+        };
+        if stage == 1 {
+            publish_other(owner.session.clone());
+        }
+        let prepared =
+            PreparedAdmission::prepare_missing(&f.db, owner.finish().unwrap().final_batch).unwrap();
+        if stage == 2 {
+            publish_other(prepared.session.clone());
+        }
+        crate::schema::reset_sql_trace();
+        let (_, metrics) = prepared.publish(&f.db, &mut 0, |_, _, _| Ok(())).unwrap();
+        let queries = crate::schema::sql_trace()
+            .iter()
+            .filter(|s| s.contains("FROM objects WHERE object_id IN ("))
+            .count();
+        assert_eq!(
+            queries > 0,
+            stage != 0,
+            "only an unchanged publication epoch proves absence"
+        );
+        assert_eq!(metrics.insert.skipped_ids, if stage != 0 { 200 } else { 0 });
+        for object in objects {
+            assert_eq!(f.db.read_object_row(object.id).unwrap(), object.bytes);
+        }
+    }
+}
+
+#[cfg(feature = "test-instrumentation")]
+#[test]
+fn streaming_absence_proofs_advance_only_over_disjoint_owned_batches() {
+    let f = Fixture::new();
+    f.publish(f.prepare(vec![object(b"preexisting witness", None)]));
+    let objects = (0_u64..1200)
+        .map(|i| object(&i.to_le_bytes(), None))
+        .collect::<Vec<_>>();
+    crate::schema::reset_sql_trace();
+    f.publish(f.prepare(objects.clone()));
+    let queries = crate::schema::sql_trace()
+        .iter()
+        .filter(|s| s.contains("FROM objects WHERE object_id IN ("))
+        .count();
+    assert_eq!(
+        queries,
+        1200_usize.div_ceil(OBJECT_PAGE_COUNT),
+        "one initial lookup per bounded page; no repeated negative lookup"
+    );
+    for object in objects {
+        assert_eq!(f.db.read_object_row(object.id).unwrap(), object.bytes);
+    }
 }

@@ -292,8 +292,29 @@ pub(super) fn assemble_native(groups: &[EncodedGroup]) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// One bounded encoder scratch allocation, owned by one admission preparation.
+/// The cached context points only into owned scratch; borrowed inputs reset on every call.
+pub(super) struct NativeEncoder {
+    memory: Vec<u64>,
+    context: Option<zstandard::NativeContext>,
+}
+
+impl NativeEncoder {
+    pub(super) fn new() -> Result<Self> {
+        Ok(Self {
+            memory: zstandard::native_workspace()?,
+            context: None,
+        })
+    }
+
+    pub(super) fn compress(&mut self, raw: &[u8], prefix: Option<&[u8]>) -> Result<Vec<u8>> {
+        zstandard::native_compress_in(&mut self.memory, &mut self.context, raw, prefix)
+    }
+}
+
+#[cfg(test)]
 pub(super) fn native_compress(raw: &[u8], prefix: Option<&[u8]>) -> Result<Vec<u8>> {
-    zstandard::native_compress(raw, prefix)
+    NativeEncoder::new()?.compress(raw, prefix)
 }
 
 pub(super) fn native_decompress(
@@ -881,7 +902,30 @@ mod zstandard {
         Ok(())
     }
 
-    pub(super) fn native_compress(raw: &[u8], prefix: Option<&[u8]>) -> Result<Vec<u8>> {
+    pub(super) fn native_workspace() -> Result<Vec<u64>> {
+        workspace(NATIVE_ENCODE_WORKSPACE, NATIVE_ENCODE_WORKSPACE)
+    }
+
+    #[cfg(test)]
+    fn native_compress(raw: &[u8], prefix: Option<&[u8]>) -> Result<Vec<u8>> {
+        super::NativeEncoder::new()?.compress(raw, prefix)
+    }
+
+    pub(super) struct NativeContext {
+        context: *mut ZSTD_CCtx,
+        workspace: *mut u64,
+        words: usize,
+    }
+
+    #[cfg(test)]
+    thread_local! { static NATIVE_CONTEXT_INITIALIZATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+    pub(super) fn native_compress_in(
+        memory: &mut [u64],
+        cached: &mut Option<NativeContext>,
+        raw: &[u8],
+        prefix: Option<&[u8]>,
+    ) -> Result<Vec<u8>> {
         let prefix = prefix.unwrap_or(&[]);
         if raw.len() > NATIVE_RAW_LIMIT || prefix.len() > NATIVE_RAW_LIMIT {
             return Err(invalid());
@@ -890,41 +934,77 @@ mod zstandard {
         // borrowed raw prefix (refPrefix's default), never a dictionary parser.
         // The static context has no C free and cannot grow beyond this region.
         unsafe {
-            let mut memory = workspace(NATIVE_ENCODE_WORKSPACE, NATIVE_ENCODE_WORKSPACE)?;
-            let context = ZSTD_initStaticCCtx(memory.as_mut_ptr().cast(), memory.len() * 8);
-            if context.is_null() {
-                return Err(resource());
+            let workspace = memory.as_mut_ptr();
+            let words = memory.len();
+            if cached
+                .as_ref()
+                .is_none_or(|state| state.workspace != workspace || state.words != words)
+            {
+                *cached = None;
+                #[cfg(test)]
+                NATIVE_CONTEXT_INITIALIZATIONS.with(|count| count.set(count.get() + 1));
+                let context = ZSTD_initStaticCCtx(workspace.cast(), words * 8);
+                if context.is_null() {
+                    return Err(resource());
+                }
+                *cached = Some(NativeContext {
+                    context,
+                    workspace,
+                    words,
+                });
             }
-            native_parameters(context)?;
-            checked(ZSTD_CCtx_refPrefix(
+            let context = cached.as_ref().unwrap().context;
+            // Reset settings and borrowed operands, while preserving the bounded
+            // context/workspace allocations and the exact frozen frame parameters.
+            let result = (|| {
+                native_parameters(context)?;
+                checked(ZSTD_CCtx_refPrefix(
+                    context,
+                    if prefix.is_empty() {
+                        std::ptr::null()
+                    } else {
+                        prefix.as_ptr().cast()
+                    },
+                    prefix.len(),
+                ))?;
+                let bound = checked(ZSTD_compressBound(raw.len()))?;
+                if bound > NATIVE_FRAME_LIMIT {
+                    return Err(resource());
+                }
+                let mut encoded = output(bound)?;
+                if encoded.capacity() > NATIVE_FRAME_LIMIT {
+                    return Err(resource());
+                }
+                let length = native_encode_checked(ZSTD_compress2(
+                    context,
+                    encoded.as_mut_ptr().cast(),
+                    encoded.len(),
+                    raw.as_ptr().cast(),
+                    raw.len(),
+                ))?;
+                if length == 0 || length > encoded.len() {
+                    return Err(invalid());
+                }
+                encoded.truncate(length);
+                Ok(encoded)
+            })();
+            // Clear borrowed prefix/input references on success AND failure,
+            // before the caller can release their buffers. Reset does not read
+            // their contents and the backing remains exclusively owned here.
+            let reset = checked(ZSTD_CCtx_reset(
                 context,
-                if prefix.is_empty() {
-                    std::ptr::null()
-                } else {
-                    prefix.as_ptr().cast()
-                },
-                prefix.len(),
-            ))?;
-            let bound = checked(ZSTD_compressBound(raw.len()))?;
-            if bound > NATIVE_FRAME_LIMIT {
-                return Err(resource());
+                ZSTD_ResetDirective::ZSTD_reset_session_and_parameters,
+            ));
+            if result.is_err() || reset.is_err() {
+                *cached = None;
             }
-            let mut encoded = output(bound)?;
-            if encoded.capacity() > NATIVE_FRAME_LIMIT {
-                return Err(resource());
+            match result {
+                Err(error) => Err(error),
+                Ok(encoded) => {
+                    reset?;
+                    Ok(encoded)
+                }
             }
-            let length = native_encode_checked(ZSTD_compress2(
-                context,
-                encoded.as_mut_ptr().cast(),
-                encoded.len(),
-                raw.as_ptr().cast(),
-                raw.len(),
-            ))?;
-            if length == 0 || length > encoded.len() {
-                return Err(invalid());
-            }
-            encoded.truncate(length);
-            Ok(encoded)
         }
     }
 
@@ -1046,6 +1126,8 @@ mod zstandard {
                 ZSTD_estimateCCtxSize_usingCParams(parameters),
                 ENCODE_CONTEXT_LIMIT,
             )?;
+            #[cfg(test)]
+            NATIVE_CONTEXT_INITIALIZATIONS.with(|count| count.set(count.get() + 1));
             let context = ZSTD_initStaticCCtx(memory.as_mut_ptr().cast(), memory.len() * 8);
             if context.is_null() {
                 return Err(resource());
@@ -1184,6 +1266,8 @@ mod zstandard {
             // the static context is never passed to a C free function.
             unsafe {
                 let mut memory = workspace(128 * 1024, 128 * 1024).unwrap();
+                #[cfg(test)]
+                NATIVE_CONTEXT_INITIALIZATIONS.with(|count| count.set(count.get() + 1));
                 let context = ZSTD_initStaticCCtx(memory.as_mut_ptr().cast(), memory.len() * 8);
                 assert!(
                     !context.is_null(),
@@ -1220,6 +1304,71 @@ mod zstandard {
         }
 
         #[test]
+        fn native_encoder_reuses_bounded_scratch_without_retaining_prefixes() {
+            let mut encoder = super::super::NativeEncoder::new().unwrap();
+            let address = encoder.memory.as_ptr();
+            let capacity = encoder.memory.capacity();
+            assert_eq!(capacity * 8, NATIVE_ENCODE_WORKSPACE);
+            let mut state = 0x174ab28du32;
+            let raw: Vec<u8> = (0..32768)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 17;
+                    state ^= state << 5;
+                    state as u8
+                })
+                .collect();
+            for (index, variant) in [0, 1, 2, 1, 0, 2].into_iter().enumerate() {
+                // Each borrowed prefix is destroyed before the next call.
+                let prefix = match variant {
+                    0 => Some(raw.clone()),
+                    1 => None,
+                    _ => Some(vec![b'x'; 16384]),
+                };
+                let before = NATIVE_CONTEXT_INITIALIZATIONS.with(|count| count.get());
+                let frame = encoder.compress(&raw, prefix.as_deref()).unwrap();
+                let after = NATIVE_CONTEXT_INITIALIZATIONS.with(|count| count.get());
+                assert_eq!(
+                    after - before,
+                    usize::from(index == 0),
+                    "stable native workspace must retain its initialized context"
+                );
+                assert_eq!(frame, native_compress(&raw, prefix.as_deref()).unwrap());
+                assert_eq!(frame, dynamic_frame(&raw, prefix.as_deref().unwrap_or(&[])));
+                assert_eq!(
+                    native_decompress(&frame, raw.len(), prefix.as_deref()).unwrap(),
+                    raw
+                );
+                drop(prefix);
+                assert_eq!(encoder.memory.as_ptr(), address);
+                assert_eq!(encoder.memory.capacity(), capacity);
+            }
+            let oversized = vec![0; NATIVE_RAW_LIMIT + 1];
+            assert!(encoder.compress(&oversized, None).is_err());
+            assert!(encoder.compress(&raw, Some(&oversized)).is_err());
+            // Exercise an error AFTER binding a borrowed prefix. Only this
+            // test supplies a smaller slice; production always owns 1 MiB.
+            {
+                let prefix = vec![b'x'; NATIVE_RAW_LIMIT];
+                let large = vec![b'x'; NATIVE_RAW_LIMIT];
+                assert!(matches!(
+                    native_compress_in(
+                        &mut encoder.memory[..128 * 1024 / 8],
+                        &mut encoder.context,
+                        &large,
+                        Some(&prefix)
+                    ),
+                    Err(StoreError::Io(_))
+                ));
+            }
+            let frame = encoder.compress(&raw, None).unwrap();
+            assert_eq!(frame, dynamic_frame(&raw, &[]));
+            assert_eq!(native_decompress(&frame, raw.len(), None).unwrap(), raw);
+            assert_eq!(encoder.memory.as_ptr(), address);
+            assert_eq!(encoder.memory.capacity(), capacity);
+        }
+
+        #[test]
         fn native_static_fit_equivalence_and_strict_frames() {
             // Source-size boundaries cover tiny inputs and the pinned level-3
             // size-table regimes; exercise empty, tiny and maximum prefixes.
@@ -1240,6 +1389,7 @@ mod zstandard {
             let repeated = vec![b'a'; NATIVE_RAW_LIMIT];
             let mut dictionary_magic = random.clone();
             dictionary_magic[..4].copy_from_slice(&[0x37, 0xa4, 0x30, 0xec]);
+            let mut reused = super::super::NativeEncoder::new().unwrap();
             for source in [&random, &repeated, &dictionary_magic] {
                 // ZSTD_window_update reduces an overlapping dictionary range
                 // (compress_internal.h). Use disjoint operands as production does.
@@ -1249,6 +1399,7 @@ mod zstandard {
                         let raw = &source[..size];
                         let prefix = &prefix_source[..prefix_size];
                         let encoded = native_compress(raw, Some(prefix)).unwrap();
+                        assert_eq!(reused.compress(raw, Some(prefix)).unwrap(), encoded);
                         assert!(encoded.capacity() <= NATIVE_FRAME_LIMIT);
                         assert_eq!(encoded, dynamic_frame(raw, prefix));
                         assert_eq!(

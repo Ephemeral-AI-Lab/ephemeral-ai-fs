@@ -308,6 +308,98 @@ impl StoreDb {
         }))
     }
 
+    // One demanded group only; no unrelated record bodies or persistent cache.
+    // SQLite ownership ends before any returned frame is decoded/authenticated.
+    fn extract_demanded_group(
+        &self,
+        pack_id: i64,
+        group: usize,
+        targets: &[(ObjectId, Location)],
+    ) -> Result<Vec<Extraction>> {
+        if targets.is_empty() || targets.len() > OBJECT_PAGE_COUNT {
+            return Err(StoreError::Integrity("native batch request bound"));
+        }
+        if targets.len() == 1 {
+            return Ok(vec![self
+                .extract_record_group(pack_id, group, targets[0].1.record, true, None)?
+                .ok_or(StoreError::Integrity("required extraction"))?]);
+        }
+        let connection = self.reader()?;
+        let blob = connection.blob_open("main", "object_packs", "data", pack_id, true)?;
+        let length = blob.len();
+        let mut header_bytes = [0; 16];
+        blob.read_at_exact(&mut header_bytes, 0)?;
+        let header = pack::versioned_header(&header_bytes, length)?;
+        if group >= header.group_count {
+            return Err(StoreError::Integrity("object group locator"));
+        }
+        let mut directory = [0; 16];
+        blob.read_at_exact(&mut directory, 16 + 16 * group)?;
+        let entry = pack::versioned_entry(&directory, header, length)?;
+        self.note_physical(PhysicalStorageReceipt {
+            group_fetches: 1,
+            blob_ranges: 2,
+            ..Default::default()
+        });
+        if header.version == pack::Version::Legacy {
+            if entry.oversized {
+                return Ok(vec![Extraction::Legacy(entry, Vec::new())]);
+            }
+            let mut encoded = vec![0; entry.range.len()];
+            blob.read_at_exact(&mut encoded, entry.range.start)?;
+            self.note_physical(PhysicalStorageReceipt {
+                encoded_read_bytes: encoded.len() as u64,
+                blob_ranges: 1,
+                ..Default::default()
+            });
+            return Ok(vec![Extraction::Legacy(entry, encoded)]);
+        }
+        if entry.range.len() < 8 || entry.range.len() > pack::GROUP_LIMIT {
+            return Err(StoreError::Integrity("native group framing"));
+        }
+        let mut count_bytes = [0; 4];
+        blob.read_at_exact(&mut count_bytes, entry.range.start)?;
+        self.note_native_range(4);
+        let count = u32::from_le_bytes(count_bytes) as usize;
+        if !(1..=pack::RECORD_COUNT_LIMIT).contains(&count) || 4 + 4 * count >= entry.range.len() {
+            return Err(StoreError::Integrity("native record count"));
+        }
+        let mut ends = vec![0; 4 * count];
+        blob.read_at_exact(&mut ends, entry.range.start + 4)?;
+        self.note_native_range(ends.len());
+        let mut extracted = Vec::with_capacity(targets.len());
+        let mut owned = 0;
+        for (_, location) in targets {
+            let range =
+                pack::native_record_range(count, &ends, entry.range.len(), location.record)?;
+            if range.len() > 37 + pack::NATIVE_FRAME_LIMIT {
+                return Err(StoreError::Integrity("native record bound"));
+            }
+            let mut record = vec![0; range.len()];
+            owned += record.capacity();
+            if owned > pack::GROUP_LIMIT {
+                return Err(StoreError::Integrity("native batch frame bound"));
+            }
+            blob.read_at_exact(&mut record, entry.range.start + range.start)?;
+            self.note_native_range(record.len());
+            pack::native_record(&record)?;
+            // Per-target work bounds remain conservative as in the point route;
+            // actual I/O telemetry counts the shared directory only once.
+            let parsed = 4 + 4 * count + record.len();
+            extracted.push(Extraction::Native {
+                record,
+                requested: 32 + parsed,
+                parsed,
+            });
+        }
+        self.note_physical(PhysicalStorageReceipt {
+            native_record_fetches: targets.len() as u64,
+            native_request_bytes: 32,
+            ..Default::default()
+        });
+        Ok(extracted)
+    }
+
     fn note_native_range(&self, bytes: usize) {
         self.note_physical(PhysicalStorageReceipt {
             encoded_read_bytes: bytes as u64,
@@ -432,8 +524,19 @@ impl StoreDb {
         &self,
         target: ObjectId,
         target_location: Location,
+        initial: Option<Extraction>,
+        budget: Option<&mut HintReadBudget>,
+    ) -> Result<NativePriorOutcome> {
+        self.native_chain_with_retained(target, target_location, initial, budget, 0)
+    }
+
+    fn native_chain_with_retained(
+        &self,
+        target: ObjectId,
+        target_location: Location,
         mut initial: Option<Extraction>,
         mut budget: Option<&mut HintReadBudget>,
+        retained: usize,
     ) -> Result<NativePriorOutcome> {
         let optional = budget.is_some();
         let mut nodes = Vec::<NativeNode>::with_capacity(5);
@@ -540,7 +643,8 @@ impl StoreDb {
                     owned_frames += record.capacity();
                     // Worst simultaneous ownership includes both legacy group buffers,
                     // two raw outputs plus canonical framing, directory, and static codec.
-                    if owned_frames
+                    if retained
+                        + owned_frames
                         + nodes.capacity() * std::mem::size_of::<NativeNode>()
                         + 2 * pack::GROUP_LIMIT
                         + 3 * (pack::NATIVE_RAW_LIMIT + 21)
@@ -719,8 +823,20 @@ impl StoreDb {
     pub(super) fn visit_locations(
         &self,
         locations: &mut [(ObjectId, Location)],
+        emit: impl FnMut(CanonicalObject) -> Result<()>,
+    ) -> Result<()> {
+        self.visit_locations_with_reserve(locations, VALIDATION_RESERVE, emit)
+    }
+
+    pub(super) fn visit_locations_with_reserve(
+        &self,
+        locations: &mut [(ObjectId, Location)],
+        reserve_limit: usize,
         mut emit: impl FnMut(CanonicalObject) -> Result<()>,
     ) -> Result<()> {
+        if reserve_limit > VALIDATION_RESERVE {
+            return Err(StoreError::Integrity("packed read reserve ceiling"));
+        }
         locations
             .sort_unstable_by_key(|(_, location)| (location.pack, location.group, location.record));
         let mut start = 0;
@@ -729,7 +845,7 @@ impl StoreDb {
             let mut reserve = 0;
             while end < locations.len() && end - start < OBJECT_PAGE_COUNT {
                 let next = validation_reserve(locations[end].1.canonical_length);
-                if reserve + next > VALIDATION_RESERVE {
+                if reserve + next > reserve_limit {
                     break;
                 }
                 reserve += next;
@@ -754,15 +870,44 @@ impl StoreDb {
         for ((pack_id, group), targets) in groups {
             // The selected entry decides the 65528..65536 RAW/DELTA overlap.
             // Do not fetch its directory a second time just to choose the route.
-            let extracted = self
-                .extract_record_group(pack_id, group, targets[0].1.record, true, None)?
-                .ok_or(StoreError::Integrity("required native extraction"))?;
-            let (entry, encoded) = match extracted {
+            let mut ordered = targets;
+            ordered.sort_unstable_by_key(|(_, location)| location.record);
+            if ordered
+                .windows(2)
+                .any(|pair| pair[0].1.record == pair[1].1.record)
+            {
+                return Err(StoreError::Integrity(
+                    "distinct object IDs alias one record",
+                ));
+            }
+            let mut extracted = self.extract_demanded_group(pack_id, group, &ordered)?;
+            let first = extracted.remove(0);
+            let (entry, encoded) = match first {
                 Extraction::Legacy(entry, encoded) => (entry, encoded),
                 first @ Extraction::Native { .. } => {
-                    let mut initial = Some(first);
-                    for (id, location) in record_slots(targets)?.into_values() {
-                        let result = self.native_chain(id, location, initial.take(), None)?;
+                    // Charge all surviving prefetched frames/associations against
+                    // the same 1 MiB active-chain scratch ceiling.
+                    extracted.insert(0, first);
+                    let associations = extracted.capacity() * std::mem::size_of::<Extraction>()
+                        + ordered.capacity() * std::mem::size_of::<(ObjectId, Location)>();
+                    let mut remaining = extracted
+                        .iter()
+                        .map(|e| match e {
+                            Extraction::Native { record, .. } => record.capacity(),
+                            _ => 0,
+                        })
+                        .sum::<usize>();
+                    for ((id, location), initial) in ordered.into_iter().zip(extracted) {
+                        if let Extraction::Native { record, .. } = &initial {
+                            remaining -= record.capacity();
+                        }
+                        let result = self.native_chain_with_retained(
+                            id,
+                            location,
+                            Some(initial),
+                            None,
+                            remaining + associations,
+                        )?;
                         let NativePriorOutcome::Available { canonical, .. } = result else {
                             return Err(StoreError::Integrity("required native chain"));
                         };
@@ -773,7 +918,7 @@ impl StoreDb {
                 Extraction::NativeUnsupported => unreachable!(),
             };
             if entry.oversized {
-                let [(id, location)] = targets.as_slice() else {
+                let [(id, location)] = ordered.as_slice() else {
                     return Err(StoreError::Integrity("singleton locator alias"));
                 };
                 emit(CanonicalObject {
@@ -788,7 +933,7 @@ impl StoreDb {
                 ..Default::default()
             });
             let decoded = pack::decode_group(entry, encoded)?;
-            let mut requested = record_slots(targets)?;
+            let mut requested = record_slots(ordered)?;
             pack::visit_records(&decoded, false, |index, record| {
                 let Some((id, location)) = requested.remove(&index) else {
                     return Ok(());

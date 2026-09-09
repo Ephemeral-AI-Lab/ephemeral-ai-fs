@@ -168,14 +168,14 @@ dependencies = [
 
 [[package]]
 name = "layerfs-content"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "blake3",
 ]
 
 [[package]]
 name = "layerfs-layerstack-store"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "blake3",
  "layerfs-content",

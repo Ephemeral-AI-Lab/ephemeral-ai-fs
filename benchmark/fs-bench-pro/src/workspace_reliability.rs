@@ -2,7 +2,8 @@
 use super::*;
 use crate::workload_source::{workspace_common as common, workspace_reliability as family};
 use layerfs_layerstack_store::{
-    arm_verification_store_fault, take_verification_store_fault_receipt, VerificationStoreFault,
+    arm_verification_store_fault, take_verification_store_fault_receipt, ObjectSource,
+    VerificationStoreFault,
 };
 use layerfs_sdk::{ExecutionId, SdkError, WorkspaceError};
 use layerfs_workspace::{
@@ -966,9 +967,14 @@ fn integrity(
         .ok_or("integrity descendant transcript")?
         .id;
     record("fault-target-payload", id);
+    let canonical = if case.kind == "missing-descendant" {
+        None
+    } else {
+        Some(pin.reader.read_object(id)?)
+    };
     drop(pin);
     drop(store);
-    let db = rusqlite::Connection::open(&path)?;
+    let mut db = rusqlite::Connection::open(&path)?;
     if case.kind == "missing-descendant" {
         if db.execute(
             "DELETE FROM objects WHERE object_id=?1",
@@ -978,17 +984,56 @@ fn integrity(
             return Err("missing descendant fault target".into());
         }
     } else {
-        let mut bytes: Vec<u8> = db.query_row(
-            "SELECT bytes FROM objects WHERE object_id=?1",
-            [id.as_bytes().as_slice()],
-            |r| r.get(0),
-        )?;
-        let last = bytes.last_mut().ok_or("empty canonical payload")?;
-        *last ^= 1;
-        db.execute(
-            "UPDATE objects SET bytes=?2 WHERE object_id=?1",
-            rusqlite::params![id.as_bytes().as_slice(), bytes],
-        )?;
+        let canonical = canonical.ok_or("missing canonical corruption control")?;
+        if canonical.is_empty() {
+            return Err("empty canonical payload".into());
+        }
+        // Isolate the authenticated target in a valid supported RAW singleton,
+        // as in the Store's same-length corruption regression. Shared pack
+        // framing and unrelated records must not be the injected fault.
+        let mut packed = b"LFPACK\0\0\x01\0\0\0\x01\0\0\0".to_vec();
+        for value in [
+            32,
+            canonical.len() + 9,
+            canonical.len() + 9,
+            0,
+            1,
+            canonical.len() + 1,
+        ] {
+            packed.extend_from_slice(&u32::try_from(value)?.to_le_bytes());
+        }
+        packed.push(0);
+        packed.extend_from_slice(&canonical);
+        let transaction = db.transaction()?;
+        transaction.execute("INSERT INTO object_packs(data) VALUES(?1)", [&packed])?;
+        let pack_id = transaction.last_insert_rowid();
+        if transaction.execute(
+            "UPDATE objects SET pack_id=?1,group_number=0,record_number=0 WHERE object_id=?2",
+            rusqlite::params![pack_id, id.as_bytes().as_slice()],
+        )? != 1
+        {
+            return Err("corrupt descendant fault target".into());
+        }
+        transaction.commit()?;
+        drop(db);
+        let store = LayerStackStore::connect(&path)?;
+        let pin = store.pin_branch(branch)?;
+        if pin.reader.read_object(id)? != canonical {
+            return Err("corrupt descendant positive control".into());
+        }
+        record("fault-target-positive-control", id);
+        drop(pin);
+        drop(store);
+        *packed.last_mut().ok_or("empty canonical payload")? ^= 1;
+        db = rusqlite::Connection::open(&path)?;
+        if db.execute(
+            "UPDATE object_packs SET data=?1 WHERE pack_id=?2",
+            rusqlite::params![packed, pack_id],
+        )? != 1
+        {
+            return Err("corrupt descendant pack target".into());
+        }
+        record("fault-target-same-length-payload-corruption", id);
     }
     drop(db);
     let store = match LayerStackStore::connect(&path) {

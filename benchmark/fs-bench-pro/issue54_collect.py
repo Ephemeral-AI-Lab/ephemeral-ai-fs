@@ -95,6 +95,46 @@ def _write(path: Path, value):
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
+def validate_campaign(campaign, selected_families):
+    """Bind the complete live registry to the prospective declaration before work."""
+    if campaign.get("schema") != "layerfs-v014-campaign-v1":
+        raise ValueError("unsupported campaign schema")
+    expected_policy = {"sample_count": 1, "seed": SEED,
+                       "product_timeout_seconds": PRODUCT_TIMEOUT,
+                       "outer_timeout_seconds": COMMAND_TIMEOUT,
+                       "setup_timeout_seconds": SETUP_TIMEOUT,
+                       "verification_work_seconds": 45, "verification_hard_seconds": 59}
+    if any(campaign.get(key) != value for key, value in expected_policy.items()):
+        raise ValueError("campaign sample/timing policy differs from supported collector contract")
+    if list(campaign["families"]) != list(selected_families):
+        raise ValueError("campaign family membership/order differs")
+    rows = [row for members, _ in selected_families.values() for row in members]
+    ids = [row["scenario_id"] for row in rows]
+    if len(ids) != len(set(ids)):
+        raise ValueError("duplicate campaign case")
+    for family, (members, _) in selected_families.items():
+        if any(row["family_id"] != family for row in members):
+            raise ValueError("case registered under incompatible family")
+        counts = {"performance": sum(not row.get("proof_only") for row in members),
+                  "proof_only": sum(bool(row.get("proof_only")) for row in members)}
+        if counts != campaign["families"][family]:
+            raise ValueError("campaign family cardinality differs: " + family)
+    perf = [row["scenario_id"] for row in rows if not row.get("proof_only")]
+    if perf != campaign["performance_order"] or ids != campaign["verification_order"]:
+        raise ValueError("campaign case membership/order differs")
+    encoded = "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows).encode()
+    if hashlib.sha256(encoded).hexdigest() != campaign["registry_sha256"]:
+        raise ValueError("campaign registry contract hash differs")
+    excluded = campaign.get("long_test_exclusion")
+    unsupported = [row["scenario_id"] for row in rows if not row.get("verification_supported", True)]
+    if excluded:
+        matched = [row for row in rows if row["scenario_id"] == excluded]
+        if len(matched) != 1 or not matched[0].get("proof_only") or not campaign.get("long_test_reason", "").strip():
+            raise ValueError("campaign exclusion must name one proof with a concrete reason")
+    if any(case != excluded for case in unsupported):
+        raise ValueError("unsupported verifier lacks explicit campaign exclusion")
+
+
 def list_family(args, family):
     listed = _run([
         sys.executable, str(HERE / "shared/runner.py"),
@@ -180,12 +220,74 @@ def collect_row(args, family, row, output):
     return result, "ran"
 
 
+def validate_proof_preparation(spec, selected_families):
+    rows = {row["scenario_id"]: row for members, _ in selected_families.values() for row in members}
+    cases = spec.get("cases", [])
+    if (spec.get("schema") != "issue91-proof-preparation-v1" or not cases
+            or len(cases) != len(set(cases))
+            or any(case not in rows or rows[case].get("setup_policy") != "fresh-output" for case in cases)
+            or spec.get("setup_timeout_seconds") != SETUP_TIMEOUT
+            or spec.get("verification_work_seconds") != 45
+            or spec.get("verification_hard_seconds") != 59):
+        raise ValueError("invalid proof preparation declaration or applicability")
+
+
+def prepare_proof(args, family, row, output, identities):
+    directory = output / "preparation" / family / row["scenario_id"]
+    receipt = directory / "preparation.json"
+    expected = {key: identities[key] for key in ("source_identity", "product_identity", "input_identity", "image")}
+    expected.update(family=family, case=row["scenario_id"], seed=SEED,
+                    setup_identity="fresh-output", harness_identity=runner.harness_identity())
+    declaration_sha = _sha256(args.proof_preparation_declaration)
+    if receipt.exists():
+        saved = json.loads(receipt.read_text())
+        raw = directory / "runner.json"
+        if (saved.get("identities") != expected or saved.get("declaration_sha256") != declaration_sha
+                or not raw.is_file() or _sha256(raw) != saved.get("runner_sha256")):
+            raise ValueError("incompatible or changed proof preparation receipt")
+    else:
+        directory.mkdir(parents=True, exist_ok=False)
+        command = [sys.executable, str(HERE / "shared/runner.py"), "--family", family,
+                   "--case", row["scenario_id"], "--prepare-only", "--setup", "fresh",
+                   "--repetition" if row.get("route") == "sdk" else "--seed", str(SEED),
+                   "--image", args.image, "--host-binary", args.host_binary,
+                   "--setup-timeout", str(SETUP_TIMEOUT), "--output", str(directory)]
+        _write(directory / "command.json", command)
+        started = time.monotonic_ns()
+        proc = _run(command)
+        wall_ns = time.monotonic_ns() - started
+        raw = directory / "runner.json"
+        raw.write_text(proc.stdout)
+        (directory / "stderr.log").write_text(proc.stderr)
+        try:
+            result = json.loads(proc.stdout)
+        except (ValueError, TypeError):
+            result = {}
+        actual = result.get("identities", {})
+        matched = all(actual.get(key) == value for key, value in expected.items())
+        passed = proc.returncode == 0 and result.get("status") == "PASS" and matched and result.get("cleanup", {}).get("status") == "PASS"
+        saved = {"status": "PASS" if passed else "INCOMPLETE", "identities": expected,
+                 "declaration_sha256": declaration_sha, "command": command,
+                 "returncode": proc.returncode, "wall_ns": wall_ns,
+                 "runner_sha256": _sha256(raw), "error": None if passed else "preparation failed or identity/cleanup incomplete"}
+        _write(receipt, saved)
+    return {**saved, "receipt": str(receipt), "receipt_sha256": _sha256(receipt)}
+
+
 def verify_row(args, family, row, output, identities):
     case = row["scenario_id"]
     case_dir = output / "verification" / family / case
     receipt = case_dir / "verification.json"
     result = {"family": family, "case": case, "seed": SEED}
-    if case.endswith("sustained-600s-compact-v2-proof") or row.get("kind") == "sustained-600s" or not row.get("verification_supported", True):
+    campaign = getattr(args, "campaign_spec", None)
+    if campaign and case == campaign.get("long_test_exclusion"):
+        result.update(status="NOT_RUN_OPTIONAL", exception="declared-optional",
+                      omissions=[campaign["long_test_reason"]])
+        _write(case_dir / "exception.json", result)
+        return result
+    if campaign and not row.get("verification_supported", True):
+        raise ValueError("unsupported verifier lacks explicit campaign exclusion")
+    if not campaign and (case.endswith("sustained-600s-compact-v2-proof") or row.get("kind") == "sustained-600s" or not row.get("verification_supported", True)):
         result.update(
             status="INCOMPLETE",
             exception="duration-incompatible",
@@ -203,12 +305,25 @@ def verify_row(args, family, row, output, identities):
             raise ValueError(f"incompatible verification receipt: {receipt}")
         if saved.get("harness_identity") != runner.harness_identity() or saved.get("image_identity") != identities.get("image"):
             raise ValueError(f"incompatible verification harness/image: {receipt}")
+        if case in getattr(args, "proof_preparation_spec", {}).get("cases", []):
+            if not (output / "preparation" / family / case / "preparation.json").is_file():
+                raise ValueError("existing proof lacks declared preparation receipt")
+            result["independent_preparation"] = prepare_proof(args, family, row, output, identities)
+            if result["independent_preparation"]["status"] != "PASS":
+                raise ValueError("existing proof has unsuccessful declared preparation")
+            result["preparation_plus_verification_wall_seconds"] = result["independent_preparation"]["wall_ns"] / 1e9 + saved["wall_seconds"]
         result.update(status=saved.get("status"), reused=True, receipt=str(receipt),
                       receipt_sha256=_sha256(receipt), wall_seconds=saved.get("wall_seconds"))
         return result
     if not identities or not identities.get("source_identity") or not identities.get("input_identity"):
         result.update(status="INCOMPLETE", error="missing identity-matched performance/source identities")
         return result
+    if case in getattr(args, "proof_preparation_spec", {}).get("cases", []):
+        preparation = prepare_proof(args, family, row, output, identities)
+        result["independent_preparation"] = preparation
+        if preparation["status"] != "PASS":
+            result.update(status="INCOMPLETE", error=preparation["error"])
+            return result
     case_dir.parent.mkdir(parents=True, exist_ok=True)
     command = [
         sys.executable, str(HERE / "verify-selected.py"),
@@ -234,6 +349,8 @@ def verify_row(args, family, row, output, identities):
     else:
         result["status"] = "TIMEOUT" if "timeout" in (proc.stderr + proc.stdout).lower() else "INCOMPLETE"
         result["error"] = (proc.stderr or proc.stdout)[-2000:]
+    if "independent_preparation" in result:
+        result["preparation_plus_verification_wall_seconds"] = result["independent_preparation"]["wall_ns"] / 1e9 + result["wall_seconds"]
     return result
 
 
@@ -245,6 +362,8 @@ def parse_args():
     parser.add_argument("--phase", choices=("inventory", "performance", "verification", "all"), default="all")
     parser.add_argument("--checkpoint", action="store_true",
                         help="All host-admitted families and routine proofs for #74/#75; one shared campaign")
+    parser.add_argument("--campaign", type=Path, help="Frozen prospective campaign declaration")
+    parser.add_argument("--proof-preparation-declaration", type=Path)
     parser.add_argument("--family")
     parser.add_argument("--case")
     parser.add_argument("--proofs", choices=("selected", "all"), default="selected",
@@ -254,6 +373,12 @@ def parse_args():
 
 def main():
     args = parse_args()
+    args.campaign_spec = json.loads(args.campaign.read_text()) if args.campaign else None
+    if args.campaign and (not args.checkpoint or args.family or args.case):
+        raise ValueError("--campaign requires complete --checkpoint selection")
+    args.proof_preparation_spec = json.loads(args.proof_preparation_declaration.read_text()) if args.proof_preparation_declaration else {}
+    if args.proof_preparation_spec and not args.campaign_spec:
+        raise ValueError("proof preparation requires a frozen --campaign")
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     inventory = {"families": {}, "performance_cases": [], "proof_cases": [], "mismatches": []}
@@ -279,7 +404,7 @@ def main():
             "cases": [row["scenario_id"] for row in rows],
             "proof_only": [row["scenario_id"] for row in rows if row.get("proof_only")],
         }
-        expected = EXPECTED_PROOFS if family == PROOF_FAMILY else EXPECTED_PERF.get(family)
+        expected = None if args.campaign_spec else EXPECTED_PROOFS if family == PROOF_FAMILY else EXPECTED_PERF.get(family)
         if not args.case and expected is not None and len(rows) != expected:
             inventory["mismatches"].append({"family": family, "expected": expected, "actual": len(rows)})
         for row in rows:
@@ -287,7 +412,15 @@ def main():
                 inventory["proof_cases"].append(row["scenario_id"])
             else:
                 inventory["performance_cases"].append(row["scenario_id"])
-    if args.checkpoint and not args.family and not args.case:
+    if args.campaign_spec:
+        validate_campaign(args.campaign_spec, selected_families)
+        if args.proof_preparation_spec:
+            validate_proof_preparation(args.proof_preparation_spec, selected_families)
+            inventory["proof_preparation_declaration_sha256"] = _sha256(args.proof_preparation_declaration)
+        inventory["campaign"] = {"issue": args.campaign_spec["issue"],
+                                 "release": args.campaign_spec["release"],
+                                 "declaration_sha256": _sha256(args.campaign)}
+    if args.checkpoint and not args.campaign_spec and not args.family and not args.case:
         if len(inventory["performance_cases"]) != 198 or len(inventory["proof_cases"]) != 29:
             raise ValueError("checkpoint registry differs from the frozen 198 performance / 29 proof contract")
     selection_path = output / "selections.json"
@@ -339,6 +472,10 @@ def main():
             if args.case:
                 rows = [row for row in rows if row["scenario_id"] == args.case]
             for row in rows:
+                if args.campaign_spec and row["scenario_id"] == args.campaign_spec.get("long_test_exclusion"):
+                    proofs.append(verify_row(args, family, row, output, None))
+                    _write(output / "verification-ledger.json", proofs)
+                    continue
                 identities = identity_cache.get(row["scenario_id"])
                 if row.get("proof_only"):
                     identities = identities or {
@@ -396,7 +533,8 @@ def main():
         _write(output / "verification-ledger.json", proofs)
 
     terminal = {
-        "issue": [74, 75] if args.checkpoint else 54,
+        "issue": args.campaign_spec["issue"] if args.campaign_spec else [74, 75] if args.checkpoint else 54,
+        "campaign": inventory.get("campaign"),
         "performance_cases": len(inventory["performance_cases"]),
         "proof_definitions": len(inventory["proof_cases"]),
         "mismatches": inventory["mismatches"],
@@ -415,7 +553,8 @@ def main():
     print(json.dumps(terminal, sort_keys=True), flush=True)
     if args.checkpoint:
         failed_perf = any(item.get("status") != "PASS" for item in ledger)
-        failed_proofs = any(item.get("status") != "PASS" and item.get("exception") != "duration-incompatible" for item in proofs)
+        allowed_exception = "declared-optional" if args.campaign_spec else "duration-incompatible"
+        failed_proofs = any(item.get("status") != "PASS" and item.get("exception") != allowed_exception for item in proofs)
         return int(bool(inventory["mismatches"]) or failed_perf or failed_proofs)
     return 0
 

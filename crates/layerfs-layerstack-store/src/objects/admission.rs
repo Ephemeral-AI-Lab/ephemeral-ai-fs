@@ -1,13 +1,13 @@
-//! Prepared whole-pack admission, with one probe and one final recheck.
+//! Prepared whole-pack admission with epoch-validated final collision checks.
 use super::diagnostic;
 use super::{
     pack, read, AuthenticatedCanonicalObject, ObjectInsertMetrics, ADMISSION_BATCH_BYTES,
-    ADMISSION_BATCH_COUNT, OBJECT_PAGE_COUNT,
+    OBJECT_PAGE_COUNT,
 };
 use crate::schema::StoreDb;
 use crate::{Result, StoreError};
 use layerfs_content::ObjectId;
-use rusqlite::{limits::Limit, params_from_iter, types::Value, Transaction, TransactionBehavior};
+use rusqlite::{limits::Limit, params_from_iter, types::Value, Connection};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::ops::Range;
@@ -49,6 +49,7 @@ const _: () = {
 pub(crate) struct PreparedAdmission {
     session: std::sync::Arc<super::AdmissionSession>,
     final_batch: bool,
+    absence_epoch: Option<u64>,
     packs: Vec<Vec<u8>>,
     objects: Vec<PreparedObject>,
     metrics: ObjectInsertMetrics,
@@ -73,13 +74,11 @@ impl PreparedAdmission {
             .iter()
             .try_fold(0usize, |sum, object| sum.checked_add(object.bytes.len()))
             .ok_or(StoreError::Integrity("admission length overflow"))?;
-        let reserve = objects
-            .iter()
-            .map(|object| read::validation_reserve(object.bytes.len()))
-            .sum::<usize>();
-        if objects.len() > ADMISSION_BATCH_COUNT
+        // Output ownership is bounded independently from collision-read waves.
+        // Maximal canonical objects retain their existing isolated treatment.
+        if objects.len() > super::PHYSICAL_ADMISSION_BATCH_COUNT
             || length > ADMISSION_BATCH_BYTES
-            || reserve > read::VALIDATION_RESERVE
+            || (objects.len() > 1 && length > 2 * super::INITIALIZATION_SLAB_BYTES)
         {
             return Err(StoreError::Integrity("prepared admission bound"));
         }
@@ -105,6 +104,7 @@ impl PreparedAdmission {
         let mut prepared = Self {
             session: missing.1,
             final_batch: missing.2,
+            absence_epoch: missing.3,
             // No pack-pointer growth during either lane: at most one pack/object.
             packs: Vec::with_capacity(count),
             objects: Vec::with_capacity(count),
@@ -233,6 +233,7 @@ impl PreparedAdmission {
         let mut groups =
             Vec::<pack::EncodedGroup>::with_capacity(objects.len().min(pack::GROUP_COUNT_LIMIT));
         let mut full_group_length = 4usize;
+        let mut encoder = None;
         for object in objects {
             self.native_scratch(
                 &pending,
@@ -247,7 +248,12 @@ impl PreparedAdmission {
                 layerfs_content::decode_bytes_object(&object.bytes)?,
             )?;
             let started = Instant::now();
-            let full = pack::native_compress(raw, None);
+            let full = (|| {
+                if encoder.is_none() {
+                    encoder = Some(pack::NativeEncoder::new()?);
+                }
+                encoder.as_mut().unwrap().compress(raw, None)
+            })();
             let elapsed = super::elapsed_ns(started);
             stats.native_full_encode_calls += 1;
             stats.native_full_encode_ns += elapsed;
@@ -265,6 +271,7 @@ impl PreparedAdmission {
                     &mut groups,
                     input_associations,
                     full.capacity(),
+                    &mut encoder,
                     stats,
                 )?;
                 full_group_length = 4;
@@ -276,6 +283,8 @@ impl PreparedAdmission {
             stats.eligible_targets += 1;
             stats.absent_predecessors += u64::from(!object.1.has_predecessor);
             if let Some(id) = object.prior_ids().iter().flatten().next().copied() {
+                // Reader and encoder each own bounded scratch; never overlap them.
+                drop(encoder.take());
                 search.reads.begin_target();
                 if search.trials == 512
                     || self
@@ -359,7 +368,10 @@ impl PreparedAdmission {
                                 // The reader owns a separate canonical allocation;
                                 // target and prefix cannot overlap as codec operands.
                                 let started = Instant::now();
-                                let result = pack::native_compress(raw, Some(prefix));
+                                let result = (|| {
+                                    encoder = Some(pack::NativeEncoder::new()?);
+                                    encoder.as_mut().unwrap().compress(raw, Some(prefix))
+                                })();
                                 let elapsed = super::elapsed_ns(started);
                                 stats.native_prefix_encode_calls += 1;
                                 stats.native_prefix_encode_ns += elapsed;
@@ -431,7 +443,15 @@ impl PreparedAdmission {
                 terminal,
             });
         }
-        self.flush_native_group(&mut pending, &mut groups, input_associations, 0, stats)?;
+        drop(encoder.take());
+        self.flush_native_group(
+            &mut pending,
+            &mut groups,
+            input_associations,
+            0,
+            &mut encoder,
+            stats,
+        )?;
         if !groups.is_empty() {
             let length =
                 16 + 16 * groups.len() + groups.iter().map(|g| g.bytes.len()).sum::<usize>();
@@ -448,6 +468,7 @@ impl PreparedAdmission {
         groups: &mut Vec<pack::EncodedGroup>,
         input_associations: usize,
         live_full_capacity: usize,
+        encoder: &mut Option<pack::NativeEncoder>,
         stats: &mut crate::PhysicalStorageReceipt,
     ) -> Result<()> {
         if pending.is_empty() {
@@ -457,16 +478,35 @@ impl PreparedAdmission {
             4 + 4 * pending.len() + pending.iter().map(|p| p.record.len()).sum::<usize>();
         let assembled_length =
             16 + 16 * groups.len() + groups.iter().map(|g| g.bytes.len()).sum::<usize>();
-        // Conservative peak: old records, copied group, old groups, copied pack
-        // and references can coexist. There is no codec context at this stage.
+        // Keep scratch reuse only when the unchanged physical ceiling also fits
+        // old records, copied group/pack and references. Releasing the encoder
+        // restores the previous assembly ownership without changing pack layout.
+        let extra = live_full_capacity
+            + group_length
+            + assembled_length
+            + pending.len() * std::mem::size_of::<&[u8]>();
+        if encoder.is_some()
+            && self
+                .native_scratch(
+                    pending,
+                    groups,
+                    input_associations,
+                    extra + pack::NATIVE_ENCODE_WORKSPACE,
+                )
+                .is_err()
+        {
+            drop(encoder.take());
+        }
         self.native_scratch(
             pending,
             groups,
             input_associations,
-            live_full_capacity
-                + group_length
-                + assembled_length
-                + pending.len() * std::mem::size_of::<&[u8]>(),
+            extra
+                + if encoder.is_some() {
+                    pack::NATIVE_ENCODE_WORKSPACE
+                } else {
+                    0
+                },
         )?;
         let refs = pending
             .iter()
@@ -746,7 +786,7 @@ impl PreparedAdmission {
         self,
         db: &StoreDb,
         statement_number: &mut u64,
-        publish: impl FnOnce(&Transaction<'_>, &ObjectInsertMetrics, &mut u64) -> Result<T>,
+        publish: impl FnOnce(&Connection, &ObjectInsertMetrics, &mut u64) -> Result<T>,
     ) -> Result<(T, super::AdmissionBatchMetrics)> {
         let session = self.session.clone();
         session.resolve(self.publish_inner(db, statement_number, publish))
@@ -756,7 +796,7 @@ impl PreparedAdmission {
         mut self,
         db: &StoreDb,
         statement_number: &mut u64,
-        publish: impl FnOnce(&Transaction<'_>, &ObjectInsertMetrics, &mut u64) -> Result<T>,
+        publish: impl FnOnce(&Connection, &ObjectInsertMetrics, &mut u64) -> Result<T>,
     ) -> Result<(T, super::AdmissionBatchMetrics)> {
         if !db.same_instance(&self.session.db) {
             return Err(StoreError::Integrity("admission Store ownership"));
@@ -767,7 +807,7 @@ impl PreparedAdmission {
             .iter()
             .map(|object| object.id)
             .collect::<Vec<_>>();
-        let supplied = self
+        let mut supplied = self
             .objects
             .iter()
             .map(|object| {
@@ -779,22 +819,42 @@ impl PreparedAdmission {
                         .unwrap_or_else(|| &self.packs[object.pack][object.canonical.clone()]),
                 )
             })
-            .collect::<BTreeMap<_, _>>();
+            .collect::<Vec<_>>();
 
-        let late = db.object_locations(&ids)?;
-        compare(db, &late, &supplied, &mut self.metrics)?;
+        // Absence was authenticated by the exact earlier lookup under this
+        // exclusive owner. An intervening publication requires the normal CAS
+        // recheck; every positive collision still compares canonical bytes.
+        let late = if self.absence_epoch
+            == Some(
+                self.session
+                    .publication_epoch
+                    .load(std::sync::atomic::Ordering::Acquire),
+            ) {
+            BTreeMap::new()
+        } else {
+            db.object_locations(&ids)?
+        };
+        drop(ids);
+        let retained = self.physical_backing()
+            + self.objects.capacity() * std::mem::size_of::<PreparedObject>()
+            + self.packs.capacity() * std::mem::size_of::<Vec<u8>>();
+        compare(db, &late, &mut supplied, &mut self.metrics, retained)?;
         let mut winners = vec![Vec::new(); self.packs.len()];
         for object in &self.objects {
             if !late.contains_key(&object.id) {
                 winners[object.pack].push(object);
             }
         }
+        let connection = db.writer()?;
+        let canonical_bytes = self.objects.iter().map(|object| object.length as u64).sum();
+        self.session.begin_batch(
+            &connection,
+            self.metrics.submitted_rows,
+            canonical_bytes,
+            &mut self.metrics.sql,
+        )?;
         let started = Instant::now();
-        let mut connection = db.writer()?;
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let begin_ns = super::elapsed_ns(started);
-        let started = Instant::now();
-        let mut diagnostic_stats = self.insert(&transaction, &winners, statement_number)?;
+        let mut diagnostic_stats = self.insert(&connection, &winners, statement_number)?;
         self.metrics.insert_ns += super::elapsed_ns(started);
         self.metrics.objects = winners.iter().map(|objects| objects.len() as u64).sum();
         self.metrics.bytes = winners
@@ -803,9 +863,22 @@ impl PreparedAdmission {
             .map(|object| object.length as u64)
             .sum();
         self.metrics.returned_ids = self.metrics.objects;
-        let result = publish(&transaction, &self.metrics, statement_number)?;
-        let started = Instant::now();
-        transaction.commit()?;
+        let result = publish(&connection, &self.metrics, statement_number)?;
+        self.session
+            .note_published_ids(winners.iter().flatten().map(|object| &object.id))?;
+        if self.final_batch || !self.session.coalesce {
+            self.session
+                .commit_pending(&connection, &mut self.metrics.sql, self.final_batch)?;
+        }
+        // Epoch tracks connection-visible object publications, not disk commits.
+        self.session
+            .publication_epoch
+            .fetch_update(
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+                |epoch| epoch.checked_add(1),
+            )
+            .map_err(|_| StoreError::Integrity("admission publication epoch overflow"))?;
         if self.final_batch {
             self.session.retain();
         }
@@ -858,15 +931,15 @@ impl PreparedAdmission {
             result,
             super::AdmissionBatchMetrics {
                 insert: self.metrics,
-                begin_ns,
-                commit_ns: super::elapsed_ns(started),
+                begin_ns: self.metrics.sql.begin_ns,
+                commit_ns: self.metrics.sql.commit_ns,
             },
         ))
     }
 
     fn insert(
         &self,
-        transaction: &Transaction<'_>,
+        transaction: &Connection,
         winners: &[Vec<&PreparedObject>],
         statement_number: &mut u64,
     ) -> Result<crate::PhysicalStorageReceipt> {
@@ -936,11 +1009,19 @@ impl PreparedAdmission {
             });
             *statement_number += 1;
             crate::schema::fail_transaction_statement(*statement_number)?;
-            if transaction.execute(&sql, params_from_iter(values))? != page.len() {
+            if transaction
+                .prepare_cached(&sql)?
+                .execute(params_from_iter(values))?
+                != page.len()
+            {
                 return Err(StoreError::Integrity("pack insertion cardinality"));
             }
             start = end;
         }
+        // Preserve pack bytes/order; only the SQL primary-key insertion order changes.
+        let sort_started = Instant::now();
+        locators.sort_unstable_by_key(|(_, object)| object.id);
+        crate::telemetry::note_workspace_admission_sort(super::elapsed_ns(sort_started));
         let locator_rows = sql_rows(transaction, 5, 12)?;
         for page in locators.chunks(locator_rows) {
             let sql = format!(
@@ -958,7 +1039,11 @@ impl PreparedAdmission {
             });
             *statement_number += 1;
             crate::schema::fail_transaction_statement(*statement_number)?;
-            if transaction.execute(&sql, params_from_iter(values))? != page.len() {
+            if transaction
+                .prepare_cached(&sql)?
+                .execute(params_from_iter(values))?
+                != page.len()
+            {
                 return Err(StoreError::Integrity("locator insertion cardinality"));
             }
         }
@@ -1190,15 +1275,28 @@ fn is_content(canonical: &[u8]) -> Result<bool> {
 pub(super) fn compare(
     db: &StoreDb,
     known: &BTreeMap<ObjectId, read::Location>,
-    supplied: &BTreeMap<ObjectId, &[u8]>,
+    supplied: &mut Vec<(ObjectId, &[u8])>,
     metrics: &mut ObjectInsertMetrics,
+    retained_physical: usize,
 ) -> Result<()> {
     let started = Instant::now();
-    let mut ordinary = Vec::new();
+    if supplied.len() > super::PHYSICAL_ADMISSION_BATCH_COUNT || known.len() > supplied.len() {
+        return Err(StoreError::Integrity("comparison ownership count"));
+    }
+    supplied.sort_unstable_by_key(|(id, _)| *id);
+    if supplied.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+        return Err(StoreError::Integrity("duplicate comparison operand"));
+    }
+    let canonical_for = |id: ObjectId| {
+        supplied
+            .binary_search_by_key(&id, |(id, _)| *id)
+            .ok()
+            .map(|index| supplied[index].1)
+    };
+    let mut ordinary = Vec::with_capacity(known.len());
     for (id, location) in known {
-        let canonical = supplied
-            .get(id)
-            .ok_or(StoreError::Integrity("unexpected membership result"))?;
+        let canonical =
+            canonical_for(*id).ok_or(StoreError::Integrity("unexpected membership result"))?;
         if canonical.len() != location.canonical_length {
             return Err(StoreError::Integrity("object length collision"));
         }
@@ -1210,12 +1308,24 @@ pub(super) fn compare(
         metrics.skipped_ids += 1;
         metrics.skipped_bytes += canonical.len() as u64;
     }
-    db.visit_locations(&mut ordinary, |object| {
-        if supplied.get(&object.id).copied() != Some(object.bytes.as_slice()) {
-            return Err(StoreError::Integrity("object collision"));
-        }
-        Ok(())
-    })?;
+    if !ordinary.is_empty() {
+        // Retained locator/map/slot ownership is charged for the whole lookup;
+        // each active wave retains its own conservative association charge too.
+        // The other 1 MiB remains reserved for active decoding/reconstruction.
+        let retained = retained_physical
+            .checked_add(supplied.capacity() * std::mem::size_of::<(ObjectId, &[u8])>())
+            .and_then(|n| n.checked_add(known.len() * 512))
+            .ok_or(StoreError::Integrity("comparison ownership overflow"))?;
+        let reserve = read::VALIDATION_RESERVE
+            .checked_sub(retained)
+            .ok_or(StoreError::Integrity("comparison physical reservation"))?;
+        db.visit_locations_with_reserve(&mut ordinary, reserve, |object| {
+            if canonical_for(object.id) != Some(object.bytes.as_slice()) {
+                return Err(StoreError::Integrity("object collision"));
+            }
+            Ok(())
+        })?;
+    }
     metrics.collision_checks += known.len() as u64;
     metrics.conflict_read_rows += known.len() as u64;
     metrics.conflict_read_bytes += known

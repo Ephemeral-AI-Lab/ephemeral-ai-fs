@@ -145,7 +145,7 @@ fn unsupported_versions_and_native_header_downgrade_reject_without_mutation() {
         let path = directory.join(format!("{version}.sqlite"));
         let db = StoreDb::create(&path).unwrap();
         publish_file(&db, &vec![b'n'; 8192]);
-        assert!(pack_versions(&db).contains(&2u32.to_le_bytes().to_vec()));
+        assert!(pack_versions(&db).contains(2u32.to_le_bytes().as_slice()));
         drop(db);
         // Disposable malformed fixtures only: this is not a supported conversion.
         let connection = Connection::open(&path).unwrap();

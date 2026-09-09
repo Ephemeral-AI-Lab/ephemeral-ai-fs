@@ -764,6 +764,15 @@ pub fn capture_workspace_commit_diagnostics() -> Result<WorkspaceCommitDiagnosti
     })
 }
 
+pub(crate) fn note_workspace_admission_sort(elapsed_ns: u64) {
+    WORKSPACE_COMMIT.with(|current| {
+        if let Some(receipt) = current.borrow_mut().as_mut() {
+            receipt.object_admission_sort_ns =
+                receipt.object_admission_sort_ns.saturating_add(elapsed_ns);
+        }
+    });
+}
+
 pub(crate) fn note_workspace_admission(
     transactions: u64,
     max_transaction_objects: u64,

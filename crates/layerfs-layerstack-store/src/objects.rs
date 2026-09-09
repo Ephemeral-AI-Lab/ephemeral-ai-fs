@@ -37,6 +37,7 @@ pub(crate) const INITIALIZATION_SLAB_OBJECTS: usize = 512;
 pub(crate) const INITIALIZATION_SLAB_QUEUE_SLOTS: usize = 4;
 const CANDIDATE_MEMORY_BYTES: usize = 8 * 1024 * 1024;
 const CANDIDATE_INDEX_BYTES: usize = 64 * 1024 * 1024;
+const FRESH_ADMISSION_FILTER_BYTES: usize = 4 * 1024 * 1024;
 // C: cumulative metadata-lookup allowance, not resident memory. The frozen
 // full157 bound is 3763 attached flat-root cursors * 2 grants * 131136 bytes.
 const CORRESPONDENCE_OPERATION_RESERVATION_BYTES: u64 = 1024 * 1024 * 1024;
@@ -633,6 +634,27 @@ impl FinalizedOutputWriter {
             .selected_storage_authentication_ns
             .saturating_add(storage_authentication_ns);
         Ok(())
+    }
+
+    /// Build a new complete file using the owner's unpublished admission session.
+    /// The caller must discard the operation on any error, including a late EOF check.
+    pub fn build_complete_file(
+        &mut self,
+        source: impl Read,
+        expected_len: u64,
+    ) -> Result<(ObjectId, BuildCounters)> {
+        let before = self.metrics.canonical_hash_calls;
+        let before_payload = self.metrics.payload_bytes;
+        let completed = build_checked_file(self, source, expected_len)?;
+        self.metrics.selected_memory_bytes += self.metrics.payload_bytes - before_payload;
+        Ok((
+            completed.root.0,
+            BuildCounters {
+                cdc_bytes_scanned: completed.counters.cdc_bytes_scanned,
+                encode_hash_invocations: self.metrics.canonical_hash_calls - before,
+                ..BuildCounters::default()
+            },
+        ))
     }
 
     pub(crate) fn finish(mut self) -> Result<OutputWriterMetrics> {
@@ -1649,6 +1671,7 @@ impl Iterator for CompactInodePairStream {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ObjectInsertMetrics {
+    pub sql: AdmissionSqlMetrics,
     pub payload_ns: u64,
     pub insert_ns: u64,
     pub objects: u64,
@@ -1669,6 +1692,8 @@ pub(crate) struct ObjectInsertMetrics {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct InitializationAdmissionDiagnostics {
+    pub fresh_probe_ids_skipped: u64,
+    pub probe_ids_queried: u64,
     pub pending_duplicate_objects: u64,
     pub pending_duplicate_bytes: u64,
     pub cross_batch_skipped_objects: u64,
@@ -1723,8 +1748,9 @@ impl InitializationAdmissionDiagnostics {
         commit_ns: u64,
         phase: InitializationSqlPhase,
     ) {
+        let ordinal = self.sql_batch_count + metrics.sql.max_commit_offset;
+        self.sql_batch_count += metrics.sql.commits;
         if metrics.submitted_rows != 0 {
-            self.sql_batch_count += 1;
             self.sql_row_shapes.insert(metrics.submitted_rows);
         }
         self.cross_batch_skipped_objects = self
@@ -1762,21 +1788,20 @@ impl InitializationAdmissionDiagnostics {
             .saturating_add(metrics.conflict_read_ns);
         self.sql_begin_ns = self.sql_begin_ns.saturating_add(begin_ns);
         self.sql_commit_ns = self.sql_commit_ns.saturating_add(commit_ns);
-        let ordinal = self.sql_batch_count;
         match phase {
             InitializationSqlPhase::Pipeline => {
-                self.pipeline_commit_count += 1;
+                self.pipeline_commit_count += metrics.sql.commits;
                 self.pipeline_commit_ns = self.pipeline_commit_ns.saturating_add(commit_ns);
-                if commit_ns > self.pipeline_commit_max_ns {
-                    self.pipeline_commit_max_ns = commit_ns;
+                if metrics.sql.max_commit_ns > self.pipeline_commit_max_ns {
+                    self.pipeline_commit_max_ns = metrics.sql.max_commit_ns;
                     self.pipeline_commit_max_ordinal = ordinal;
                 }
             }
             InitializationSqlPhase::FinalBuild => {
-                self.final_build_commit_count += 1;
+                self.final_build_commit_count += metrics.sql.commits;
                 self.final_build_commit_ns = self.final_build_commit_ns.saturating_add(commit_ns);
-                if commit_ns > self.final_build_commit_max_ns {
-                    self.final_build_commit_max_ns = commit_ns;
+                if metrics.sql.max_commit_ns > self.final_build_commit_max_ns {
+                    self.final_build_commit_max_ns = metrics.sql.max_commit_ns;
                     self.final_build_commit_max_ordinal = ordinal;
                 }
             }
@@ -1809,11 +1834,11 @@ impl CheckedAdmission {
             .insert
             .bytes
             .saturating_add(metrics.insert.skipped_bytes);
-        self.transactions += 1;
+        self.transactions += metrics.insert.sql.commits;
         self.max_transaction_objects = self
             .max_transaction_objects
-            .max(metrics.insert.submitted_rows);
-        self.max_transaction_bytes = self.max_transaction_bytes.max(bytes);
+            .max(metrics.insert.sql.max_objects);
+        self.max_transaction_bytes = self.max_transaction_bytes.max(metrics.insert.sql.max_bytes);
         self.begin_ns = self.begin_ns.saturating_add(metrics.begin_ns);
         self.insert_ns = self.insert_ns.saturating_add(metrics.insert.insert_ns);
         self.commit_ns = self.commit_ns.saturating_add(metrics.commit_ns);
@@ -1834,30 +1859,200 @@ pub(crate) struct AdmissionBatchMetrics {
     pub(crate) commit_ns: u64,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct AdmissionSqlMetrics {
+    pub commits: u64,
+    pub final_commits: u64,
+    pub max_objects: u64,
+    pub max_bytes: u64,
+    pub begin_ns: u64,
+    pub commit_ns: u64,
+    pub max_commit_ns: u64,
+    pub max_commit_offset: u64,
+}
+
+#[derive(Default)]
+struct AdmissionCohort {
+    open: bool,
+    objects: u64,
+    bytes: u64,
+}
+
+impl AdmissionCohort {
+    fn commit(
+        &mut self,
+        connection: &rusqlite::Connection,
+        metrics: &mut AdmissionSqlMetrics,
+        final_commit: bool,
+    ) -> Result<()> {
+        if !self.open {
+            return Ok(());
+        }
+        let started = Instant::now();
+        connection.execute_batch("COMMIT")?;
+        let elapsed = elapsed_ns(started);
+        metrics.commits += 1;
+        metrics.final_commits += u64::from(final_commit);
+        metrics.max_objects = metrics.max_objects.max(self.objects);
+        metrics.max_bytes = metrics.max_bytes.max(self.bytes);
+        metrics.commit_ns += elapsed;
+        if elapsed > metrics.max_commit_ns {
+            metrics.max_commit_ns = elapsed;
+            metrics.max_commit_offset = metrics.commits;
+        }
+        *self = Self::default();
+        #[cfg(feature = "test-instrumentation")]
+        if !final_commit {
+            crate::schema::verification_early_committed();
+        }
+        Ok(())
+    }
+}
+
 /// One admission owns publication until it either retains its output or removes it.
 /// Existing pack IDs never change, so the held writer gate makes this high-water
 /// mark an exact ownership boundary, including every physical dependency.
 pub(crate) struct AdmissionSession {
     db: crate::schema::StoreDb,
     baseline_pack: i64,
+    fresh_ids: Option<Mutex<Box<[u64]>>>,
+    coalesce: bool,
+    cohort: Mutex<AdmissionCohort>,
+    publication_epoch: AtomicU64,
     state: std::sync::atomic::AtomicU8,
     _permit: crate::schema::OperationPermit,
 }
 
 impl AdmissionSession {
     fn new(db: &crate::schema::StoreDb) -> Result<std::sync::Arc<Self>> {
+        Self::with_coalescing(db, false)
+    }
+
+    fn with_coalescing(
+        db: &crate::schema::StoreDb,
+        coalesce: bool,
+    ) -> Result<std::sync::Arc<Self>> {
         let permit = db.enter_operation()?;
-        let baseline_pack = db.reader()?.query_row(
-            "SELECT COALESCE(MAX(pack_id),0) FROM object_packs",
-            [],
-            |row| row.get(0),
-        )?;
+        let (baseline_pack, initially_empty) = {
+            let connection = db.reader()?;
+            if !connection.is_autocommit() {
+                return Err(StoreError::Integrity("admission starts inside transaction"));
+            }
+            let baseline_pack: i64 = connection.query_row(
+                "SELECT COALESCE(MAX(pack_id),0) FROM object_packs",
+                [],
+                |row| row.get(0),
+            )?;
+            // Do not infer empty membership solely from pack chronology: retain
+            // ordinary lookup even for an orphaned/inconsistent locator table.
+            let initially_empty = baseline_pack == 0
+                && connection.query_row("SELECT NOT EXISTS(SELECT 1 FROM objects)", [], |row| {
+                    row.get::<_, bool>(0)
+                })?;
+            (baseline_pack, initially_empty)
+        };
+        let fresh_ids = initially_empty.then(|| {
+            Mutex::new(
+                vec![0_u64; FRESH_ADMISSION_FILTER_BYTES / std::mem::size_of::<u64>()]
+                    .into_boxed_slice(),
+            )
+        });
         Ok(std::sync::Arc::new(Self {
             db: db.clone(),
             baseline_pack,
+            fresh_ids,
+            coalesce,
+            cohort: Mutex::new(AdmissionCohort::default()),
+            publication_epoch: AtomicU64::new(0),
             state: std::sync::atomic::AtomicU8::new(0),
             _permit: permit,
         }))
+    }
+
+    fn begin_batch(
+        &self,
+        connection: &rusqlite::Connection,
+        objects: u64,
+        bytes: u64,
+        metrics: &mut AdmissionSqlMetrics,
+    ) -> Result<()> {
+        if objects > ADMISSION_BATCH_COUNT as u64 || bytes > ADMISSION_BATCH_BYTES as u64 {
+            return Err(StoreError::Integrity("SQL admission cohort bound"));
+        }
+        let mut cohort = self
+            .cohort
+            .lock()
+            .map_err(|_| StoreError::Integrity("admission cohort"))?;
+        if cohort.open == connection.is_autocommit() {
+            return Err(StoreError::Integrity("admission transaction ownership"));
+        }
+        if cohort.open
+            && (cohort.objects + objects > ADMISSION_BATCH_COUNT as u64
+                || cohort.bytes + bytes > ADMISSION_BATCH_BYTES as u64)
+        {
+            cohort.commit(connection, metrics, false)?;
+        }
+        if !cohort.open {
+            let started = Instant::now();
+            connection.execute_batch("BEGIN IMMEDIATE")?;
+            metrics.begin_ns += elapsed_ns(started);
+            cohort.open = true;
+        }
+        cohort.objects += objects;
+        cohort.bytes += bytes;
+        Ok(())
+    }
+
+    fn commit_pending(
+        &self,
+        connection: &rusqlite::Connection,
+        metrics: &mut AdmissionSqlMetrics,
+        final_commit: bool,
+    ) -> Result<()> {
+        self.cohort
+            .lock()
+            .map_err(|_| StoreError::Integrity("admission cohort"))?
+            .commit(connection, metrics, final_commit)
+    }
+
+    fn fresh_bit_positions(id: &ObjectId) -> impl Iterator<Item = usize> + '_ {
+        // ObjectId is an authenticated 32-byte digest. Bit collisions only add
+        // SQL work; they never establish presence or authorize a dependency.
+        id.as_bytes().chunks_exact(8).map(|word| {
+            (u64::from_le_bytes(word.try_into().expect("ObjectId word")) as usize)
+                & (FRESH_ADMISSION_FILTER_BYTES * 8 - 1)
+        })
+    }
+
+    fn retain_possible_ids(&self, ids: &mut Vec<ObjectId>) -> Result<()> {
+        let Some(bitmap) = &self.fresh_ids else {
+            return Ok(());
+        };
+        let bitmap = bitmap
+            .lock()
+            .map_err(|_| StoreError::Integrity("fresh admission filter"))?;
+        ids.retain(|id| {
+            Self::fresh_bit_positions(id).all(|bit| bitmap[bit / 64] & (1_u64 << (bit % 64)) != 0)
+        });
+        // The guard drops before the caller takes the Store connection.
+        Ok(())
+    }
+
+    fn note_published_ids<'a>(&self, ids: impl Iterator<Item = &'a ObjectId>) -> Result<()> {
+        let Some(bitmap) = &self.fresh_ids else {
+            return Ok(());
+        };
+        let mut bitmap = bitmap
+            .lock()
+            .map_err(|_| StoreError::Integrity("fresh admission filter"))?;
+        for id in ids {
+            for bit in Self::fresh_bit_positions(id) {
+                bitmap[bit / 64] |= 1_u64 << (bit % 64);
+            }
+        }
+        // Publication calls this before commit/epoch release. A failed commit
+        // can leave only false positives; rollback closes the entire session.
+        Ok(())
     }
 
     pub(crate) fn retain(&self) {
@@ -1889,6 +2084,22 @@ impl AdmissionSession {
             return Ok(());
         }
         let mut connection = self.db.writer()?;
+        // The connection can contain a bounded, not-yet-committed cohort even
+        // though no Rust Transaction or mutex guard survived its physical batch.
+        let mut cohort = self
+            .cohort
+            .lock()
+            .map_err(|_| StoreError::Integrity("admission cohort"))?;
+        if !cohort.open && !connection.is_autocommit() {
+            return Err(StoreError::Integrity(
+                "admission rollback transaction ownership",
+            ));
+        }
+        if !connection.is_autocommit() {
+            connection.execute_batch("ROLLBACK")?;
+        }
+        *cohort = AdmissionCohort::default();
+        drop(cohort);
         let mut after = Vec::<u8>::new();
         loop {
             let ids = {
@@ -1956,11 +2167,10 @@ pub(crate) struct CheckedOutputAdmission {
     incoming_index: HashMap<ObjectId, usize>,
     incoming_bytes: usize,
     batch: Vec<AuthenticatedCanonicalObject>,
-    available: SpillableObjectSet,
     seen: SpillableObjectSet,
     pending: HashMap<ObjectId, usize>,
     batch_bytes: usize,
-    validation_reserve: usize,
+    batch_epoch: u64,
     statement_number: u64,
     receipt: crate::CandidateReceipt,
     checked: CheckedAdmission,
@@ -1969,11 +2179,12 @@ pub(crate) struct CheckedOutputAdmission {
 }
 
 /// Owned initially missing canonical output with closed external dependencies.
-/// Only the accumulator creates this handoff; final publishers cannot reprobe it.
+/// Only the accumulator issues absence proofs; stale proofs require a final recheck.
 pub(crate) struct MissingBatch(
     Vec<AuthenticatedCanonicalObject>,
     std::sync::Arc<AdmissionSession>,
     bool,
+    Option<u64>,
 );
 
 impl std::ops::Deref for MissingBatch {
@@ -3087,10 +3298,21 @@ impl CheckedOutputAdmission {
         Self::with_session(db, AdmissionSession::new(db)?)
     }
 
+    pub(crate) fn new_for_initialization(db: &crate::schema::StoreDb) -> Result<Self> {
+        Self::with_session(db, AdmissionSession::with_coalescing(db, true)?)
+    }
+
     fn with_session(
         db: &crate::schema::StoreDb,
         session: std::sync::Arc<AdmissionSession>,
     ) -> Result<Self> {
+        // Repartition the existing 16MiB index allowance, never add a cache.
+        let seen_limit = CANDIDATE_INDEX_BYTES / 4
+            - if session.fresh_ids.is_some() {
+                FRESH_ADMISSION_FILTER_BYTES
+            } else {
+                0
+            };
         Ok(Self {
             session,
             db: db.clone(),
@@ -3098,14 +3320,12 @@ impl CheckedOutputAdmission {
             incoming_index: HashMap::new(),
             incoming_bytes: 0,
             batch: Vec::with_capacity(INITIALIZATION_SLAB_OBJECTS),
-            // Two independent facts share the existing index allowance: seen
-            // input IDs and closed, available dependencies. Leave half for
-            // bounded logical-reference decoding and temporary lookup pages.
-            seen: SpillableObjectSet::bounded(CANDIDATE_INDEX_BYTES / 4)?,
-            available: SpillableObjectSet::bounded(CANDIDATE_INDEX_BYTES / 4)?,
+            // Only preexisting occurrences need a separate uniqueness index.
+            // This session's published packs already identify its fresh output.
+            seen: SpillableObjectSet::bounded(seen_limit)?,
             pending: HashMap::new(),
             batch_bytes: 0,
-            validation_reserve: 0,
+            batch_epoch: 0,
             statement_number: 0,
             receipt: crate::CandidateReceipt::default(),
             checked: CheckedAdmission::default(),
@@ -3196,8 +3416,12 @@ impl CheckedOutputAdmission {
         let batch = std::mem::take(&mut self.batch);
         self.pending.clear();
         self.batch_bytes = 0;
-        self.validation_reserve = 0;
-        Ok(MissingBatch(batch, self.session.clone(), false))
+        Ok(MissingBatch(
+            batch,
+            self.session.clone(),
+            false,
+            Some(self.batch_epoch),
+        ))
     }
 
     fn close_dependencies(&mut self) -> Result<()> {
@@ -3211,16 +3435,9 @@ impl CheckedOutputAdmission {
         }
         let dependencies = dependencies.into_iter().collect::<Vec<_>>();
         for page in dependencies.chunks(OBJECT_PAGE_COUNT) {
-            let known = self.available.membership(page)?;
-            let missing = page
-                .iter()
-                .copied()
-                .filter(|id| !known.contains(id))
-                .collect::<Vec<_>>();
-            if !self.db.objects_exist(&missing)? {
+            if !self.db.objects_exist(page)? {
                 return Err(StoreError::Integrity("new object dependency missing"));
             }
-            self.available.insert_page(&missing)?;
         }
         Ok(())
     }
@@ -3232,72 +3449,67 @@ impl CheckedOutputAdmission {
         let page = std::mem::take(&mut self.incoming);
         self.incoming_index.clear();
         self.incoming_bytes = 0;
-        let ids = page.iter().map(|object| object.id).collect::<Vec<_>>();
+        let mut ids = page.iter().map(|object| object.id).collect::<Vec<_>>();
+        let mut probe_epoch = self
+            .session
+            .publication_epoch
+            .load(std::sync::atomic::Ordering::Acquire);
+        let before_filter = ids.len();
+        self.session.retain_possible_ids(&mut ids)?;
+        self.diagnostics.fresh_probe_ids_skipped += (before_filter - ids.len()) as u64;
+        self.diagnostics.probe_ids_queried += ids.len() as u64;
+        let known = self.db.object_locations(&ids)?;
+        drop(ids);
+        let preexisting = known
+            .iter()
+            .filter_map(|(&id, location)| {
+                (location.pack <= self.session.baseline_pack).then_some(id)
+            })
+            .collect::<Vec<_>>();
         let first = self
             .seen
-            .insert_page(&ids)?
+            .insert_page(&preexisting)?
             .into_iter()
             .collect::<BTreeSet<_>>();
-        let (fresh, repeated): (Vec<_>, Vec<_>) = page
-            .into_iter()
-            .partition(|object| first.contains(&object.id));
-        if !repeated.is_empty() {
-            // Supplied duplicate occurrences still compare their actual bytes;
-            // they are not new admission candidates or new initial probes.
-            let ids = repeated.iter().map(|object| object.id).collect::<Vec<_>>();
-            let known = self.db.object_locations(&ids)?;
-            if known.len() != ids.len() {
-                return Err(StoreError::Integrity("flushed duplicate missing"));
-            }
-            let supplied = repeated
-                .iter()
-                .map(|object| (object.id, object.bytes.as_slice()))
-                .collect();
-            let mut metrics = ObjectInsertMetrics::default();
-            admission::compare(&self.db, &known, &supplied, &mut metrics)?;
-            self.note_collision_reads(metrics);
-            self.diagnostics.cross_batch_skipped_objects += repeated.len() as u64;
-            self.diagnostics.cross_batch_skipped_bytes += metrics.skipped_bytes;
-        }
-        let mut diagnostic_stats = crate::PhysicalStorageReceipt::default();
-        for mut object in repeated {
-            diagnostic::occurrence(&mut object, 2, &mut diagnostic_stats);
-        }
-        self.db.note_physical(diagnostic_stats);
-        let ids = fresh.iter().map(|object| object.id).collect::<Vec<_>>();
-        let known = self.db.object_locations(&ids)?;
-        let supplied = fresh
+        drop(preexisting);
+        let mut supplied = page
             .iter()
             .map(|object| (object.id, object.bytes.as_slice()))
-            .collect();
-        let mut reused = ObjectInsertMetrics::default();
-        admission::compare(&self.db, &known, &supplied, &mut reused)?;
-        self.note_collision_reads(reused);
-        self.available
-            .insert_page(&known.keys().copied().collect::<Vec<_>>())?;
-        self.checked.candidate_objects += reused.skipped_ids;
-        self.checked.candidate_bytes += reused.skipped_bytes;
-        self.checked.reused_objects += reused.skipped_ids;
-        self.checked.reused_bytes += reused.skipped_bytes;
-        self.receipt.candidate_objects += reused.skipped_ids;
-        self.receipt.candidate_bytes += reused.skipped_bytes;
-        self.receipt.reused_objects += reused.skipped_ids;
-        self.receipt.reused_bytes += reused.skipped_bytes;
-        self.receipt.preexisting_reused_objects += reused.skipped_ids;
-        self.receipt.preexisting_reused_bytes += reused.skipped_bytes;
+            .collect::<Vec<_>>();
+        let mut metrics = ObjectInsertMetrics::default();
+        // The watermark supplies occurrence provenance, never authentication.
+        // Every found object still compares its canonical length and actual bytes.
+        admission::compare(&self.db, &known, &mut supplied, &mut metrics, 0)?;
+        self.note_collision_reads(metrics);
         drop(supplied);
-        let mut diagnostic_stats = crate::PhysicalStorageReceipt::default();
-        for mut object in fresh {
-            let missing = !known.contains_key(&object.id);
-            diagnostic::occurrence(&mut object, u8::from(missing), &mut diagnostic_stats);
-            if missing {
-                diagnostic::eligible(&object, &mut diagnostic_stats);
-            }
-            if missing {
-                self.push_pending(object)?;
+        let mut stats = crate::PhysicalStorageReceipt::default();
+        for mut object in page {
+            if let Some(location) = known.get(&object.id) {
+                if location.pack <= self.session.baseline_pack && first.contains(&object.id) {
+                    let bytes = object.bytes.len() as u64;
+                    self.checked.candidate_objects += 1;
+                    self.checked.candidate_bytes += bytes;
+                    self.checked.reused_objects += 1;
+                    self.checked.reused_bytes += bytes;
+                    self.receipt.candidate_objects += 1;
+                    self.receipt.candidate_bytes += bytes;
+                    self.receipt.reused_objects += 1;
+                    self.receipt.reused_bytes += bytes;
+                    self.receipt.preexisting_reused_objects += 1;
+                    self.receipt.preexisting_reused_bytes += bytes;
+                    diagnostic::occurrence(&mut object, 0, &mut stats);
+                } else {
+                    self.diagnostics.cross_batch_skipped_objects += 1;
+                    self.diagnostics.cross_batch_skipped_bytes += object.bytes.len() as u64;
+                    diagnostic::occurrence(&mut object, 2, &mut stats);
+                }
+            } else {
+                diagnostic::occurrence(&mut object, 1, &mut stats);
+                diagnostic::eligible(&object, &mut stats);
+                self.push_pending(object, &mut probe_epoch)?;
             }
         }
-        self.db.note_physical(diagnostic_stats);
+        self.db.note_physical(stats);
         self.incoming = Vec::with_capacity(INITIALIZATION_SLAB_OBJECTS);
         Ok(())
     }
@@ -3373,20 +3585,39 @@ impl CheckedOutputAdmission {
         Ok(())
     }
 
-    fn push_pending(&mut self, object: AuthenticatedCanonicalObject) -> Result<()> {
+    fn push_pending(
+        &mut self,
+        object: AuthenticatedCanonicalObject,
+        probe_epoch: &mut u64,
+    ) -> Result<()> {
         if object.bytes.len() > ADMISSION_BATCH_BYTES {
             return Err(StoreError::Integrity("canonical object admission size"));
         }
-        let reserve = read::validation_reserve(object.bytes.len());
         if !self.batch.is_empty()
             && (self.batch.len() == PHYSICAL_ADMISSION_BATCH_COUNT
                 || self.batch_bytes.saturating_add(object.bytes.len())
-                    > 2 * INITIALIZATION_SLAB_BYTES
-                || self.validation_reserve + reserve > read::VALIDATION_RESERVE)
+                    > 2 * INITIALIZATION_SLAB_BYTES)
         {
+            let before = self
+                .session
+                .publication_epoch
+                .load(std::sync::atomic::Ordering::Acquire);
             self.flush_batch()?;
+            let after = self
+                .session
+                .publication_epoch
+                .load(std::sync::atomic::Ordering::Acquire);
+            // Incoming/pending duplicate guards make our flushed batch disjoint
+            // from this page. Any other publication keeps the old proof stale.
+            if *probe_epoch == before && before.checked_add(1) == Some(after) {
+                *probe_epoch = after;
+            }
         }
-        self.validation_reserve += reserve;
+        self.batch_epoch = if self.batch.is_empty() {
+            *probe_epoch
+        } else {
+            self.batch_epoch.min(*probe_epoch)
+        };
         self.batch_bytes = self.batch_bytes.saturating_add(object.bytes.len());
         self.pending.insert(object.id, self.batch.len());
         self.batch.push(object);
@@ -3436,9 +3667,7 @@ impl CheckedOutputAdmission {
         if batch.is_empty() {
             return Ok(());
         }
-        let ids = batch.iter().map(|object| object.id).collect::<Vec<_>>();
         let metrics = consume_checked_owned_page(&self.db, batch, &mut self.statement_number)?;
-        self.available.insert_page(&ids)?;
         self.checked.record(&metrics);
         self.batch = Vec::with_capacity(capacity);
         self.diagnostics.record_sql_batch(
@@ -3452,8 +3681,36 @@ impl CheckedOutputAdmission {
             },
         );
         self.batch_bytes = 0;
-        self.validation_reserve = 0;
         self.pending.clear();
+        record_admission_receipt(&mut self.receipt, metrics.insert, false);
+        Ok(())
+    }
+
+    fn commit_pending(&mut self) -> Result<()> {
+        let mut sql = AdmissionSqlMetrics::default();
+        {
+            let connection = self.db.writer()?;
+            self.session.commit_pending(&connection, &mut sql, false)?;
+        }
+        let metrics = AdmissionBatchMetrics {
+            insert: ObjectInsertMetrics {
+                sql,
+                ..Default::default()
+            },
+            begin_ns: sql.begin_ns,
+            commit_ns: sql.commit_ns,
+        };
+        self.checked.record(&metrics);
+        self.diagnostics.record_sql_batch(
+            metrics.insert,
+            metrics.begin_ns,
+            metrics.commit_ns,
+            if self.final_phase {
+                InitializationSqlPhase::FinalBuild
+            } else {
+                InitializationSqlPhase::Pipeline
+            },
+        );
         record_admission_receipt(&mut self.receipt, metrics.insert, false);
         Ok(())
     }
@@ -3473,15 +3730,15 @@ pub(crate) fn record_admission_receipt(
     receipt.reused_bytes += metrics.skipped_bytes;
     receipt.preexisting_reused_objects += metrics.skipped_ids;
     receipt.preexisting_reused_bytes += metrics.skipped_bytes;
-    receipt.max_transaction_objects = receipt.max_transaction_objects.max(metrics.submitted_rows);
-    receipt.max_transaction_bytes = receipt.max_transaction_bytes.max(bytes);
+    receipt.max_transaction_objects = receipt.max_transaction_objects.max(metrics.sql.max_objects);
+    receipt.max_transaction_bytes = receipt.max_transaction_bytes.max(metrics.sql.max_bytes);
+    receipt.admission_transactions += metrics.sql.commits - metrics.sql.final_commits;
     if final_batch {
         receipt.final_inserted_objects += metrics.objects;
         receipt.final_inserted_bytes += metrics.bytes;
     } else {
         receipt.batch_inserted_objects += metrics.objects;
         receipt.batch_inserted_bytes += metrics.bytes;
-        receipt.admission_transactions += 1;
     }
 }
 
@@ -3584,6 +3841,9 @@ impl WorkspaceAdmission {
     ) -> Result<(CheckedAdmission, u64, std::sync::Arc<AdmissionSession>)> {
         objects.consume_prevalidated_pages(|page| self.admission.admit_page(page))?;
         self.admission.flush()?;
+        // Workspace staging starts a separate transaction and retains the session.
+        // Default Workspace admission is immediate; keep the handoff explicit.
+        self.admission.commit_pending()?;
         let finished = self.admission.finish()?;
         let admission = finished.checked;
         if admission.candidate_objects != admission.inserted_objects + admission.reused_objects
@@ -3610,8 +3870,6 @@ fn consume_checked_owned_page(
         )?;
         Ok(())
     })?;
-    #[cfg(feature = "test-instrumentation")]
-    crate::schema::verification_early_committed();
     Ok(metrics)
 }
 
@@ -3791,6 +4049,19 @@ mod tests {
             .into_iter()
             .collect::<BTreeSet<_>>();
         let mut direct_ids = BTreeSet::new();
+        let consumed = AtomicU64::new(0);
+        struct ObservedEof<'a> {
+            bytes: &'a [u8],
+            consumed: &'a AtomicU64,
+        }
+        impl Read for ObservedEof<'_> {
+            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                if self.bytes.is_empty() && self.consumed.load(Ordering::Acquire) == 0 {
+                    return Err(std::io::Error::other("no output before EOF"));
+                }
+                self.bytes.read(output)
+            }
+        }
         let cancelled = std::sync::atomic::AtomicBool::new(false);
         let (direct, _) = run_finalized_output(
             1,
@@ -3799,26 +4070,33 @@ mod tests {
             &cancelled,
             |_| Ok(None),
             |result, _, _, writer| {
-                *result = Some(build_checked_file(
-                    writer,
-                    data.as_slice(),
+                *result = Some(writer.build_complete_file(
+                    ObservedEof {
+                        bytes: &data,
+                        consumed: &consumed,
+                    },
                     data.len() as u64,
                 )?);
                 Ok(())
             },
             |result| result.ok_or(StoreError::Integrity("missing completion")),
             |page| {
+                consumed.fetch_add(page.len() as u64, Ordering::Release);
                 direct_ids.extend(page.into_iter().map(|object| object.id));
                 Ok(())
             },
         )
         .unwrap();
-        assert_eq!(direct[0].0.root.0, private.root_id);
-        assert_eq!(direct[0].0.logical_len, data.len() as u64);
+        assert_eq!(direct[0].0 .0, private.root_id);
         assert_eq!(
-            direct[0].0.counters.cdc_bytes_scanned,
+            direct[0].0 .1.cdc_bytes_scanned,
             private.counters.cdc_bytes_scanned
         );
+        assert_eq!(direct[0].0 .1.spill_count, 0);
+        assert_eq!(direct[0].0 .1.first_store_write_bytes, 0);
+        assert_eq!(direct[0].1.selected_spill_bytes, 0);
+        assert_eq!(direct[0].1.selected_memory_bytes, direct[0].1.payload_bytes);
+        assert!(direct[0].1.partial_peak_payload_bytes <= INITIALIZATION_SLAB_BYTES as u64);
         assert_eq!(direct_ids, expected_ids);
         let mut buffer = ObjectBuffer::bounded_output(None).unwrap();
         buffer.partition_output(4).unwrap();
@@ -3836,6 +4114,7 @@ mod tests {
 
         struct Broken {
             remaining: usize,
+            random: u64,
         }
         impl Read for Broken {
             fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
@@ -3843,7 +4122,12 @@ mod tests {
                     return Err(std::io::ErrorKind::Other.into());
                 }
                 let size = bytes.len().min(self.remaining);
-                bytes[..size].fill(7);
+                for byte in &mut bytes[..size] {
+                    self.random ^= self.random << 13;
+                    self.random ^= self.random >> 7;
+                    self.random ^= self.random << 17;
+                    *byte = self.random as u8;
+                }
                 self.remaining -= size;
                 Ok(size)
             }
@@ -3858,6 +4142,7 @@ mod tests {
         ));
         let store = crate::LayerStackStore::create(&path).unwrap();
         let before = store.store_counts().unwrap();
+        let published = std::sync::atomic::AtomicBool::new(false);
         let failed = store.construct_workspace_files(
             [5; 16],
             4,
@@ -3865,18 +4150,20 @@ mod tests {
             std::iter::once(()),
             |_| Ok(()),
             |_, _, _, writer| {
-                let built = ObjectBuffer::build_complete_file_partition(
+                let result = writer.build_complete_file(
                     Broken {
                         remaining: 2 * 1024 * 1024,
+                        random: 31,
                     },
                     2 * 1024 * 1024 + 1,
-                    4,
-                )?;
-                writer.send_selected(built.objects)
+                );
+                published.store(store.store_counts()? != before, Ordering::Release);
+                result.map(|_| ())
             },
             |_| Ok(()),
         );
         assert!(failed.is_err());
+        assert!(published.load(Ordering::Acquire));
         assert_eq!(store.store_counts().unwrap(), before);
         assert!(ObjectBuffer::build_complete_file_partition(
             data.as_slice(),
@@ -3947,6 +4234,10 @@ mod tests {
             .collect::<Vec<_>>();
         admission.admit_page(objects.clone()).unwrap();
         admission.flush().unwrap();
+        assert_eq!(
+            admission.seen.count, 0,
+            "published fresh objects use the session watermark, not a second index"
+        );
         #[cfg(feature = "test-instrumentation")]
         crate::schema::reset_sql_trace();
         admission
@@ -3981,6 +4272,176 @@ mod tests {
         ));
         drop(admission);
         drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn fresh_filter_negatives_false_positives_and_collisions_keep_exact_admission() {
+        let root = std::env::temp_dir().join(format!(
+            "layerfs-fresh-filter-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = crate::schema::StoreDb::create(root.join("store.sqlite")).unwrap();
+        let mut owner = CheckedOutputAdmission::new_for_initialization(&db).unwrap();
+        let first = AuthenticatedCanonicalObject::new(
+            layerfs_content::encode_bytes_object(b"one").unwrap(),
+            None,
+        )
+        .unwrap();
+        let second = AuthenticatedCanonicalObject::new(
+            layerfs_content::encode_bytes_object(b"two").unwrap(),
+            None,
+        )
+        .unwrap();
+        let bitmap_bytes = owner
+            .session
+            .fresh_ids
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .len()
+            * std::mem::size_of::<u64>();
+        assert_eq!(bitmap_bytes, FRESH_ADMISSION_FILTER_BYTES);
+        assert_eq!(
+            owner.seen.memory_limit + bitmap_bytes,
+            CANDIDATE_INDEX_BYTES / 4
+        );
+        let mut ids = vec![first.id, second.id];
+        owner.session.retain_possible_ids(&mut ids).unwrap();
+        assert!(
+            ids.is_empty(),
+            "empty filter proves only definite negatives"
+        );
+        owner.admit_object(first.clone()).unwrap();
+        owner.flush().unwrap();
+        assert_eq!(owner.diagnostics.fresh_probe_ids_skipped, 1);
+        assert_eq!(owner.diagnostics.probe_ids_queried, 0);
+        assert!(!db.reader().unwrap().is_autocommit());
+        let mut ids = vec![first.id];
+        owner.session.retain_possible_ids(&mut ids).unwrap();
+        assert_eq!(
+            ids,
+            vec![first.id],
+            "uncommitted publication must already set its bits"
+        );
+
+        // A saturated filter is a deterministic false-positive control. It must
+        // only request ordinary SQL lookup, never turn a missing object into reuse.
+        owner
+            .session
+            .fresh_ids
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .fill(u64::MAX);
+        owner.admit_object(second.clone()).unwrap();
+        owner.flush().unwrap();
+        assert_eq!(owner.checked.inserted_objects, 2);
+        assert_eq!(db.read_object_row(second.id).unwrap(), second.bytes);
+        owner.admit_object(first.clone()).unwrap();
+        owner.flush().unwrap();
+        assert_eq!(owner.diagnostics.probe_ids_queried, 2);
+        assert_eq!(owner.checked.candidate_objects, 2);
+        assert_eq!(owner.checked.inserted_objects, 2);
+        assert_eq!(owner.diagnostics.collision_checks, 1);
+
+        let mut corrupt = first;
+        corrupt.0.bytes = second.bytes.clone(); // Test-only violation of private authenticated ownership.
+        assert!(matches!(
+            owner
+                .session()
+                .resolve(owner.admit_object(corrupt).and_then(|_| owner.flush())),
+            Err(StoreError::Integrity("object collision"))
+        ));
+        assert!(db.reader().unwrap().is_autocommit());
+        assert_eq!(
+            db.reader()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM objects", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        drop(owner);
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn fresh_filter_nonempty_and_orphaned_stores_keep_sql_fallback() {
+        let root = std::env::temp_dir().join(format!(
+            "layerfs-filter-fallback-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        for orphan in [false, true] {
+            let db = crate::schema::StoreDb::create(root.join(format!("{orphan}.sqlite"))).unwrap();
+            let original = AuthenticatedCanonicalObject::new(
+                layerfs_content::encode_bytes_object(b"old").unwrap(),
+                None,
+            )
+            .unwrap();
+            if orphan {
+                let connection = db.writer().unwrap();
+                connection
+                    .pragma_update(None, "foreign_keys", false)
+                    .unwrap();
+                connection
+                    .execute(
+                        "INSERT INTO objects VALUES (?1,?2,1,0,0)",
+                        rusqlite::params![
+                            original.id.as_bytes().as_slice(),
+                            original.bytes.len() as i64
+                        ],
+                    )
+                    .unwrap();
+                connection
+                    .pragma_update(None, "foreign_keys", true)
+                    .unwrap();
+            } else {
+                let mut initial = CheckedOutputAdmission::new(&db).unwrap();
+                initial.admit_object(original.clone()).unwrap();
+                finish_segment_admission(&db, initial);
+            }
+            let mut owner = CheckedOutputAdmission::new_for_initialization(&db).unwrap();
+            assert!(owner.session.fresh_ids.is_none());
+            assert_eq!(owner.seen.memory_limit, CANDIDATE_INDEX_BYTES / 4);
+            let mut ids = vec![original.id, ObjectId::for_bytes(b"missing")];
+            let expected = ids.clone();
+            owner.session.retain_possible_ids(&mut ids).unwrap();
+            assert_eq!(ids, expected);
+            if orphan {
+                assert_eq!(owner.session.baseline_pack, 0);
+                owner.session.retain(); // No writes: this case exercises only the activation guard.
+            } else {
+                owner.admit_object(original.clone()).unwrap();
+                owner.flush().unwrap();
+                assert_eq!(owner.diagnostics.probe_ids_queried, 1);
+                assert_eq!(owner.checked.reused_objects, 1);
+                let mut corrupt = original.clone();
+                corrupt.0.bytes = layerfs_content::encode_bytes_object(b"bad").unwrap();
+                assert!(matches!(
+                    owner
+                        .session()
+                        .resolve(owner.admit_object(corrupt).and_then(|_| owner.flush())),
+                    Err(StoreError::Integrity("object collision"))
+                ));
+                assert_eq!(db.read_object_row(original.id).unwrap(), original.bytes);
+            }
+            drop(owner);
+            drop(db);
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -4311,7 +4772,7 @@ mod tests {
             .map(|object| object.id)
             .collect::<Vec<_>>();
         let mut statement_number = finished.statement_number;
-        let (_, metrics) = PreparedAdmission::prepare_missing(&db, finished.final_batch)
+        let (_, metrics) = PreparedAdmission::prepare_missing(db, finished.final_batch)
             .unwrap()
             .publish(db, &mut statement_number, |_, _, _| Ok(()))
             .unwrap();
@@ -5108,6 +5569,232 @@ mod tests {
             assert!(receipt.max_transaction_objects <= ADMISSION_BATCH_COUNT as u64);
             assert!(receipt.max_transaction_bytes < OBJECT_PAGE_BYTES as u64);
             drop(db);
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn init_cohorts_bound_sql_commits_flush_empty_final_and_rollback_pending() {
+        let root = std::env::temp_dir().join(format!(
+            "layerfs-init-cohorts-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        // The first case crosses the object cap; the second crosses the byte cap.
+        for (payload_len, batches, per_batch, rollback) in
+            [(8, 16, 512, true), (65_500, 9, 8, false)]
+        {
+            let db =
+                crate::schema::StoreDb::create(root.join(format!("{payload_len}.sqlite"))).unwrap();
+            let mut owner = CheckedOutputAdmission::new_for_initialization(&db).unwrap();
+            let mut canonical_length = 0;
+            for batch in 0..batches {
+                for index in 0..per_batch {
+                    let mut payload = vec![0; payload_len];
+                    payload[..8]
+                        .copy_from_slice(&((batch * per_batch + index) as u64).to_le_bytes());
+                    let bytes = layerfs_content::encode_bytes_object(&payload).unwrap();
+                    canonical_length = bytes.len();
+                    owner
+                        .admit_object(AuthenticatedCanonicalObject::new(bytes, None).unwrap())
+                        .unwrap();
+                }
+                owner.flush().unwrap();
+                assert!(!db.reader().unwrap().is_autocommit());
+                assert_eq!(owner.checked.transactions, u64::from(batch == batches - 1));
+                assert!(owner.diagnostics.batch_peak_objects <= 512);
+                assert!(owner.diagnostics.batch_peak_payload_bytes <= 512 * 1024);
+            }
+            assert_eq!(
+                owner.checked.max_transaction_objects,
+                ((batches - 1) * per_batch) as u64
+            );
+            assert_eq!(
+                owner.checked.max_transaction_bytes,
+                ((batches - 1) * per_batch * canonical_length) as u64
+            );
+            assert!(owner.checked.max_transaction_objects <= ADMISSION_BATCH_COUNT as u64);
+            assert!(owner.checked.max_transaction_bytes <= ADMISSION_BATCH_BYTES as u64);
+            let session = owner.session();
+            assert_eq!(session.cohort.lock().unwrap().objects, per_batch as u64);
+            if rollback {
+                // Undo both the currently open cohort and the earlier committed one.
+                owner.abort().unwrap();
+                let connection = db.reader().unwrap();
+                assert!(connection.is_autocommit());
+                assert_eq!(
+                    connection
+                        .query_row("SELECT COUNT(*) FROM objects", [], |row| row
+                            .get::<_, i64>(0))
+                        .unwrap(),
+                    0
+                );
+                assert_eq!(
+                    connection
+                        .query_row("SELECT COUNT(*) FROM object_packs", [], |row| row
+                            .get::<_, i64>(0))
+                        .unwrap(),
+                    0
+                );
+            } else {
+                let finished = owner.finish().unwrap();
+                assert!(finished.final_batch.is_empty());
+                let called = std::cell::Cell::new(false);
+                let (_, metrics) =
+                    admission::PreparedAdmission::prepare_missing(&db, finished.final_batch)
+                        .unwrap()
+                        .publish(&db, &mut 0, |connection, _, _| {
+                            assert!(!connection.is_autocommit());
+                            called.set(true);
+                            Ok(())
+                        })
+                        .unwrap();
+                assert!(called.get());
+                assert_eq!(metrics.insert.sql.commits, 1);
+                assert_eq!(metrics.insert.sql.final_commits, 1);
+                assert_eq!(metrics.insert.sql.max_objects, per_batch as u64);
+                let connection = db.reader().unwrap();
+                assert!(connection.is_autocommit());
+                assert_eq!(
+                    connection
+                        .query_row("SELECT COUNT(*) FROM objects", [], |row| row
+                            .get::<_, i64>(0))
+                        .unwrap(),
+                    (batches * per_batch) as i64
+                );
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn init_cohorts_final_metadata_and_commit_failures_restore_baseline() {
+        let root = std::env::temp_dir().join(format!(
+            "layerfs-cohort-final-failure-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let object = |payload: &[u8]| {
+            AuthenticatedCanonicalObject::new(
+                layerfs_content::encode_bytes_object(payload).unwrap(),
+                None,
+            )
+            .unwrap()
+        };
+        for commit_failure in [false, true] {
+            let db = crate::schema::StoreDb::create(root.join(format!("{commit_failure}.sqlite")))
+                .unwrap();
+            let baseline = object(b"retained baseline");
+            let mut initial = CheckedOutputAdmission::new(&db).unwrap();
+            initial.admit_object(baseline.clone()).unwrap();
+            finish_segment_admission(&db, initial);
+            let mut owner = CheckedOutputAdmission::new_for_initialization(&db).unwrap();
+            owner.admit_object(object(b"private committed")).unwrap();
+            owner.flush().unwrap();
+            owner.commit_pending().unwrap();
+            assert_eq!(owner.checked.transactions, 1);
+            let pending = object(b"private pending root");
+            owner.admit_object(pending.clone()).unwrap();
+            owner.flush().unwrap();
+            assert!(!db.reader().unwrap().is_autocommit());
+            let session = owner.session();
+            let finished = owner.finish().unwrap();
+            assert!(finished.final_batch.is_empty());
+            let prepared = PreparedAdmission::prepare_missing(&db, finished.final_batch).unwrap();
+            let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            if commit_failure {
+                let fired = fired.clone();
+                // Veto exactly the final COMMIT; cleanup transactions must remain usable.
+                db.writer()
+                    .unwrap()
+                    .commit_hook(Some(move || !fired.swap(true, Ordering::SeqCst)))
+                    .unwrap();
+            }
+            let stack = crate::LayerStackId::new();
+            let layer = crate::LayerId::derive(stack, None, pending.id);
+            let partial_written = std::cell::Cell::new(false);
+            let result = prepared.publish(&db, &mut 0, |connection, _, _| {
+                connection.execute(
+                    crate::statements::layerstack::INSERT_LAYER,
+                    rusqlite::params![
+                        layer.as_slice(),
+                        stack.as_slice(),
+                        Option::<&[u8]>::None,
+                        pending.id.as_bytes().as_slice(),
+                        Option::<&[u8]>::None,
+                        Option::<&[u8]>::None,
+                    ],
+                )?;
+                partial_written.set(true);
+                if !commit_failure {
+                    return Err(StoreError::Integrity("partial final metadata"));
+                }
+                connection.execute(
+                    crate::statements::layerstack::INSERT,
+                    rusqlite::params![stack.as_slice(), "atomic-final", layer.as_slice()],
+                )?;
+                Ok(())
+            });
+            db.writer()
+                .unwrap()
+                .commit_hook(None::<fn() -> bool>)
+                .unwrap();
+            assert!(partial_written.get());
+            if commit_failure {
+                assert!(fired.load(Ordering::SeqCst));
+                assert!(result.is_err());
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(StoreError::Integrity("partial final metadata"))
+                ));
+            }
+            assert_eq!(session.state.load(Ordering::Acquire), 2);
+            {
+                let connection = db.reader().unwrap();
+                assert!(connection.is_autocommit());
+                assert_eq!(
+                    connection
+                        .query_row("SELECT COUNT(*) FROM objects", [], |row| row
+                            .get::<_, i64>(0))
+                        .unwrap(),
+                    1
+                );
+                assert_eq!(
+                    connection
+                        .query_row("SELECT COUNT(*) FROM object_packs", [], |row| row
+                            .get::<_, i64>(0))
+                        .unwrap(),
+                    1
+                );
+                assert_eq!(
+                    connection
+                        .query_row("SELECT COUNT(*) FROM layers", [], |row| row
+                            .get::<_, i64>(0))
+                        .unwrap(),
+                    0
+                );
+                assert_eq!(
+                    connection
+                        .query_row("SELECT COUNT(*) FROM layer_stacks", [], |row| row
+                            .get::<_, i64>(0))
+                        .unwrap(),
+                    0
+                );
+            }
+            assert_eq!(db.read_object_row(baseline.id).unwrap(), baseline.bytes);
+            drop(session);
+            let mut retry = CheckedOutputAdmission::new(&db).unwrap();
+            retry.admit_object(object(b"subsequent owner")).unwrap();
+            finish_segment_admission(&db, retry);
         }
         std::fs::remove_dir_all(root).unwrap();
     }

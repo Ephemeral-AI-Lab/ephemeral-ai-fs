@@ -599,7 +599,12 @@ impl CandidateInputs<'_> {
         let content_started = Instant::now();
         let mut objects = ObjectBuffer::bounded_output(Some(&self.reader))?;
         let plan = inputs.prepare()?;
-        let workers = worker_limit.min(plan.count).min(io_bytes / 256).min(8);
+        // ponytail: predecessor plans use one producer so their cursor fits the
+        // existing 1-MiB budget; share bounded correspondence scratch before widening.
+        let workers = worker_limit
+            .min(plan.count)
+            .min(io_bytes / 256)
+            .min(if plan.has_predecessor { 1 } else { 8 });
         if workers == 0 && plan.count != 0 {
             return Err(StorageError::InvalidInput("file producer budget"));
         }
@@ -610,9 +615,7 @@ impl CandidateInputs<'_> {
              ordinal,
              task: Result<NodeId>,
              writer: &mut layerfs_layerstack_store::FinalizedOutputWriter| {
-                inputs.produce_file(worker, &plan.file, ordinal, task?, &mut |selected| {
-                    writer.send_selected(selected)
-                })
+                inputs.produce_file(worker, &plan.file, ordinal, task?, writer)
             };
         let finish = |worker: FileResultWriter| worker.finish();
         let (workers, admission) = match purpose {
@@ -949,6 +952,7 @@ struct FileTaskPlan {
     file: File,
     count: usize,
     generation: u64,
+    has_predecessor: bool,
 }
 struct FileTasks {
     reader: BufReader<File>,
@@ -1046,6 +1050,7 @@ impl StableFileInputs<'_> {
     fn prepare(&self) -> Result<FileTaskPlan> {
         let mut writer = BufWriter::with_capacity(self.io_bytes, anonymous_journal(self.spool)?);
         let mut count = 0_usize;
+        let mut has_predecessor = false;
         // One 8-KiB canonical directory page per lookup plus decoded/request
         // ownership; callbacks discard each decoded node before the next one.
         let limit = (self.io_bytes / (16 * 1024)).clamp(1, 128);
@@ -1063,22 +1068,23 @@ impl StableFileInputs<'_> {
                 .checked_add(1)
                 .ok_or(StorageError::Integrity("file task count"))?;
             if page.len() == limit {
-                self.prepare_page(&page, &mut writer)?;
+                has_predecessor |= self.prepare_page(&page, &mut writer)?;
                 page.clear();
             }
         }
         if !page.is_empty() {
-            self.prepare_page(&page, &mut writer)?;
+            has_predecessor |= self.prepare_page(&page, &mut writer)?;
         }
         writer.flush()?;
         Ok(FileTaskPlan {
             file: writer.into_inner().map_err(|error| error.into_error())?,
             count,
             generation: self.generation,
+            has_predecessor,
         })
     }
 
-    fn prepare_page(&self, page: &[NodeId], writer: &mut impl Write) -> Result<()> {
+    fn prepare_page(&self, page: &[NodeId], writer: &mut impl Write) -> Result<bool> {
         let core = CoreReader(&self.reader);
         let mut before = vec![None; page.len()];
         let known: Vec<_> = page
@@ -1180,12 +1186,14 @@ impl StableFileInputs<'_> {
                 }
             }
         }
+        let mut has_predecessor = false;
         for (slot, id) in page.iter().enumerate() {
             let mut encoded = [0; FILE_TASK_BYTES as usize];
             encoded[..8].copy_from_slice(&id.0.to_le_bytes());
             if let Some(record) = prior[slot].filter(|record| record.kind == InodeKind::RegularFile)
             {
                 encoded[32..64].copy_from_slice(record.content_root.as_bytes());
+                has_predecessor = true;
             }
             if let Some(record) = before[slot] {
                 let record = encode_inode_record(record)?;
@@ -1197,7 +1205,7 @@ impl StableFileInputs<'_> {
             }
             writer.write_all(&encoded)?;
         }
-        Ok(())
+        Ok(has_predecessor)
     }
 
     fn worker(&self, worker: usize, workers: usize) -> Result<FileResultWriter> {
@@ -1220,7 +1228,7 @@ impl StableFileInputs<'_> {
         index: &File,
         ordinal: usize,
         id: NodeId,
-        emit: &mut dyn FnMut(layerfs_layerstack_store::DeferredObjectStore) -> Result<()>,
+        writer: &mut layerfs_layerstack_store::FinalizedOutputWriter,
     ) -> Result<()> {
         let node = self
             .nodes
@@ -1260,16 +1268,22 @@ impl StableFileInputs<'_> {
                 None
             }
         };
-        let built = input.build(
-            before,
-            predecessor,
-            self.correspondence_reserved.clone(),
-            captured,
-            worker.partitions,
-        )?;
-        let root = built.root_id;
-        add_build_counters(&mut worker.counters, built.counters);
-        emit(built.objects)?;
+        let (root, counters) = if before.is_none() && predecessor.is_none() && captured.is_none() {
+            // Complete new-file prefixes are final; keep the root private until
+            // EOF/length validation and the enclosing task coverage both succeed.
+            writer.build_complete_file(input.reader(), input.len)?
+        } else {
+            let built = input.build(
+                before,
+                predecessor,
+                self.correspondence_reserved.clone(),
+                captured,
+                worker.partitions,
+            )?;
+            writer.send_selected(built.objects)?;
+            (built.root_id, built.counters)
+        };
+        add_build_counters(&mut worker.counters, counters);
         let before = before.map(encode_inode_record).transpose()?;
         let mut record = Vec::with_capacity(308);
         record.extend_from_slice(&id.0.to_le_bytes());
@@ -2611,6 +2625,96 @@ mod tests {
     }
 
     #[test]
+    fn parallel_predecessor_plan_keeps_correspondence_and_native_prefixes() {
+        let (root, mut workspace) = empty_workspace("predecessor-worker-budget");
+        let mut files = Vec::new();
+        for index in 0..2 {
+            let mut seed = 91_u64 + index;
+            let bytes = (0..layerfs_content::file::cdc::MINIMUM_CHUNK_BYTES - 1)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    seed as u8
+                })
+                .collect::<Vec<_>>();
+            let name = format!("file-{index}");
+            let node = workspace
+                .create_file(ROOT, name.as_bytes(), 0o640)
+                .unwrap()
+                .node;
+            workspace.write(node, 0, &bytes).unwrap();
+            files.push((name, node, bytes));
+        }
+        workspace.invalidate_capture();
+        workspace.commit().unwrap();
+        let base_root = workspace.base_root;
+        let old = workspace.reader.clone();
+        let original_bytes = files
+            .iter()
+            .map(|(_, _, bytes)| bytes.clone())
+            .collect::<Vec<_>>();
+        for (_, node, bytes) in &mut files {
+            bytes[17] ^= 1;
+            // A whole-file replacement emits one new chunk with a strong prior
+            // match, rather than a one-byte patch that legitimately prefers FULL.
+            workspace.write(*node, 0, bytes).unwrap();
+        }
+        workspace.invalidate_capture();
+        let serial = workspace
+            .build_frontier_candidate_with_workers(CandidatePurpose::Preview, 1)
+            .unwrap();
+        let expected = serial.built.root_id;
+        drop(serial);
+        let before = workspace.store.physical_storage_receipt();
+        let candidate = workspace
+            .build_frontier_candidate_with_workers(CandidatePurpose::Commit, 4)
+            .unwrap();
+        assert_eq!(candidate.built.root_id, expected);
+        let branch = workspace
+            .store
+            .branch(workspace.branch_id)
+            .unwrap()
+            .unwrap();
+        let outcome = workspace
+            .store
+            .commit_workspace_candidate(
+                workspace.workspace_id,
+                &branch,
+                base_root,
+                workspace.expected_base,
+                candidate.built,
+                candidate.admission.unwrap(),
+            )
+            .unwrap();
+        assert!(matches!(outcome, CommitOutcome::Committed { root_id, .. } if root_id == expected));
+        let physical = workspace.store.physical_storage_receipt().since(before);
+        assert!(
+            physical.diag_cursor_grants > 0,
+            "predecessor metadata must fit the selected producer budget"
+        );
+        assert_eq!(physical.diag_cursor_memory_limit, 0);
+        assert!(
+            physical.native_admitted_prefix_count > 0,
+            "similar replacement chunks must retain native PREFIX selection"
+        );
+        let reader = workspace.store.snapshot_reader(expected);
+        for ((name, _, bytes), retained) in files.iter().zip(&original_bytes) {
+            let path = CanonicalPath::new(name).unwrap();
+            let mut actual = Vec::new();
+            filesystem::stream(&CoreReader(&reader), expected, &path, &mut actual).unwrap();
+            assert_eq!(&actual, bytes);
+            actual.clear();
+            filesystem::stream(&CoreReader(&old), base_root, &path, &mut actual).unwrap();
+            assert_eq!(&actual, retained);
+        }
+        drop(reader);
+        drop(old);
+        drop(workspace);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn producer_workers_preserve_roots_alias_capture_and_empty_inputs() {
         let (root, mut workspace) = empty_workspace("producer-workers");
         workspace.mkdir(ROOT, b"directory", 0o700).unwrap();
@@ -2770,29 +2874,40 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>>>()
             .unwrap();
-        let mut workers = (0..4)
-            .map(|index| inputs.worker(index, 4).unwrap())
-            .collect::<Vec<_>>();
-        for ordinal in (0..4).rev() {
-            inputs
-                .produce_file(
-                    &mut workers[ordinal],
-                    &plan.file,
-                    ordinal,
-                    tasks[ordinal],
-                    &mut |_| Ok(()),
-                )
-                .unwrap();
-        }
-        let mut output = FileResults::new(
-            plan,
-            workers
-                .into_iter()
-                .map(|worker| worker.finish().unwrap())
-                .collect(),
-            256,
-        )
-        .unwrap();
+        let mut objects = ObjectBuffer::bounded_output(None).unwrap();
+        let workers = objects
+            .construct_files(
+                1,
+                1,
+                std::iter::once(()),
+                |_| {
+                    (0..4)
+                        .map(|index| inputs.worker(index, 4))
+                        .collect::<Result<Vec<_>>>()
+                },
+                |workers, _, (), writer| {
+                    for ordinal in (0..4).rev() {
+                        inputs.produce_file(
+                            &mut workers[ordinal],
+                            &plan.file,
+                            ordinal,
+                            tasks[ordinal],
+                            writer,
+                        )?;
+                    }
+                    Ok(())
+                },
+                |workers| {
+                    workers
+                        .into_iter()
+                        .map(|worker| worker.finish())
+                        .collect::<Result<Vec<_>>>()
+                },
+            )
+            .unwrap()
+            .pop()
+            .unwrap();
+        let mut output = FileResults::new(plan, workers, 256).unwrap();
         for node in &tasks {
             output.next(*node, inputs.generation, 17).unwrap();
         }
@@ -2826,6 +2941,77 @@ mod tests {
             workspace.store.store_counts().unwrap().commits,
             counts.commits + 1
         );
+        drop(workspace);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn new_complete_file_streams_without_private_spill_and_preserves_history() {
+        let (root, mut workspace) = empty_workspace("complete-file-stream");
+        let mut seed = 91_u64;
+        let data = (0..2 * 1024 * 1024)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                seed as u8
+            })
+            .collect::<Vec<_>>();
+        let file = workspace.create_file(ROOT, b"payload", 0o640).unwrap().node;
+        workspace.write(file, 0, &data).unwrap();
+        workspace.invalidate_capture();
+        workspace.create_file(ROOT, b"empty", 0o600).unwrap();
+        let control = FrozenFile::from_node(&workspace.reader, &workspace.live.nodes[&file])
+            .unwrap()
+            .build(
+                None,
+                None,
+                std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                None,
+                1,
+            )
+            .unwrap();
+        let expected_file = control.root_id;
+        assert!(control.counters.spill_count > 0);
+        drop(control);
+        let counts = workspace.store.store_counts().unwrap();
+        let preview = workspace
+            .build_candidate(CandidatePurpose::Preview)
+            .unwrap();
+        assert_eq!(workspace.store.store_counts().unwrap(), counts);
+        let expected_root = preview.built.root_id;
+        drop(preview);
+        let candidate = workspace.build_candidate(CandidatePurpose::Commit).unwrap();
+        assert_eq!(candidate.built.root_id, expected_root);
+        assert_eq!(
+            candidate.built.counters.cdc_bytes_scanned,
+            data.len() as u64
+        );
+        assert_eq!(candidate.built.counters.spill_count, 0);
+        assert!(candidate.built.counters.first_store_write_bytes < data.len() as u64);
+        drop(candidate);
+        workspace.commit().unwrap();
+        assert_eq!(workspace.base_root, expected_root);
+        let old = workspace.reader.clone();
+        let path = CanonicalPath::new("payload").unwrap();
+        let record = filesystem::resolve(
+            &CoreReader(&old),
+            expected_root,
+            &path,
+            &mut LogicalCounters::default(),
+        )
+        .unwrap()
+        .record;
+        assert_eq!(record.content_root, expected_file);
+        workspace.write(file, 19, b"changed").unwrap();
+        workspace.commit().unwrap();
+        let mut retained = Vec::new();
+        filesystem::stream(&CoreReader(&old), expected_root, &path, &mut retained).unwrap();
+        assert_eq!(retained, data);
+        assert_eq!(workspace.read(file, 19, 7).unwrap(), b"changed");
+        let empty = workspace.lookup(ROOT, b"empty").unwrap().node;
+        assert!(workspace.read(empty, 0, 1).unwrap().is_empty());
+        drop(old);
         drop(workspace);
         std::fs::remove_dir_all(root).unwrap();
     }

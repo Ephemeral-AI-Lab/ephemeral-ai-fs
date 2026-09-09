@@ -687,9 +687,21 @@ fn scratch_index(label: &str, schema: &str) -> Result<(Connection, TempPath)> {
     let path = TempPath(path);
     drop(temporary);
     let connection = Connection::open(&path.0)?;
+    // Only this newly created, disposable database uses OFF journaling. Restore
+    // defensive mode before any schema/data access; failed scratch is discarded.
+    use rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE;
+    let defensive = connection.db_config(SQLITE_DBCONFIG_DEFENSIVE)?;
+    connection.set_db_config(SQLITE_DBCONFIG_DEFENSIVE, false)?;
+    let configured = connection.pragma_update(None, "journal_mode", "OFF");
+    connection.set_db_config(SQLITE_DBCONFIG_DEFENSIVE, defensive)?;
+    configured?;
+    let journal: String = connection.pragma_query_value(None, "journal_mode", |row| row.get(0))?;
+    if !journal.eq_ignore_ascii_case("off") {
+        return Err(StoreError::Integrity("private scratch journal policy"));
+    }
     // Derived private scratch, with the same bounded cache and no Store policy changes.
     connection.execute_batch(
-        "PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;
+        "PRAGMA synchronous=OFF;
         PRAGMA temp_store=FILE; PRAGMA cache_size=-4096; PRAGMA cache_spill=ON;
         PRAGMA mmap_size=0; PRAGMA locking_mode=EXCLUSIVE;",
     )?;
@@ -813,4 +825,98 @@ pub(super) fn temporary_file(label: &str) -> Result<(std::fs::File, PathBuf)> {
         }
     }
     Err(StoreError::Integrity("candidate temporary file"))
+}
+
+#[cfg(test)]
+mod scratch_tests {
+    use super::*;
+
+    #[test]
+    fn private_scratch_uses_the_requested_journal_policy() {
+        use rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE;
+        let default = Connection::open_in_memory()
+            .unwrap()
+            .db_config(SQLITE_DBCONFIG_DEFENSIVE)
+            .unwrap();
+        let mut seen = SpillableObjectSet::bounded(4 * 1024 * 1024).unwrap();
+        let ids = (0_u64..2048)
+            .map(|i| ObjectId::for_bytes(&i.to_le_bytes()))
+            .collect::<Vec<_>>();
+        assert_eq!(seen.insert_page(&ids).unwrap(), ids);
+        assert!(seen.insert_page(&ids).unwrap().is_empty());
+        assert_eq!(seen.membership(&ids).unwrap().len(), ids.len());
+        let path = match &seen.storage {
+            SeenStorage::Spill { connection, _path } => {
+                let connection = connection.lock().unwrap();
+                let journal: String = connection
+                    .pragma_query_value(None, "journal_mode", |row| row.get(0))
+                    .unwrap();
+                assert_eq!(
+                    journal, "off",
+                    "private scratch must not silently use a disk rollback journal"
+                );
+                assert_eq!(
+                    connection.db_config(SQLITE_DBCONFIG_DEFENSIVE).unwrap(),
+                    default
+                );
+                assert_eq!(
+                    connection
+                        .pragma_query_value(None, "cache_size", |r| r.get::<_, i64>(0))
+                        .unwrap(),
+                    -4096
+                );
+                assert!(
+                    !std::path::PathBuf::from(format!("{}-journal", _path.0.display())).exists()
+                );
+                // A failed derived index must never be reused, even with OFF journaling.
+                connection.execute_batch("CREATE TRIGGER fail_scratch BEFORE INSERT ON seen BEGIN SELECT RAISE(ABORT, 'injected scratch failure'); END;").unwrap();
+                _path.0.clone()
+            }
+            _ => panic!("small bound must exercise actual spill"),
+        };
+        assert!(seen
+            .insert_page(&[ObjectId::for_bytes(b"failed new object")])
+            .is_err());
+        assert!(seen.membership(&ids[..1]).is_err());
+        assert!(seen.insert_page(&ids[..1]).is_err());
+        drop(seen);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn private_scratch_off_configuration_restores_defensive_mode() {
+        let (file, path) = temporary_file("journal-config-probe").unwrap();
+        let path = TempPath(path);
+        drop(file);
+        let connection = Connection::open(&path.0).unwrap();
+        use rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE;
+        let previous = connection.db_config(SQLITE_DBCONFIG_DEFENSIVE).unwrap();
+        connection
+            .set_db_config(SQLITE_DBCONFIG_DEFENSIVE, false)
+            .unwrap();
+        connection
+            .pragma_update(None, "journal_mode", "OFF")
+            .unwrap();
+        connection
+            .set_db_config(SQLITE_DBCONFIG_DEFENSIVE, previous)
+            .unwrap();
+        let journal: String = connection
+            .pragma_query_value(None, "journal_mode", |row| row.get(0))
+            .unwrap();
+        assert_eq!(journal, "off");
+        assert_eq!(
+            connection.db_config(SQLITE_DBCONFIG_DEFENSIVE).unwrap(),
+            previous
+        );
+        connection
+            .execute_batch("CREATE TABLE t(id INTEGER PRIMARY KEY); INSERT INTO t VALUES (1);")
+            .unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT count(*) FROM t", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert!(!std::path::PathBuf::from(format!("{}-journal", path.0.display())).exists());
+    }
 }
