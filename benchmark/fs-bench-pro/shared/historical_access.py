@@ -99,6 +99,7 @@ def worker(config):
         if result['copy']['master_store_sha256'] != fixture['store_sha256']:
             raise ValueError('NOT_READY: incompatible history Store')
         (host / 'branch-id').write_text(fixture['branch_id'])
+        (output / 'container-attempted').touch(exist_ok=False)
         sample = runtime.start_sample(image['Id'], args['container'], {'family': 'historical_access', 'run': output.name}, deadline=deadline)
         result['environment'] = sample.observation
         result['cgroup_before'] = runner.cgroup_snapshot(sample, deadline.end)
@@ -168,9 +169,10 @@ def selected(args, started_ns):
     finally:
         cleanup_started = time.monotonic_ns()
         try:
-            removed = runtime.run(['docker', 'rm', '--force', container], deadline=runtime.Deadline(end - 0.2), check=False)
-            if removed.returncode and b'No such container' not in removed.stderr:
-                raise RuntimeError(removed.stderr.decode(errors="replace"))
+            if (output / 'container-attempted').exists():
+                removed = runtime.run(['docker', 'rm', '--force', container], deadline=runtime.Deadline(end - 0.2), check=False)
+                if removed.returncode and b'No such container' not in removed.stderr:
+                    raise RuntimeError(removed.stderr.decode(errors="replace"))
             host = output / 'host-runtime'
             if host.exists() and result['status'] == 'PASS': shutil.rmtree(host)
             result['cleanup_status'] = 'PASS'
