@@ -4365,7 +4365,7 @@ mod tests {
             db.reader()
                 .unwrap()
                 .query_row("SELECT COUNT(*) FROM objects", [], |row| row
-                    .get::<_, u64>(0))
+                    .get::<_, i64>(0))
                 .unwrap(),
             0
         );
@@ -5629,14 +5629,14 @@ mod tests {
                 assert_eq!(
                     connection
                         .query_row("SELECT COUNT(*) FROM objects", [], |row| row
-                            .get::<_, u64>(0))
+                            .get::<_, i64>(0))
                         .unwrap(),
                     0
                 );
                 assert_eq!(
                     connection
                         .query_row("SELECT COUNT(*) FROM object_packs", [], |row| row
-                            .get::<_, u64>(0))
+                            .get::<_, i64>(0))
                         .unwrap(),
                     0
                 );
@@ -5662,9 +5662,9 @@ mod tests {
                 assert_eq!(
                     connection
                         .query_row("SELECT COUNT(*) FROM objects", [], |row| row
-                            .get::<_, u64>(0))
+                            .get::<_, i64>(0))
                         .unwrap(),
-                    (batches * per_batch) as u64
+                    (batches * per_batch) as i64
                 );
             }
         }
@@ -5673,7 +5673,6 @@ mod tests {
 
     #[test]
     fn init_cohorts_final_metadata_and_commit_failures_restore_baseline() {
-        use crate::ids::TypedId;
         let root = std::env::temp_dir().join(format!(
             "layerfs-cohort-final-failure-{}-{}",
             std::process::id(),
@@ -5765,28 +5764,28 @@ mod tests {
                 assert_eq!(
                     connection
                         .query_row("SELECT COUNT(*) FROM objects", [], |row| row
-                            .get::<_, u64>(0))
+                            .get::<_, i64>(0))
                         .unwrap(),
                     1
                 );
                 assert_eq!(
                     connection
                         .query_row("SELECT COUNT(*) FROM object_packs", [], |row| row
-                            .get::<_, u64>(0))
+                            .get::<_, i64>(0))
                         .unwrap(),
                     1
                 );
                 assert_eq!(
                     connection
                         .query_row("SELECT COUNT(*) FROM layers", [], |row| row
-                            .get::<_, u64>(0))
+                            .get::<_, i64>(0))
                         .unwrap(),
                     0
                 );
                 assert_eq!(
                     connection
                         .query_row("SELECT COUNT(*) FROM layer_stacks", [], |row| row
-                            .get::<_, u64>(0))
+                            .get::<_, i64>(0))
                         .unwrap(),
                     0
                 );
