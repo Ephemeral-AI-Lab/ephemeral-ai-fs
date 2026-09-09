@@ -4,7 +4,7 @@ Updated: **2026-09-10**. Working branch: `codex/issue100-40mb-experiments`.
 
 This is the working index for priorities, completed approaches, results, rejected ideas and remaining qualification. Update this file after each experiment. Keep the linked raw reports and manifests immutable; add a new run when the policy changes.
 
-**Current assessment:** historical reuse is the largest opportunity. The best verified offline full157 reference is **79,790,080 B**, still **23,416,832 B / 41.54% above recorded Git**. It uses extended reconstruction bounds and an offline Git-selected content graph. A useful intermediate saving is not completion. **STRUCT-01–03 completed:** metadata representation, whole-history content dependencies, and complete-copy integration recovered **18,878,464 B** with all157 original states verified. The smaller NEXT experiments below are candidate mechanisms, not the top-level strategy. The same improved policy now measures **59,760,640B on53states versus49,332,224B Git53**, with all53 original states verified ([result](stride3-structural-results.md)).
+**Current assessment:** the ordered campaign's selected archive/reference layouts are **54,382,592B on53 states** and **65,957,888B on157 states**, with all original states verified. They exceed matching Git by **10.24% /17.00%**. Metadata pooling and whole-file history encoding reduce storage, but cold metadata reads can decode5.79MB and a native chunk can incur3,700× amplification. These are **archive/reference results, not hot-filesystem recommendations**. [Ordered results and decisions](ordered-optimization-results.md).
 
 ## 1. Current scorecard — preserve the measurement boundary
 
@@ -18,18 +18,27 @@ Decimal bytes throughout. The ten-state objective is **40,000,000 B**. Full157 i
 | Matched offline controls for that compact experiment | 48,783,360 | 129,937,408 | Equally VACUUMed controls; do not blend with public allocation |
 | Prior offline copy with depth-one metadata deltas | Not run | **98,668,544** | [History-delta report](history-scaling-and-metadata-deltas.md); 157 original-oracle checks PASS |
 | Matched chronological FULL control for depth-one deltas | Not run | 108,081,152 | Same canonical objects, chronology, groups and pack membership |
-| Latest structural offline reference, extended read bounds | Not run | **79,790,080** | [Structural investigation](structural-investigations.md); full database, all157 original oracles PASS |
+| Earlier structural offline reference, extended read bounds | Not run | **79,790,080** | [Structural investigation](structural-investigations.md); full database, all157 original oracles PASS |
+| Latest ordered archive/reference,4KiB pages | Not run | **65,957,888** | [Ordered results](ordered-optimization-results.md); all157 oracles PASS, severe read amplification |
 
-**Separate53-state result:** the [same improved structural policy](stride3-structural-results.md) occupies **59,760,640B**, versus matched Git53 **49,332,224B**. The older public53 implementation remains100,700,160B. These are explicitly different formats, not a regression.
+**Earlier53-state result:** the [same improved structural policy](stride3-structural-results.md) occupies **59,760,640B**, versus matched Git53 **49,332,224B**. The older public53 implementation remains100,700,160B. These are explicitly different formats, not a regression.
 
 The latest ten-state and latest full157 winners use different metadata policies. Do not infer a scaling rate by comparing those two best numbers. The same-policy compact pair, 41,648,128→107,958,272 B, remains the measured scaling comparison. Git's full157 live allocation is now 56,197,120 B with unchanged apparent sizes and pack contents; keep that later observation separate from the recorded 56,373,248 B.
 
 | Remaining full157 category gap | Current offline B | Recorded Git B | Gap B |
 | --- | ---: | ---: | ---: |
-| Content packs / blob entries | 56,367,207 | 46,982,533 | **9,384,674** |
-| Metadata packs / trees and commits | 17,459,061 | 5,007,335 | **12,451,726** |
-| Indexes, structures and allocation | 5,963,812 | 4,383,380 | **1,580,432** |
-| **Total** | **79,790,080** | **56,373,248** | **23,416,832** |
+| Content packs / blob entries | 50,710,265 | 46,982,533 | **3,727,732** |
+| Metadata and physical value-pool packs / trees and commits | 9,603,174 | 5,007,335 | **4,595,839** |
+| Indexes, structures and allocation | 5,644,449 | 4,383,380 | **1,261,069** |
+| **Total** | **65,957,888** | **56,373,248** | **9,584,640** |
+
+## Ordered follow-up — completed in requested order
+
+1. **Metadata:** reject the per-value indexed pool; retain physical group catalogues as a storage experiment. Complete copies57,974,784B /71,970,816B, all53/157states verified.
+2. **Content:** integrate whole-file objects and native slice adapters. Complete copies54,382,592B /65,957,888B, all53/157states verified. Archive/reference-only because of severe small-read amplification.
+3. **Index/layout:**1KiB pages grow53 by4,096B and save157 only73,728B, with deeper B-trees. Retain4KiB pages uniformly; preserve both trials.
+
+The next design requirement is acceptable read amplification. The proposed53≤55MB milestone is met;157≤65MB is missed by957,888B. [Complete ordered results](ordered-optimization-results.md).
 
 ## 2. Structural investigations — highest priority
 
@@ -144,6 +153,15 @@ The selection reduces commit count by66.24%; the first completed public run meas
 Rows are grouped by the priority domain above. Within a domain, retained approaches appear together with their rejected alternatives and supporting studies. IDs remain stable; append a new row for a changed policy rather than overwriting a rejected result.
 
 **Status key:** `PUBLIC-KEPT` = measured runtime foundation, not release approval; `OFFLINE-KEPT` = useful diagnostic component, not product integration; `REJECTED` = tested but not retained; `MEASURED-OFFLINE` = measured diagnostic/control without a retained optimization; `DEFERRED` = measured or studied, with further work postponed; `REFERENCE-ONLY` = encoded architectural reference without complete Store integration; `STUDY-ONLY` = attribution/model without an alternative encoding; `INCOMPLETE` = unusable as final proof; `SUPERSEDED` = valid earlier result replaced by later evidence. A checked experiment means execution/reporting is complete, not that the idea won.
+
+### Ordered optimization follow-up
+
+| Done | ID / approach | Complete measured result | Decision / scope | Evidence |
+| --- | --- | --- | --- | --- |
+| [x] | ORDER-META-01 — per-value indexed pool |53:66,527,232B;157:83,488,768B; regress6,766,592B /3,698,688B | REJECTED; pool/index cost outweighs smaller payload | [Metadata](experiments40/ordered-optimization/metadata/report.md) |
+| [x] | ORDER-META-02 — physical value-group catalogue |53:57,974,784B;157:71,970,816B; save1,785,856B /7,819,264B;all original states PASS | OFFLINE-KEPT storage reference;4.73/5.79MB cold group decoding | [Metadata](experiments40/ordered-optimization/metadata/report.md) |
+| [x] | ORDER-CONTENT-01 — whole-file graph/native adapters |53:54,382,592B;157:65,957,888B; additional3,592,192B /6,012,928B saving;all original states PASS | OFFLINE-KEPT archive reference; worst3,700× native-read amplification | [Content53](experiments40/ordered-optimization/content/report.md), [content157](experiments40/ordered-optimization/content/full157/report.md) |
+| [x] | ORDER-INDEX-01 —1KiB SQLite pages |53:54,386,688B (+4,096B);157:65,884,160B (−73,728B);alllogicalrows identical | REJECTED as default; tiny157gain/deeperBtrees,4KiB retained | [Layout](experiments40/ordered-optimization/index/report.md) |
 
 ### Structural campaign — completed after the original queue
 

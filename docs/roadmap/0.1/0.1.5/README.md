@@ -33,6 +33,11 @@ work. The earlier [31-state smoke report](smoke-report.md) remains historical
 first-round evidence. Its restrictions and the old [implementation prompt](implementation_prompt.md)
 do not supersede the current issue #100 owner instructions.
 
+The [ordered metadata → content → layout campaign](issue100/ordered-optimization-results.md)
+now yields **54,382,592B on53 states /65,957,888B on157**, with all original states verified.
+These remain archive/reference layouts: cold-read amplification is substantial, and the public
+implementation below is unchanged. The1KiB page trial was not adopted.
+
 ## Current implementation
 
 New or changed nonempty file content strictly below **131,072 bytes** uses one
