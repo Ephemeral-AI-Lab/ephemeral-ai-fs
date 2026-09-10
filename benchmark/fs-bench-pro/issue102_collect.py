@@ -75,7 +75,11 @@ def main():
     p.add_argument('--inventory-only',action='store_true')
     p.add_argument('--resume',action='store_true')
     p.add_argument('--retry-case')
+    p.add_argument('--verification-only',action='store_true')
+    p.add_argument('--applicability',type=Path)
     args=p.parse_args()
+    if args.verification_only and (not args.applicability or not args.applicability.is_file()):
+        p.error('verification-only resume requires retained applicability evidence')
     if not args.control_inapplicable and not (args.control_image and args.control_binary):
         p.error('qualified control or retained inapplicability evidence required')
     if args.family=='historical_access' and not (args.access_fixture and args.access_store):
@@ -126,14 +130,19 @@ def main():
             if arm not in arms:continue
             config=arms[arm]
             prior=[v for v in values if v.get('family')==family and v.get('case')==case and v.get('arm')==arm]
-            if not args.retry_case and any(v['phase']=='verification' for v in prior):
+            if not args.retry_case and not args.verification_only and any(v['phase']=='verification' for v in prior):
                 print('RETAINED',family,arm,case,'original receipts in ledger',flush=True);continue
             attempt=sum(v['phase']=='verification' for v in prior)+1
             output=args.output/arm/('attempt-'+str(attempt))
             try:
                 if case==declaration.get('long_test_exclusion'):
                     retain(arm,'verification',case,collect.verify_row(config,family,row,output,None));continue
-                if not row['proof_only']:
+                original_performance=None
+                if args.verification_only and not row['proof_only']:
+                    original_performance=next((v for v in reversed(prior) if v['phase']=='performance' and v.get('status')=='PASS'),None)
+                    if original_performance is None:raise ValueError('no passing performance to retain')
+                    print('RETAINED_PERFORMANCE',original_performance['receipt'],flush=True)
+                if not row['proof_only'] and not args.verification_only:
                     result,_=collect.collect_row(config,family,row,output)
                     if args.retry_case or not completed(values,family,arm,'performance',case):retain(arm,'performance',case,result)
                     identities=result.get('identities')
@@ -145,7 +154,12 @@ def main():
                         '--product-timeout','300','--timeout','310','--setup-timeout','600','--source-arm',config.source_arm])
                     resolve.verification=True
                     identities=runner.resolve_selection(resolve,time.monotonic()+30)
-                retain(arm,'verification',case,collect.verify_row(config,family,row,output,identities))
+                result=collect.verify_row(config,family,row,output,identities)
+                if original_performance:
+                    result.update(retained_performance=original_performance['receipt'],
+                                  retained_performance_sha256=original_performance['receipt_sha256'],
+                                  applicability=str(args.applicability),applicability_sha256=collect._sha256(args.applicability))
+                retain(arm,'verification',case,result)
             except Exception as error:
                 retain(arm,'verification',case,{'status':'INCOMPLETE','error':type(error).__name__+': '+str(error)})
     if fixture:
