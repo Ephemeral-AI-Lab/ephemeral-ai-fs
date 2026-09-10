@@ -1975,7 +1975,12 @@ fn run_case(
             );
             if case.family.starts_with("dedup_") {
                 let dedup = if case.kind == "boundaries" {
-                    super::dedup_verify::verify_boundaries(&receipt)?
+                    {
+                        let connection = rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+                        let schema: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+                        if !matches!(schema, 7 | 9) { return Err("unqualified boundary Store schema".into()); }
+                        super::dedup_verify::verify_boundaries(&receipt, schema == 9)?
+                    }
                 } else {
                     super::dedup_verify::verify_transcripts(
                         case,

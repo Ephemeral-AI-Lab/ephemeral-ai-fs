@@ -548,10 +548,11 @@ pub(crate) fn run(
                 {
                     return Err("publication/presentation boundary".into());
                 }
-                canonical(&store, branch, &case, "done", 0)?;
+                let canonical_result = canonical(&store, branch, &case, "done", 0);
                 record("presentation-stage", "recover-start");
                 client.recover_workspace_presentation(session.id)?;
                 record("presentation-stage", "recover-complete");
+                canonical_result?;
                 live(&client, session.id, &case, "done", 0)?;
                 uptodate(&client, session.id)?;
             }

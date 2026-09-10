@@ -463,6 +463,8 @@ struct SourceImportMetrics {
     file_read_bytes: u64,
     symlink_metadata_calls: u64,
     read_dir_calls: u64,
+    small_content_files: u64,
+    small_content_scratch_bound_bytes: u64,
     single_chunk_files: u64,
     streaming_files: u64,
     cdc_scratch_peak_bytes: u64,
@@ -480,6 +482,8 @@ impl SourceImportMetrics {
             .symlink_metadata_calls
             .saturating_add(other.symlink_metadata_calls);
         self.read_dir_calls = self.read_dir_calls.saturating_add(other.read_dir_calls);
+        self.small_content_files = self.small_content_files.saturating_add(other.small_content_files);
+        self.small_content_scratch_bound_bytes = self.small_content_scratch_bound_bytes.max(other.small_content_scratch_bound_bytes);
         self.single_chunk_files = self
             .single_chunk_files
             .saturating_add(other.single_chunk_files);
@@ -619,14 +623,13 @@ impl InitializationDiagnostic {
         let parent_merge_bytes = if fast_path == 1 { "0" } else { "na" };
         let fast = self.fast.unwrap_or_default();
         let admission = fast.admission;
-        let cdc_peak = fast
-            .source
-            .cdc_scratch_peak_bytes
+        let source_scratch_bound = fast.source.cdc_scratch_peak_bytes
+            .max(fast.source.small_content_scratch_bound_bytes)
             .saturating_mul(fast.worker_count);
         let explicit_buffer_peak_bytes = if fast.slab.handoffs == 0 {
             let prepare_peak = (INITIALIZATION_APPEND_PENDING_BYTES
                 + INITIALIZATION_PAIR_PENDING_BYTES) as u64
-                + cdc_peak;
+                + source_scratch_bound;
             let admission_peak = admission
                 .batch_peak_payload_bytes
                 .saturating_add(
@@ -654,7 +657,7 @@ impl InitializationDiagnostic {
                 .saturating_add(fast.queue_peak_bytes)
                 .saturating_add(crate::objects::INITIALIZATION_SLAB_BYTES as u64)
                 .saturating_add(INITIALIZATION_PAIR_PENDING_BYTES as u64)
-                .saturating_add(cdc_peak)
+                .saturating_add(source_scratch_bound)
                 .saturating_add(fast.slab.structural_peak_bytes)
                 .saturating_add(fast.task_state_bytes)
                 .saturating_add(slab_headers)
@@ -682,7 +685,7 @@ impl InitializationDiagnostic {
             pipeline_peak.max(completed_peak).max(final_peak)
         };
         eprintln!(
-            "layerfs-initialization-diagnostic-v3 nonce={} fast_path={} worker_count={} prepare_import_wall_ns={} source_file_open_calls={} source_file_read_calls={} source_file_read_bytes={} source_symlink_metadata_calls={} source_read_dir_calls={} single_chunk_files={} streaming_files={} cdc_scratch_peak_bytes={} metadata_cache_hits={} metadata_cache_misses={} metadata_cache_peak_entries={} explicit_buffer_peak_bytes={} explicit_slab_payload_limit_bytes={} explicit_slab_object_limit={} explicit_canonical_object_header_bytes={} explicit_pair_pending_limit_bytes={} canonical_frame_count={} canonical_payload_bytes={} canonical_payload_capacity_bytes={} canonical_payload_capacity_slack_bytes={} canonical_encode_calls={} canonical_hash_calls={} canonical_framing_bytes={} object_segment_write_calls={} object_segment_write_bytes={} object_segment_raw_read_calls={} object_segment_raw_read_bytes={} object_segment_passes={} slab_handoffs={} slab_sent_objects={} slab_sent_bytes={} slab_send_blocked_ns={} slab_partial_peak_objects={} slab_partial_peak_payload_bytes={} slab_queue_peak={} slab_queue_peak_bytes={} slab_consumer_idle_ns={} last_slab_receive_offset_ns={} direct_pipeline_wall_ns={} import_pipeline_thread_peak={} active_producers_after={} task_state_bytes={} completed_result_peak_bytes={} parent_final_state_peak_bytes={} candidate_copy_bytes={} structural_peak_bytes={} parent_payload_copy_bytes={} pair_segment_write_calls={} pair_segment_write_bytes={} pair_segment_raw_read_calls={} pair_segment_raw_read_bytes={} pair_segment_passes={} parent_merge_bytes={} pending_duplicate_objects={} pending_duplicate_bytes={} cross_batch_skipped_objects={} cross_batch_skipped_bytes={} collision_checks={} admission_batch_peak_objects={} admission_batch_peak_payload_bytes={} admission_batch_peak_vec_capacity={} pending_index_peak_entries={} pending_index_peak_bytes={} final_batch_peak_payload_bytes={} final_batch_peak_vec_capacity={} final_pending_index_peak_bytes={} final_simultaneous_owned_peak_bytes={} sql_batch_count={} sql_row_count_shape_count={} sql_submitted_rows={} sql_returned_ids={} sql_skipped_ids={} sql_string_build_ns={} sql_prepare_ns={} sql_bind_step_returning_ns={} conflict_read_calls={} conflict_read_rows={} conflict_read_bytes={} conflict_read_ns={} sql_begin_ns={} sql_commit_ns={} final_root_inode_table_wall_ns={} insert_node_peak_len={} insert_node_peak_capacity={}",
+            "layerfs-initialization-diagnostic-v3 nonce={} fast_path={} worker_count={} prepare_import_wall_ns={} source_file_open_calls={} source_file_read_calls={} source_file_read_bytes={} source_symlink_metadata_calls={} source_read_dir_calls={} small_content_files={} small_content_scratch_bound_bytes={} single_chunk_files={} streaming_files={} cdc_scratch_peak_bytes={} metadata_cache_hits={} metadata_cache_misses={} metadata_cache_peak_entries={} explicit_buffer_peak_bytes={} explicit_slab_payload_limit_bytes={} explicit_slab_object_limit={} explicit_canonical_object_header_bytes={} explicit_pair_pending_limit_bytes={} canonical_frame_count={} canonical_payload_bytes={} canonical_payload_capacity_bytes={} canonical_payload_capacity_slack_bytes={} canonical_encode_calls={} canonical_hash_calls={} canonical_framing_bytes={} object_segment_write_calls={} object_segment_write_bytes={} object_segment_raw_read_calls={} object_segment_raw_read_bytes={} object_segment_passes={} slab_handoffs={} slab_sent_objects={} slab_sent_bytes={} slab_send_blocked_ns={} slab_partial_peak_objects={} slab_partial_peak_payload_bytes={} slab_queue_peak={} slab_queue_peak_bytes={} slab_consumer_idle_ns={} last_slab_receive_offset_ns={} direct_pipeline_wall_ns={} import_pipeline_thread_peak={} active_producers_after={} task_state_bytes={} completed_result_peak_bytes={} parent_final_state_peak_bytes={} candidate_copy_bytes={} structural_peak_bytes={} parent_payload_copy_bytes={} pair_segment_write_calls={} pair_segment_write_bytes={} pair_segment_raw_read_calls={} pair_segment_raw_read_bytes={} pair_segment_passes={} parent_merge_bytes={} pending_duplicate_objects={} pending_duplicate_bytes={} cross_batch_skipped_objects={} cross_batch_skipped_bytes={} collision_checks={} admission_batch_peak_objects={} admission_batch_peak_payload_bytes={} admission_batch_peak_vec_capacity={} pending_index_peak_entries={} pending_index_peak_bytes={} final_batch_peak_payload_bytes={} final_batch_peak_vec_capacity={} final_pending_index_peak_bytes={} final_simultaneous_owned_peak_bytes={} sql_batch_count={} sql_row_count_shape_count={} sql_submitted_rows={} sql_returned_ids={} sql_skipped_ids={} sql_string_build_ns={} sql_prepare_ns={} sql_bind_step_returning_ns={} conflict_read_calls={} conflict_read_rows={} conflict_read_bytes={} conflict_read_ns={} sql_begin_ns={} sql_commit_ns={} final_root_inode_table_wall_ns={} insert_node_peak_len={} insert_node_peak_capacity={}",
             self.nonce,
             fast_path,
             fast.worker_count,
@@ -692,6 +695,8 @@ impl InitializationDiagnostic {
             fast.source.file_read_bytes,
             fast.source.symlink_metadata_calls,
             fast.source.read_dir_calls,
+            fast.source.small_content_files,
+            fast.source.small_content_scratch_bound_bytes.saturating_mul(fast.worker_count),
             fast.source.single_chunk_files,
             fast.source.streaming_files,
             fast.source
@@ -2118,7 +2123,16 @@ impl<'objects, S: ObjectStore> NativeImport<'objects, S> {
         self.source.file_read_calls = self.source.file_read_calls.saturating_add(source.calls);
         self.source.file_read_bytes = self.source.file_read_bytes.saturating_add(source.bytes);
         let completed = completed?;
-        if metadata.len() > 0
+        if self.objects.small_content_format()
+            && metadata.len() > 0
+            && metadata.len() < layerfs_content::file::content::SMALL_LIMIT as u64
+        {
+            self.source.small_content_files += 1;
+            // Input, framed value and canonical output coexist during encoding.
+            // Include Vec growth headroom; this is a conservative owned-buffer bound.
+            self.source.small_content_scratch_bound_bytes = self.source.small_content_scratch_bound_bytes
+                .max(metadata.len().saturating_add(32).saturating_mul(4));
+        } else if metadata.len() > 0
             && metadata.len() < layerfs_content::file::cdc::MINIMUM_CHUNK_BYTES as u64
         {
             self.source.single_chunk_files += 1;
@@ -2135,7 +2149,7 @@ impl<'objects, S: ObjectStore> NativeImport<'objects, S> {
             .ok_or(StoreError::Integrity("Layer initialization scan counter"))?;
         self.scanned_bytes = self
             .scanned_bytes
-            .checked_add(completed.counters.cdc_bytes_scanned)
+            .checked_add(source.bytes)
             .ok_or(StoreError::Integrity("Layer initialization scan counter"))?;
         let metadata_root = self.portable_metadata(
             InodeKind::RegularFile,
@@ -2291,12 +2305,26 @@ impl<'objects, S: ObjectStore> NativeImport<'objects, S> {
 
 #[cfg(test)]
 fn legacy_directory_root(path: &std::path::Path, seed: [u8; 32]) -> Result<(BuiltRoot, u64, u64)> {
+    reference_directory_root(path, seed, false)
+}
+
+#[cfg(test)]
+fn reference_directory_root(path: &std::path::Path, seed: [u8; 32], small: bool) -> Result<(BuiltRoot, u64, u64)> {
     use layerfs_content::filesystem;
     use layerfs_content::CanonicalPath;
     use std::collections::HashMap;
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-    let mut objects = ObjectBuffer::empty()?;
+    // The serial oracle shares only format policy, never actual Store objects.
+    struct Format(bool);
+    impl crate::ObjectSource for Format {
+        fn small_content_format(&self) -> bool { self.0 }
+        fn read_object(&self, _: layerfs_content::ObjectId) -> Result<Vec<u8>> {
+            Err(StoreError::NotFound("independent reference object"))
+        }
+    }
+    let format = Format(small);
+    let mut objects = ObjectBuffer::new(&format)?;
     let mut root = filesystem::empty_root(&mut objects, seed)?;
     let metadata = std::fs::symlink_metadata(path)?;
     root = filesystem::set_mode(
@@ -2317,6 +2345,7 @@ fn legacy_directory_root(path: &std::path::Path, seed: [u8; 32]) -> Result<(Buil
     let mut hard_links = HashMap::new();
     let mut scanned_files = 0_u64;
     let mut scanned_bytes = 0_u64;
+    let mut cdc_bytes_scanned = 0_u64;
     legacy_import_directory(
         path,
         &CanonicalPath::root(),
@@ -2326,9 +2355,10 @@ fn legacy_directory_root(path: &std::path::Path, seed: [u8; 32]) -> Result<(Buil
         &mut hard_links,
         &mut scanned_files,
         &mut scanned_bytes,
+        &mut cdc_bytes_scanned,
     )?;
     Ok((
-        objects.finish(root, scanned_bytes)?,
+        objects.finish(root, cdc_bytes_scanned)?,
         scanned_files,
         scanned_bytes,
     ))
@@ -2345,6 +2375,7 @@ fn legacy_import_directory(
     hard_links: &mut std::collections::HashMap<(u64, u64), layerfs_content::CanonicalPath>,
     scanned_files: &mut u64,
     scanned_bytes: &mut u64,
+    cdc_bytes_scanned: &mut u64,
 ) -> Result<()> {
     use layerfs_content::filesystem;
     use layerfs_content::CanonicalName;
@@ -2398,13 +2429,19 @@ fn legacy_import_directory(
                 hard_links,
                 scanned_files,
                 scanned_bytes,
+                cdc_bytes_scanned,
             )?;
         } else if metadata.file_type().is_file() {
+            let mut input = CountedSourceReader {
+                file: std::fs::File::open(entry.path())?,
+                calls: 0,
+                bytes: 0,
+            };
             let candidate = filesystem::write_file(
                 objects,
                 *root,
                 &path,
-                std::fs::File::open(entry.path())?,
+                &mut input,
                 metadata.permissions().mode(),
                 seed,
             )?;
@@ -2412,8 +2449,11 @@ fn legacy_import_directory(
                 .checked_add(1)
                 .ok_or(StoreError::Integrity("Layer initialization scan counter"))?;
             *scanned_bytes = scanned_bytes
-                .checked_add(candidate.counters().rope.cdc_bytes_scanned)
+                .checked_add(input.bytes)
                 .ok_or(StoreError::Integrity("Layer initialization scan counter"))?;
+            *cdc_bytes_scanned = cdc_bytes_scanned
+                .checked_add(candidate.counters().rope.cdc_bytes_scanned)
+                .ok_or(StoreError::Integrity("Layer initialization CDC counter"))?;
             *root = candidate.root();
         } else if metadata.file_type().is_symlink() {
             *root = filesystem::apply_changes(
@@ -2666,7 +2706,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let layer = reopened.layer(stack.head_layer_id).unwrap().unwrap();
-        let (legacy, legacy_files, legacy_bytes) = legacy_directory_root(&source, seed).unwrap();
+        let (legacy, legacy_files, legacy_bytes) = reference_directory_root(&source, seed, true).unwrap();
         assert_eq!((legacy_files, legacy_bytes), (2, 6));
         assert_eq!(layer.root_id, legacy.root_id);
         let mut ids = legacy.objects.ids_in_order(usize::MAX).unwrap().unwrap();
@@ -2721,7 +2761,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let layer = reopened.layer(stack.head_layer_id).unwrap().unwrap();
-        let (legacy, _, _) = legacy_directory_root(&source, seed).unwrap();
+        let (legacy, _, _) = reference_directory_root(&source, seed, true).unwrap();
         assert_eq!(layer.root_id, legacy.root_id);
         let mut ids = legacy.objects.ids_in_order(usize::MAX).unwrap().unwrap();
         ids.sort_unstable();
@@ -2846,7 +2886,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let layer = store.layer(stack.head_layer_id).unwrap().unwrap();
-        let (expected, _, _) = directory_root(&source, seed).unwrap();
+        let (expected, _, _) = reference_directory_root(&source, seed, true).unwrap();
         assert_eq!(layer.root_id, expected.root_id);
         assert_eq!(
             store.store_counts().unwrap().objects,
@@ -3233,7 +3273,7 @@ mod tests {
         assert!(
             (4_000_u64.div_ceil(INITIALIZATION_TASK_FILE_LIMIT as u64)..=32).contains(&task_count)
         );
-        let (expected, files, _) = legacy_directory_root(&source, [29; 32]).unwrap();
+        let (expected, files, _) = reference_directory_root(&source, [29; 32], true).unwrap();
         assert_eq!(files, 4_000);
         assert_direct_objects(&store, &direct, &expected);
 
@@ -3266,7 +3306,7 @@ mod tests {
             (direct.scanned_files, direct.scanned_bytes),
             (4_001, 32_006)
         );
-        let (expected, _, _) = serial_directory_root(&source, [43; 32]).unwrap();
+        let (expected, _, _) = reference_directory_root(&source, [43; 32], true).unwrap();
         assert_direct_objects(&store, &direct, &expected);
         let expected_ids = expected
             .objects
@@ -3314,7 +3354,10 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!((direct.scanned_files, direct.scanned_bytes), (2, 10));
-        let (expected, files, bytes) = legacy_directory_root(&source, [31; 32]).unwrap();
+        assert_eq!(direct.diagnostics.source.small_content_files, 2);
+        assert_eq!(direct.diagnostics.source.cdc_scratch_peak_bytes, 0);
+        let (expected, files, bytes) = reference_directory_root(&source, [31; 32], true).unwrap();
+        assert_eq!(expected.counters.cdc_bytes_scanned, 0);
         assert_eq!((files, bytes), (2, 10));
         assert_direct_objects(&store, &direct, &expected);
 
@@ -3349,7 +3392,7 @@ mod tests {
                 .sum::<u64>()
                 > 3
         );
-        let (expected, _, _) = legacy_directory_root(&source, [41; 32]).unwrap();
+        let (expected, _, _) = reference_directory_root(&source, [41; 32], true).unwrap();
         assert_direct_objects(&store, &direct, &expected);
         drop(expected);
         drop(direct);
@@ -3432,7 +3475,7 @@ mod tests {
             limited.directories[task.directory].entries[task.start].kind,
             FrontierEntryKind::Directory
         )));
-        let (expected, _, _) = serial_directory_root(&source, [47; 32]).unwrap();
+        let (expected, _, _) = reference_directory_root(&source, [47; 32], true).unwrap();
         let store = LayerStackStore::create(root.join("limited.sqlite")).unwrap();
         let direct = direct_initialize_frontier(
             &store.db,
@@ -3542,7 +3585,7 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(*completion.0.lock().unwrap(), vec![1, 0]);
-        let (expected, _, _) = serial_directory_root(&source, [49; 32]).unwrap();
+        let (expected, _, _) = reference_directory_root(&source, [49; 32], true).unwrap();
         assert_direct_objects(&store, &direct, &expected);
         drop(expected);
         drop(direct);
@@ -3597,7 +3640,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let layer = store.layer(stack.head_layer_id).unwrap().unwrap();
-        let (expected, files, _) = directory_root(&source, seed).unwrap();
+        let (expected, files, _) = reference_directory_root(&source, seed, true).unwrap();
         assert_eq!(files, 1);
         assert_eq!(layer.root_id, expected.root_id);
 

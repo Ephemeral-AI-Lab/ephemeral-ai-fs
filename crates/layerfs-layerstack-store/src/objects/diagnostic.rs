@@ -434,26 +434,18 @@ mod tests {
             limited.diag_eligible_count
         );
 
-        let before = store.db.physical_storage_receipt();
+        let before = store.store_counts().unwrap();
         let missing = layerfs_content::ObjectId::for_bytes(b"not an admitted predecessor");
         let mut broken = ObjectBuffer::new(&store).unwrap();
-        broken
-            .set_physical_predecessor(
-                store.snapshot_reader(missing),
-                layerfs_content::file::rope::FileStateRoot(missing),
-                std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            )
-            .unwrap();
-        let broken = broken
-            .build_complete_with_predecessor(b"failure".as_slice(), 7)
-            .unwrap();
-        assert!(broken
-            .objects
-            .consume_prevalidated_pages(|_| Ok(()))
-            .is_err());
-        let failure = store.db.physical_storage_receipt().since(before);
-        assert_ne!(failure.diag_invalid, 0);
-        assert_eq!(failure.diag_cursor_grants, 1);
+        // Format inspection now authenticates the predecessor eagerly. An absent
+        // predecessor must fail before publishing any candidate or Store changes.
+        assert!(broken.set_physical_predecessor(
+            store.snapshot_reader(missing),
+            layerfs_content::file::rope::FileStateRoot(missing),
+            std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        ).is_err());
+        assert_eq!(store.store_counts().unwrap(), before);
+        drop(broken);
         drop(store);
         std::fs::remove_dir_all(folder).unwrap();
     }

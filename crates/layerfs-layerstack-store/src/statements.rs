@@ -142,7 +142,7 @@ mod tests {
             .collect::<Vec<_>>();
         registered.sort();
         assert_eq!(files, registered);
-        assert_eq!(ALL.len(), 45);
+        assert_eq!(ALL.len(), 49);
 
         let connection = Connection::open_in_memory().unwrap();
         connection
@@ -200,6 +200,10 @@ mod tests {
                     | "schema/v5.sql"
                     | "schema/v6.sql"
                     | "schema/v7.sql"
+                    | "schema/v8.sql"
+                    | "schema/v9.sql"
+                    | "schema/migrate_to_v9.sql"
+                    | "schema/migrate_v7_to_v8.sql"
                     | "schema/migrate_v4_to_v5.sql"
             )
         }) {

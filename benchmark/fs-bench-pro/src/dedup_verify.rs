@@ -682,6 +682,23 @@ pub(crate) fn verify_transcripts(
     )
 }
 
+fn whole_small(content: &super::workload_source::workspace_common::Content) -> Result<Vec<Extent>> {
+    if content.len() == 0 || content.len() >= 131072 {
+        return Err("SmallContent oracle bound".into());
+    }
+    let mut raw = Vec::with_capacity(content.len() as usize);
+    content.write_to(&mut raw)?;
+    if raw.len() as u64 != content.len() {
+        return Err("SmallContent oracle short read".into());
+    }
+    Ok(vec![Extent {
+        id: super::workspace_verify::expected_small_root(&raw)?,
+        source_offset: 0,
+        len: raw.len() as u64,
+        payload_len: raw.len() as u64,
+    }])
+}
+
 /// File-level transcript checks also serve fast verification. The caller records
 /// which extents came from current byte reads versus qualified root references;
 /// this function makes no exhaustive namespace/object-census claim.
@@ -692,7 +709,29 @@ pub(crate) fn verify_file_transcripts(
     actual_extents: &BTreeMap<String, Vec<super::workspace_verify::Extent>>,
     actual_file_roots: &BTreeMap<String, ObjectId>,
 ) -> Result<super::workload_source::workspace_common::Receipt> {
-    let expected = expected_transcripts(case, seed, completed_steps)?;
+    let mut expected = expected_transcripts(case, seed, completed_steps)?;
+    let entries =
+        super::workload_source::workspace_registry::expected(case, seed, completed_steps)?;
+    let mut small_count = 0;
+    for (path, got) in actual_extents {
+        if got.len() == 1 && actual_file_roots.get(path) == Some(&got[0].id) {
+            let content = entries
+                .iter()
+                .find_map(|entry| {
+                    if &entry.path == path {
+                        if let super::workload_source::workspace_common::EntryKind::File(content) =
+                            &entry.kind
+                        {
+                            return Some(content);
+                        }
+                    }
+                    None
+                })
+                .ok_or("SmallContent original oracle missing")?;
+            expected.insert(path.clone(), whole_small(content)?);
+            small_count += 1;
+        }
+    }
     if actual_extents.len() != expected.len() {
         return Err("dedup regular-file transcript cardinality".into());
     }
@@ -711,14 +750,24 @@ pub(crate) fn verify_file_transcripts(
             .collect();
         compare(want, &got)?;
     }
-    verify_expected_contract(
+    let mut receipt = verify_expected_contract(
         case,
         seed,
         completed_steps,
         &expected,
         Some(actual_file_roots),
-    )
+    )?;
+    receipt.insert(
+        "admitted_small_content_paths".into(),
+        small_count.to_string(),
+    );
+    receipt.insert(
+        "payload_transcript_schema".into(),
+        "actual-file-payloads-v2".into(),
+    );
+    Ok(receipt)
 }
+
 
 fn verify_expected_contract(
     case: &super::workload_source::workspace_common::Case,
@@ -1205,22 +1254,44 @@ impl HistoryAccounting {
 
 pub(crate) fn verify_boundaries(
     actual: &super::workspace_verify::SnapshotEvidence,
+    small_format: bool,
 ) -> Result<super::workload_source::workspace_common::Receipt> {
     use super::workload_source::{dedup_cdc_locality, workspace_common::EntryKind};
+    let mut source_cdc = BTreeMap::new();
     let mut expected = BTreeMap::new();
+    let mut small_count = 0;
     for entry in dedup_cdc_locality::boundaries()? {
         if let EntryKind::File(content) = entry.kind {
-            expected.insert(entry.path, transcript(content.reader())?);
+            let cdc = transcript(content.reader())?;
+            source_cdc.insert(entry.path.clone(), cdc.clone());
+            let want = if small_format && content.len() > 0 && content.len() < 131072 {
+                small_count += 1;
+                let small = whole_small(&content)?;
+                if actual.file_roots.get(&entry.path) != Some(&small[0].id)
+                    || actual
+                        .canonical_objects
+                        .get(&small[0].id)
+                        .is_none_or(|object| {
+                            object.role != super::workspace_verify::Role::SmallContent
+                        })
+                {
+                    return Err("SmallContent import root identity/role".into());
+                }
+                small
+            } else {
+                cdc
+            };
+            expected.insert(entry.path, want);
         }
     }
     if expected.len() != 60 || actual.extents.len() != 60 {
-        return Err("CDC boundary transcript cardinality".into());
+        return Err("boundary path cardinality".into());
     }
     for (path, want) in &expected {
         let got = actual
             .extents
             .get(path)
-            .ok_or("CDC boundary actual path missing")?;
+            .ok_or("boundary actual path missing")?;
         let got: Vec<_> = got
             .iter()
             .map(|e| Extent {
@@ -1232,8 +1303,23 @@ pub(crate) fn verify_boundaries(
             .collect();
         compare(want, &got)?;
     }
-    verify_boundary_contract(&expected)
+    let mut receipt = verify_boundary_contract(&source_cdc)?;
+    receipt.insert("source_cdc_oracle_status".into(), "pass".into());
+    receipt.insert(
+        "admitted_small_content_paths".into(),
+        small_count.to_string(),
+    );
+    receipt.insert(
+        "admitted_chunked_paths".into(),
+        (60 - small_count).to_string(),
+    );
+    receipt.insert(
+        "payload_transcript_schema".into(),
+        "actual-file-payloads-v2".into(),
+    );
+    Ok(receipt)
 }
+
 
 fn verify_boundary_contract(
     expected: &BTreeMap<String, Vec<Extent>>,

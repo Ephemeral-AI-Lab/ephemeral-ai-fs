@@ -12,6 +12,68 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::process::Stdio;
 
+// Independent regular-root grammar; usable by both schema7 and schema9 builds.
+// Metadata ropes continue to use the extent-only functions below.
+pub(crate) fn small_bytes(canonical: &[u8]) -> layerfs_content::CoreResult<Option<&[u8]>> {
+    let value = layerfs_content::decode_bytes_object(canonical)?;
+    if !value.starts_with(b"LFS5SML\0") {
+        return Ok(None);
+    }
+    if value.get(8..10) != Some(&[0, 1]) || !(11..131082).contains(&value.len()) {
+        return Err(layerfs_content::CoreError::InvalidRecord(
+            "SmallContent framing",
+        ));
+    }
+    Ok(Some(&value[10..]))
+}
+
+pub(crate) fn expected_small_root(bytes: &[u8]) -> AnyResult<ObjectId> {
+    if bytes.is_empty() || bytes.len() >= 131072 {
+        return Err("SmallContent length".into());
+    }
+    let mut payload = b"LFS5SML\0\0\x01".to_vec();
+    payload.extend_from_slice(bytes);
+    let canonical = layerfs_content::encode_bytes_object(&payload)?;
+    Ok(ObjectId::for_bytes(&canonical))
+}
+
+fn regular_length(reader: &CoreReader<'_>, root: rope::FileStateRoot) -> AnyResult<u64> {
+    Ok(reader.with_authenticated_canonical(root.0, |canonical| {
+        Ok(match small_bytes(canonical)? {
+            Some(raw) => raw.len() as u64,
+            None => extent_codec::decode_file_state(canonical)?.logical_len,
+        })
+    })?)
+}
+
+fn validate_regular(reader: &CoreReader<'_>, root: rope::FileStateRoot) -> AnyResult<()> {
+    if !reader
+        .with_authenticated_canonical(root.0, |canonical| Ok(small_bytes(canonical)?.is_some()))?
+    {
+        rope::validate_file(reader, root)?;
+    }
+    Ok(())
+}
+
+fn read_regular(
+    reader: &CoreReader<'_>,
+    root: rope::FileStateRoot,
+    range: std::ops::Range<u64>,
+    sink: &mut impl Write,
+) -> AnyResult<()> {
+    let small = reader.with_authenticated_canonical(root.0, |canonical| {
+        Ok(small_bytes(canonical)?.map(Vec::from))
+    })?;
+    if let Some(bytes) = small {
+        let from = usize::try_from(range.start)?;
+        let to = usize::try_from(range.end)?;
+        sink.write_all(bytes.get(from..to).ok_or("SmallContent range bound")?)?;
+    } else {
+        rope::read_range(reader, root, range, sink)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn verify_sample(
     source: &dyn ObjectSource,
     root: ObjectId,
@@ -33,8 +95,8 @@ pub(crate) fn verify_sample(
             EntryKind::Directory if resolved.record.kind == inode::InodeKind::Directory => (),
             EntryKind::File(content) if resolved.record.kind == inode::InodeKind::RegularFile => {
                 let file = rope::FileStateRoot(resolved.record.content_root);
-                let state = rope::state(&reader, file, &mut Default::default())?;
-                if state.logical_len != content.len() {
+                let length = regular_length(&reader, file)?;
+                if length != content.len() {
                     return Err(format!("sampled canonical length: {}", entry.path).into());
                 }
                 for (offset, len) in sample.file_ranges(entry, content) {
@@ -43,7 +105,7 @@ pub(crate) fn verify_sample(
                         return Err("sampled oracle length".into());
                     }
                     let mut actual = Vec::with_capacity(len);
-                    rope::read_range(&reader, file, offset..offset + len as u64, &mut actual)?;
+                    read_regular(&reader, file, offset..offset + len as u64, &mut actual)?;
                     if actual != expected {
                         return Err(format!("sampled canonical bytes: {}", entry.path).into());
                     }
@@ -414,9 +476,9 @@ pub(crate) fn verify_root(
                 }
                 let file_root = rope::FileStateRoot(resolved.record.content_root);
                 file_roots.insert(path.clone(), resolved.record.content_root);
-                rope::validate_file(&reader, file_root)?;
-                let state = rope::state(&reader, file_root, &mut Default::default())?;
-                if state.logical_len != content.len() {
+                validate_regular(&reader, file_root)?;
+                let length = regular_length(&reader, file_root)?;
+                if length != content.len() {
                     return Err(format!("canonical length: {path}").into());
                 }
                 let mut sink = CompareSink {
@@ -427,7 +489,7 @@ pub(crate) fn verify_root(
                         .then(workload_source::Sha256::new),
                 };
                 custody_paths += usize::from(sink.custody_hash.is_some());
-                rope::read_all(&reader, file_root, &mut sink)?;
+                read_regular(&reader, file_root, 0..content.len(), &mut sink)?;
                 if sink.offset != content.len() {
                     return Err(format!("canonical short file: {path}").into());
                 }
@@ -449,6 +511,7 @@ pub(crate) fn verify_root(
     namespace.require_complete_membership(&namespace_inodes)?;
     drop(namespace);
     let (mut receipt, canonical_objects) = typed_census(source, root)?;
+    receipt.insert("regular_content_schema".into(), "authenticated-filecontent-v2".into());
     receipt.insert("verification_status".into(), "pass".into());
     receipt.insert("canonical_root".into(), root.to_string());
     receipt.insert("verified_paths".into(), entries.len().to_string());
@@ -489,6 +552,9 @@ fn read_file_extents(
     reader: &CoreReader<'_>,
     file_root: rope::FileStateRoot,
 ) -> AnyResult<Vec<Extent>> {
+    if let Some(length) = reader.with_authenticated_canonical(file_root.0, |canonical| Ok(small_bytes(canonical)?.map(|raw| raw.len() as u64)))? {
+        return Ok(vec![Extent { id: file_root.0, source_offset: 0, len: length, payload_len: length }]);
+    }
     let mut file_extents = Vec::new();
     rope::visit_extents(reader, file_root, |page| {
         for extent in page {
@@ -616,6 +682,7 @@ pub(crate) enum Role {
     FileState,
     FileNode,
     Chunk,
+    SmallContent,
     Symlink,
 }
 
@@ -628,7 +695,7 @@ pub(crate) struct CanonicalObject {
 }
 impl CanonicalObject {
     pub(crate) fn regular_payload(&self) -> bool {
-        self.role == Role::Chunk && self.regular_file
+        matches!(self.role, Role::Chunk | Role::SmallContent) && self.regular_file
     }
 }
 
@@ -670,6 +737,10 @@ pub(crate) fn typed_census(
             }
             let bytes = &object.bytes;
             layerfs_content::authenticate_identity(bytes, id)?;
+            let role = if role == Role::FileState && small_bytes(bytes)?.is_some() {
+                if origin != Origin::RegularFile { return Err("SmallContent is not a metadata rope".into()); }
+                Role::SmallContent
+            } else { role };
             let observed = CanonicalObject {
                 role,
                 canonical_bytes: bytes.len() as u64,
@@ -774,6 +845,7 @@ pub(crate) fn typed_census(
                         bytes,
                     )?)?;
                 }
+                Role::SmallContent => { small_bytes(bytes)?.ok_or("SmallContent role mismatch")?; }
                 Role::Symlink => {
                     directory::codec::decode_symlink(bytes)?;
                 }
@@ -1296,9 +1368,9 @@ pub(crate) fn verify_fast_snapshot(
                 }
                 if selected.contains(&path) {
                     let file_root = rope::FileStateRoot(record.content_root);
-                    rope::validate_file(&reader, file_root)?;
-                    let state = rope::state(&reader, file_root, &mut Default::default())?;
-                    if state.logical_len != content.len() {
+                    validate_regular(&reader, file_root)?;
+                    let length = regular_length(&reader, file_root)?;
+                    if length != content.len() {
                         return Err("fast changed/witness length".into());
                     }
                     let mut sink = CompareSink {
@@ -1307,7 +1379,7 @@ pub(crate) fn verify_fast_snapshot(
                         scratch: &mut scratch,
                         custody_hash: None,
                     };
-                    rope::read_all(&reader, file_root, &mut sink)?;
+                    read_regular(&reader, file_root, 0..content.len(), &mut sink)?;
                     if sink.offset != content.len() {
                         return Err("fast changed/witness short read".into());
                     }
@@ -1900,5 +1972,34 @@ mod sampled_tests {
         drop(store);
         std::fs::remove_dir_all(root)?;
         Ok(())
+    }
+}
+
+
+#[cfg(test)]
+mod small_content_checks {
+    use super::*;
+    #[test]
+    fn small_content_grammar_and_identity_are_bounded() {
+        for length in [1, 8192, 131071] {
+            let raw = vec![42; length];
+            let mut value = b"LFS5SML\0\0\x01".to_vec();
+            value.extend_from_slice(&raw);
+            let canonical = layerfs_content::encode_bytes_object(&value).unwrap();
+            assert_eq!(small_bytes(&canonical).unwrap(), Some(raw.as_slice()));
+            assert_eq!(
+                expected_small_root(&raw).unwrap(),
+                ObjectId::for_bytes(&canonical)
+            );
+            value[9] = 2;
+            assert!(small_bytes(&layerfs_content::encode_bytes_object(&value).unwrap()).is_err());
+        }
+        for raw in [vec![], vec![0; 131072]] {
+            assert!(expected_small_root(&raw).is_err());
+        }
+        assert!(
+            small_bytes(&layerfs_content::encode_bytes_object(b"LFS5SML\0\0\x01").unwrap())
+                .is_err()
+        );
     }
 }
