@@ -11,6 +11,87 @@ hashes are in [measurements.json](measurements.json).
 
 Two independent read-only subagents traced the two stages against the historical product source. A single intrusive macOS stack profile of the exact archived #104 executable corroborates two concrete sources of avoidable work. No product code has been changed or optimization measured in this investigation.
 
+## Clear direction and remaining uncertainty
+
+**Ready now:** implement signature reuse and metadata-index statement reuse as
+separate candidates. Their duplicated work is confirmed by source inspection
+and profiling; another broad exploratory profile is not a prerequisite.
+**Not established:** their actual latency savings, combined benefit, or whether
+they restore the <=2.7-second goal while preserving storage and resource behavior.
+All candidates still require correctness checks and controlled measurements.
+
+| Priority | Issue | Proposed optimization | Readiness and required experiment |
+| --- | --- | --- | --- |
+| 1 | Preparation discards a SmallContent signature that FULL publication recomputes. | Retain/reuse the existing bounded 64-byte signature; preserve fallback computation and memory accounting. | Ready to implement. Prove publication reuses the signature without changing lookup/winner behavior; compare pipeline and total Init against an unchanged control. |
+| 2 | Metadata index prepares the same INSERT per value and SELECT per lookup. | Prepare INSERT once per existing transaction; reuse cached SELECT. | Ready to implement. Measure final-tree, index sync/lookup and total Init; verify metadata sharing, authentication, reopen and rollback. |
+| 3 | Scratch metadata index commits each synchronized group of at most 165 values. | Group compatible synchronization work in a bounded scratch transaction. | Measure remaining cost after priority 2 first. Count groups and scratch commits, then test grouping with cursor/error/invalidation checks. Store commit clocks do not cover these transactions. |
+| 4 | FULL compression and candidate-triggered DELTA trials may provide little benefit for this pseudorandom fixture. | Reduce provably unnecessary encoding/trial work only after quantifying its benefit. | Exploratory evidence required: FULL/DELTA selections, trial success rate, codec time, encoded bytes saved and complete allocated Store size. Any encoding-policy change is an explicit treatment, not a silent benchmark shortcut. |
+| 5 | Candidate hits can add locator queries, authenticated base decoding and codec teardown/setup. | Reuse already available facts or batch compatible calls within existing authentication and memory bounds. | Profile/count the remaining calls after earlier fixes. Implement only demonstrated reuse; do not add speculative caches or allow decoder/encoder memory to overlap beyond the budget. |
+| 6 | Four producers feed a mostly busy serial consumer and encounter backpressure. | Reassess worker count or bounded parallel preparation after reducing serial work. | Reprofile first. A separate worker-count treatment must show latency benefit with consumer idle, producer blocked time, CPU and memory evidence. More producers are not currently justified as the first fix. |
+
+Priority order follows evidence, expected effort and correctness risk, not a
+predicted number of seconds saved. Once the first two fixes are measured, follow
+the remaining dominant cost rather than mechanically implementing every item.
+The 23.6% redundant signature share and 76.8% metadata-index share are stack
+observations; the latter includes necessary execution/I/O. Neither is a promised
+wall-time reduction.
+
+### Questions that the next experiments must answer
+
+| What is not clear | Evidence needed to resolve it |
+| --- | --- |
+| Actual benefit of signature reuse | Unchanged-control versus signature-only candidate operation/pipeline clocks; signature computation/reuse counts or equivalent focused evidence; memory and selection correctness. |
+| SQL preparation versus necessary lookup, execution and I/O cost | Statement-only candidate final-tree/index timings, lookup counts and residual profile if needed. Keep scratch commits separate from authoritative Store commits. |
+| Whether scratch transaction grouping is both useful and safe | Remaining scratch commit count/time after statement reuse, then a separate grouped candidate with cursor/error-state and invalidation checks. |
+| Delta/compression benefit on this exact corpus | Actual FULL/DELTA distribution, trial costs, encoded savings and allocated Store bytes. Pseudorandom input suggests low opportunity but is not a measured selection result. |
+| Whether combined fixes recover v0.1.3-level performance | Fresh current-source control and combined candidate with matched harness, fixture, flags, cache policy and bounded ordered repetitions; report operation and command wall, all attempts, median/range and correctness. |
+| Whether improvements transfer beyond the selected case | All four registered Init tiers and independent proofs after fixes stabilize, plus shared admission/publication callers affected by the actual changes, coordinated with #108. |
+
+The current instrumented observation is 4.702218500 s. Reaching 2.7 s requires
+2.002218500 s (42.58%) less latency relative to that observation. This is target
+gap arithmetic, not a prediction or a valid substitute for a fresh control. The
+historical 2.603162083-second campaign sample and 2.537925917-second historical
+product diagnostic retain their different harness/custody and unpaired scope.
+
+### Bounded execution order
+
+```text
+Freeze current source, compatibility and measurement protocol
+  |
+  +--> unchanged control <-> A: signature reuse only -> check + measure
+  |
+  +--> unchanged control <-> B: SQL statement reuse only -> check + measure
+                                  |
+                                  v
+                        combine validated A + B
+                                  |
+                                  v
+                         measure remaining cost
+                                  |
+                 +----------------+----------------+
+                 |                                 |
+          target reached                    target still missed
+                 |                                 |
+                 v                                 v
+       qualify all Init tiers          investigate remaining dominant cost
+       and affected shared callers      among priorities 3 through 6
+```
+
+Before the first build/edit/timed execution, freeze exact source arms, a small
+repetition count and alternating arm order, fixture acquisition/preconditioning,
+cache policy, output locations, timing boundaries and acceptance checks. The
+execution protocol has not yet been frozen or run; this is the implementation
+order. Use the existing measurement lock and fresh independent Stores, retaining
+every attempt. Keep profiler runs separate from clean timing. Add only the
+missing counters needed to distinguish a tested mechanism; reuse existing hooks.
+
+An improvement is retained only with correct behavior, measured benefit and
+reported storage/memory tradeoffs. Do not weaken FULL/DELTA eligibility,
+authentication, publication, complete workload, benchmark compiler flags or
+verifier coverage to obtain a faster number. Source custody must distinguish
+any separately pending compaction-removal changes. No broad campaign rerun is
+needed for this report-only update.
+
 ## Recorded operation and command boundaries
 
 Case: `init_namespace / namespace-100000`, 100,000 files, 1,000 data
@@ -35,6 +116,44 @@ diagnostic used a retained later harness with exactly matching product-source
 seal; it is not a decomposition of the exact old 2.603-second observation.
 The v0.1.5 diagnostic uses the exact archived #104 executable. Neither arm
 measures the later, separately pending compaction-removal patch.
+
+## Fixture distribution and hybrid storage routes
+
+A read-only inventory of the retained fixture verified these actual sizes.
+There are 1,000 data directories with 100 regular files each. All MB are decimal.
+
+| Fixture class | Files | Size per file, bytes | Total bytes | Share of all bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Empty | 1,000 | 0 | 0 | 0% |
+| Tiny | 78,998 | 13-95 | 4,250,404 | 0.85% |
+| Small | 15,000 | 377-3,005 | 25,363,467 | 5.07% |
+| Medium | 5,000 | 12,018-96,136 | 270,386,129 | 54.08% |
+| Large fixture anchors | 2 | 100,000,000 | 200,000,000 | 40% |
+| Total | 100,000 | | 500,000,000 | 100% |
+
+The fixture's category labels are not product thresholds. SmallContent accepts
+non-empty files strictly below 131,072 bytes (128 KiB), so all 98,998 tiny,
+small and medium files use that route: 300 MB, or 60% of the bytes. The two
+100-MB files use the large-file CDC/extents route; empty files are separate.
+The 5,000 medium files carry 90.13% of all SmallContent bytes, whereas the
+78,998 tiny files emphasize per-file and metadata overhead.
+
+```text
+100,000 files / 500 MB
+  +-- 98,998 non-empty files <128 KiB: SmallContent FULL/eligible DELTA, 300 MB
+  +-- 2 files of 100 MB: CDC chunks and extents, 200 MB
+  +-- 1,000 empty files: empty representation and namespace metadata
+
+Both content routes retain exact CAS identity/authentication and packed storage.
+SmallContent eligibility does not imply DELTA selection.
+```
+
+The generator seeds deterministic pseudorandom content separately per file;
+this is not a corpus deliberately composed of related file versions. The exact
+compression ratio and FULL/DELTA selection distribution remain unmeasured in
+these Init diagnostics. The fixture's "anchor" label does not mean those large
+files are SmallContent delta bases. The read-only inventory and its original
+hash are retained in [measurements.json](measurements.json).
 
 ## Clean clocks already recorded
 
@@ -183,7 +302,9 @@ New profile evidence:
 - Parent owned the existing runner measurement lock; no other resource-sensitive run overlapped. Both subagents performed read-only analysis. No source changes/builds, compaction, or independent verifier run occurred. Diagnostic scan counts pass; admission_eligible=false.
 - Historical and clean v0.1.5 evidence manifests were rechecked successfully. The investigation did not alter the unrelated compaction-removal work or sealed #104 campaign.
 
-Next implementation should isolate the two candidates: (A) reuse SmallContent signatures, (B) reuse metadata-index SQL statements. Freeze fresh current-source control/candidate identities and a small sample order before each experiment, use fresh Stores and the existing fixture, check shared-call correctness, and measure existing phase clocks. Add only missing signature-reuse and index lookup/sync accounting needed to distinguish the mechanisms. A combined candidate can follow their individual validation. Remaining scratch transaction coalescing is secondary. No speedup is promised from stack shares; #109 remains open pending implementation, measured improvement, and qualification.
+The prioritized implementation order and evidence needed for each open question
+are recorded above under [Clear direction and remaining uncertainty](#clear-direction-and-remaining-uncertainty).
+No optimization has been measured yet; #109 remains open.
 
 
 ## Correctness and qualification still required

@@ -664,6 +664,72 @@
     "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-issue109-evidence/profile-corrected-20260910T173335Z/init.log": "2863f025f4347abf5475a56d2cfd055d3ae7a8f37ca8e11eba009fdab3d23448",
     "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-issue109-evidence/profile-corrected-20260910T173335Z/attempts.jsonl": "1701d3b0d78824c14a5d92640831752d35825b28e9a13f0956608f3796551e3a",
     "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-issue109-evidence/profile-corrected-20260910T173335Z/declaration.md": "000185cf50c946b7b3cbc16eb68018e93c52858b708afebdf6d3e62822b2222a",
-    "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-issue109-evidence/profile-corrected-20260910T173335Z/manifest.json": "30e4e242dc120a8d8afc22de71f85a01885581aeb65369930faaaf1afca4f1ff"
+    "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-issue109-evidence/profile-corrected-20260910T173335Z/manifest.json": "30e4e242dc120a8d8afc22de71f85a01885581aeb65369930faaaf1afca4f1ff",
+    "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-issue109-evidence/fixture-distribution-20260910T175052Z.json": "1b3fee56b03d64aedbeac31121f1ae5a4f700b2dca427eb9f3fe77eab73360aa"
+  },
+  "fixture_distribution_inventory": {
+    "observed_utc": "2026-09-10T17:50:52.243094+00:00",
+    "fixture_path": "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-issue109-evidence/historical-clock-20260910T171735Z/fixture",
+    "method": "one read-only stat inventory, sorted disjoint fixture size classes with registered class counts",
+    "files": 100000,
+    "directories": 1000,
+    "logical_bytes": 500000000,
+    "classes": [
+      {
+        "class": "empty",
+        "files": 1000,
+        "minimum_bytes": 0,
+        "maximum_bytes": 0,
+        "total_bytes": 0,
+        "file_percent": 1.0,
+        "byte_percent": 0.0
+      },
+      {
+        "class": "tiny",
+        "files": 78998,
+        "minimum_bytes": 13,
+        "maximum_bytes": 95,
+        "total_bytes": 4250404,
+        "file_percent": 78.998,
+        "byte_percent": 0.8500808
+      },
+      {
+        "class": "small",
+        "files": 15000,
+        "minimum_bytes": 377,
+        "maximum_bytes": 3005,
+        "total_bytes": 25363467,
+        "file_percent": 15.0,
+        "byte_percent": 5.0726934
+      },
+      {
+        "class": "medium",
+        "files": 5000,
+        "minimum_bytes": 12018,
+        "maximum_bytes": 96136,
+        "total_bytes": 270386129,
+        "file_percent": 5.0,
+        "byte_percent": 54.0772258
+      },
+      {
+        "class": "anchor",
+        "files": 2,
+        "minimum_bytes": 100000000,
+        "maximum_bytes": 100000000,
+        "total_bytes": 200000000,
+        "file_percent": 0.002,
+        "byte_percent": 40.0
+      }
+    ],
+    "small_content": {
+      "files": 98998,
+      "bytes": 300000000,
+      "threshold_exclusive_bytes": 131072
+    },
+    "large_cdc": {
+      "files": 2,
+      "bytes": 200000000
+    },
+    "empty_files": 1000
   }
 }
