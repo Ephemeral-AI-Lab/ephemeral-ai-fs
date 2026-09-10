@@ -1,20 +1,21 @@
-# Issue #103 integration progress — stride3 complete
+# Issue #103 integration progress — stride3 and full157 complete
 
-**Current result:** integrated stride3 is **46,202,880 allocated bytes / 53 of 53
-original states verified**, after measured public compaction. All 11 historical
-access performance cases and all 11 verification runs pass their 15-second
-contracts. [Final results, custody, costs and limitations](stride3-integrated-results.md).
-Full157/66 MB qualification remains **NOT QUALIFIED**, outside the revised scope.
+**Current result:66 MB storage target ACHIEVED.** Integrated full157 occupies
+**55,476,224 allocated bytes /157 of157 original states verified**, after measured
+public compaction. The margin below66,000,000 bytes is10,523,776 bytes. All11
+full157 historical-access performance cases and11 verification runs pass.
+[Final full157 result, custody, costs and limitations](full157-integrated-results.md).
+The preceding stride3 result remains46,202,880 bytes /53 of53 states verified.
 
-Scope amended by the user on 2026-09-10: finish integration of the promoted
-method and optimize/verify **stride3 only**. Full157 is outside this execution
-scope; the earlier 66 MB/full157 requirement remains historical context, not a
-claim this stride3 run can qualify.
+The user first narrowed execution to integration/stride3 only, then explicitly
+authorized full157 after stride3 completed. The checkpoints below preserve that
+chronology. Full157 now qualifies the66MB criterion; the broader #102 campaign
+and release remain outside scope.
 
 The dated checkpoints below preserve the implementation chronology and failed
 attempts; their pending statements describe those earlier checkpoints. The final
-continuation supersedes their stride3 status. No full157, broad #102 campaign,
-release, tag or deployment was performed.
+continuation supersedes their pending status. No broad #102 campaign, release,
+tag or deployment was performed.
 
 ## Handoff custody
 
@@ -670,3 +671,39 @@ and [seal audit](stride3-seal-audit.json) for exact evidence and commands.
 The user-revised integration/stride3 scope is complete. #103 stays open for its
 original full157 final-storage and #102 handoff obligations. No full157 or broad
 #102 campaign was run; the66MB/full157 result remains NOT QUALIFIED.
+
+
+## Continuation 8 — full157 authorized and verified
+
+The owner authorized the157-state case after stride3 completion. Contract commit
+`937bc2e58c9060df13086be10c4d84b5b0a44b9c` precedes the minimal runner extension
+at`786d29575b1b7cf1123b5f9b8c97f1e4610c2bab`. The product seal and host/compactor/
+Linux executable bytes are unchanged from stride3. The updated runner passes52
+profile/custody checks and uses qualified source-isolated builds and linked probes.
+
+The single full157 producer records157 Created,0 UpToDate and0 presentation
+failures. Public compaction reduces allocated Store storage from83,935,232 to
+**55,476,224 bytes** in626.313062 seconds; source preservation, publication,
+directory sync and cleanup pass. All157 original states verify through the frozen
+measured Store:904,143 path-states and4,936,693,030 logical bytes. The66MB storage
+criterion is **ACHIEVED**, with10,523,776 bytes of margin.
+
+All11 original-checkpoint historical-access cases and their11 separate verifiers
+pass15-second end-to-end contracts, with no read-limit failures. Checkpoints65/57
+are used directly; the earlier stride3 mappings are not reused. The6421-byte cold
+range still decodes22,216,028 bytes, an explicit limitation alongside required
+compaction cost. No limits, product policy or original oracles were weakened.
+
+The final audit passes330 performance files,811 verification files,157 original
+oracle seals,22 access manifests/completions and exact frozen Store/build custody.
+The Store is10,481,664B below offline157 and897,024B below recorded Git157; the
+[final report](full157-integrated-results.md) explains complete physical allocation,
+selection differences, costs, resources and verification-only growth. Raw evidence
+remains in`/Users/yifanxu/Ephemeral-AI-Lab/layerfs-issue103-evidence/full157-integrated-1/`
+and the linked full157 analysis/access/build archives. There were no failed full157
+attempts and no unchanged rerun.
+
+Issue103's integration, correctness, storage and historical-access obligations
+are satisfied; this candidate is handed to #102 through the result/custody docs.
+The full mandatory benchmark campaign and matched released control remain #102
+work and have not run. No release/tag/deployment or unrelated cleanup occurred.

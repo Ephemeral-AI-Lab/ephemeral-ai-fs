@@ -4,7 +4,15 @@ Updated: **2026-09-10**. Working branch: `codex/issue100-40mb-experiments`.
 
 This is the working index for priorities, completed approaches, results, rejected ideas and remaining qualification. Update this file after each experiment. Keep the linked raw reports and manifests immutable; add a new run when the policy changes.
 
-**Integrated stride3 update:** issue #103 now measures **46,202,880 allocated B
+**Integrated full157 update:66 MB target ACHIEVED.** After the owner authorized
+full157, the unchanged promoted product measured **55,476,224 allocated B
+(55.476224 MB),157/157 original states verified**,10,523,776B below66MB. Supported
+compaction costs626.313062s; all11 historical-access cases and11 verification runs
+pass. Cold range amplification remains22,216,028 decoded B for6421 requested B.
+[Final full157 report](../issue103/full157-integrated-results.md). No broad #102
+campaign or release is claimed. Earlier checkpoint assessments below are retained.
+
+**Preceding integrated stride3 update:** issue #103 now measures **46,202,880 allocated B
 (46.202880 MB), 53/53 original states verified**, after339.132858 seconds of
 supported public compaction. It is8,179,712B below offline53 and3,129,344B below
 recorded Git53. All11 historical-access performance cases and11 verification runs
@@ -448,3 +456,31 @@ access11+11 cases pass; the cold6421-byte range decodes17,029,550B, so low read
 amplification and release readiness are not claimed. Full157/66MB qualification
 and broad #102 remain outside the revised scope. Exact identities, commands,
 frozen Store and retained failures: [issue103 final report](../issue103/stride3-integrated-results.md).
+
+
+## 2026-09-10 — promoted full157 qualifies the66MB target
+
+The owner authorized full157 after stride3 completion. Product seal and all
+executables remain identical to the qualified stride3 candidate; runner-only
+registration/custody changes are frozen at`786d29575b1b7cf1123b5f9b8c97f1e4610c2bab`.
+
+| Full157 boundary | Allocated B | Outcome |
+| --- | ---: | --- |
+| Product before compaction | 83,935,232 |157 Created,0 UpToDate,0 presentation failures |
+| **After supported compaction** | **55,476,224** | **157/157 original oracles PASS** |
+| Selected offline157 reference | 65,957,888 | Historical, unchanged |
+| Matching recorded Git157 | 56,373,248 | Historical storage comparison |
+
+Complete allocation saves10,481,664B against offline and897,024B against Git.
+Content payload saves9,912,779B, other payload991,303B, while SQLite nonpayload
+allocation adds422,418B. All75,398 Small and523 whole-owner IDs/lengths match the
+offline reference. Product selection adds6378 Small prefixes, saving10,055,283B;
+whole records cost142,366B more under the bounded product-owned graph. No states
+were omitted to obtain the size.
+
+Compaction626.313062s; peak RSS131,792,896B; sampled temporary407,638,016B plus
+preserved source. All publication/cleanup and157-state oracle checks pass. All11
+historical-access cases and11 verification runs pass15-second contracts; cold
+range decoding22,216,028B for6421B remains a limitation. Exact sources, costs,
+commands and immutable evidence: [full157 result](../issue103/full157-integrated-results.md).
+The full #102 campaign and release remain incomplete.

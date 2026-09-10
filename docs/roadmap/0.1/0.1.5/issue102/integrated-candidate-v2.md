@@ -9,13 +9,16 @@ campaign is diagnostic evidence for the previous product, not qualification of
 the intended candidate. Stop further broad schema9 collection. Preserve its
 failures and the applicable receipt/verifier/build-custody repairs.
 
-**Current prerequisite status (2026-09-10):** full promoted-method integration and
-revised-scope stride3 checks are complete at measured commit
-`80bc489281735c889a4d62ed576135586be3365b`: **46,202,880 allocated B, 53/53 original
-states verified**, all11 historical-access performance cases and11 verification
-runs PASS. Explicit compaction and substantial cold amplification are reported in
-[the final issue103 result](../issue103/stride3-integrated-results.md). Full157 and
-the broad #102 campaign were not authorized in the revised scope and remain open.
+**Current prerequisite status (2026-09-10): integration, stride3 and full157
+storage/oracle checks are complete.** The owner authorized full157 after stride3.
+The unchanged promoted product measures **55,476,224 allocated B /157 of157
+original states verified**,10,523,776B below66MB. All11 full157 historical-access
+performance cases and11 verifiers pass15-second contracts. Measured source
+`786d29575b1b7cf1123b5f9b8c97f1e4610c2bab` changes only runner registration/custody
+from the earlier candidate; its executable bytes/product seal are unchanged.
+[Final result and exact candidate handoff](../issue103/full157-integrated-results.md).
+Explicit compaction cost and substantial cold amplification remain recorded
+tradeoffs. The broad #102 campaign and matched released-control run remain open.
 Earlier checkpoint paragraphs below are retained chronology.
 
 Implementation order:
@@ -30,8 +33,10 @@ Implementation order:
       substituted for the product implementation.
 - [x] Qualify exact bytes, metadata, hardlinks, branching, failure recovery and
       corruption rejection before collecting the full mandatory registry.
-- [ ] Measure integrated stride3 first, then full157 and historical_access;
-      run the complete mandatory benchmark campaign on the frozen candidate.
+- [x] Measure integrated stride3 first, then full157 and historical_access,
+      retaining original-state verification and complete allocation custody.
+- [ ] Run the complete mandatory benchmark campaign and matched released control
+      on the frozen integrated candidate.
 
 The offline 65,957,888-byte database is the reference, not a promised online
 allocation. It rewrites canonical namespace/commit identities and chooses a
@@ -132,3 +137,24 @@ This is the candidate and evidence available for later authorized #102 work.
 It does not qualify the full mandatory registry or a release. Preserve old
 schema9 campaign qualifications and initial-1 invalid custody; neither is promoted
 by this result. #103 remains open for its original full157/handoff obligations.
+
+
+### 2026-09-10 — full157 completed; candidate handed off to #102
+
+[Final full157 report](../issue103/full157-integrated-results.md) supplies the
+source-sealed candidate, exact build/fixture/Store identities, commands, complete
+physical attribution and retained evidence. Full157 is55,476,224 allocated B,
+157/157 original states verified,157 Created and no presentation failures. The
+66MB target is ACHIEVED with10,523,776B margin. Source preservation, publication,
+sync and cleanup all pass; verification-only Store growth is separate.
+
+The API compaction costs626.313062s,131,792,896B peak RSS and407,638,016B sampled
+temporary allocation. Exec/Commit sums are314.027550s/62.689607s. All11 original
+historical-access cases and11 verifiers pass; the cold6421B range decodes22,216,028B.
+Storage success does not remove this amplification or qualify the full registry.
+
+Use measured source`786d29575b1b7cf1123b5f9b8c97f1e4610c2bab`, product seal
+`b1a94e2223b1cd6c0eedffa3c6c60eca7134727c45b9018e1cea518cdf6d3dd5`, and the archived
+binaries/identities identified in that report as the completed #103 prerequisite.
+No broad #102 campaign, matched released-control speed comparison or release has
+been performed. Preserve earlier schema9/initial-1 qualification boundaries.

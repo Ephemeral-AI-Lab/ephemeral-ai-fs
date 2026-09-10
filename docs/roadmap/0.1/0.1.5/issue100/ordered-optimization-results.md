@@ -1,6 +1,12 @@
 # Ordered optimization results: metadata, content, then layout
 
-**Later product integration:** [issue103 stride3 results](../issue103/stride3-integrated-results.md)
+**Later full157 product qualification:** [issue103 full157 results](../issue103/full157-integrated-results.md)
+measure **55,476,224 allocated bytes /157 original states verified**, after
+supported public compaction. The66MB target is achieved with10,523,776B margin;
+all11 historical-access cases and11 verification runs pass. This preserves the
+original offline evidence below and does not complete the broad #102 campaign.
+
+**Preceding product integration:** [issue103 stride3 results](../issue103/stride3-integrated-results.md)
 report **46,202,880 allocated bytes / 53 original states verified**, after supported
 public compaction. All11 historical-access cases and11 verification runs pass.
 This document preserves the original offline measurements; full157 was not rerun
