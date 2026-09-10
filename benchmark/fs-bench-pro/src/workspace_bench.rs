@@ -1860,6 +1860,13 @@ fn run_case(
     drop(store);
     spool_observation("after-client-drop-cleanup")?;
     if verification {
+        // Read before the public Store reacquires its exclusive SQLite lock.
+        let boundary_small_content = if case.kind == "boundaries" {
+            let connection = rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+            let schema: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            if !matches!(schema, 7 | 9) { return Err("unqualified boundary Store schema".into()); }
+            schema == 9
+        } else { false };
         let reopened = Arc::new(LayerStackStore::connect(&path)?);
         store_metrics(
             &reopened,
@@ -1975,12 +1982,7 @@ fn run_case(
             );
             if case.family.starts_with("dedup_") {
                 let dedup = if case.kind == "boundaries" {
-                    {
-                        let connection = rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-                        let schema: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-                        if !matches!(schema, 7 | 9) { return Err("unqualified boundary Store schema".into()); }
-                        super::dedup_verify::verify_boundaries(&receipt, schema == 9)?
-                    }
+                    super::dedup_verify::verify_boundaries(&receipt, boundary_small_content)?
                 } else {
                     super::dedup_verify::verify_transcripts(
                         case,
