@@ -14,6 +14,12 @@ import runner
 
 
 class RunnerTests(unittest.TestCase):
+    def test_linked_schema_rejects_false_source_label(self):
+        with patch.object(runner.runtime, "run", return_value=SimpleNamespace(stdout=b"7\n")):
+            self.assertEqual(runner.verify_linked_schema("binary", 7), 7)
+            with self.assertRaisesRegex(ValueError, "stale build"):
+                runner.verify_linked_schema("binary", 9)
+
     def test_docker_topology_rejected_before_execution(self):
         with patch.object(runner, "_command") as command:
             for modes in (True, False):

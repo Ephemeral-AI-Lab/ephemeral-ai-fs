@@ -552,6 +552,15 @@ pub(crate) fn dispatch(args: &[OsString]) -> AnyResult<()> {
         .map(|s| s.to_str().ok_or("infra arguments must be UTF-8"))
         .collect::<Result<Vec<_>, _>>()?;
     match text.as_slice() {
+        ["infra-schema-probe", path] => {
+            // Build qualification must observe the linked product, not its source labels.
+            let store = LayerStackStore::create(Path::new(path))?;
+            drop(store);
+            let connection = rusqlite::Connection::open(path)?;
+            let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            println!("{version}");
+            Ok(())
+        },
         ["infra-fixture-info",family,case,seed]=>fixture_info(family,case,seed.parse()?),
         ["infra-footprint-fixture",root,case,tier]=>workload_source::create_store_footprint_fixture(Path::new(root),case,tier.parse()?),
         ["infra-list"]=>list(None, None),

@@ -4,6 +4,7 @@ FROM rust:1.85.1-bookworm@sha256:e51d0265072d2d9d5d320f6a44dde6b9ef13653b035098f
 
 ARG TARGETARCH
 ARG CARGO_BUILD_JOBS=2
+ARG LAYERFS_SOURCE_SEAL
 
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
@@ -15,7 +16,7 @@ COPY benchmark/fs-bench-pro/workload ./benchmark/fs-bench-pro/workload
 COPY benchmark/fs-bench-pro/families ./benchmark/fs-bench-pro/families
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/src/target \
+    --mount=type=cache,id=layerfs-bench-target-${LAYERFS_SOURCE_SEAL},target=/src/target,sharing=locked \
     case "$CARGO_BUILD_JOBS" in \
       ''|*[!0-9]*) exit 1 ;; \
     esac \
@@ -27,10 +28,6 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
       *) exit 1 ;; \
     esac \
  && rustup target add "$target" \
- && cargo clean --release --target "$target" \
-      -p layerfs-content -p layerfs-materialization -p layerfs-layerstack-store \
-      -p layerfs-workspace -p layerfs-monitor -p layerfs-sdk \
-      -p layerfs-daemon -p layerfs-fuse -p fs-benchmark-pro \
  && rustc --edition=2021 -C opt-level=3 -C strip=symbols \
       --remap-path-prefix=/src/benchmark/fs-bench-pro=. \
       benchmark/fs-bench-pro/workload/main.rs -o /fs-benchmark-workload \
@@ -62,7 +59,7 @@ FROM build AS runtime-check
 
 # Explicit component checks; this stage never starts a Store or benchmark.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/src/target \
+    --mount=type=cache,id=layerfs-bench-target-${LAYERFS_SOURCE_SEAL},target=/src/target,sharing=locked \
     cargo test --locked --jobs 2 -p layerfs-daemon --bin layerfs-daemon \
  && cargo check --locked --jobs 2 -p layerfs-workspace --features host-fuse \
  && cargo test --locked --jobs 2 -p layerfs-fuse --features proxy,live \

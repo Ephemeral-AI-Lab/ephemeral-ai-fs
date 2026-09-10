@@ -16,6 +16,7 @@ import re
 import shutil
 from pathlib import Path
 import statistics
+import tempfile
 import sys
 import time
 import uuid
@@ -607,6 +608,15 @@ def _timer(row):
     return declared or "unavailable", None
 
 
+def verify_linked_schema(binary, expected):
+    with tempfile.TemporaryDirectory(prefix="layerfs-build-schema-") as folder:
+        observed = int(runtime.run([str(binary), "infra-schema-probe", str(Path(folder) / "store.sqlite")],
+                                   deadline=runtime.Deadline.after(15)).stdout)
+    if observed != expected:
+        raise ValueError(f"linked Store schema {observed} differs from source schema {expected}; stale build")
+    return observed
+
+
 def main(argv=None):
     access_started_ns = ENTRY_STARTED_NS
     argv = sys.argv[1:] if argv is None else argv
@@ -635,8 +645,9 @@ def main(argv=None):
             values = source_build_args()
             if argv == ["--build-host"]:
                 binary = REPO / "target/release/fs-benchmark-pro"
+                build_target = HOST_ROOT / "builds" / values["LAYERFS_SOURCE_SEAL"]
                 try:
-                    result = runtime.run(["cargo", "+1.85.1", "build", "--locked", "--release", "-j2", "-p", "fs-benchmark-pro"],
+                    result = runtime.run(["cargo", "+1.85.1", "build", "--locked", "--release", "-j2", "-p", "fs-benchmark-pro", "--target-dir", str(build_target)],
                         deadline=runtime.Deadline.after(900), cwd=REPO, output_limit=1024**2)
                 except runtime.CommandFailure as error:
                     print(_text(error.result.stderr), file=sys.stderr)
@@ -646,7 +657,11 @@ def main(argv=None):
                 if version is None:
                     raise ValueError("active Store schema version missing")
                 schema_path = REPO / f"crates/layerfs-layerstack-store/sql/schema/v{version.group(1)}.sql"
-                identity = {**values, "binary_sha256": runtime.file_sha256(binary), "platform": platform.platform(), "rust_toolchain": "1.85.1", "schema_sha256": runtime.file_sha256(schema_path)}
+                built = build_target / "release/fs-benchmark-pro"
+                observed_schema = verify_linked_schema(built, int(version.group(1)))
+                binary.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(built, binary)
+                identity = {**values, "build_target": str(build_target), "observed_schema_version": observed_schema, "binary_sha256": runtime.file_sha256(binary), "platform": platform.platform(), "rust_toolchain": "1.85.1", "schema_sha256": runtime.file_sha256(schema_path)}
                 Path(str(binary) + ".identity.json").write_text(json.dumps(identity, sort_keys=True))
                 print(binary)
                 return 0
