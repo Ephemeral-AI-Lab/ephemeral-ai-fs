@@ -132,6 +132,10 @@ def main():
             prior=[v for v in values if v.get('family')==family and v.get('case')==case and v.get('arm')==arm]
             if not args.retry_case and not args.verification_only and any(v['phase']=='verification' for v in prior):
                 print('RETAINED',family,arm,case,'original receipts in ledger',flush=True);continue
+            if args.verification_only and not args.retry_case:
+                latest_proof=next((v for v in reversed(prior) if v['phase']=='verification'),None)
+                if latest_proof and latest_proof.get('status')=='PASS':
+                    print('RETAINED_VERIFICATION',latest_proof.get('receipt'),flush=True);continue
             attempt=sum(v['phase']=='verification' for v in prior)+1
             output=args.output/arm/('attempt-'+str(attempt))
             try:
