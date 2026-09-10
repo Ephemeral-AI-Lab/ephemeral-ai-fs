@@ -245,8 +245,13 @@ fn probe(root: &Path) -> AnyResult<()> {
     Ok(())
 }
 fn check_script(small: &str, large: &str, after: bool) -> String {
-    format!("set -eu; test \"$(stat -f -c %t {MOUNT})\" = 65735546; test \"$(sha256sum {MOUNT}/large-a | cut -d ' ' -f1)\" = {large}; test \"$(sha256sum {MOUNT}/small-a | cut -d ' ' -f1)\" = {small}; test \"$(stat -c %h {MOUNT}/alias)\" = 2; {}", if after {format!("test \"$(cat {MOUNT}/after)\" = after")} else {String::new()})
+    let mut script = format!("set -eu; test \"$(stat -f -c %t {MOUNT})\" = 65735546; test \"$(sha256sum {MOUNT}/large-a | cut -d ' ' -f1)\" = {large}; test \"$(sha256sum {MOUNT}/small-a | cut -d ' ' -f1)\" = {small}; test \"$(stat -c %h {MOUNT}/alias)\" = 2");
+    if after {
+        script.push_str(&format!("; test \"$(cat {MOUNT}/after)\" = after"));
+    }
+    script
 }
+
 fn exec_session(
     store: Arc<LayerStackStore>,
     binding: &ContainerBinding,
@@ -382,5 +387,22 @@ pub(super) fn dispatch(args: &[OsString]) -> AnyResult<()> {
             &ContainerId(container.to_string_lossy().into_owned()),
         ),
         _ => Err("integrated storage command arguments".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn integration_scripts_parse_with_and_without_following_mutations() {
+        for after in [false, true] {
+            for suffix in ["", "; printf changed > /workspace/storage-smoke/small-a"] {
+                let script = super::check_script("0123456789", "abcdef0123", after) + suffix;
+                assert!(std::process::Command::new("/bin/sh")
+                    .args(["-n", "-c", &script])
+                    .status()
+                    .unwrap()
+                    .success());
+            }
+        }
     }
 }

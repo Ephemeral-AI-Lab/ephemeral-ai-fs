@@ -607,3 +607,23 @@ The 51 Python runner tests and Rust1.85.1 harness checks pass in
 harness compile errors are retained in the preceding numbered logs. Docker was
 stopped and was started for the required Linux roles. Qualified builds and the
 live smoke are next; stride3 remains unmeasured.
+
+
+### Qualified build and first live-smoke attempt
+
+Commit `27677bbae7f3431a1ba1b8f8b163fb688982c83e` passed the qualified host
+build and linked integrated-format probe: schema10, compact namespace, metadata
+pool, content107 and system SQLite3.51.0. Source seal:
+`1a638cd29b888a709176001feaa8a5517c485e193cb123e671fb494636ddc458`;
+host SHA256: `0b4430c1079e9912c90b1c9f8bd078d61da8472baf7551c8cdfbf342f67ded55`.
+Host/compactor copies and identities are retained in external evidence
+`qualified-candidate-27677bbae/`; the runner also archives them and the matching
+Linux image binaries. Image `layerfs-bench-infra:1a638cd29b888a70` built successfully.
+
+`live-integration-1/` failed before filesystem reads/writes: the new harness
+script builder emitted adjacent shell separators. The daemon execution receipt
+was valid (zero Docker-engine calls), and cleanup passed. The shared builder was
+fixed, retaining all checks; a shell-parse test covers both standalone checks and
+checks followed by mutation. `integration-script-tests-8.log` passes. Product
+code/seal is unchanged. Rebuild the qualified host/image pair for this harness
+fix before retrying. No stride3 or other storage workload was run.
