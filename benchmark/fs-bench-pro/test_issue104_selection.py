@@ -56,7 +56,18 @@ def test_verification_only_preserves_passing_work():
         assert all(v['phase']=='verification' and v['case']!=cases[0] and v['retained_performance'].startswith('original-') for v in after[len(ledger):])
 
 
+def test_sdk_store_observation():
+    import tempfile
+    with tempfile.TemporaryDirectory() as directory:
+        p=Path(directory)/'store.sqlite';p.write_bytes(b'x'*4096)
+        wal=Path(str(p)+'-wal');wal.write_bytes(b'y'*8192)
+        observed=campaign.runner.sdk_store_observation(p)
+        assert observed['apparent_bytes']==12288 and len(observed['files'])==2
+        assert observed['allocated_bytes']==sum(q.stat().st_blocks*512 for q in (p,wal))
+
+
 if __name__=='__main__':
     test_selection_resume()
+    test_sdk_store_observation()
     test_verification_only_preserves_passing_work()
     print('PASS complete registry, single-family isolation, explicit CLI selection, phase/family resume isolation')
