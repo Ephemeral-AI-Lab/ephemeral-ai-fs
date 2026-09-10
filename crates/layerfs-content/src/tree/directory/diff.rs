@@ -65,6 +65,7 @@ fn diff_directory_nodes<S: ObjectRead>(
     }
     let old_node = load_directory_node_shallow(store, old, root, None, counters)?;
     let new_node = load_directory_node_shallow(store, new, root, None, counters)?;
+    if old_node.summary.compact != new_node.summary.compact { return Err(CoreError::ProfileMismatch); }
     match (&old_node.node, &new_node.node) {
         (
             DirectoryNodeV1::Leaf { entries: old, .. },
@@ -88,6 +89,7 @@ fn diff_directory_nodes<S: ObjectRead>(
         ) if old_level == new_level => diff_directory_children(
             store,
             *old_level,
+            old_node.summary.compact,
             old_children,
             new_children,
             counters,
@@ -114,6 +116,7 @@ fn diff_directory_nodes<S: ObjectRead>(
 fn diff_directory_children<S: ObjectRead>(
     store: &S,
     level: u8,
+    compact: bool,
     old: &[(CanonicalName, ObjectId)],
     new: &[(CanonicalName, ObjectId)],
     counters: &mut NamespaceCounters,
@@ -146,12 +149,14 @@ fn diff_directory_children<S: ObjectRead>(
                 store,
                 &old[old_index..=old_stop],
                 child_level,
+                compact,
                 &mut old_counters,
             ),
             DirectoryEntryCursor::from_children(
                 store,
                 &new[new_index..=new_stop],
                 child_level,
+                compact,
                 &mut new_counters,
             ),
             visitor,
@@ -172,6 +177,7 @@ fn diff_directory_children<S: ObjectRead>(
                 store,
                 &old[old_index..],
                 child_level,
+                compact,
                 &mut old_counters,
             ),
             std::iter::empty(),
@@ -190,6 +196,7 @@ fn diff_directory_children<S: ObjectRead>(
                 store,
                 &new[new_index..],
                 child_level,
+                compact,
                 &mut new_counters,
             ),
             visitor,

@@ -7,6 +7,25 @@ use std::ops::Range;
 
 pub const SMALL_LIMIT: usize = 131072;
 pub const MAGIC: &[u8; 8] = b"LFS5SML\0";
+pub const WHOLE_MAGIC: &[u8; 8] = b"LFSWFL1\0";
+pub const WHOLE_LIMIT: usize = 2 * 1024 * 1024;
+
+/// An authenticated physical owner for native chunk slices, not a logical file root.
+pub fn whole_bytes(canonical: &[u8]) -> CoreResult<Option<&[u8]>> {
+    let value = crate::decode_bytes_object(canonical)?;
+    if !value.starts_with(WHOLE_MAGIC) { return Ok(None); }
+    let raw = &value[8..];
+    if !(SMALL_LIMIT..=WHOLE_LIMIT).contains(&raw.len()) { return Err(CoreError::InvalidRecord("whole-file owner length")); }
+    Ok(Some(raw))
+}
+
+pub fn encode_whole(bytes: &[u8]) -> CoreResult<Vec<u8>> {
+    if !(SMALL_LIMIT..=WHOLE_LIMIT).contains(&bytes.len()) { return Err(CoreError::InvalidRecord("whole-file owner length")); }
+    let mut value = Vec::with_capacity(8 + bytes.len());
+    value.extend_from_slice(WHOLE_MAGIC);
+    value.extend_from_slice(bytes);
+    crate::encode_bytes_object(&value)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FileContentRoot(pub ObjectId);

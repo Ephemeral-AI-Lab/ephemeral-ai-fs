@@ -19,7 +19,7 @@ pub use ids::{BranchId, CommitId, LayerId, LayerStackId};
 pub use objects::{
     apply_changes, apply_reconcile_choices, empty_root, reconcile_candidate,
     reconcile_candidate_with, BuildCounters, BuiltRoot, CandidateReconciliation, CanonicalObject,
-    CoreReader, DeferredObjectStore, FinalizedOutputWriter, ObjectBuffer, ObjectSource,
+    CompactionOptions, CompactionReceipt, CoreReader, DeferredObjectStore, FinalizedOutputWriter, ObjectBuffer, ObjectSource,
     SpillableObjectSet, WorkspaceAdmission, ADMISSION_BATCH_COUNT, OBJECT_PAGE_BYTES,
     OBJECT_PAGE_COUNT,
 };

@@ -40,6 +40,7 @@ pub struct DirectoryPage {
 
 #[derive(Clone)]
 pub(super) struct NodeSummary {
+    pub(super) compact: bool,
     pub(super) id: ObjectId,
     pub(super) min: Option<CanonicalName>,
     pub(super) max: Option<CanonicalName>,

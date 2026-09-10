@@ -14,7 +14,7 @@ pub use layerfs_layerstack_store::{
     capture_workspace_commit_diagnostics, take_workspace_commit_diagnostics,
 };
 pub use layerfs_layerstack_store::{
-    AddLayerResult, BranchId, BranchRecord, BuildCounters, CandidateReceipt, CanonicalStorage,
+    CompactionOptions, CompactionReceipt, AddLayerResult, BranchId, BranchRecord, BuildCounters, CandidateReceipt, CanonicalStorage,
     CommitId, CommitRecord, DiffAspects, DiffEntry, DiffRequest, EntityName, FuseWriteReceipt,
     InitializeLayerStackResult, LayerId, LayerRecord, LayerStackId, LayerStackInitialization,
     LayerStackInitializationReceipt, LayerStackRecord, LayerStackStore, LocalForkSource,

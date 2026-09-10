@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex, MutexGuard};
 
 pub const APPLICATION_ID: i64 = 0x4c46_534c;
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 10;
 pub const LEGACY_SCHEMA_VERSION: i64 = 6;
 // Creation policy is independent of supported existing schema-6 layouts.
 pub const NEW_STORE_PAGE_SIZE_BYTES: i64 = 4096;
@@ -75,6 +75,7 @@ struct StoreInner {
     gate: Arc<TicketGate>,
     leases: Mutex<BTreeSet<BranchId>>,
     idle_small_candidates: Mutex<Option<crate::objects::small_candidates::Candidates>>,
+    metadata_index: Mutex<Option<crate::objects::metadata::ValueIndex>>,
     path: PathBuf,
 }
 
@@ -171,6 +172,70 @@ impl StoreDb {
 
     pub(crate) fn small_chain_format(&self) -> bool { self.0.format_version >= 9 }
 
+    pub(crate) fn compact_framing(&self) -> bool { self.0.format_version >= 10 }
+    pub(crate) fn compact_namespace(&self) -> bool { self.0.format_version >= 10 }
+    pub(crate) fn metadata_index(&self) -> Result<MutexGuard<'_, Option<crate::objects::metadata::ValueIndex>>> {
+        self.0.metadata_index.lock().map_err(|_| StoreError::Integrity("metadata index ownership"))
+    }
+    pub(crate) fn clear_metadata_index(&self) -> Result<()> {
+        *self.metadata_index()? = None;
+        Ok(())
+    }
+
+
+    /// Burn a range before canonical construction/admission. A failed candidate
+    /// cannot roll this reservation back or reuse an identity exposed by it.
+    pub(crate) fn reserve_inode_serials(&self, scope: layerfs_content::ObjectId, count: u64) -> Result<std::ops::Range<u64>> {
+        use rusqlite::OptionalExtension;
+        if !self.compact_namespace() || count == 0 || count > i64::MAX as u64 {
+            return Err(StoreError::InvalidInput("compact inode reservation"));
+        }
+        let _permit = self.enter_operation()?;
+        let mut connection = self.writer()?;
+        if !connection.is_autocommit() { return Err(StoreError::Integrity("inode reservation must precede admission")); }
+        let result = (|| {
+            // Allocation is durable before its serials escape. Keep the normal
+            // publication policy unchanged after this isolated transaction.
+            connection.pragma_update(None, "journal_mode", "DELETE")?;
+            connection.pragma_update(None, "synchronous", "FULL")?;
+            let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let end = transaction.query_row(statements::schema::RESERVE_INODE_SERIALS,
+                rusqlite::params![scope.as_bytes().as_slice(), count as i64], |row| row.get::<_, i64>(0))
+                .optional()?.ok_or(StoreError::InvalidInput("inode serial space exhausted"))?;
+            let end = u64::try_from(end).map_err(|_| StoreError::Integrity("inode allocator highwater"))?;
+            let start = end.checked_sub(count).and_then(|value| value.checked_add(1)).ok_or(StoreError::Integrity("inode allocator range"))?;
+            transaction.commit()?;
+            Ok(start..end + 1)
+        })();
+        let restored = connection.pragma_update(None, "journal_mode", "MEMORY")
+            .and_then(|_| connection.pragma_update(None, "synchronous", "OFF"));
+        if restored.is_err() {
+            self.quarantine_writes();
+            return Err(StoreError::Integrity("inode allocator connection restoration"));
+        }
+        let cleanup = (|| {
+            if !connection.is_autocommit() { return Err(StoreError::Integrity("inode allocator transaction remains active")); }
+            // EXCLUSIVE locking leaves a zeroed rollback journal after commit.
+            // Switching to MEMORY closes SQLite's disk journal handle without
+            // releasing the exclusive database lock. Remove only that inactive
+            // journal; a nonzero header is retained and quarantines further writes.
+            let journal = appended(self.path(), "-journal");
+            let file = match std::fs::File::open(&journal) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(error) => return Err(error.into()),
+            };
+            let mut header = Vec::with_capacity(8);
+            file.take(8).read_to_end(&mut header)?;
+            if header.iter().any(|byte| *byte != 0) { return Err(StoreError::Integrity("inode allocator journal remains hot")); }
+            std::fs::remove_file(journal)?;
+            Ok(())
+        })();
+        if cleanup.is_err() { self.quarantine_writes(); }
+        cleanup?;
+        result
+    }
+
     pub(crate) fn same_instance(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }
@@ -224,7 +289,7 @@ impl StoreDb {
         }
         configure_connection(&connection)?;
         if mode == OpenMode::Create {
-            connection.execute_batch(statements::schema::V9)?;
+            connection.execute_batch(statements::schema::V10)?;
         }
         acquire_exclusive_lock(&mut connection)?;
         verify_schema(&connection, format_version)?;
@@ -244,6 +309,7 @@ impl StoreDb {
             gate: Arc::new(TicketGate::default()),
             leases: Mutex::new(BTreeSet::new()),
             idle_small_candidates: Mutex::new(None),
+            metadata_index: Mutex::new(None),
             path,
         }));
         if let Some(created) = &mut created {
@@ -371,7 +437,7 @@ fn preflight_connect(path: &Path) -> Result<i64> {
         return Err(StoreError::WrongStoreSchema);
     }
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if !matches!(version, LEGACY_SCHEMA_VERSION | 7 | 8 | SCHEMA_VERSION) {
+    if !matches!(version, LEGACY_SCHEMA_VERSION | 7 | 8 | 9 | SCHEMA_VERSION) {
         return Err(StoreError::WrongStoreSchema);
     }
     verify_schema(&connection, version)?;
@@ -445,7 +511,9 @@ fn verify_schema(connection: &Connection, version: i64) -> Result<()> {
 }
 
 fn prepare_manifest(connection: &Connection) -> Result<()> {
+    let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     for (name, sql) in statements::ALL {
+        if *name == "schema/reserve_inode_serials.sql" && version < 10 { continue; }
         if matches!(
             *name,
             "schema/v4.sql"
@@ -454,6 +522,7 @@ fn prepare_manifest(connection: &Connection) -> Result<()> {
                 | "schema/v7.sql"
                 | "schema/v8.sql"
                 | "schema/v9.sql"
+                | "schema/v10.sql"
                 | "schema/migrate_to_v9.sql"
                 | "schema/migrate_v7_to_v8.sql"
                 | "schema/migrate_v4_to_v5.sql"
@@ -482,7 +551,8 @@ fn expected_schema_objects(version: i64) -> Result<Vec<SchemaObject>> {
         LEGACY_SCHEMA_VERSION => statements::schema::V6,
         7 => statements::schema::V7,
         8 => statements::schema::V8,
-        SCHEMA_VERSION => statements::schema::V9,
+        9 => statements::schema::V9,
+        SCHEMA_VERSION => statements::schema::V10,
         _ => return Err(StoreError::WrongStoreSchema),
     })?;
     schema_objects(&expected)
@@ -806,11 +876,11 @@ pub(crate) fn upgrade_format(path: &Path) -> Result<()> {
     let current: i64 = transaction.pragma_query_value(None, "user_version", |r| r.get(0))?;
     if !matches!(current, 7 | 8 | 9) { return Err(StoreError::WrongStoreSchema); }
     verify_schema(&transaction, current)?;
-    if current != SCHEMA_VERSION { transaction.execute_batch(statements::schema::MIGRATE_TO_V9)?; }
+    if current != 9 { transaction.execute_batch(statements::schema::MIGRATE_TO_V9)?; }
     match transaction.commit() {
         Ok(()) => Ok(()),
         Err(error) => {
-            let promoted = connection.is_autocommit() && connection.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).ok() == Some(SCHEMA_VERSION);
+            let promoted = connection.is_autocommit() && connection.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).ok() == Some(9);
             if promoted {
                 Err(StoreError::Io(std::io::Error::other(format!("schema 9 promotion occurred; commit reported: {error}"))))
             } else { Err(error.into()) }

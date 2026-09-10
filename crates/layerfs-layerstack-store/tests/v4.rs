@@ -6,7 +6,7 @@ use layerfs_layerstack_store::{
 use std::collections::BTreeSet;
 
 #[test]
-fn exact_v9_schema_runtime_and_old_schema_rejection() {
+fn exact_v10_schema_runtime_and_old_schema_rejection() {
     let root = temp("schema");
     let path = root.join("store.sqlite");
     let store = LayerStackStore::create(&path).unwrap();
@@ -16,7 +16,7 @@ fn exact_v9_schema_runtime_and_old_schema_rejection() {
         rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .unwrap();
     assert_eq!(pragma(&connection, "application_id"), 0x4c46_534c);
-    assert_eq!(pragma(&connection, "user_version"), 9);
+    assert_eq!(pragma(&connection, "user_version"), 10);
     assert_eq!(pragma(&connection, "page_size"), 4096);
 
     let tables = connection
@@ -43,12 +43,14 @@ fn exact_v9_schema_runtime_and_old_schema_rejection() {
             ("commits".to_owned(), 4, 1, 1),
             ("layer_stacks".to_owned(), 3, 1, 1),
             ("layers".to_owned(), 6, 1, 1),
+            ("metadata_value_groups".to_owned(), 5, 0, 1),
             ("object_packs".to_owned(), 2, 0, 1),
             ("objects".to_owned(), 5, 1, 1),
+            ("scope_allocator".to_owned(), 2, 1, 1),
             ("workspace_stages".to_owned(), 3, 1, 1),
         ]
     );
-    assert_eq!(tables.iter().map(|table| table.1).sum::<i64>(), 28);
+    assert_eq!(tables.iter().map(|table| table.1).sum::<i64>(), 35);
     let indexes = connection
         .prepare(
             "SELECT name FROM sqlite_schema \
@@ -121,6 +123,9 @@ fn one_store_initialize_fork_commit_add_and_dedup_are_atomic() {
         )
         .unwrap();
     let pinned = store.pin_branch(branch_id).unwrap();
+    let namespace = layerfs_content::filesystem::namespace(&layerfs_layerstack_store::CoreReader(&pinned.reader), pinned.root).unwrap();
+    assert!(namespace.scope.is_some());
+    assert_eq!(&layerfs_content::decode_bytes_object(&pinned.reader.read_object(namespace.inode_table_root).unwrap()).unwrap()[..8], b"LFS6INT\0");
     let built = apply_changes(
         &pinned.reader,
         pinned.root,
@@ -211,6 +216,86 @@ fn directory_initialization_receipt_counts_scanned_files_and_bytes() {
 }
 
 #[test]
+fn compact_framing_public_lifecycle_and_file_boundaries() {
+    use layerfs_content::{filesystem, CanonicalPath};
+    use layerfs_layerstack_store::CoreReader;
+    let root = temp("compact-framing-lifecycle");
+    let source = root.join("source");
+    std::fs::create_dir(&source).unwrap();
+    let files: Vec<_> = [0, 1, 131071, 131072, 131073, 2 * 1024 * 1024 + 1].into_iter()
+        .map(|length| {
+            let name = format!("file-{length}");
+            let bytes: Vec<u8> = (0..length).map(|i| (i % 251) as u8).collect();
+            std::fs::write(source.join(&name), &bytes).unwrap();
+            (name, bytes)
+        }).collect();
+    std::fs::hard_link(source.join("file-131071"), source.join("alias")).unwrap();
+    let path = root.join("store.sqlite");
+    let store = LayerStackStore::create(&path).unwrap();
+    let initialized = store.initialize_layerstack(EntityName::new("framing").unwrap(), LayerStackInitialization::Directory(source)).unwrap();
+    let genesis = store.layer(initialized.genesis_layer_id).unwrap().unwrap().root_id;
+    {
+        let reader = store.snapshot_reader(genesis);
+        assert!(filesystem::namespace(&CoreReader(&reader), genesis).unwrap().scope.is_some());
+        let indexed = store.inspect_connection(|db| db.prepare("SELECT object_id FROM objects").unwrap()
+            .query_map([], |row| row.get::<_, Vec<u8>>(0)).unwrap().map(|row| layerfs_content::ObjectId::from_bytes(&row.unwrap()).unwrap())
+            .collect::<BTreeSet<_>>()).unwrap();
+        let mut reached = BTreeSet::new();
+        let mut pending = vec![genesis];
+        while let Some(id) = pending.pop() {
+            if !reached.insert(id) { continue; }
+            let bytes = reader.read_object(id).unwrap();
+            layerfs_content::authenticate_identity(&bytes, id).unwrap();
+            let value = layerfs_content::decode_bytes_object(&bytes).unwrap();
+            assert!(!value.starts_with(b"LFS4INO\0") && !value.starts_with(b"LFS4DIR\0"));
+            pending.extend(layerfs_content::object::references::referenced_objects(&bytes).unwrap());
+        }
+        assert_eq!(reached, indexed, "initialization must admit only final reachable objects");
+    }
+    let branch = store.fork_branch(EntityName::new("main").unwrap(), LocalForkSource::Layer { layer_id: initialized.genesis_layer_id }).unwrap();
+    store.inspect_connection(|db| {
+        assert!(db.query_row("SELECT EXISTS(SELECT 1 FROM object_packs WHERE substr(data,9,4)=x'04000000')", [], |r| r.get::<_, bool>(0)).unwrap());
+        assert!(db.query_row("SELECT EXISTS(SELECT 1 FROM object_packs WHERE substr(data,9,4)=x'06000000')", [], |r| r.get::<_, bool>(0)).unwrap());
+        assert!(db.query_row("SELECT count(*) FROM metadata_value_groups", [], |r| r.get::<_, i64>(0)).unwrap() > 0);
+    }).unwrap();
+    drop(store);
+    let store = LayerStackStore::connect(&path).unwrap();
+    let before = store.snapshot_reader(genesis);
+    for (name, expected) in &files {
+        let mut actual = Vec::new();
+        filesystem::stream(&CoreReader(&before), genesis, &CanonicalPath::from_bytes(name.as_bytes()).unwrap(), &mut actual).unwrap();
+        assert_eq!(&actual, expected);
+    }
+    let alias = CanonicalPath::from_bytes(b"alias").unwrap();
+    assert_eq!(filesystem::stat(&CoreReader(&before), genesis, &alias).unwrap().0.namespace_ref_count, 2);
+    let pinned = store.pin_branch(branch).unwrap();
+    let candidate = apply_changes(&pinned.reader, pinned.root, &[ContentChange::Write {
+        path: "file-1".into(), bytes: b"changed".to_vec(), mode: 0o600,
+    }], [31; 32]).unwrap();
+    let (commit, committed_root) = match store.commit_candidate(&pinned.branch, pinned.root, pinned.branch.base_layer_id, candidate).unwrap() {
+        CommitOutcome::Committed { commit_id, root_id, .. } => (commit_id, root_id),
+        outcome => panic!("unexpected outcome: {outcome:?}"),
+    };
+    let fork = store.fork_branch(EntityName::new("fork").unwrap(), LocalForkSource::Branch { branch_id: branch, commit_id: commit }).unwrap();
+    let pinned_fork = store.pin_branch(fork).unwrap();
+    let candidate = apply_changes(&pinned_fork.reader, pinned_fork.root, &[ContentChange::Write {
+        path: "file-1".into(), bytes: b"fork only".to_vec(), mode: 0o640,
+    }], [32; 32]).unwrap();
+    assert!(matches!(store.commit_candidate(&pinned_fork.branch, pinned_fork.root, pinned_fork.branch.base_layer_id, candidate).unwrap(), CommitOutcome::Committed { .. }));
+    drop(pinned_fork); drop(pinned); drop(before); drop(store);
+    let store = LayerStackStore::connect(&path).unwrap();
+    for (state, expected) in [(genesis, b"\0".as_slice()), (committed_root, b"changed".as_slice()), (store.pin_branch(fork).unwrap().root, b"fork only".as_slice())] {
+        let reader = store.snapshot_reader(state);
+        let mut actual = Vec::new();
+        filesystem::stream(&CoreReader(&reader), state, &CanonicalPath::from_bytes(b"file-1").unwrap(), &mut actual).unwrap();
+        assert_eq!(actual, expected);
+    }
+    assert_eq!(store.canonical_storage().unwrap().objects, store.store_counts().unwrap().objects);
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn entity_names_enforce_the_exact_boundary() {
     assert!(EntityName::new("a").is_ok());
     assert!(EntityName::new("a".repeat(63)).is_ok());
@@ -263,8 +348,8 @@ fn no_op_commit_writes_nothing_and_every_publication_statement_rolls_back() {
     assert_eq!(store_files(&root), vec!["store.sqlite"]);
 
     // The two logical publication statements have stable fault sentinels;
-    // pack and locator insertion can batch independently of object count.
-    for statement in [1, 2, u64::MAX - 1, u64::MAX - 2] {
+    // pack, pool catalogue and locator insertion can batch independently of object count.
+    for statement in [1, 2, 3, u64::MAX - 1, u64::MAX - 2] {
         let candidate = apply_changes(
             &pinned.reader,
             pinned.root,

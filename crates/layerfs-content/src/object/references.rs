@@ -23,6 +23,16 @@ pub fn referenced_objects(canonical: &[u8]) -> CoreResult<Vec<ObjectId>> {
     let value = crate::decode_bytes_object(canonical)?;
     let magic = value.get(..8).unwrap_or_default();
     Ok(match magic {
+        b"LFS6FSR\0" => vec![crate::tree::compact::decode_root(canonical)?.inode_table],
+        b"LFS6INT\0" => match crate::tree::compact::decode_inode(canonical)? {
+            crate::tree::compact::InodeNode::Leaf(rows) => rows.into_iter()
+                .flat_map(|(_, record)| [record.content_root, record.metadata_root]).collect(),
+            crate::tree::compact::InodeNode::Branch { children, .. } => children.into_iter().map(|(_, id)| id).collect(),
+        },
+        b"LFS6NSP\0" => match crate::tree::compact::decode_directory(canonical)? {
+            crate::tree::compact::DirectoryNode::Leaf(_) => Vec::new(),
+            crate::tree::compact::DirectoryNode::Branch { children, .. } => children.into_iter().map(|(_, id)| id).collect(),
+        },
         b"LFS4FSR\0" => vec![decode_namespace_root(canonical)?.inode_table_root],
         b"LFS4INT\0" => match decode_inode_table_node(canonical)? {
             InodeTableNodeV1::Leaf(entries) => entries.into_iter().map(|(_, id)| id).collect(),
@@ -66,6 +76,7 @@ pub fn referenced_objects(canonical: &[u8]) -> CoreResult<Vec<ObjectId>> {
                 }
             }
         }
+        b"LFSWFL1\0" => { crate::file::content::whole_bytes(canonical)?; Vec::new() },
         b"LFS5SML\0" => { crate::file::content::small_bytes(canonical)?; Vec::new() },
         b"LFS4CHK\0" => Vec::new(),
         b"LFS4LNK\0" => Vec::new(),
@@ -99,6 +110,9 @@ mod tests {
     #[test]
     fn every_internal_magic_is_safe_as_user_file_prefix_and_transfer_leaf() {
         for magic in [
+            &b"LFS6FSR\0"[..],
+            &b"LFS6INT\0"[..],
+            &b"LFS6NSP\0"[..],
             &b"LFS4FSR\0"[..],
             &b"LFS4INT\0"[..],
             &b"LFS4INO\0"[..],

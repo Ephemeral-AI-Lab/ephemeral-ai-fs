@@ -1,9 +1,8 @@
 use crate::object::access::ObjectRead;
 use crate::tree::directory::codec::decode_namespace_root;
 use crate::tree::directory::{directory_lookup, DirectoryStateRoot, NamespaceCounters};
-use crate::tree::inode::codec::decode_inode_record;
 use crate::tree::inode::{
-    inode_table_lookup, InodeId, InodeRecordV1, InodeTableCounters, InodeTableRoot,
+    inode_record_lookup, InodeId, InodeRecordV1, InodeTableCounters, InodeTableRoot,
 };
 use crate::tree::NamespaceRootV1;
 use crate::{CanonicalName, CanonicalPath, CoreError, CoreResult, ObjectId};
@@ -84,7 +83,6 @@ fn load_record<S: ObjectRead>(
     inode: InodeId,
     counters: &mut LogicalCounters,
 ) -> CoreResult<InodeRecordV1> {
-    let id = inode_table_lookup(store, table, inode, &mut counters.inode_table)?
-        .ok_or(CoreError::MissingObject)?;
-    store.with_authenticated_canonical(id, decode_inode_record)
+    inode_record_lookup(store, table, inode, &mut counters.inode_table)?
+        .ok_or(CoreError::MissingObject)
 }

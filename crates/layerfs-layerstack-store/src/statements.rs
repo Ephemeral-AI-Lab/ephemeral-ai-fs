@@ -5,6 +5,8 @@ pub const ALL: &[(&str, &str)] = &[
     ("schema/v7.sql", schema::V7),
     ("schema/v8.sql", schema::V8),
     ("schema/v9.sql", schema::V9),
+    ("schema/v10.sql", schema::V10),
+    ("schema/reserve_inode_serials.sql", schema::RESERVE_INODE_SERIALS),
     ("schema/migrate_to_v9.sql", schema::MIGRATE_TO_V9),
     ("schema/migrate_v7_to_v8.sql", schema::MIGRATE_V7_TO_V8),
     ("schema/migrate_v4_to_v5.sql", schema::MIGRATE_V4_TO_V5),
@@ -57,6 +59,8 @@ pub const ALL: &[(&str, &str)] = &[
 ];
 
 pub mod schema {
+    pub const RESERVE_INODE_SERIALS: &str = include_str!("../sql/schema/reserve_inode_serials.sql");
+    pub const V10: &str = include_str!("../sql/schema/v10.sql");
     pub const V9: &str = include_str!("../sql/schema/v9.sql");
     pub const MIGRATE_TO_V9: &str = include_str!("../sql/schema/migrate_to_v9.sql");
     pub const V4: &str = include_str!("../sql/schema/v4.sql");
@@ -142,7 +146,7 @@ mod tests {
             .collect::<Vec<_>>();
         registered.sort();
         assert_eq!(files, registered);
-        assert_eq!(ALL.len(), 49);
+        assert_eq!(ALL.len(), 51);
 
         let connection = Connection::open_in_memory().unwrap();
         connection
@@ -150,7 +154,10 @@ mod tests {
             .unwrap();
         connection.execute_batch(schema::V6).unwrap();
 
+        let compact = Connection::open_in_memory().unwrap();
+        compact.execute_batch(schema::V10).unwrap();
         let expected_parameters = BTreeMap::from([
+            ("schema/reserve_inode_serials.sql", 2),
             ("schema/schema_objects.sql", 0),
             ("schema/table_columns.sql", 1),
             ("schema/foreign_key_check.sql", 0),
@@ -202,6 +209,7 @@ mod tests {
                     | "schema/v7.sql"
                     | "schema/v8.sql"
                     | "schema/v9.sql"
+                    | "schema/v10.sql"
                     | "schema/migrate_to_v9.sql"
                     | "schema/migrate_v7_to_v8.sql"
                     | "schema/migrate_v4_to_v5.sql"
@@ -213,13 +221,14 @@ mod tests {
                 sql.contains("\n-- parameters:"),
                 "missing parameter header: {name}"
             );
+            let owner = if *name == "schema/reserve_inode_serials.sql" { &compact } else { &connection };
             use rusqlite::fallible_iterator::FallibleIterator;
             assert_eq!(
-                rusqlite::Batch::new(&connection, sql).count().unwrap(),
+                rusqlite::Batch::new(owner, sql).count().unwrap(),
                 1,
                 "not one statement: {name}"
             );
-            let statement = connection
+            let statement = owner
                 .prepare(sql)
                 .unwrap_or_else(|error| panic!("failed to prepare {name}: {error}"));
             assert_eq!(

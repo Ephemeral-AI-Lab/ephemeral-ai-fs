@@ -684,11 +684,17 @@ impl SpillObjects {
     }
 }
 
-fn scratch_index(label: &str, schema: &str) -> Result<(Connection, TempPath)> {
+pub(super) fn scratch_index(label: &str, schema: &str) -> Result<(Connection, TempPath)> {
     let (temporary, path) = temporary_file(label)?;
     let path = TempPath(path);
     drop(temporary);
     let connection = Connection::open(&path.0)?;
+    configure_scratch(&connection)?;
+    connection.execute_batch(schema)?;
+    Ok((connection, path))
+}
+
+pub(super) fn configure_scratch(connection: &Connection) -> Result<()> {
     // Only this newly created, disposable database uses OFF journaling. Restore
     // defensive mode before any schema/data access; failed scratch is discarded.
     use rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE;
@@ -707,8 +713,7 @@ fn scratch_index(label: &str, schema: &str) -> Result<(Connection, TempPath)> {
         PRAGMA temp_store=FILE; PRAGMA cache_size=-4096; PRAGMA cache_spill=ON;
         PRAGMA mmap_size=0; PRAGMA locking_mode=EXCLUSIVE;",
     )?;
-    connection.execute_batch(schema)?;
-    Ok((connection, path))
+    Ok(())
 }
 
 impl SpillDiskIndex {
@@ -805,8 +810,11 @@ impl SpillDiskIndex {
 }
 
 pub(super) fn temporary_file(label: &str) -> Result<(std::fs::File, PathBuf)> {
+    temporary_file_in(&std::env::temp_dir(), label)
+}
+
+pub(super) fn temporary_file_in(directory: &std::path::Path, label: &str) -> Result<(std::fs::File, PathBuf)> {
     static SERIAL: AtomicU64 = AtomicU64::new(0);
-    let directory = std::env::temp_dir();
     for _ in 0..32 {
         let path = directory.join(format!(
             "layerfs-{label}-{}-{}",

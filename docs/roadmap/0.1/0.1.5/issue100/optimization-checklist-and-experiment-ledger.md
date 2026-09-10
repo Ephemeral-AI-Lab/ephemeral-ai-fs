@@ -347,3 +347,67 @@ Raw evidence roots, including immutable unsupported copies, selected frames and 
 ```
 
 Maintenance rule: preserve old rows and evidence; append changed-policy experiments. Re-rank the queue only when new evidence changes expected value or dependencies. Do not mark an untested idea completed because a raw-byte model looks favorable.
+
+## #103 native integration checkpoint — 2026-09-10
+
+[Implementation progress](../issue103/integration-progress.md) records native
+schema-10/pack-v4 SmallContent framing and focused correctness checks. The rest
+of the compact namespace, pooled metadata and whole-file/slice product path
+remains unfinished. No integrated stride3/full157 allocation exists yet; the
+66 MB product target is NOT QUALIFIED. Recorded offline results above are
+unchanged. Stride3 remains the first permitted storage run after integration.
+
+### #103 continuation 2 — native namespace foundation
+
+[Progress and exact logs](../issue103/integration-progress.md#native-namespace-checkpoint--continuation-2)
+now cover scoped inline namespace writes from empty initialization, ordinary
+Commit/workspace paths, durable serial reservations and passing affected suites.
+Directory-source initialization, compact reconciliation and the metadata/content
+physical optimizations remain unfinished. No integrated history size is measured;
+66 MB remains NOT QUALIFIED. Offline reference rows remain unchanged.
+
+
+### 2026-09-10 — issue103 continuation 3 and revised scope
+
+The user narrowed execution to full promoted-method integration followed by
+**stride3 optimization/verification only**. Full157 is outside the revised scope;
+no broad #102 campaign or release qualification is implied. Native directory
+initialization and compact reconciliation now pass focused development checks.
+Schema-10 metadata pack v5 integrates bounded 16-edge/128-KiB canonical delta
+chains with authenticated intermediate bases and unchanged legacy contracts.
+Shared metadata-value groups and whole-file graphs/native slices remain pending;
+stride3 has not run and no integrated allocation is claimed. See
+[issue103 integration progress](../issue103/integration-progress.md) for exact
+commands, retained failures and evidence. Recorded offline/Git references are
+unchanged and are not fresh product measurements.
+
+
+### 2026-09-10 — issue103 shared metadata groups integrated
+
+Schema-10 public initialization/admission/Commit now uses pack-v6 pooled inode
+leaves and bounded metadata deltas. Append-only product-owned ordinals preserve
+canonical IDs; full group digests and every intermediate leaf are authenticated.
+A bounded disposable macOS lookup index replaces permanent per-value indexes and
+rebuilds from published groups on reopen. Sharing, rollback/cache disposal,
+corrupt pool dependencies and public lifecycle tests pass. Exact policy, memory/
+work limits, retained failures and test commands are in
+[issue103 integration progress](../issue103/integration-progress.md).
+Whole-file graphs/native slices remain pending. **Stride3 is not yet measured**;
+full157 and broad #102 execution remain outside the revised scope.
+
+
+### 2026-09-10 — issue103 whole-file product compaction implemented
+
+The public `LayerStackStore::compact_into` operation and `layerfs-store-compact`
+binary now write authenticated whole-file prefix graphs and native chunk slices
+using only already published Store content. Selection reuses product min-hash
+signatures; canonical IDs/logical records are preserved, sources are retained,
+and destination publication follows full intrinsic verification. Explicit
+compaction cost, temporary storage and resources must accompany the final size.
+The content container and four-KiB final layout are integrated with public reads,
+future writes/Commit, fork, reopen and repeated compaction. The focused development
+suites pass 342 tests (4 existing ignored), including corruption, quota failure
+and publication recovery. See [issue103 integration progress](../issue103/integration-progress.md)
+for exact policy, limits, commands and retained failed attempts.
+**Stride3 remains unmeasured** pending runner/qualified-build/live-Exec gates.
+No full157 or broad #102 campaign has run under the revised scope.

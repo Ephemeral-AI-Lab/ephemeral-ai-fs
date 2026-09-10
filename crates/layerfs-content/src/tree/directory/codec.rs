@@ -11,10 +11,12 @@ pub(crate) const NODE_LIMIT: usize = 8192;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DirectoryNodeV1 {
     Leaf {
+        compact: bool,
         subtree_encoded_bytes: u64,
         entries: Vec<(CanonicalName, InodeId)>,
     },
     Branch {
+        compact: bool,
         level: u8,
         subtree_entry_count: u64,
         subtree_encoded_bytes: u64,
@@ -22,9 +24,30 @@ pub enum DirectoryNodeV1 {
     },
 }
 
+impl DirectoryNodeV1 {
+    pub fn compact(&self) -> bool {
+        match self { Self::Leaf { compact, .. } | Self::Branch { compact, .. } => *compact }
+    }
+}
+
 pub fn encode_directory_node(node: &DirectoryNodeV1) -> CoreResult<Vec<u8>> {
+    if node.compact() {
+        use crate::tree::compact::{self, DirectoryNode, InodeSerial};
+        let value = match node {
+            DirectoryNodeV1::Leaf { entries, subtree_encoded_bytes, .. } => {
+                let bytes: u64 = entries.iter().map(|row| 10 + row.0.as_bytes().len() as u64).sum();
+                if bytes != *subtree_encoded_bytes { return Err(CoreError::InvalidRecord("compact directory bytes")); }
+                DirectoryNode::Leaf(entries.iter().map(|(key, id)| Ok((key.clone(), InodeSerial::from_inode_key(*id)?))).collect::<CoreResult<_>>()?)
+            }
+            DirectoryNodeV1::Branch { level, subtree_entry_count, subtree_encoded_bytes, children, .. } => DirectoryNode::Branch {
+                level: *level, subtree_count: *subtree_entry_count, subtree_bytes: *subtree_encoded_bytes, children: children.clone(),
+            },
+        };
+        return compact::encode_directory(&value);
+    }
     let (role, level, count, subtree_count, subtree_bytes) = match node {
         DirectoryNodeV1::Leaf {
+            compact: _,
             subtree_encoded_bytes,
             entries,
         } => (
@@ -35,6 +58,7 @@ pub fn encode_directory_node(node: &DirectoryNodeV1) -> CoreResult<Vec<u8>> {
             *subtree_encoded_bytes,
         ),
         DirectoryNodeV1::Branch {
+            compact: _,
             level,
             subtree_entry_count,
             subtree_encoded_bytes,
@@ -80,6 +104,19 @@ pub fn encode_directory_node(node: &DirectoryNodeV1) -> CoreResult<Vec<u8>> {
 }
 
 pub fn decode_directory_node(canonical: &[u8]) -> CoreResult<DirectoryNodeV1> {
+    if decode_bytes_object(canonical)?.starts_with(b"LFS6NSP\0") {
+        use crate::tree::compact::{self, DirectoryNode};
+        return Ok(match compact::decode_directory(canonical)? {
+            DirectoryNode::Leaf(rows) => DirectoryNodeV1::Leaf {
+                compact: true,
+                subtree_encoded_bytes: rows.iter().map(|row| 10 + row.0.as_bytes().len() as u64).sum(),
+                entries: rows.into_iter().map(|(key, serial)| (key, serial.inode_key())).collect(),
+            },
+            DirectoryNode::Branch { level, subtree_count, subtree_bytes, children } => DirectoryNodeV1::Branch {
+                compact: true, level, subtree_entry_count: subtree_count, subtree_encoded_bytes: subtree_bytes, children,
+            },
+        });
+    }
     let value = decode_node_value(canonical, b"LFS4NSP\0")?;
     let role = value[10];
     let level = value[11];
@@ -97,6 +134,7 @@ pub fn decode_directory_node(canonical: &[u8]) -> CoreResult<DirectoryNodeV1> {
                 entries.push((name, inode));
             }
             DirectoryNodeV1::Leaf {
+            compact: false,
                 subtree_encoded_bytes: subtree_bytes,
                 entries,
             }
@@ -109,6 +147,7 @@ pub fn decode_directory_node(canonical: &[u8]) -> CoreResult<DirectoryNodeV1> {
                 children.push((name, child));
             }
             DirectoryNodeV1::Branch {
+            compact: false,
                 level,
                 subtree_entry_count: subtree_count,
                 subtree_encoded_bytes: subtree_bytes,
@@ -141,6 +180,11 @@ pub fn encode_directory_state(value: DirectoryStateV1) -> CoreResult<Vec<u8>> {
 }
 
 pub fn decode_directory_state(canonical: &[u8]) -> CoreResult<DirectoryStateV1> {
+    if decode_bytes_object(canonical)?.starts_with(b"LFS6NSP\0") {
+        let node = decode_directory_node(canonical)?;
+        let (_, entry_count, _, tree_level) = super::validate::node_fields(&node);
+        return Ok(DirectoryStateV1 { entry_count, tree_level, profile_id: crate::tree::compact::profile_id(), mapping_root: ObjectId::for_bytes(canonical) });
+    }
     let bytes = exact_value(canonical, b"LFS4DIR\0", 85, 3)?;
     let value = DirectoryStateV1 {
         entry_count: u64::from_be_bytes(bytes[12..20].try_into().unwrap()),
@@ -185,6 +229,12 @@ pub fn decode_symlink(canonical: &[u8]) -> CoreResult<SymlinkStateV1> {
 }
 
 pub fn encode_namespace_root(value: NamespaceRootV1) -> CoreResult<Vec<u8>> {
+    if let Some(scope) = value.scope {
+        use crate::tree::compact::{self, InodeSerial};
+        if value.profile_id != compact::profile_id() { return Err(CoreError::ProfileMismatch); }
+        return compact::encode_root(compact::NamespaceRoot { profile_id: value.profile_id, scope,
+            root_inode: InodeSerial::from_inode_key(value.root_directory_inode)?, inode_table: value.inode_table_root });
+    }
     if value.profile_id != profile_id() {
         return Err(CoreError::ProfileMismatch);
     }
@@ -199,8 +249,15 @@ pub fn encode_namespace_root(value: NamespaceRootV1) -> CoreResult<Vec<u8>> {
 }
 
 pub fn decode_namespace_root(canonical: &[u8]) -> CoreResult<NamespaceRootV1> {
+    if decode_bytes_object(canonical)?.starts_with(b"LFS6FSR\0") {
+        let root = crate::tree::compact::decode_root(canonical)?;
+        if root.profile_id != crate::tree::compact::profile_id() { return Err(CoreError::ProfileMismatch); }
+        return Ok(NamespaceRootV1 { scope: Some(root.scope), profile_id: root.profile_id,
+            root_directory_inode: root.root_inode.inode_key(), inode_table_root: root.inode_table });
+    }
     let bytes = exact_value(canonical, b"LFS4FSR\0", 108, 6)?;
     let value = NamespaceRootV1 {
+        scope: None,
         profile_id: ObjectId::from_bytes(&bytes[12..44])?,
         root_directory_inode: InodeId::from_slice(&bytes[44..76])?,
         inode_table_root: ObjectId::from_bytes(&bytes[76..108])?,

@@ -102,6 +102,9 @@ pub(super) enum Version {
     Legacy,
     Native,
     Small,
+    CompactSmall,
+    Metadata,
+    PooledMetadata,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -116,17 +119,17 @@ pub(super) fn versioned_header(bytes: &[u8; 16], blob_length: usize) -> Result<H
             version: Version::Legacy,
             group_count: header(bytes, blob_length)?,
         }),
-        version @ (2 | 3) => {
+        version @ (2 | 3 | 4 | 5 | 6) => {
             let count = u32_at(bytes, 12)?;
             if &bytes[..8] != MAGIC
                 || blob_length > PACK_LIMIT
                 || !(1..=GROUP_COUNT_LIMIT).contains(&count)
-                || blob_length <= 16 + 16 * count
+                || blob_length <= 16 + if version == 4 { 4 } else { 16 } * count
             {
                 return Err(invalid());
             }
             Ok(Header {
-                version: if version == 3 { Version::Small } else { Version::Native },
+                version: match version { 6 => Version::PooledMetadata, 5 => Version::Metadata, 4 => Version::CompactSmall, 3 => Version::Small, _ => Version::Native },
                 group_count: count,
             })
         }
@@ -139,6 +142,7 @@ pub(super) fn versioned_entry(
     header: Header,
     blob_length: usize,
 ) -> Result<GroupEntry> {
+    if header.version == Version::CompactSmall { return Err(invalid()); }
     if header.version == Version::Small {
         let start = u32_at(bytes, 0)?;
         let encoded = u32_at(bytes, 4)?;
@@ -151,12 +155,33 @@ pub(super) fn versioned_entry(
         return Ok(GroupEntry { range: start..end, decoded_length: decoded, codec: Codec::Raw, oversized: false });
     }
     let parsed = entry(bytes, header.group_count, blob_length)?;
+    if matches!(header.version, Version::Metadata | Version::PooledMetadata) && (parsed.oversized || parsed.decoded_length > 16 * 1024) { return Err(invalid()); }
     if header.version == Version::Native
         && (parsed.oversized || parsed.codec != Codec::Raw || blob_length > PACK_LIMIT)
     {
         return Err(invalid());
     }
     Ok(parsed)
+}
+
+/// Pack v4 stores only group starts. Validate the complete bounded directory
+/// before selecting a range; the final end is the SQLite BLOB length.
+pub(super) fn compact_entry(starts: &[u8], header: Header, blob_length: usize, group: usize) -> Result<GroupEntry> {
+    if header.version != Version::CompactSmall || !(1..=GROUP_COUNT_LIMIT).contains(&header.group_count) || group >= header.group_count
+        || starts.len() != 4 * header.group_count || blob_length > PACK_LIMIT {
+        return Err(invalid());
+    }
+    let mut start = 16 + starts.len();
+    let mut selected = 0..0;
+    for index in 0..header.group_count {
+        if u32_at(starts, 4 * index)? != start { return Err(invalid()); }
+        let end = if index + 1 == header.group_count { blob_length } else { u32_at(starts, 4 * (index + 1))? };
+        let size = end.checked_sub(start).ok_or_else(invalid)?;
+        if !(2..=1 + 32 + super::delta::FRAME_LIMIT).contains(&size) || end > blob_length { return Err(invalid()); }
+        if index == group { selected = start..end; }
+        start = end;
+    }
+    Ok(GroupEntry { decoded_length: selected.len(), range: selected, codec: Codec::Raw, oversized: false })
 }
 
 pub(super) const NATIVE_RAW_LIMIT: usize = 32_768;
@@ -306,8 +331,18 @@ pub(super) fn assemble_native(groups: &[EncodedGroup]) -> Result<Vec<u8>> {
 
 /// One bounded encoder scratch allocation, owned by one admission preparation.
 /// The cached context points only into owned scratch; borrowed inputs reset on every call.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum ContentProfile { Native, Small, Whole }
+impl ContentProfile {
+    fn raw_limit(self) -> usize { match self { Self::Native => NATIVE_RAW_LIMIT, Self::Small => 131071, Self::Whole => layerfs_content::file::content::WHOLE_LIMIT } }
+    fn frame_limit(self) -> usize { match self { Self::Native => NATIVE_FRAME_LIMIT, Self::Small => 135168, Self::Whole => layerfs_content::file::content::WHOLE_LIMIT + 1024 } }
+    fn output_limit(self) -> usize { if self == Self::Whole { self.raw_limit() + 16 * 1024 } else { self.frame_limit() } }
+    fn window(self) -> i32 { if self == Self::Small { 18 } else { 20 } }
+    fn decode_workspace(self) -> usize { if self == Self::Native { NATIVE_DECODE_WORKSPACE } else { 1024 * 1024 } }
+}
+
 pub(super) struct NativeEncoder {
-    small: bool,
+    profile: ContentProfile,
     memory: Vec<u64>,
     context: Option<zstandard::NativeContext>,
 }
@@ -315,18 +350,22 @@ pub(super) struct NativeEncoder {
 impl NativeEncoder {
     pub(super) fn new() -> Result<Self> {
         Ok(Self {
-            small: false,
+            profile: ContentProfile::Native,
             memory: zstandard::native_workspace()?,
             context: None,
         })
     }
 
     pub(super) fn new_small() -> Result<Self> {
-        Ok(Self { small: true, memory: zstandard::small_workspace()?, context: None })
+        Ok(Self { profile: ContentProfile::Small, memory: zstandard::small_workspace()?, context: None })
+    }
+
+    pub(super) fn new_whole() -> Result<Self> {
+        Ok(Self { profile: ContentProfile::Whole, memory: zstandard::whole_workspace()?, context: None })
     }
 
     pub(super) fn compress(&mut self, raw: &[u8], prefix: Option<&[u8]>) -> Result<Vec<u8>> {
-        zstandard::native_compress_in(&mut self.memory, &mut self.context, raw, prefix, self.small)
+        zstandard::native_compress_in(&mut self.memory, &mut self.context, raw, prefix, self.profile)
     }
 }
 
@@ -340,16 +379,28 @@ pub(super) fn native_decompress(
     raw_length: usize,
     prefix: Option<&[u8]>,
 ) -> Result<Vec<u8>> {
-    zstandard::decompress_profile(frame, raw_length, prefix, false)
+    zstandard::decompress_profile(frame, raw_length, prefix, ContentProfile::Native)
 }
 
 pub(super) fn small_decompress(frame: &[u8], raw_length: usize, prefix: Option<&[u8]>) -> Result<Vec<u8>> {
-    zstandard::decompress_profile(frame, raw_length, prefix, true)
+    zstandard::decompress_profile(frame, raw_length, prefix, ContentProfile::Small)
+}
+
+pub(super) fn whole_decompress(frame: &[u8], raw_length: usize, prefix: Option<&[u8]>) -> Result<Vec<u8>> {
+    zstandard::decompress_profile(frame, raw_length, prefix, ContentProfile::Whole)
 }
 
 pub(super) fn validate_small_pack(bytes: &[u8]) -> Result<()> {
     let header_bytes: &[u8; 16] = bytes.get(..16).ok_or_else(invalid)?.try_into().map_err(|_| invalid())?;
     let header = versioned_header(header_bytes, bytes.len())?;
+    if header.version == Version::CompactSmall {
+        let starts = bytes.get(16..16 + 4 * header.group_count).ok_or_else(invalid)?;
+        for index in 0..header.group_count {
+            let entry = compact_entry(starts, header, bytes.len(), index)?;
+            super::delta::compact_record_parts(&bytes[entry.range])?;
+        }
+        return Ok(());
+    }
     if header.version != Version::Small { return Err(invalid()); }
     let mut offset = 16 + 16 * header.group_count;
     for index in 0..header.group_count {
@@ -361,6 +412,25 @@ pub(super) fn validate_small_pack(bytes: &[u8]) -> Result<()> {
     }
     if offset != bytes.len() { return Err(invalid()); }
     Ok(())
+}
+
+pub(super) fn assemble_compact_small(groups: &[EncodedGroup]) -> Result<Vec<u8>> {
+    let mut size = 16 + 4 * groups.len();
+    if groups.is_empty() || groups.len() > GROUP_COUNT_LIMIT { return Err(invalid()); }
+    for group in groups {
+        super::delta::record(&group.bytes)?;
+        if group.records != 1 || group.codec != Codec::Raw || group.decoded_length != group.bytes.len() { return Err(invalid()); }
+        size = size.checked_add(group.bytes.len() - 8).ok_or_else(invalid)?;
+    }
+    if size > PACK_LIMIT { return Err(invalid()); }
+    let mut bytes = Vec::with_capacity(size);
+    bytes.extend_from_slice(MAGIC);
+    put_u32(&mut bytes, 4)?;
+    put_u32(&mut bytes, groups.len())?;
+    let mut offset = 16 + 4 * groups.len();
+    for group in groups { put_u32(&mut bytes, offset)?; offset += group.bytes.len() - 8; }
+    for group in groups { bytes.push(group.bytes[0]); bytes.extend_from_slice(&group.bytes[9..]); }
+    Ok(bytes)
 }
 
 pub(super) fn assemble_small(groups: &[EncodedGroup]) -> Result<Vec<u8>> {
@@ -934,13 +1004,13 @@ mod zstandard {
         Ok(bytes)
     }
 
-    use super::{
-        NATIVE_DECODE_WORKSPACE, NATIVE_ENCODE_WORKSPACE, NATIVE_FRAME_LIMIT, NATIVE_RAW_LIMIT,
-    };
+    use super::NATIVE_ENCODE_WORKSPACE;
+    #[cfg(test)]
+    use super::{NATIVE_FRAME_LIMIT, NATIVE_RAW_LIMIT};
 
     /// Exact S2 requested setter sequence, shared with the dynamic-equivalence
     /// test. No CParams substitution or parameter adjustment to fit workspace.
-    unsafe fn native_parameters(context: *mut ZSTD_CCtx, small: bool) -> Result<()> {
+    unsafe fn native_parameters(context: *mut ZSTD_CCtx, profile: super::ContentProfile) -> Result<()> {
         // SAFETY: Caller supplies a live initialized context, exclusively owned.
         unsafe {
             checked(ZSTD_CCtx_reset(
@@ -949,7 +1019,7 @@ mod zstandard {
             ))?;
             for (parameter, value) in [
                 (ZSTD_cParameter::ZSTD_c_compressionLevel, 3),
-                (ZSTD_cParameter::ZSTD_c_windowLog, if small { 18 } else { 20 }),
+                (ZSTD_cParameter::ZSTD_c_windowLog, profile.window()),
                 (ZSTD_cParameter::ZSTD_c_contentSizeFlag, 1),
                 (ZSTD_cParameter::ZSTD_c_checksumFlag, 1),
                 (ZSTD_cParameter::ZSTD_c_dictIDFlag, 0),
@@ -971,6 +1041,16 @@ mod zstandard {
             if size > 2 * 1024 * 1024 || checked(ZSTD_compressBound(131071))? > 135168 { return Err(resource()); }
         }
         workspace(2 * 1024 * 1024, 2 * 1024 * 1024)
+    }
+
+    pub(super) fn whole_workspace() -> Result<Vec<u64>> {
+        unsafe {
+            let mut parameters = ZSTD_getCParams(3, 2 * 1024 * 1024, 2 * 1024 * 1024);
+            parameters.windowLog = 20;
+            if checked(ZSTD_estimateCCtxSize_usingCParams(parameters))? > 8 * 1024 * 1024
+                || checked(ZSTD_compressBound(2 * 1024 * 1024))? > 2 * 1024 * 1024 + 16 * 1024 { return Err(resource()); }
+        }
+        workspace(8 * 1024 * 1024, 8 * 1024 * 1024)
     }
 
     pub(super) fn native_workspace() -> Result<Vec<u64>> {
@@ -996,10 +1076,10 @@ mod zstandard {
         cached: &mut Option<NativeContext>,
         raw: &[u8],
         prefix: Option<&[u8]>,
-        small: bool,
+        profile: super::ContentProfile,
     ) -> Result<Vec<u8>> {
-        let raw_limit = if small { 131071 } else { NATIVE_RAW_LIMIT };
-        let frame_limit = if small { 135168 } else { NATIVE_FRAME_LIMIT };
+        let raw_limit = profile.raw_limit();
+        let frame_limit = profile.frame_limit();
         let prefix = prefix.unwrap_or(&[]);
         if raw.len() > raw_limit || prefix.len() > raw_limit {
             return Err(invalid());
@@ -1031,7 +1111,7 @@ mod zstandard {
             // Reset settings and borrowed operands, while preserving the bounded
             // context/workspace allocations and the exact frozen frame parameters.
             let result = (|| {
-                native_parameters(context, small)?;
+                native_parameters(context, profile)?;
                 checked(ZSTD_CCtx_refPrefix(
                     context,
                     if prefix.is_empty() {
@@ -1042,11 +1122,11 @@ mod zstandard {
                     prefix.len(),
                 ))?;
                 let bound = checked(ZSTD_compressBound(raw.len()))?;
-                if bound > frame_limit {
+                if bound > profile.output_limit() {
                     return Err(resource());
                 }
                 let mut encoded = output(bound)?;
-                if encoded.capacity() > frame_limit {
+                if encoded.capacity() > profile.output_limit() {
                     return Err(resource());
                 }
                 let length = native_encode_checked(ZSTD_compress2(
@@ -1056,7 +1136,7 @@ mod zstandard {
                     raw.as_ptr().cast(),
                     raw.len(),
                 ))?;
-                if length == 0 || length > encoded.len() {
+                if length == 0 || length > encoded.len() || length > frame_limit {
                     return Err(invalid());
                 }
                 encoded.truncate(length);
@@ -1084,17 +1164,17 @@ mod zstandard {
 
     #[cfg(test)]
     fn native_decompress(encoded: &[u8], length: usize, prefix: Option<&[u8]>) -> Result<Vec<u8>> {
-        decompress_profile(encoded, length, prefix, false)
+        decompress_profile(encoded, length, prefix, super::ContentProfile::Native)
     }
 
     pub(super) fn decompress_profile(
         encoded: &[u8],
         length: usize,
         prefix: Option<&[u8]>,
-        small: bool,
+        profile: super::ContentProfile,
     ) -> Result<Vec<u8>> {
-        let raw_limit = if small { 131071 } else { NATIVE_RAW_LIMIT };
-        let frame_limit = if small { 135168 } else { NATIVE_FRAME_LIMIT };
+        let raw_limit = profile.raw_limit();
+        let frame_limit = profile.frame_limit();
         let prefix = prefix.unwrap_or(&[]);
         if length > raw_limit
             || prefix.len() > raw_limit
@@ -1124,7 +1204,7 @@ mod zstandard {
             let header = header.assume_init();
             if header.frameType != ZSTD_FrameType_e::ZSTD_frame
                 || header.frameContentSize != length as u64
-                || header.windowSize > if small { 262144 } else { 1_048_576 }
+                || header.windowSize > (1u64 << profile.window())
                 || header.dictID != 0
                 || header.checksumFlag != 1
                 || checked(ZSTD_findFrameCompressedSize(
@@ -1134,7 +1214,7 @@ mod zstandard {
             {
                 return Err(invalid());
             }
-            let mut memory = workspace(ZSTD_estimateDCtxSize(), if small { 1024 * 1024 } else { NATIVE_DECODE_WORKSPACE })?;
+            let mut memory = workspace(ZSTD_estimateDCtxSize(), profile.decode_workspace())?;
             let context = ZSTD_initStaticDCtx(memory.as_mut_ptr().cast(), memory.len() * 8);
             if context.is_null() {
                 return Err(resource());
@@ -1146,9 +1226,9 @@ mod zstandard {
             checked(ZSTD_DCtx_setParameter(
                 context,
                 ZSTD_dParameter::ZSTD_d_windowLogMax,
-                if small { 18 } else { 20 },
+                profile.window(),
             ))?;
-            let remaining = (if small { 1024 * 1024 } else { NATIVE_DECODE_WORKSPACE })
+            let remaining = (profile.decode_workspace())
                 .checked_sub(memory.capacity() * 8)
                 .ok_or_else(resource)?;
             let mut dictionary = if prefix.is_empty() {
@@ -1318,7 +1398,7 @@ mod zstandard {
             unsafe {
                 let context = Context(ZSTD_createCCtx());
                 assert!(!context.0.is_null());
-                native_parameters(context.0, false).unwrap();
+                native_parameters(context.0, super::super::ContentProfile::Native).unwrap();
                 checked(ZSTD_CCtx_refPrefix(
                     context.0,
                     prefix.as_ptr().cast(),
@@ -1355,7 +1435,7 @@ mod zstandard {
                     !context.is_null(),
                     "fixture must initialize before encoding exhausts workspace"
                 );
-                native_parameters(context, false).unwrap();
+                native_parameters(context, super::super::ContentProfile::Native).unwrap();
                 checked(ZSTD_CCtx_refPrefix(context, std::ptr::null(), 0)).unwrap();
                 let raw = vec![b'x'; NATIVE_RAW_LIMIT];
                 let mut frame = vec![0; ZSTD_compressBound(raw.len())];
@@ -1439,7 +1519,7 @@ mod zstandard {
                         &mut encoder.context,
                         &large,
                         Some(&prefix),
-                        false
+                        super::super::ContentProfile::Native
                     ),
                     Err(StoreError::Io(_))
                 ));
@@ -1545,6 +1625,40 @@ mod zstandard {
 #[cfg(test)]
 mod native_framing_tests {
     use super::*;
+
+    #[test]
+    fn compact_small_framing_exact_reconstruction_and_rejection() {
+        let base = ObjectId::for_bytes(b"base");
+        let groups = [
+            super::super::delta::encode(0, 1, None, vec![9, 8]).unwrap(),
+            super::super::delta::encode(1, 131071, Some(base), vec![7, 6, 5]).unwrap(),
+            super::super::delta::encode(2, 1024, Some(base), vec![4]).unwrap(),
+        ];
+        let old = assemble_small(&groups).unwrap();
+        let bytes = assemble_compact_small(&groups).unwrap();
+        assert_eq!(old.len() - bytes.len(), 20 * groups.len());
+        assert_eq!(&bytes[..16], b"LFPACK\0\0\x04\0\0\0\x03\0\0\0");
+        let header = versioned_header(bytes[..16].try_into().unwrap(), bytes.len()).unwrap();
+        assert_eq!(header.version, Version::CompactSmall);
+        validate_small_pack(&bytes).unwrap();
+        for (index, (group, raw)) in groups.iter().zip([1, 131071, 1024]).enumerate() {
+            let entry = compact_entry(&bytes[16..28], header, bytes.len(), index).unwrap();
+            let mut record = bytes[entry.range].to_vec();
+            super::super::delta::expand_compact(&mut record, raw + 23).unwrap();
+            assert_eq!(record, group.bytes);
+        }
+        for end in 0..bytes.len() { assert!(validate_small_pack(&bytes[..end]).is_err()); }
+        for (offset, replacement) in [(12, 0), (12, 257), (16, 27), (20, 28), (24, bytes.len() as u32 + 1)] {
+            let mut corrupt = bytes.clone();
+            corrupt[offset..offset + 4].copy_from_slice(&replacement.to_le_bytes());
+            assert!(validate_small_pack(&corrupt).is_err());
+        }
+        for raw_length in [0, 23, 131072 + 23, usize::MAX] {
+            assert!(super::super::delta::expand_compact(&mut vec![0, 1], raw_length).is_err());
+        }
+        assert!(super::super::delta::compact_record_parts(&[3, 1]).is_err());
+        assert!(super::super::delta::compact_record_parts(&[1; 32]).is_err());
+    }
 
     #[test]
     fn native_grammar_ranges_and_legacy_dispatch() {

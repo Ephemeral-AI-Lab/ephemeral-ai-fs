@@ -52,6 +52,8 @@ pub(crate) struct PreparedAdmission {
     absence_epoch: Option<u64>,
     packs: Vec<Vec<u8>>,
     objects: Vec<PreparedObject>,
+    pool_groups: Vec<PreparedValueGroup>,
+    pending_values: BTreeMap<[u8; 73], u32>,
     metrics: ObjectInsertMetrics,
     native_base_max_pack: i64,
     canonical_live_capacity: usize,
@@ -108,6 +110,8 @@ impl PreparedAdmission {
             // No pack-pointer growth during either lane: at most one pack/object.
             packs: Vec::with_capacity(count),
             objects: Vec::with_capacity(count),
+            pool_groups: Vec::new(),
+            pending_values: BTreeMap::new(),
             metrics,
             native_base_max_pack: 0,
             canonical_live_capacity,
@@ -126,6 +130,7 @@ impl PreparedAdmission {
         objects: Vec<AuthenticatedCanonicalObject>,
         stats: &mut crate::PhysicalStorageReceipt,
     ) -> Result<()> {
+        for object in &objects { db.check_canonical_format(&object.bytes)?; }
         let input_associations =
             objects.capacity() * std::mem::size_of::<AuthenticatedCanonicalObject>();
         let mut search = DeltaSearch {
@@ -143,6 +148,11 @@ impl PreparedAdmission {
         search.input_associations = (native.capacity() + objects.capacity())
             * std::mem::size_of::<AuthenticatedCanonicalObject>();
         self.prepare_native(db, native, &mut search, stats)?;
+        let (metadata, ordinary_objects): (Vec<_>, Vec<_>) = objects.into_iter().partition(|object|
+            db.compact_namespace() && read::metadata_leaf(&object.bytes));
+        for objects in [metadata, ordinary_objects] {
+        let metadata_lane = objects.first().is_some_and(|object| read::metadata_leaf(&object.bytes));
+        let pack_limit = if metadata_lane { 128 * 1024 } else { pack::PACK_LIMIT };
         let mut ordinary = Vec::new();
         let mut bytes = 0usize;
         let mut count = 0usize;
@@ -159,7 +169,7 @@ impl PreparedAdmission {
             // Charge one directory entry per possible group. This conservative
             // incremental bound avoids growing-prefix group recounts.
             let next = object.bytes.len() + 5 + 20;
-            if bytes + next + 16 > pack::PACK_LIMIT || count == pack::RECORD_COUNT_LIMIT {
+            if bytes + next + 16 > pack_limit || count == pack::RECORD_COUNT_LIMIT {
                 self.prepare_ordinary(db, std::mem::take(&mut ordinary), &mut search, stats)?;
                 bytes = 0;
                 count = 0;
@@ -168,7 +178,9 @@ impl PreparedAdmission {
             count += 1;
             ordinary.push(object);
         }
-        self.prepare_ordinary(db, ordinary, &mut search, stats)
+        self.prepare_ordinary(db, ordinary, &mut search, stats)?;
+        }
+        Ok(())
     }
 
     fn physical_backing(&self) -> usize {
@@ -259,7 +271,7 @@ impl PreparedAdmission {
             let started = Instant::now();
             let full = encoder.as_mut().unwrap().compress(raw, None)?;
             stats.encoding_calls += 1;
-            stats.full_alternative_bytes += (full.len() + 9 + 16) as u64;
+            stats.full_alternative_bytes += (full.len() + if db.compact_framing() { 5 } else { 25 }) as u64;
             let mut base = None;
             let mut kind = 0;
             let mut frame = full;
@@ -281,14 +293,14 @@ impl PreparedAdmission {
             let delta = base.is_some();
             let group = super::delta::encode(kind, raw.len(), base, frame)?;
             if 16 + 16 * (groups.len() + 1) + group_bytes + group.bytes.len() > pack::PACK_LIMIT || groups.len() == pack::GROUP_COUNT_LIMIT {
-                self.packs.push(pack::assemble_small(&groups)?);
+                self.packs.push(if db.compact_framing() { pack::assemble_compact_small(&groups)? } else { pack::assemble_small(&groups)? });
                 groups.clear();
                 group_bytes = 0;
             }
             stats.eligible_targets += 1;
             stats.full_selected += u64::from(!delta);
             stats.delta_selected += u64::from(delta);
-            stats.selected_encoded_bytes += group.bytes.len() as u64;
+            stats.selected_encoded_bytes += (group.bytes.len() - if db.compact_framing() { 8 } else { 0 }) as u64;
             self.objects.push(PreparedObject {
                 id: object.id, length: object.bytes.len(), pack: self.packs.len(), group: groups.len(), record: 0,
                 canonical: 0..0, retained: Some(object.0.bytes), delta,
@@ -298,7 +310,7 @@ impl PreparedAdmission {
             groups.push(group);
         }
         drop(encoder);
-        if !groups.is_empty() { self.packs.push(pack::assemble_small(&groups)?); }
+        if !groups.is_empty() { self.packs.push(if db.compact_framing() { pack::assemble_compact_small(&groups)? } else { pack::assemble_small(&groups)? }); }
         Ok(())
     }
 
@@ -655,6 +667,8 @@ impl PreparedAdmission {
         if objects.is_empty() {
             return Ok(());
         }
+        let metadata = db.compact_namespace() && objects.iter().all(|object| read::metadata_leaf(&object.bytes));
+        let mut values = if metadata { Some(prepare_values(db, &objects, self.pool_groups.last().map(|group| group.first + group.count as u64), &mut self.pending_values, stats)?) } else { None };
         let mut groups = Vec::<Vec<usize>>::new();
         let mut pending = [Vec::new(), Vec::new()];
         let mut sizes = [4usize, 4usize];
@@ -662,7 +676,7 @@ impl PreparedAdmission {
             let content = is_content(&object.bytes)?;
             let role = usize::from(content);
             let target = if content { 32 * 1024 } else { 16 * 1024 };
-            let next = 5 + object.bytes.len();
+            let next = 5 + values.as_ref().map_or(object.bytes.len(), |values| values.physical[index].len());
             if !pending[role].is_empty() && sizes[role] + next > target {
                 groups.push(std::mem::take(&mut pending[role]));
                 sizes[role] = 4;
@@ -679,6 +693,8 @@ impl PreparedAdmission {
         let pack_index = self.packs.len();
         let mut offset = 16 + 16 * groups.len();
         let fixed_associations = search.input_associations
+            + values.as_ref().map_or(0, |values| values.backing())
+            + self.pool_groups.capacity() * std::mem::size_of::<PreparedValueGroup>()
             + self.packs.capacity() * std::mem::size_of::<Vec<u8>>()
             + self.objects.capacity() * std::mem::size_of::<PreparedObject>()
             + objects.capacity() * std::mem::size_of::<AuthenticatedCanonicalObject>()
@@ -716,7 +732,7 @@ impl PreparedAdmission {
                 let before_instruction = stats.instruction_budget_skips;
                 let before_memory = stats.memory_budget_skips;
                 if optional {
-                    deltas.push(search.candidate(db, object, stats)?);
+                    deltas.push(search.candidate(db, object, values.as_ref().map(|values| values.physical[*index].as_slice()), stats)?);
                 } else {
                     stats.memory_budget_skips += 1;
                     stats.budget_skips += 1;
@@ -772,7 +788,7 @@ impl PreparedAdmission {
             }
             let canonical = group
                 .iter()
-                .map(|index| objects[*index].bytes.as_slice())
+                .map(|index| values.as_ref().map_or(objects[*index].bytes.as_slice(), |values| values.physical[*index].as_slice()))
                 .collect::<Vec<_>>();
             let (selected, mixed) = pack::encode_group(&canonical, &deltas, stats)?;
             let mut cursor = offset + 4 + 4 * group.len();
@@ -782,7 +798,7 @@ impl PreparedAdmission {
                 let record_length = if delta {
                     deltas[record_number].as_ref().unwrap().len()
                 } else {
-                    1 + object.bytes.len()
+                    1 + values.as_ref().map_or(object.bytes.len(), |values| values.physical[*index].len())
                 };
                 let end = cursor + record_length;
                 let mut diagnostic_terminal = object.1.diagnostic_grants;
@@ -792,7 +808,7 @@ impl PreparedAdmission {
                     stats.diag_event_mixed_rejection_bytes += object.bytes.len() as u64;
                 }
                 let canonical_length = object.bytes.len();
-                let retained = if delta || selected.codec == pack::Codec::Zstandard {
+                let retained = if metadata || delta || selected.codec == pack::Codec::Zstandard {
                     Some(std::mem::take(&mut object.0.bytes))
                 } else {
                     self.canonical_live_capacity -= object.0.bytes.capacity();
@@ -816,6 +832,14 @@ impl PreparedAdmission {
             backing += selected.bytes.capacity();
             encoded.push(selected);
         }
+        if let Some(values) = values.take() {
+            for (mut catalogue, group) in values.groups {
+                catalogue.pack = pack_index;
+                catalogue.group = encoded.len();
+                self.pool_groups.push(catalogue);
+                encoded.push(group);
+            }
+        }
         let length = 16 + 16 * encoded.len() + encoded.iter().map(|g| g.bytes.len()).sum::<usize>();
         self.data_reserve(length)?;
         if backing + fixed_associations + length > 2 * 1024 * 1024 {
@@ -823,7 +847,9 @@ impl PreparedAdmission {
                 "legacy assembly reservation",
             )));
         }
-        self.packs.push(pack::assemble(&encoded)?);
+        let mut bytes = pack::assemble(&encoded)?;
+        if metadata { bytes[8..12].copy_from_slice(&6u32.to_le_bytes()); }
+        self.packs.push(bytes);
         Ok(())
     }
 
@@ -981,7 +1007,7 @@ impl PreparedAdmission {
         if !self.final_batch {
             if let Some(candidates) = &self.session.small_candidates {
                 for object in winners.iter().flatten().filter(|object| !object.delta) {
-                    if self.packs[object.pack][8..12] != [3, 0, 0, 0] { continue; }
+                    if !matches!(&self.packs[object.pack][8..12], [3, 0, 0, 0] | [4, 0, 0, 0]) { continue; }
                     let canonical = object.retained.as_ref()
                         .ok_or(StoreError::Integrity("selected small candidate ownership"))?;
                     let raw = layerfs_content::file::content::small_bytes(canonical)?
@@ -1064,16 +1090,19 @@ impl PreparedAdmission {
         if self.native_base_max_pack > next {
             return Err(StoreError::Integrity("native base publication chronology"));
         }
+        let keep_pools = winners.iter().enumerate().any(|(index, objects)| !objects.is_empty() && self.packs[index][8..12] == 6u32.to_le_bytes());
+        let mut pool_packs = BTreeMap::new();
         let mut packs = Vec::new();
         let mut locators = Vec::new();
         for (index, objects) in winners.iter().enumerate() {
-            if objects.is_empty() {
+            if objects.is_empty() && !(keep_pools && self.pool_groups.iter().any(|group| group.pack == index)) {
                 continue;
             }
             next = next
                 .checked_add(1)
                 .filter(|id| *id > 0)
                 .ok_or(StoreError::Integrity("pack identity exhausted"))?;
+            pool_packs.insert(index, next);
             packs.push((next, self.packs[index].as_slice()));
             diagnostic_stats.diag_selected_pack_count += 1;
             diagnostic_stats.diag_selected_pack_last_id = next as u64;
@@ -1127,6 +1156,18 @@ impl PreparedAdmission {
                 return Err(StoreError::Integrity("pack insertion cardinality"));
             }
             start = end;
+        }
+        let mut next_ordinal: i64 = if keep_pools { transaction.query_row(
+            "SELECT COALESCE(MAX(first_ordinal+count),1) FROM metadata_value_groups", [], |row| row.get(0))? } else { 1 };
+        for group in self.pool_groups.iter().filter(|group| keep_pools && pool_packs.contains_key(&group.pack)) {
+            if group.first as i64 != next_ordinal { return Err(StoreError::Integrity("metadata pool publication epoch moved")); }
+            *statement_number += 1;
+            crate::schema::fail_transaction_statement(*statement_number)?;
+            transaction.execute("INSERT INTO metadata_value_groups(first_ordinal,count,pack_id,group_number,digest) VALUES (?1,?2,?3,?4,?5)",
+                rusqlite::params![group.first as i64, group.count as i64, pool_packs[&group.pack], group.group as i64, group.digest.as_bytes().as_slice()])?;
+            next_ordinal += group.count as i64;
+            diagnostic_stats.metadata_pool_admitted_groups += 1;
+            diagnostic_stats.metadata_pool_admitted_values += group.count as u64;
         }
         // Preserve pack bytes/order; only the SQL primary-key insertion order changes.
         let sort_started = Instant::now();
@@ -1232,6 +1273,7 @@ impl DeltaSearch {
         &mut self,
         db: &StoreDb,
         object: &AuthenticatedCanonicalObject,
+        pooled_target: Option<&[u8]>,
         stats: &mut crate::PhysicalStorageReceipt,
     ) -> Result<Option<Vec<u8>>> {
         // Payload span hints retain their policy. S1 additionally accepts only
@@ -1273,7 +1315,13 @@ impl DeltaSearch {
                 break;
             }
             stats.predecessor_hints += 1;
-            let prior = db.read_hint(id, false, &mut self.reads)?;
+            let prior = if db.compact_namespace() && read::metadata_leaf(&object.bytes) {
+                match db.metadata_predecessor(id, &mut self.reads)? {
+                    Some(base) if base.pooled && base.depth < read::METADATA_EDGES
+                        && base.canonical_closure + object.bytes.len() <= read::METADATA_CLOSURE => Some(read::HintRecord::Full(super::CanonicalObject { id: base.canonical.id, bytes: base.physical })),
+                    _ => None,
+                }
+            } else { db.read_hint(id, false, &mut self.reads)? };
             let base = match prior {
                 Some(read::HintRecord::Full(base)) => base,
                 Some(read::HintRecord::Anchor(_)) if inode_leaf => continue,
@@ -1305,7 +1353,7 @@ impl DeltaSearch {
                 continue;
             }
             if inode_leaf {
-                if !super::is_inode_table_leaf(&base.bytes)? {
+                if pooled_target.is_none() && !super::is_inode_table_leaf(&base.bytes)? {
                     continue;
                 }
             } else {
@@ -1322,7 +1370,7 @@ impl DeltaSearch {
             let result = pack::delta_record(
                 base.id,
                 &base.bytes,
-                &object.bytes,
+                pooled_target.unwrap_or(&object.bytes),
                 &mut self.remaining,
                 stats,
             );
@@ -1371,6 +1419,9 @@ fn is_content(canonical: &[u8]) -> Result<bool> {
         value.get(..8),
         Some(
             b"LFS4FSR\0"
+                | b"LFS6FSR\0"
+                | b"LFS6INT\0"
+                | b"LFS6NSP\0"
                 | b"LFS4INT\0"
                 | b"LFS4INO\0"
                 | b"LFS4DIR\0"
@@ -1448,3 +1499,7 @@ pub(super) fn compare(
 
 #[cfg(test)]
 mod native_tests;
+
+#[path = "admission/metadata_values.rs"]
+mod metadata_values;
+use metadata_values::{prepare_values, PreparedValueGroup};

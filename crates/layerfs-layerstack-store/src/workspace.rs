@@ -843,6 +843,12 @@ impl SnapshotReader {
 
 impl ObjectSource for SnapshotReader {
     fn small_content_format(&self) -> bool { self.db.small_content_format() }
+    fn compact_namespace(&self) -> bool {
+        self.read_object(self.root).ok().and_then(|bytes| layerfs_content::tree::directory::codec::decode_namespace_root(&bytes).ok()).is_some_and(|root| root.scope.is_some())
+    }
+    fn allocate_inode_serial(&self, scope: ObjectId) -> Result<layerfs_content::tree::compact::InodeSerial> {
+        ObjectSource::allocate_inode_serial(&self.db, scope)
+    }
 
     fn read_object(&self, id: ObjectId) -> Result<Vec<u8>> {
         let started = Instant::now();

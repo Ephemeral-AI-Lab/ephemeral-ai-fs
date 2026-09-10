@@ -8,9 +8,9 @@ use crate::tree::directory::codec::encode_namespace_root;
 use crate::tree::directory::{
     directory_lookup, directory_page_after, DirectoryStateRoot, NamespaceCounters,
 };
-use crate::tree::inode::codec::{decode_inode_record, encode_inode_record};
+use crate::tree::inode::codec::encode_inode_record;
 use crate::tree::inode::{
-    inode_table_lookup, inode_table_remove, inode_table_upsert, reconcile_inode_tables, InodeId,
+    inode_record_lookup, inode_table_remove, inode_table_upsert, reconcile_inode_tables, InodeId,
     InodeKind, InodeRecordV1, InodeTableCounters, InodeTableDiff, InodeTableRoot,
 };
 use crate::tree::NamespaceRootV1;
@@ -57,6 +57,7 @@ pub fn reconcile_roots<S: ObjectStore>(
         .into_iter()
         .any(|namespace| {
             namespace.profile_id != base_namespace.profile_id
+                || namespace.scope != base_namespace.scope
                 || namespace.root_directory_inode != base_namespace.root_directory_inode
         })
     {
@@ -136,6 +137,7 @@ pub fn replace_paths_from_snapshot<S: ObjectStore>(
     let destination = namespace(store, destination_root)?;
     let source = namespace(store, source_root)?;
     if destination.profile_id != source.profile_id
+        || destination.scope != source.scope
         || destination.root_directory_inode != source.root_directory_inode
     {
         return Err(CoreError::InvalidRecord("namespace identity mismatch"));
@@ -312,14 +314,8 @@ fn copy_snapshot_inode<S: ObjectStore>(
     if !active.insert(inode) {
         return Err(CoreError::InvalidRecord("directory cycle"));
     }
-    let record_id = inode_table_lookup(
-        store,
-        source_table,
-        inode,
-        &mut InodeTableCounters::default(),
-    )?
-    .ok_or(CoreError::MissingObject)?;
-    let record = store.with_authenticated_canonical(record_id, decode_inode_record)?;
+    let record = inode_record_lookup(store, source_table, inode, &mut InodeTableCounters::default())?.ok_or(CoreError::MissingObject)?;
+    let record_id = store.put(&encode_inode_record(record)?)?;
     if record.kind == InodeKind::Directory {
         let mut cursor = DirectoryCursor::new(record.content_root);
         while let Some((_, child)) = cursor.next(store)? {
@@ -341,9 +337,7 @@ fn release_namespace_reference<S: ObjectStore>(
     if !active.insert(inode) {
         return Err(CoreError::InvalidRecord("directory cycle"));
     }
-    let record_id = inode_table_lookup(store, *table, inode, &mut InodeTableCounters::default())?
-        .ok_or(CoreError::MissingObject)?;
-    let record = store.with_authenticated_canonical(record_id, decode_inode_record)?;
+    let record = inode_record_lookup(store, *table, inode, &mut InodeTableCounters::default())?.ok_or(CoreError::MissingObject)?;
     if record.namespace_ref_count > 1 {
         let record_id = store.put(&encode_inode_record(InodeRecordV1 {
             namespace_ref_count: record.namespace_ref_count - 1,
@@ -877,19 +871,9 @@ fn record<S: ObjectRead>(store: &S, entry: TreeEntry) -> CoreResult<Option<Loade
     let Some(inode) = entry.inode else {
         return Ok(None);
     };
-    let Some(id) = inode_table_lookup(
-        store,
-        entry.table,
-        inode,
-        &mut InodeTableCounters::default(),
-    )?
-    else {
-        return Ok(None);
-    };
-    Ok(Some((
-        id,
-        store.with_authenticated_canonical(id, decode_inode_record)?,
-    )))
+    let Some(record) = inode_record_lookup(store, entry.table, inode, &mut InodeTableCounters::default())? else { return Ok(None); };
+    // A logical comparison identity, not a required separately stored object.
+    Ok(Some((ObjectId::for_bytes(&encode_inode_record(record)?), record)))
 }
 
 fn record_eq(left: Option<LoadedRecord>, right: Option<LoadedRecord>) -> bool {

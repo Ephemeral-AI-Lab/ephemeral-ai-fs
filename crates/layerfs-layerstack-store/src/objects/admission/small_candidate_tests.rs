@@ -28,7 +28,8 @@ fn selected_small_candidate_reuse_late_cas_and_rollback() {
     let prepared = prepare(target.clone());
     assert!(prepared.objects[0].delta);
     // Cache contains only a selected FULL, so this new-path target uses kind 1.
-    assert_eq!(prepared.packs[0][32], 1);
+    assert_eq!(&prepared.packs[0][8..12], &4u32.to_le_bytes());
+    assert_eq!(prepared.packs[0][20], 1);
     f.publish(prepare(target.clone()));
     let before = f.db.physical_storage_receipt();
     f.publish(prepared);
@@ -136,7 +137,8 @@ fn selected_small_candidate_retained_handoff_rollback_and_cold_reopen() {
         drop(session);
         let next = prepare(target.clone());
         assert!(next.objects[0].delta);
-        assert_eq!(next.packs[0][32], 1);
+        assert_eq!(&next.packs[0][8..12], &4u32.to_le_bytes());
+        assert_eq!(next.packs[0][20], 1);
         publish(next);
         assert_eq!(db.small_physical_base(target.id).unwrap(), Some(base.id));
         assert_eq!(db.read_object_row(target.id).unwrap(), target.bytes);

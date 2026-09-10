@@ -16,7 +16,7 @@ use layerfs_content::tree::directory::{
 };
 use layerfs_content::tree::inode::codec::{decode_inode_record, encode_inode_record};
 use layerfs_content::tree::inode::{
-    inode_table_lookup, inode_table_lookup_many, InodeTableCounters,
+    InodeTableCounters,
 };
 use layerfs_content::tree::inode::{InodeId, InodeKind, InodeRecordV1, InodeTableRoot};
 use layerfs_content::tree::NamespaceRootV1;
@@ -372,6 +372,8 @@ impl Workspace {
                 .filter_map(|(id, node)| node.canonical.map(|inode| (inode, *id)))
                 .collect();
             return CandidateInputs {
+                scope: self.inode_scope,
+                serials: self.inode_serials.clone(),
                 live: layerfs_workspace_core::FrozenWorkspaceChanges {
                     nodes: &backing.facts,
                     dirty: &backing.dirty,
@@ -395,6 +397,8 @@ impl Workspace {
 
     fn candidate_inputs(&self) -> CandidateInputs<'_> {
         CandidateInputs {
+            scope: self.inode_scope,
+                serials: self.inode_serials.clone(),
             live: self.live.frozen_changes(),
             store: &self.store,
             workspace_id: self.workspace_id,
@@ -549,6 +553,8 @@ impl Workspace {
 
 // Host construction needs immutable inputs and backing, never a live Workspace.
 struct CandidateInputs<'a> {
+    scope: Option<ObjectId>,
+    serials: std::sync::Arc<std::sync::Mutex<Option<std::ops::Range<u64>>>>,
     live: layerfs_workspace_core::FrozenWorkspaceChanges<'a>,
     store: &'a layerfs_layerstack_store::LayerStackStore,
     workspace_id: [u8; 16],
@@ -558,12 +564,29 @@ struct CandidateInputs<'a> {
 }
 
 impl CandidateInputs<'_> {
+    fn prepare_inode_serials(&self) -> Result<()> {
+        let mut serials = self.serials.lock().map_err(|_| StorageError::Integrity("workspace inode reservation lock"))?;
+        if serials.is_some() { return Ok(()); }
+        let Some(scope) = self.scope else { return Ok(()); };
+        let Some(maximum) = self.live.nodes.iter().filter(|(_, node)| node.canonical.is_none() && !node.paths.is_empty())
+            .map(|(id, _)| id.0).max() else { return Ok(()); };
+        // ponytail: one 32-bit NodeId range per mutable Workspace; chunked
+        // reservations are needed only for a lifetime exceeding 2^32 nodes.
+        const WIDTH: u64 = 1u64 << 32;
+        if maximum >= WIDTH { return Err(StorageError::InvalidInput("workspace inode serial range")); }
+        *serials = Some(self.store.reserve_inode_serials(scope, WIDTH)?);
+        Ok(())
+    }
+
     fn build(
         &self,
         purpose: CandidatePurpose,
         worker_limit: usize,
         captured: Option<crate::capture::CapturedFile>,
     ) -> Result<PreparedCommit> {
+        // Reserve before content admission opens its coalesced transaction.
+        // Every use of a new live NodeId in this candidate shares the same serial.
+        self.prepare_inode_serials()?;
         let started = Instant::now();
         self.live
             .policy
@@ -925,6 +948,12 @@ impl CandidateInputs<'_> {
             .check_final_delta(batch_allowance.saturating_add(path_charge(path)))
             .map_err(crate::live_error)?;
         layerfs_layerstack_store::note_workspace_namespace_visits(0, 1, 0, 0, 0);
+        self.prepare_inode_serials()?;
+        if let Some(range) = self.serials.lock().map_err(|_| StorageError::Integrity("workspace inode reservation lock"))?.as_ref() {
+            let serial = range.start.checked_add(node.0).filter(|serial| *serial < range.end)
+                .ok_or(StorageError::Integrity("workspace inode reservation coverage"))?;
+            return Ok(layerfs_content::tree::compact::InodeSerial::new(serial)?.inode_key());
+        }
         // Bind new identity to this base snapshot: replacing one alias must not
         // accidentally reuse the still-live inode originally allocated at its path.
         Ok(filesystem::allocated_inode(
@@ -2004,18 +2033,8 @@ impl FrontierInodes {
             return Ok(record);
         }
         let namespace = filesystem::namespace(objects, self.root)?;
-        let id = inode_table_lookup(
-            objects,
-            InodeTableRoot(namespace.inode_table_root),
-            inode,
-            &mut InodeTableCounters::default(),
-        )?
-        .ok_or(StorageError::Integrity("frontier inode record"))?;
-        Ok(ObjectStore::with_authenticated_canonical(
-            objects,
-            id,
-            decode_inode_record,
-        )?)
+        layerfs_content::tree::inode::inode_record_lookup(objects, InodeTableRoot(namespace.inode_table_root), inode, &mut InodeTableCounters::default())?
+            .ok_or(StorageError::Integrity("frontier inode record"))
     }
 
     #[cfg(test)]
@@ -2330,28 +2349,13 @@ impl FrontierInodes {
         keys: &[InodeId],
         lookup_limit: usize,
     ) -> Result<Vec<InodeRecordV1>> {
-        let mut ids = Vec::with_capacity(keys.len());
+        let mut records = Vec::with_capacity(keys.len());
         for keys in keys.chunks(lookup_limit) {
-            for id in
-                inode_table_lookup_many(base, table, keys, &mut InodeTableCounters::default())?
-            {
-                ids.push(id.ok_or(StorageError::Integrity("referenced inode record"))?);
+            for record in layerfs_content::tree::inode::inode_record_lookup_many(base, table, keys, &mut InodeTableCounters::default())? {
+                records.push(record.ok_or(StorageError::Integrity("referenced inode record"))?);
             }
         }
-        let objects = base.0.read_authenticated_objects(&ids)?;
-        if objects.len() != ids.len() {
-            return Err(StorageError::Integrity("reference record cardinality"));
-        }
-        objects
-            .into_iter()
-            .zip(ids)
-            .map(|(object, id)| {
-                if object.id != id {
-                    return Err(StorageError::Integrity("reference record identity"));
-                }
-                decode_inode_record(&object.bytes).map_err(Into::into)
-            })
-            .collect()
+        Ok(records)
     }
 
     fn apply_references(
@@ -2831,6 +2835,8 @@ mod tests {
         workspace.write(file, 0, b"later!").unwrap();
         workspace.unlink(ROOT, b"alias", false).unwrap();
         let frozen = CandidateInputs {
+            scope: workspace.inode_scope,
+            serials: workspace.inode_serials.clone(),
             live: layerfs_workspace_core::FrozenWorkspaceChanges {
                 nodes: &nodes,
                 dirty: &dirty,
@@ -3686,7 +3692,7 @@ mod tests {
         }
         let namespace = filesystem::namespace(&core, final_root).unwrap();
         let table = layerfs_content::tree::inode::InodeTableRoot(namespace.inode_table_root);
-        assert!(inode_table_lookup(
+        assert!(layerfs_content::tree::inode::inode_record_lookup(
             &core,
             table,
             old_tree.inode,
@@ -3694,15 +3700,11 @@ mod tests {
         )
         .unwrap()
         .is_none());
-        let entries = layerfs_content::tree::inode::inode_table_entries(
-            &core,
-            table,
-            &mut InodeTableCounters::default(),
-        )
-        .unwrap();
+        let mut entry_count = 0;
+        layerfs_content::tree::inode::visit_inode_records(&core, table, &mut InodeTableCounters::default(), |_, _| { entry_count += 1; Ok(()) }).unwrap();
         // root + background directory/files + kept directory/file + outside +
         // hidden + replacement + aliased new file + new directory + 120 files.
-        assert_eq!(entries.len(), 329);
+        assert_eq!(entry_count, 329);
         // A valid long path still must fit the transient planner allocation,
         // together with its pending inode batch, under a custom small policy.
         workspace.live.policy.max_final_delta_memory_bytes = 4096;

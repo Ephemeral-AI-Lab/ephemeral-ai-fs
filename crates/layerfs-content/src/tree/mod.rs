@@ -1,3 +1,4 @@
+pub mod compact;
 pub mod batch;
 pub mod directory;
 pub mod inode;

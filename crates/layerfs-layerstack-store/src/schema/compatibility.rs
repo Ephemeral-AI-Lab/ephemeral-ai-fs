@@ -185,3 +185,74 @@ fn legacy_open_contract_rejects_native_store_before_writer_configuration() {
     assert_eq!(std::fs::read(&path).unwrap(), before);
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn schema9_small_records_remain_nonpromoting_after_reopen() {
+    let directory = folder();
+    let path = directory.join("schema9.sqlite");
+    let connection = Connection::open(&path).unwrap();
+    connection.execute_batch(statements::schema::V9).unwrap();
+    drop(connection);
+    for _ in 0..2 {
+        let db = StoreDb::connect(&path).unwrap();
+        assert!(!db.compact_framing());
+        let canonical = layerfs_content::file::content::encode_small(b"legacy small file").unwrap();
+        let mut buffer = ObjectBuffer::empty().unwrap();
+        let id = layerfs_content::object::access::ObjectStore::put(&mut buffer, &canonical).unwrap();
+        let built = buffer.finish(id, 0).unwrap();
+        let mut owner = CheckedOutputAdmission::new(&db).unwrap();
+        owner.admit(built.objects).unwrap();
+        let finished = owner.finish().unwrap();
+        PreparedAdmission::prepare_missing(&db, finished.final_batch).unwrap()
+            .publish(&db, &mut 0, |_, _, _| Ok(())).unwrap();
+        assert_eq!(db.read_object_row(id).unwrap(), canonical);
+        assert_eq!(pack_versions(&db), BTreeSet::from([3u32.to_le_bytes().to_vec()]));
+        assert_eq!(db.reader().unwrap().pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 9);
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn scoped_inode_reservations_are_durable_disjoint_and_never_recycled() {
+    let directory = folder();
+    let path = directory.join("allocator.sqlite");
+    let db = StoreDb::create(&path).unwrap();
+    let scope = ObjectId::for_bytes(b"allocation origin");
+    assert_eq!(db.reserve_inode_serials(scope, 4).unwrap(), 1..5);
+    // Abandon the first range, as after a failed construction/publication.
+    assert_eq!(db.reserve_inode_serials(scope, 2).unwrap(), 5..7);
+    let workers: Vec<_> = (0..4).map(|_| {
+        let db = db.clone();
+        std::thread::spawn(move || db.reserve_inode_serials(scope, 3).unwrap())
+    }).collect();
+    let mut ranges: Vec<_> = workers.into_iter().map(|worker| worker.join().unwrap()).collect();
+    ranges.sort_by_key(|range| range.start);
+    assert_eq!(ranges, [7..10, 10..13, 13..16, 16..19]);
+    assert!(db.reserve_inode_serials(scope, 0).is_err());
+    assert!(db.reserve_inode_serials(scope, u64::MAX).is_err());
+    let other = ObjectId::for_bytes(b"another origin");
+    assert_eq!(db.reserve_inode_serials(other, i64::MAX as u64).unwrap(), 1..(i64::MAX as u64 + 1));
+    assert!(db.reserve_inode_serials(other, 1).is_err());
+    {
+        let connection = db.reader().unwrap();
+        assert_eq!(connection.pragma_query_value(None, "journal_mode", |r| r.get::<_, String>(0)).unwrap(), "memory");
+        assert_eq!(connection.pragma_query_value(None, "synchronous", |r| r.get::<_, i64>(0)).unwrap(), 0);
+        assert_eq!(connection.pragma_query_value(None, "locking_mode", |r| r.get::<_, String>(0)).unwrap(), "exclusive");
+    }
+    assert!(!appended(&path, "-journal").exists());
+    drop(db);
+    let db = StoreDb::connect(&path).unwrap();
+    assert_eq!(db.reserve_inode_serials(scope, 1).unwrap(), 19..20);
+    assert!(db.reserve_inode_serials(other, 1).is_err());
+    drop(db);
+    let legacy = directory.join("legacy.sqlite");
+    let connection = Connection::open(&legacy).unwrap();
+    connection.execute_batch(statements::schema::V9).unwrap();
+    drop(connection);
+    let before = std::fs::read(&legacy).unwrap();
+    let db = StoreDb::connect(&legacy).unwrap();
+    assert!(db.reserve_inode_serials(scope, 1).is_err());
+    drop(db);
+    assert_eq!(std::fs::read(&legacy).unwrap(), before);
+    std::fs::remove_dir_all(directory).unwrap();
+}

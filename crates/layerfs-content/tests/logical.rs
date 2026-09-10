@@ -374,6 +374,7 @@ fn fixture() -> (MemoryStore, ObjectId) {
     let root = store
         .put(
             &encode_namespace_root(NamespaceRootV1 {
+        scope: None,
                 profile_id: namespace_profile_id(),
                 root_directory_inode: root_inode,
                 inode_table_root: table.0,
@@ -719,6 +720,7 @@ fn rename_fixture() -> (MemoryStore, ObjectId) {
     let root = store
         .put(
             &encode_namespace_root(NamespaceRootV1 {
+        scope: None,
                 profile_id: namespace_profile_id(),
                 root_directory_inode: root_inode,
                 inode_table_root: table.0,

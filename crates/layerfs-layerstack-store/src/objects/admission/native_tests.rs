@@ -69,6 +69,38 @@ fn random() -> Vec<u8> {
 }
 
 #[test]
+fn compact_namespace_admission_and_reads_require_the_new_schema() {
+    let mut f = Fixture::new();
+    let path = f.folder.join("legacy9.sqlite");
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch(crate::statements::schema::V9).unwrap(); drop(db);
+    f.db = StoreDb::connect(&path).unwrap();
+    let canonical = layerfs_content::tree::compact::encode_directory(&layerfs_content::tree::compact::DirectoryNode::Leaf(Vec::new())).unwrap();
+    let object = AuthenticatedCanonicalObject::new(canonical.clone(), None).unwrap();
+    let result = (|| -> Result<()> {
+        let mut owner = CheckedOutputAdmission::new(&f.db)?;
+        owner.admit_page(vec![object])?;
+        PreparedAdmission::prepare_missing(&f.db, owner.finish()?.final_batch)?;
+        Ok(())
+    })();
+    assert!(matches!(result, Err(StoreError::Integrity("compact namespace requires schema 10"))));
+    assert_eq!(f.db.reader().unwrap().query_row("SELECT count(*) FROM objects", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+
+    let mut native = Fixture::new();
+    let object = AuthenticatedCanonicalObject::new(canonical, None).unwrap();
+    let id = object.id;
+    native.publish(native.prepare(vec![object]));
+    let malformed = native.db.path().to_owned();
+    let replacement = StoreDb::create(native.folder.join("replacement.sqlite")).unwrap();
+    drop(std::mem::replace(&mut native.db, replacement));
+    // Disposable deliberately mislabeled Store: no supported downgrade is implied.
+    let db = rusqlite::Connection::open(&malformed).unwrap();
+    db.execute_batch("DROP TABLE scope_allocator; DROP TABLE metadata_value_groups; PRAGMA user_version=9;").unwrap(); drop(db);
+    let db = StoreDb::connect(&malformed).unwrap();
+    assert!(matches!(db.read_object_row(id), Err(StoreError::Integrity("compact namespace requires schema 10"))));
+}
+
+#[test]
 fn native_admission_actual_prior_depth_first_hint_and_readback() {
     let f = Fixture::new();
     let mut raw = random();
@@ -679,3 +711,6 @@ fn issue100_identical_base_git_matcher() {
 
 #[path = "small_candidate_tests.rs"]
 mod small_candidate_tests;
+
+#[path = "metadata_tests.rs"]
+mod metadata_tests;

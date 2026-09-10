@@ -7,9 +7,9 @@ use crate::tree::directory::{
     directory_insert, directory_lookup, directory_page_after, directory_remove, directory_rename,
     empty_directory, DeferredDirectory, DirectoryStateRoot,
 };
-use crate::tree::inode::codec::{decode_inode_record, encode_inode_record};
+use crate::tree::inode::codec::encode_inode_record;
 use crate::tree::inode::{
-    inode_table_apply_insertions, inode_table_entries, inode_table_lookup, inode_table_remove,
+    inode_table_apply_insertions, inode_table_entries, inode_record_lookup, inode_table_remove,
     inode_table_upsert, DeferredInodes, InodeId, InodeKind, InodeRecordV1, InodeTableCounters,
     InodeTableRoot,
 };
@@ -115,6 +115,7 @@ pub fn replace_range_with_metadata<S: ObjectStore, R: Read>(
     let (content, rope) = result?;
     counters.rope = rope;
     let NamespaceRootV1 {
+        scope,
         profile_id,
         root_directory_inode,
         inode_table_root,
@@ -141,6 +142,7 @@ pub fn replace_range_with_metadata<S: ObjectStore, R: Read>(
         .checked_add(inode.nodes_created)
         .ok_or(CoreError::LengthOverflow)?;
     let canonical = encode_namespace_root(NamespaceRootV1 {
+        scope,
         profile_id,
         root_directory_inode,
         inode_table_root: table.0,
@@ -272,6 +274,21 @@ pub fn build_initial_namespace(
     seed: [u8; 32],
     mutations: impl IntoIterator<Item = InodeMutation>,
 ) -> CoreResult<ObjectId> {
+    if store.compact_namespace() {
+        use crate::tree::compact::{self, InodeSerial};
+        let mut rows = mutations.into_iter().map(|mutation| match mutation {
+            InodeMutation::Upsert { inode, record } => Ok((InodeSerial::from_inode_key(inode)?, record)),
+            InodeMutation::Remove { .. } => Err(CoreError::InvalidRecord("initial inode removal")),
+        });
+        let first = rows.next().transpose()?.ok_or(CoreError::InvalidRecord("initial root inode"))?;
+        first.1.validate(true)?;
+        let root_inode = first.0;
+        let (table, _) = crate::tree::batch::compact_inode_table_from_sorted(store,
+            std::iter::once(Ok(first)).chain(rows), crate::tree::batch::SORTED_TREE_UPDATE_SCRATCH_BYTES)?;
+        return store.put_owned(compact::encode_root(compact::NamespaceRoot {
+            profile_id: compact::profile_id(), scope: compact::scope_for_seed(seed), root_inode, inode_table: table.0,
+        })?);
+    }
     let root_inode = InodeId::allocate(seed, 0);
     let mut insertions = mutations
         .into_iter()
@@ -290,6 +307,7 @@ pub fn build_initial_namespace(
     let mut counters = InodeTableCounters::default();
     let table = inode_table_apply_insertions(store, vec![root], insertions, &mut counters)?;
     store.put_owned(encode_namespace_root(NamespaceRootV1 {
+        scope: None,
         profile_id: profile_id(),
         root_directory_inode: root_inode,
         inode_table_root: table.0,
@@ -318,7 +336,20 @@ fn apply_inode_mutations_deferred(
     let mut table = InodeTableRoot(namespace.inode_table_root);
     let mut deferred = DeferredInodes::new(store);
     for mutation in mutations {
-        match mutation {
+        if namespace.scope.is_some() {
+            let (inode, record) = match mutation {
+                InodeMutation::Upsert { inode, record } => (inode, Some(record)),
+                InodeMutation::Remove { inode } => (inode, None),
+            };
+            let (next, batch) = crate::tree::batch::compact_inode_table_apply_sorted(
+                &mut deferred, table,
+                std::iter::once(Ok((crate::tree::compact::InodeSerial::from_inode_key(inode)?, record))),
+                crate::tree::batch::SORTED_TREE_UPDATE_SCRATCH_BYTES,
+            )?;
+            merge_inode(&mut counters, InodeTableCounters { nodes_read: batch.nodes_read, nodes_created: batch.nodes_created })?;
+            counters.structural_deferred_peak_bytes = counters.structural_deferred_peak_bytes.max(batch.peak_scratch_bytes as u64);
+            table = next;
+        } else { match mutation {
             InodeMutation::Upsert { inode, record } => {
                 let record = deferred.put_persistent(&encode_inode_record(record)?)?;
                 let (next, visits) = inode_table_upsert(&mut deferred, table, inode, record)?;
@@ -331,11 +362,12 @@ fn apply_inode_mutations_deferred(
                 table = next;
             }
         }
+        }
         deferred.prune_to(table.0)?;
     }
     let peak_bytes = deferred.peak_charged_bytes();
     let prunes = deferred.prunes();
-    counters.structural_deferred_peak_bytes = peak_bytes as u64;
+    counters.structural_deferred_peak_bytes = counters.structural_deferred_peak_bytes.checked_add(peak_bytes as u64).ok_or(CoreError::LengthOverflow)?;
     counters.structural_deferred_prunes = prunes;
     counters.inode_table.nodes_created = deferred.commit(table.0)?;
     let candidate = deferred.put_persistent(&encode_namespace_root(NamespaceRootV1 {
@@ -603,9 +635,8 @@ pub fn remove_path(
         directory_remove(store, DirectoryStateRoot(parent.record.content_root), &name)?;
     merge_namespace(&mut counters, visits)?;
     let table = InodeTableRoot(namespace.inode_table_root);
-    let record_id = inode_table_lookup(store, table, inode, &mut counters.inode_table)?
+    let record = inode_record_lookup(store, table, inode, &mut counters.inode_table)?
         .ok_or(CoreError::MissingObject)?;
-    let record = store.with_authenticated_canonical(record_id, decode_inode_record)?;
     if record.kind == InodeKind::Directory
         && !directory_page_after(
             store,
@@ -729,9 +760,8 @@ where
     let table = InodeTableRoot(namespace.inode_table_root);
     let (inode, record) = match directory.take() {
         Some(inode) => {
-            let record_id = inode_table_lookup(store, table, inode, &mut counters.inode_table)?
+            let record = inode_record_lookup(store, table, inode, &mut counters.inode_table)?
                 .ok_or(CoreError::MissingObject)?;
-            let record = store.with_authenticated_canonical(record_id, decode_inode_record)?;
             if record.kind != InodeKind::RegularFile {
                 return Err(CoreError::WrongLogicalRole);
             }
@@ -1156,6 +1186,7 @@ mod tests {
         let root = store
             .put(
                 &encode_namespace_root(NamespaceRootV1 {
+        scope: None,
                     profile_id: crate::tree::directory::codec::profile_id(),
                     root_directory_inode: root_inode,
                     inode_table_root: table.0,

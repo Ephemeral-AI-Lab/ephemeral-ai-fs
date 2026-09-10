@@ -1,11 +1,15 @@
 mod admission;
 mod delta;
+pub(crate) mod metadata;
 #[cfg(test)]
 mod comparison_reuse_tests;
 mod diagnostic;
 pub(crate) use admission::PreparedAdmission;
 mod pack;
 mod read;
+mod whole;
+mod compaction;
+pub use compaction::{CompactionOptions, CompactionReceipt};
 pub(crate) mod small_candidates;
 mod spill;
 #[cfg(test)]
@@ -234,6 +238,9 @@ impl AuthenticatedCanonicalObject {
 
 fn is_inode_table_leaf(canonical: &[u8]) -> CoreResult<bool> {
     let value = layerfs_content::decode_bytes_object(canonical)?;
+    if value.starts_with(b"LFS6INT\0") {
+        return Ok(matches!(layerfs_content::tree::compact::decode_inode(canonical)?, layerfs_content::tree::compact::InodeNode::Leaf(_)));
+    }
     if !value.starts_with(b"LFS4INT\0") {
         return Ok(false);
     }
@@ -500,7 +507,20 @@ where
     Ok((output, metrics))
 }
 
+pub(crate) struct NamespaceAllocation {
+    scope: ObjectId,
+    range: std::ops::Range<u64>,
+}
+impl NamespaceAllocation {
+    pub(crate) fn new(scope: ObjectId, range: std::ops::Range<u64>) -> Self { Self { scope, range } }
+    fn allocate(&mut self, scope: ObjectId) -> CoreResult<layerfs_content::tree::compact::InodeSerial> {
+        if scope != self.scope { return Err(CoreError::ProfileMismatch); }
+        layerfs_content::tree::compact::InodeSerial::new(self.range.next().ok_or(CoreError::ObjectLimitExceeded)?)
+    }
+}
+
 pub struct FinalizedOutputWriter {
+    namespace: Option<NamespaceAllocation>,
     small_predecessor: Option<ObjectId>,
     small_content_format: bool,
     file_payload_context: bool,
@@ -512,6 +532,7 @@ pub struct FinalizedOutputWriter {
 }
 
 pub(crate) struct InitializationDirectAdmissionWriter<'admission> {
+    namespace: Option<NamespaceAllocation>,
     file_payload_context: bool,
     admission: &'admission mut CheckedOutputAdmission,
     error: Option<StoreError>,
@@ -520,8 +541,10 @@ pub(crate) struct InitializationDirectAdmissionWriter<'admission> {
 }
 
 impl<'admission> InitializationDirectAdmissionWriter<'admission> {
+    pub(crate) fn set_namespace_allocation(&mut self, allocation: Option<NamespaceAllocation>) { self.namespace = allocation; }
     pub(crate) fn new(admission: &'admission mut CheckedOutputAdmission) -> Self {
         Self {
+            namespace: None,
             file_payload_context: false,
             admission,
             error: None,
@@ -570,6 +593,10 @@ impl<'admission> InitializationDirectAdmissionWriter<'admission> {
 }
 
 impl ObjectStore for InitializationDirectAdmissionWriter<'_> {
+    fn compact_namespace(&self) -> bool { self.namespace.is_some() }
+    fn allocate_inode_serial(&mut self, scope: ObjectId) -> CoreResult<layerfs_content::tree::compact::InodeSerial> {
+        self.namespace.as_mut().ok_or(CoreError::Unsupported)?.allocate(scope)
+    }
     fn small_content_format(&self) -> bool { self.admission.db.small_content_format() }
 
     fn set_file_payload_context(&mut self, enabled: bool) -> bool {
@@ -619,6 +646,7 @@ impl ObjectStore for InitializationDirectAdmissionWriter<'_> {
 }
 
 impl FinalizedOutputWriter {
+    pub(crate) fn set_namespace_allocation(&mut self, allocation: Option<NamespaceAllocation>) { self.namespace = allocation; }
     pub fn set_small_content_format(&mut self, enabled: bool) { self.small_content_format = enabled; }
     pub fn supports_small_content(&self) -> bool { self.small_content_format }
     pub fn build_small_file(&mut self, source: impl Read, len: u64, predecessor: Option<ObjectId>) -> Result<(ObjectId, BuildCounters)> {
@@ -634,6 +662,7 @@ impl FinalizedOutputWriter {
     ) -> Self {
         Self {
             small_predecessor: None,
+            namespace: None,
             small_content_format: false,
             file_payload_context: false,
             sender,
@@ -777,6 +806,10 @@ impl FinalizedOutputWriter {
 }
 
 impl ObjectStore for FinalizedOutputWriter {
+    fn compact_namespace(&self) -> bool { self.namespace.is_some() }
+    fn allocate_inode_serial(&mut self, scope: ObjectId) -> CoreResult<layerfs_content::tree::compact::InodeSerial> {
+        self.namespace.as_mut().ok_or(CoreError::Unsupported)?.allocate(scope)
+    }
     fn small_content_format(&self) -> bool { self.small_content_format }
 
     fn set_file_payload_context(&mut self, enabled: bool) -> bool {
@@ -819,6 +852,8 @@ impl ObjectStore for FinalizedOutputWriter {
 
 pub trait ObjectSource: Send + Sync {
     fn small_content_format(&self) -> bool { false }
+    fn compact_namespace(&self) -> bool { false }
+    fn allocate_inode_serial(&self, _scope: ObjectId) -> Result<layerfs_content::tree::compact::InodeSerial> { Err(StoreError::InvalidInput("inode allocator unavailable")) }
 
     fn read_object(&self, id: ObjectId) -> Result<Vec<u8>>;
 
@@ -1059,6 +1094,7 @@ pub(crate) struct InitializationTaskBlock {
 }
 
 pub(crate) struct CompactInodePairWriter {
+    width: usize,
     writer: std::fs::File,
     reader: std::fs::File,
     path: TempPath,
@@ -1071,6 +1107,7 @@ pub(crate) struct CompactInodePairWriter {
 }
 
 pub(crate) struct CompactInodePairSegment {
+    width: usize,
     reader: BufReader<CountedFile>,
     _path: TempPath,
     cursor: u64,
@@ -1091,6 +1128,7 @@ pub(crate) struct CompactInodePairBlock {
 }
 
 pub(crate) struct CompactInodePairStream {
+    width: usize,
     segments: Vec<CompactInodePairSegment>,
     blocks: std::vec::IntoIter<CompactInodePairBlock>,
     current: Option<(CompactInodePairBlock, u64)>,
@@ -1422,13 +1460,17 @@ impl AppendOnlyInitializationSegment {
 }
 
 impl CompactInodePairWriter {
-    pub(crate) fn new(pending_limit: usize) -> Result<Self> {
-        if pending_limit < 64 {
+    pub(crate) fn new(pending_limit: usize) -> Result<Self> { Self::with_width(pending_limit, 64) }
+    pub(crate) fn new_inline(pending_limit: usize) -> Result<Self> { Self::with_width(pending_limit, 81) }
+    pub(crate) fn inline(&self) -> bool { self.width == 81 }
+    fn with_width(pending_limit: usize, width: usize) -> Result<Self> {
+        if pending_limit < width {
             return Err(StoreError::InvalidInput("inode pair segment buffer"));
         }
         let (writer, path) = temporary_file("initialization-inode-pairs")?;
         let reader = std::fs::File::open(&path)?;
         Ok(Self {
+            width,
             writer,
             reader,
             path: TempPath(path),
@@ -1450,22 +1492,27 @@ impl CompactInodePairWriter {
         inode: layerfs_content::tree::inode::InodeId,
         record: ObjectId,
     ) -> Result<()> {
-        if !self.pending.is_empty() && self.pending.len() + 64 > self.pending_limit {
-            self.flush()?;
-        }
-        self.pending.extend_from_slice(inode.as_bytes());
-        self.pending.extend_from_slice(record.as_bytes());
-        self.end = self
-            .end
-            .checked_add(64)
-            .ok_or(StoreError::Integrity("inode pair segment length"))?;
-        self.pairs = self
-            .pairs
-            .checked_add(1)
-            .ok_or(StoreError::Integrity("inode pair segment count"))?;
-        if self.pending.len() >= self.pending_limit {
-            self.flush()?;
-        }
+        if self.width != 64 { return Err(StoreError::Integrity("inode pair format")); }
+        let mut bytes = [0; 64];
+        bytes[..32].copy_from_slice(inode.as_bytes()); bytes[32..].copy_from_slice(record.as_bytes());
+        self.push_bytes(&bytes)
+    }
+
+    pub(crate) fn push_inline(&mut self, serial: layerfs_content::tree::compact::InodeSerial, record: layerfs_content::tree::inode::InodeRecordV1) -> Result<()> {
+        if self.width != 81 { return Err(StoreError::Integrity("inode pair format")); }
+        let mut bytes = [0; 81];
+        bytes[..8].copy_from_slice(&serial.get().to_be_bytes());
+        bytes[8..].copy_from_slice(&layerfs_content::tree::compact::encode_inode_value(record));
+        self.push_bytes(&bytes)
+    }
+
+    fn push_bytes(&mut self, bytes: &[u8]) -> Result<()> {
+        if bytes.len() != self.width { return Err(StoreError::Integrity("inode pair width")); }
+        if !self.pending.is_empty() && self.pending.len() + self.width > self.pending_limit { self.flush()?; }
+        self.pending.extend_from_slice(bytes);
+        self.end = self.end.checked_add(self.width as u64).ok_or(StoreError::Integrity("inode pair segment length"))?;
+        self.pairs = self.pairs.checked_add(1).ok_or(StoreError::Integrity("inode pair segment count"))?;
+        if self.pending.len() >= self.pending_limit { self.flush()?; }
         Ok(())
     }
 
@@ -1494,6 +1541,7 @@ impl CompactInodePairWriter {
             return Err(StoreError::Integrity("inode pair segment length"));
         }
         let Self {
+            width,
             writer,
             mut reader,
             path,
@@ -1509,6 +1557,7 @@ impl CompactInodePairWriter {
         #[cfg(unix)]
         std::fs::remove_file(&path.0)?;
         Ok(CompactInodePairSegment {
+            width,
             reader: BufReader::with_capacity(
                 pending_limit,
                 CountedFile {
@@ -1544,25 +1593,28 @@ impl CompactInodePairWriter {
 }
 
 impl CompactInodePairSegment {
-    fn read_pair(
+    #[cfg(test)]
+    fn read_pair(&mut self, end: u64) -> Result<(layerfs_content::tree::inode::InodeId, ObjectId)> {
+        if self.width != 64 { return Err(StoreError::Integrity("inode pair format")); }
+        let row = self.read_raw_pair(end)?;
+        Ok((layerfs_content::tree::inode::InodeId::from_slice(&row[..32])?, ObjectId::from_bytes(&row[32..64])?))
+    }
+    fn read_raw_pair(
         &mut self,
         block_end: u64,
-    ) -> Result<(layerfs_content::tree::inode::InodeId, ObjectId)> {
+    ) -> Result<[u8; 81]> {
         let next = self
             .cursor
-            .checked_add(64)
+            .checked_add(self.width as u64)
             .ok_or(StoreError::Integrity("inode pair segment length"))?;
         if next > block_end {
             return Err(StoreError::Integrity("inode pair block length"));
         }
-        let mut pair = [0; 64];
-        self.reader.read_exact(&mut pair)?;
+        let mut pair = [0; 81];
+        self.reader.read_exact(&mut pair[..self.width])?;
         self.cursor = next;
         self.read_pairs += 1;
-        Ok((
-            layerfs_content::tree::inode::InodeId::from_slice(&pair[..32])?,
-            ObjectId::from_bytes(&pair[32..])?,
-        ))
+        Ok(pair)
     }
 
     fn consumed(&self) -> bool {
@@ -1595,17 +1647,19 @@ impl CompactInodePairStream {
         segments: Vec<CompactInodePairSegment>,
         blocks: Vec<CompactInodePairBlock>,
     ) -> Result<Self> {
-        if blocks.len() > 1_000
+        let width = segments.first().map_or(64, |segment| segment.width);
+        if !matches!(width, 64 | 81) || segments.iter().any(|segment| segment.width != width) || blocks.len() > 1_000
             || blocks.iter().enumerate().any(|(task, block)| {
                 block.task_ordinal != task
                     || block.worker_index >= segments.len()
                     || block.start > block.end
-                    || block.pair_count.checked_mul(64) != Some(block.end - block.start)
+                    || block.pair_count.checked_mul(width as u64) != Some(block.end - block.start)
             })
         {
             return Err(StoreError::Integrity("inode pair block order"));
         }
         Ok(Self {
+            width,
             segments,
             blocks: blocks.into_iter(),
             current: None,
@@ -1617,7 +1671,7 @@ impl CompactInodePairStream {
     fn fail(
         &mut self,
         error: StoreError,
-    ) -> Option<CoreResult<(layerfs_content::tree::inode::InodeId, ObjectId)>> {
+    ) -> Option<CoreResult<[u8; 81]>> {
         self.done = true;
         Some(Err(core_read_error(error)))
     }
@@ -1632,7 +1686,7 @@ impl CompactInodePairStream {
         }
         let mut metrics = InitializationSegmentIoMetrics::default();
         for segment in self.segments {
-            if segment.end != segment.pairs.saturating_mul(64)
+            if segment.end != segment.pairs.saturating_mul(segment.width as u64)
                 || segment.write_bytes != segment.end
                 || segment.reader.get_ref().bytes != segment.end
             {
@@ -1654,10 +1708,8 @@ impl CompactInodePairStream {
     }
 }
 
-impl Iterator for CompactInodePairStream {
-    type Item = CoreResult<(layerfs_content::tree::inode::InodeId, ObjectId)>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+impl CompactInodePairStream {
+    fn next_raw(&mut self) -> Option<CoreResult<[u8; 81]>> {
         if self.done {
             return None;
         }
@@ -1677,7 +1729,7 @@ impl Iterator for CompactInodePairStream {
                     self.current = None;
                     continue;
                 }
-                match segment.read_pair(block.end) {
+                match segment.read_raw_pair(block.end) {
                     Ok(pair) => {
                         self.current = Some((block, read + 1));
                         return Some(Ok(pair));
@@ -1707,6 +1759,23 @@ impl Iterator for CompactInodePairStream {
             }
             self.current = Some((block, 0));
         }
+    }
+}
+
+impl Iterator for CompactInodePairStream {
+    type Item = CoreResult<(layerfs_content::tree::inode::InodeId, ObjectId)>;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done { return None; }
+        if self.width != 64 { self.done = true; return Some(Err(CoreError::InvalidRecord("inode pair format"))); }
+        self.next_raw().map(|row| { let row = row?; Ok((layerfs_content::tree::inode::InodeId::from_slice(&row[..32])?, ObjectId::from_bytes(&row[32..64])?)) })
+    }
+}
+impl CompactInodePairStream {
+    pub(crate) fn next_inline(&mut self) -> Option<CoreResult<(layerfs_content::tree::compact::InodeSerial, layerfs_content::tree::inode::InodeRecordV1)>> {
+        if self.done { return None; }
+        if self.segments.is_empty() && self.blocks.len() == 0 { self.done = true; return None; }
+        if self.width != 81 { self.done = true; return Some(Err(CoreError::InvalidRecord("inode pair format"))); }
+        self.next_raw().map(|row| { let row = row?; Ok((layerfs_content::tree::compact::InodeSerial::new(u64::from_be_bytes(row[..8].try_into().unwrap()))?, layerfs_content::tree::compact::decode_inode_value(&row[8..])?)) })
     }
 }
 
@@ -2181,6 +2250,7 @@ impl AdmissionSession {
                 break;
             }
         }
+        self.db.clear_metadata_index()?;
         self.state.store(2, std::sync::atomic::Ordering::Release);
         Ok(())
     }
@@ -3171,6 +3241,10 @@ impl<'a> ObjectBuffer<'a> {
 
 impl ObjectStore for ObjectBuffer<'_> {
     fn small_content_format(&self) -> bool { self.source.is_some_and(ObjectSource::small_content_format) }
+    fn compact_namespace(&self) -> bool { self.source.is_some_and(ObjectSource::compact_namespace) }
+    fn allocate_inode_serial(&mut self, scope: ObjectId) -> CoreResult<layerfs_content::tree::compact::InodeSerial> {
+        self.source.ok_or(CoreError::Unsupported)?.allocate_inode_serial(scope).map_err(core_read_error)
+    }
 
     fn set_file_payload_context(&mut self, enabled: bool) -> bool {
         std::mem::replace(&mut self.objects.diagnostic_file_context, enabled)
@@ -3257,6 +3331,10 @@ impl ObjectStore for ObjectBuffer<'_> {
 }
 
 impl ObjectSource for ObjectBuffer<'_> {
+    fn compact_namespace(&self) -> bool { ObjectStore::compact_namespace(self) }
+    fn allocate_inode_serial(&self, scope: ObjectId) -> Result<layerfs_content::tree::compact::InodeSerial> {
+        self.source.ok_or(StoreError::InvalidInput("inode allocator unavailable"))?.allocate_inode_serial(scope)
+    }
     fn small_content_format(&self) -> bool { ObjectStore::small_content_format(self) }
 
     fn read_object(&self, id: ObjectId) -> Result<Vec<u8>> {
@@ -3305,6 +3383,17 @@ fn elapsed_ns(started: Instant) -> u64 {
 }
 
 impl crate::schema::StoreDb {
+    pub(crate) fn check_canonical_format(&self, canonical: &[u8]) -> Result<()> {
+        if layerfs_content::decode_bytes_object(canonical).is_ok_and(|value| value.starts_with(layerfs_content::file::content::WHOLE_MAGIC)) {
+            if !self.compact_namespace() { return Err(StoreError::Integrity("whole-file owner requires schema 10")); }
+            layerfs_content::file::content::whole_bytes(canonical)?;
+        }
+        if !self.compact_namespace() && layerfs_content::decode_bytes_object(canonical).is_ok_and(|value|
+            matches!(value.get(..8), Some(b"LFS6FSR\0" | b"LFS6INT\0" | b"LFS6NSP\0"))) {
+            return Err(StoreError::Integrity("compact namespace requires schema 10"));
+        }
+        Ok(())
+    }
     pub fn read_object_row(&self, id: ObjectId) -> Result<Vec<u8>> {
         let location = self
             .object_locations(&[id])?
@@ -4036,6 +4125,10 @@ fn consume_checked_owned_page(
 
 impl ObjectSource for crate::schema::StoreDb {
     fn small_content_format(&self) -> bool { self.small_content_format() }
+    fn compact_namespace(&self) -> bool { self.compact_namespace() }
+    fn allocate_inode_serial(&self, scope: ObjectId) -> Result<layerfs_content::tree::compact::InodeSerial> {
+        Ok(layerfs_content::tree::compact::InodeSerial::new(self.reserve_inode_serials(scope, 1)?.start)?)
+    }
 
     fn read_object(&self, id: ObjectId) -> Result<Vec<u8>> {
         self.read_object_row(id)

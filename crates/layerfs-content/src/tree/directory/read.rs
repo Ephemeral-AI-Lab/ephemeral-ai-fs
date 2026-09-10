@@ -14,10 +14,16 @@ use crate::{CanonicalName, CoreError, CoreResult, ObjectId};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub fn empty_directory<S: ObjectStore>(store: &mut S) -> CoreResult<DirectoryStateRoot> {
+    if store.compact_namespace() {
+        return Ok(DirectoryStateRoot(store.put_owned(crate::tree::compact::encode_directory(
+            &crate::tree::compact::DirectoryNode::Leaf(Vec::new()),
+        )?)?));
+    }
     let mut counters = NamespaceCounters::default();
     let node = emit_directory_node(
         store,
         DirectoryNodeV1::Leaf {
+            compact: false,
             subtree_encoded_bytes: 0,
             entries: Vec::new(),
         },
@@ -60,6 +66,7 @@ pub fn directory_lookup_many<S: ObjectRead>(
         .checked_add(ids.len() as u64)
         .ok_or(CoreError::LengthOverflow)?;
     struct Pending {
+        compact: bool,
         slot: usize,
         node: ObjectId,
         level: u8,
@@ -72,6 +79,7 @@ pub fn directory_lookup_many<S: ObjectRead>(
         .map(|(slot, (root, _))| {
             let state = states.get(&root.0).ok_or(CoreError::MissingObject)?;
             Ok(Pending {
+                compact: state.profile_id == crate::tree::compact::profile_id(),
                 slot,
                 node: state.mapping_root,
                 level: state.tree_level,
@@ -101,7 +109,7 @@ pub fn directory_lookup_many<S: ObjectRead>(
             )?;
             for lookup in &pending[first..last] {
                 visited += 1;
-                if summary.level != lookup.level
+                if summary.compact != lookup.compact || summary.level != lookup.level
                     || lookup
                         .entries
                         .is_some_and(|entries| summary.entries != entries)
@@ -127,6 +135,7 @@ pub fn directory_lookup_many<S: ObjectRead>(
                             .partition_point(|(maximum, _)| maximum < name)
                             .min(children.len().saturating_sub(1));
                         next.push(Pending {
+                            compact: lookup.compact,
                             slot: lookup.slot,
                             node: children[index].1,
                             level: level
@@ -222,7 +231,7 @@ impl DirectoryLookupCache {
                         None,
                         counters,
                     )?;
-                    if child.summary.max.as_ref() != Some(&expected_max)
+                    if child.summary.compact != current.summary.compact || child.summary.max.as_ref() != Some(&expected_max)
                         || child.summary.level.checked_add(1) != Some(current.summary.level)
                     {
                         return Err(CoreError::InvalidRecord("directory child summary"));
@@ -331,7 +340,8 @@ pub(super) fn load_directory_root_shallow<S: ObjectRead>(
     counters: &mut NamespaceCounters,
 ) -> CoreResult<ValidatedNode> {
     let loaded = load_directory_node_shallow(store, state.mapping_root, true, None, counters)?;
-    if loaded.summary.entries != state.entry_count || loaded.summary.level != state.tree_level {
+    if loaded.summary.compact != (state.profile_id == crate::tree::compact::profile_id())
+        || loaded.summary.entries != state.entry_count || loaded.summary.level != state.tree_level {
         return Err(CoreError::InvalidRecord("directory state summary"));
     }
     Ok(loaded)
@@ -356,7 +366,7 @@ pub(super) fn load_directory_node_shallow<S: ObjectRead>(
     let node = load_directory_node(store, id, counters)?;
     let summary = directory_node_shape(id, &node, root)?;
     if expected.is_some_and(|expected| {
-        summary.max != expected.max
+        summary.compact != expected.compact || summary.max != expected.max
             || summary.entries != expected.entries
             || summary.encoded_bytes != expected.encoded_bytes
             || summary.level != expected.level
@@ -385,6 +395,7 @@ fn walk_directory_node<S: ObjectRead>(
     match &node {
         DirectoryNodeV1::Leaf { entries, .. } => visitor(entries)?,
         DirectoryNodeV1::Branch {
+            compact: _,
             level,
             subtree_entry_count,
             subtree_encoded_bytes,
@@ -407,6 +418,7 @@ fn walk_directory_node<S: ObjectRead>(
                     counters,
                     visitor,
                 )?;
+                if child.compact != summary.compact { return Err(CoreError::ProfileMismatch); }
                 if previous_max
                     .as_ref()
                     .zip(child.min.as_ref())
@@ -530,6 +542,7 @@ impl StreamingDirectoryDiff {
 }
 
 struct StreamingDirectoryCursor {
+    compact: Option<bool>,
     stack: Vec<DirectoryWalkItem>,
     leaf: std::vec::IntoIter<(CanonicalName, InodeId)>,
 }
@@ -537,6 +550,7 @@ struct StreamingDirectoryCursor {
 impl StreamingDirectoryCursor {
     fn new(root: ObjectId) -> Self {
         Self {
+            compact: None,
             stack: vec![DirectoryWalkItem {
                 id: root,
                 root: true,
@@ -560,6 +574,8 @@ impl StreamingDirectoryCursor {
                 return Ok(None);
             };
             let loaded = load_directory_node_shallow(store, item.id, item.root, None, counters)?;
+            if self.compact.is_some_and(|compact| compact != loaded.summary.compact) { return Err(CoreError::ProfileMismatch); }
+            self.compact = Some(loaded.summary.compact);
             if item
                 .expected_level
                 .is_some_and(|level| loaded.summary.level != level)
@@ -594,6 +610,7 @@ impl StreamingDirectoryCursor {
 }
 
 pub(super) struct DirectoryEntryCursor<'a, S> {
+    compact: Option<bool>,
     store: &'a S,
     stack: Vec<DirectoryWalkItem>,
     leaf: std::vec::IntoIter<(CanonicalName, InodeId)>,
@@ -608,6 +625,7 @@ impl<'a, S> DirectoryEntryCursor<'a, S> {
         counters: &'a mut NamespaceCounters,
     ) -> Self {
         Self {
+            compact: None,
             store,
             stack: vec![DirectoryWalkItem {
                 id: root,
@@ -624,9 +642,11 @@ impl<'a, S> DirectoryEntryCursor<'a, S> {
         store: &'a S,
         children: &[(CanonicalName, ObjectId)],
         child_level: u8,
+        compact: bool,
         counters: &'a mut NamespaceCounters,
     ) -> Self {
         Self {
+            compact: Some(compact),
             store,
             stack: children
                 .iter()
@@ -655,12 +675,14 @@ impl<'a, S> DirectoryEntryCursor<'a, S> {
         let mut loaded = load_directory_root_shallow(store, state, counters)?;
         let mut stack = Vec::new();
         loop {
+            if loaded.summary.compact != (state.profile_id == crate::tree::compact::profile_id()) { return Err(CoreError::ProfileMismatch); }
             match loaded.node {
                 DirectoryNodeV1::Leaf { entries, .. } => {
                     let start = exclusive_after
                         .map(|after| entries.partition_point(|entry| entry.0 <= *after))
                         .unwrap_or(0);
                     return Ok(Self {
+                        compact: Some(state.profile_id == crate::tree::compact::profile_id()),
                         store,
                         stack,
                         leaf: entries
@@ -682,6 +704,7 @@ impl<'a, S> DirectoryEntryCursor<'a, S> {
                         .unwrap_or(0);
                     if selected == children.len() {
                         return Ok(Self {
+                        compact: Some(state.profile_id == crate::tree::compact::profile_id()),
                             store,
                             stack,
                             leaf: Vec::new().into_iter(),
@@ -728,6 +751,8 @@ impl<S: ObjectRead> Iterator for DirectoryEntryCursor<'_, S> {
                 Ok(loaded) => loaded,
                 Err(error) => return Some(Err(error)),
             };
+            if self.compact.is_some_and(|compact| compact != loaded.summary.compact) { return Some(Err(CoreError::ProfileMismatch)); }
+            self.compact = Some(loaded.summary.compact);
             if item
                 .expected_level
                 .is_some_and(|level| loaded.summary.level != level)

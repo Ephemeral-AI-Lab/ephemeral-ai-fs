@@ -45,6 +45,11 @@ pub(super) fn state(object: &AuthenticatedCanonicalObject) -> u8 {
     if !object.1.has_predecessor {
         return NO_PREDECESSOR;
     }
+    // Whole-file units carry a root hint, not a native-chunk span/cursor.
+    // Their hint coverage is complete without granting any CDC correspondence work.
+    if object.is_small_content() {
+        return if object.1.prior_ids.iter().any(Option::is_some) { BASE } else { NO_OVERLAP };
+    }
     if object.1.first_span.is_none() {
         return MISSING_SPAN;
     }
@@ -252,7 +257,7 @@ pub(super) fn eligible(object: &AuthenticatedCanonicalObject, stats: &mut Receip
             stats.diag_limited_empty_count += 1;
             stats.diag_limited_empty_bytes += bytes;
         }
-        BASE if object.1.diagnostic & 7 == COMPLETE => {
+        BASE if object.is_small_content() || object.1.diagnostic & 7 == COMPLETE => {
             stats.diag_complete_hints_count += 1;
             stats.diag_complete_hints_bytes += bytes;
         }
@@ -361,6 +366,8 @@ mod tests {
 
     #[test]
     fn spill_handoff_admission_and_pack_provenance_conserve_the_file_cohort() {
+        for version in [7, 10] {
+
         let folder = std::env::temp_dir().join(format!(
             "layerfs-diagnostic-{}-{}",
             std::process::id(),
@@ -370,7 +377,11 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&folder).unwrap();
-        let store = crate::LayerStackStore::create(folder.join("store.sqlite")).unwrap();
+        let path = folder.join("store.sqlite");
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch(if version == 7 { crate::statements::schema::V7 } else { crate::statements::schema::V10 }).unwrap();
+        drop(db);
+        let store = crate::LayerStackStore::connect(&path).unwrap();
         let base = ObjectBuffer::build_complete_file(b"abcdefgh".as_slice(), 8).unwrap();
         let prior_root = base.root_id;
         admit(&store.db, base.objects);
@@ -391,11 +402,11 @@ mod tests {
         let stats = store.db.physical_storage_receipt().since(before);
         assert_eq!(
             (stats.diag_eligible_count, stats.diag_eligible_bytes),
-            (1, 29)
+            (1, if version == 7 { 29 } else { 31 })
         );
         assert_eq!(stats.diag_complete_hints_count, 1);
-        assert_eq!(stats.diag_cursor_grants, 2);
-        assert_eq!(stats.diag_occurrence_missing_grants, 2);
+        assert_eq!(stats.diag_cursor_grants, if version == 7 { 2 } else { 0 });
+        assert_eq!(stats.diag_occurrence_missing_grants, if version == 7 { 2 } else { 0 });
         assert_eq!(stats.diag_new_full_count + stats.diag_new_delta_count, 1);
         assert_eq!((stats.diag_race_count, stats.diag_invalid), (0, 0));
         assert!(stats.diag_selected_pack_count > 0);
@@ -425,6 +436,7 @@ mod tests {
             .unwrap();
         admit(&store.db, built.objects);
         let limited = store.db.physical_storage_receipt().since(before);
+        if version == 7 {
         assert_eq!(limited.diag_cursor_operation_limit, 1);
         assert_eq!(limited.diag_cursor_grants, 0);
         assert_eq!(limited.diag_limit_operation_first_empty_count, 1);
@@ -433,6 +445,16 @@ mod tests {
             limited.diag_limited_empty_count,
             limited.diag_eligible_count
         );
+        } else {
+            // SmallContent never ran native CDC correspondence; do not charge it
+            // native cursor work or manufacture an inherited-limit receipt.
+            assert_eq!(limited.diag_cursor_operation_limit, 0);
+            assert_eq!(limited.diag_cursor_grants, 0);
+            assert_eq!(limited.diag_limit_operation_first_empty_count, 0);
+            assert_eq!(limited.diag_limit_operation_inherited_empty_count, 0);
+            assert_eq!(limited.diag_limited_empty_count, 0);
+            assert_eq!(limited.diag_eligible_count, 1);
+        }
 
         let before = store.store_counts().unwrap();
         let missing = layerfs_content::ObjectId::for_bytes(b"not an admitted predecessor");
@@ -448,6 +470,8 @@ mod tests {
         drop(broken);
         drop(store);
         std::fs::remove_dir_all(folder).unwrap();
+
+        }
     }
 
     #[test]

@@ -56,14 +56,17 @@ pub fn diff_roots<S: ObjectRead>(
     let old_namespace = namespace(store, old)?;
     let new_namespace = namespace(store, new)?;
     if old_namespace.profile_id != new_namespace.profile_id
+        || old_namespace.scope != new_namespace.scope
         || old_namespace.root_directory_inode != new_namespace.root_directory_inode
     {
         return Err(CoreError::InvalidRecord("namespace identity mismatch"));
     }
     let old = RootView {
+        compact: old_namespace.scope.is_some(),
         table: InodeTableRoot(old_namespace.inode_table_root),
     };
     let new = RootView {
+        compact: new_namespace.scope.is_some(),
         table: InodeTableRoot(new_namespace.inode_table_root),
     };
     diff_node(
@@ -80,6 +83,7 @@ pub fn diff_roots<S: ObjectRead>(
 
 #[derive(Clone, Copy)]
 struct RootView {
+    compact: bool,
     table: InodeTableRoot,
 }
 
@@ -175,6 +179,14 @@ fn load_pair(
     new_inode: Option<InodeId>,
     is_root: bool,
 ) -> CoreResult<(Option<LoadedNode>, Option<LoadedNode>)> {
+    if old.compact || new.compact {
+        let read = |view: RootView, inode: Option<InodeId>| inode.map(|inode| {
+            let record = crate::tree::inode::inode_record_lookup(store, view.table, inode, &mut InodeTableCounters::default())?.ok_or(CoreError::MissingObject)?;
+            record.validate(is_root)?;
+            Ok(loaded(inode, record))
+        }).transpose();
+        return Ok((read(old, old_inode)?, read(new, new_inode)?));
+    }
     let (old_record, new_record) = match (old_inode, new_inode) {
         (Some(old_inode), Some(new_inode)) if old_inode == new_inode => inode_table_lookup_pair(
             store,

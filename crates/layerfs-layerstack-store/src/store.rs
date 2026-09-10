@@ -7,6 +7,11 @@ pub struct LayerStackStore {
 }
 
 impl LayerStackStore {
+    /// Reserve never-recycled scoped identities before a construction batch.
+    #[doc(hidden)]
+    pub fn reserve_inode_serials(&self, scope: layerfs_content::ObjectId, count: u64) -> Result<std::ops::Range<u64>> {
+        self.db.reserve_inode_serials(scope, count)
+    }
     /// Promote a closed schema-7/8 Store to schema 9 without rewriting payloads or page layout.
     pub fn upgrade_format(path: impl AsRef<Path>) -> Result<()> {
         crate::schema::upgrade_format(path.as_ref())

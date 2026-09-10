@@ -93,8 +93,8 @@ pub fn write_file<S: ObjectStore, R: Read>(
     mode: u32,
     seed: [u8; 32],
 ) -> CoreResult<filesystem::CandidateRoot> {
-    let inode = allocated_inode(seed, path);
     let candidate = filesystem::replace_file(store, root, path, bytes, |store| {
+        let inode = allocate_for_root(store, root, seed, path)?;
         Ok((inode, metadata(store, InodeKind::RegularFile, mode)?))
     })?;
     set_mode(store, candidate.root(), path, mode)?.after(candidate)
@@ -113,9 +113,9 @@ fn apply_change<S: ObjectStore>(
             mode,
         } => {
             let path = path(value)?;
-            let inode = allocated_inode_text(seed, value);
             let candidate =
                 filesystem::replace_file(store, root, &path, Cursor::new(bytes), |store| {
+                    let inode = allocate_for_root(store, root, seed, &path)?;
                     Ok((inode, metadata(store, InodeKind::RegularFile, *mode)?))
                 })?;
             set_mode(store, candidate.root(), &path, *mode)?.after(candidate)?
@@ -135,11 +135,12 @@ fn apply_change<S: ObjectStore>(
         )?,
         ContentChange::Mkdir { path: value, mode } => {
             let metadata = metadata(store, InodeKind::Directory, *mode)?;
+            let inode = allocate_for_root(store, root, seed, &path(value)?)?;
             filesystem::create_directory(
                 store,
                 root,
                 &path(value)?,
-                allocated_inode_text(seed, value),
+                inode,
                 metadata,
             )?
         }
@@ -148,11 +149,12 @@ fn apply_change<S: ObjectStore>(
             target,
         } => {
             let metadata = metadata(store, InodeKind::Symlink, 0o777)?;
+            let inode = allocate_for_root(store, root, seed, &path(value)?)?;
             filesystem::create_symlink(
                 store,
                 root,
                 &path(value)?,
-                allocated_inode_text(seed, value),
+                inode,
                 target.clone(),
                 metadata,
             )?
@@ -422,6 +424,13 @@ fn path(value: &str) -> CoreResult<CanonicalPath> {
 }
 
 #[doc(hidden)]
+fn allocate_for_root<S: ObjectStore>(store: &mut S, root: ObjectId, seed: [u8; 32], path: &CanonicalPath) -> CoreResult<InodeId> {
+    match filesystem::namespace(store, root)?.scope {
+        Some(scope) => store.allocate_inode_serial(scope).map(|serial| serial.inode_key()),
+        None => Ok(allocated_inode(seed, path)),
+    }
+}
+
 pub fn allocated_inode(seed: [u8; 32], path: &CanonicalPath) -> InodeId {
     allocated_inode_text(seed, path.as_str())
 }

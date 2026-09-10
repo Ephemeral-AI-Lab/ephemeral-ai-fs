@@ -84,44 +84,49 @@ impl Drop for Lease {
     }
 }
 
-struct Wire<K> {
+struct Wire<K, V> {
     level: u8,
     count: u64,
     bytes: u64,
-    entries: Vec<(K, ObjectId)>,
+    entries: Vec<(K, ObjectId, V)>,
     size: usize,
 }
-struct ReadPage<K> {
-    wire: Wire<K>,
+struct ReadPage<K, V> {
+    wire: Wire<K, V>,
     _lease: Lease,
 }
 trait Format {
     type Key: Ord + Clone;
-    fn decode(bytes: &[u8]) -> CoreResult<Wire<Self::Key>>;
-    fn encode(page: &Page<Self::Key>) -> CoreResult<Vec<u8>>;
-    fn width(key: &Self::Key) -> usize;
+    type Value: Default + Clone;
+    fn leaf_value<S: crate::object::access::ObjectRead>(_store: &S, _id: ObjectId, value: Self::Value) -> CoreResult<Self::Value> { Ok(value) }
+    fn decode(bytes: &[u8]) -> CoreResult<Wire<Self::Key, Self::Value>>;
+    fn encode(page: &Page<Self::Key, Self::Value>) -> CoreResult<Vec<u8>>;
+    fn width(key: &Self::Key, level: u8) -> usize;
+    fn page_items(_level: u8) -> usize { PAGE_ITEMS }
     fn heap_bytes(key: &Self::Key) -> usize;
     fn decode_scratch(bytes: usize) -> usize;
-    fn filled(size: usize, count: usize) -> bool;
-    fn fits(size: usize, count: usize) -> bool;
+    fn filled(size: usize, count: usize, level: u8) -> bool;
+    fn fits(size: usize, count: usize, level: u8) -> bool;
     fn empty_allowed() -> bool;
 }
 
-struct Entry<K> {
+struct Entry<K, V> {
     key: K,
     id: ObjectId,
+    value: V,
     count: u64,
     bytes: u64,
     size: usize,
-    pending: Option<Box<Page<K>>>,
+    items: usize,
+    pending: Option<Box<Page<K, V>>>,
 }
-struct Page<K> {
+struct Page<K, V> {
     level: u8,
-    entries: Vec<Entry<K>>,
+    entries: Vec<Entry<K, V>>,
     origin: Option<ObjectId>,
     _lease: Lease,
 }
-struct Node<K> {
+struct Node<K, V> {
     max: Option<K>,
     id: Option<ObjectId>,
     level: u8,
@@ -129,10 +134,10 @@ struct Node<K> {
     bytes: u64,
     size: usize,
     items: usize,
-    pending: Option<Box<Page<K>>>,
+    pending: Option<Box<Page<K, V>>>,
 }
-impl<K: Clone> Node<K> {
-    fn existing(id: ObjectId, wire: &Wire<K>) -> Self {
+impl<K: Clone, V> Node<K, V> {
+    fn existing(id: ObjectId, wire: &Wire<K, V>) -> Self {
         Self {
             max: wire.entries.last().map(|v| v.0.clone()),
             id: Some(id),
@@ -153,11 +158,11 @@ struct Engine<'a, S, F> {
     format: PhantomData<F>,
 }
 impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
-    fn page(&self, level: u8) -> CoreResult<Page<F::Key>> {
+    fn page(&self, level: u8) -> CoreResult<Page<F::Key, F::Value>> {
         if level > 31 {
             return Err(CoreError::MappingDepthExceeded);
         }
-        let lease = self.budget.reserve(std::mem::size_of::<Page<F::Key>>())?;
+        let lease = self.budget.reserve(std::mem::size_of::<Page<F::Key, F::Value>>())?;
         Ok(Page {
             level,
             entries: Vec::new(),
@@ -165,7 +170,7 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
             _lease: lease,
         })
     }
-    fn read(&mut self, id: ObjectId, root: bool) -> CoreResult<ReadPage<F::Key>> {
+    fn read(&mut self, id: ObjectId, root: bool) -> CoreResult<ReadPage<F::Key, F::Value>> {
         self.counters.nodes_read += 1;
         let budget = self.budget.clone();
         let (wire, lease) = self.store.with_authenticated_canonical(id, |bytes| {
@@ -173,10 +178,10 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
                 return Err(CoreError::ObjectLimitExceeded);
             }
             let lease = budget
-                .reserve(F::decode_scratch(bytes.len()) + std::mem::size_of::<Wire<F::Key>>())?;
+                .reserve(F::decode_scratch(bytes.len()) + std::mem::size_of::<Wire<F::Key, F::Value>>())?;
             Ok((F::decode(bytes)?, lease))
         })?;
-        if (!root && !F::filled(wire.size, wire.entries.len()))
+        if (!root && !F::filled(wire.size, wire.entries.len(), wire.level))
             || (wire.level > 0 && wire.entries.len() < 2)
             || (!F::empty_allowed() && wire.entries.is_empty())
         {
@@ -187,7 +192,7 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
             _lease: lease,
         })
     }
-    fn node(&self, mut page: Page<F::Key>) -> CoreResult<Node<F::Key>> {
+    fn node(&self, mut page: Page<F::Key, F::Value>) -> CoreResult<Node<F::Key, F::Value>> {
         page._lease
             .grow(page.entries.last().map_or(0, |e| F::heap_bytes(&e.key)))?;
         let count = page.entries.iter().try_fold(0u64, |n, e| {
@@ -196,7 +201,7 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
         let bytes = page.entries.iter().try_fold(0u64, |n, e| {
             n.checked_add(e.bytes).ok_or(CoreError::LengthOverflow)
         })?;
-        let size = 44 + page.entries.iter().map(|e| F::width(&e.key)).sum::<usize>();
+        let size = 44 + page.entries.iter().map(|e| F::width(&e.key, page.level)).sum::<usize>();
         Ok(Node {
             max: page.entries.last().map(|e| e.key.clone()),
             id: page.origin,
@@ -208,17 +213,17 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
             pending: Some(Box::new(page)),
         })
     }
-    fn filled(node: &Node<F::Key>) -> bool {
-        F::filled(node.size, node.items)
+    fn filled(node: &Node<F::Key, F::Value>) -> bool {
+        F::filled(node.size, node.items, node.level)
     }
-    fn persist(&mut self, mut node: Node<F::Key>) -> CoreResult<Node<F::Key>> {
+    fn persist(&mut self, mut node: Node<F::Key, F::Value>) -> CoreResult<Node<F::Key, F::Value>> {
         if let Some(mut page) = node.pending.take() {
             for entry in &mut page.entries {
                 self.persist_entry(entry, page.level)?;
             }
             let _codec = self.budget.reserve(
                 node.size * 2
-                    + page.entries.len() * std::mem::size_of::<(F::Key, ObjectId)>()
+                    + page.entries.len() * std::mem::size_of::<(F::Key, ObjectId, F::Value)>()
                     + page
                         .entries
                         .iter()
@@ -240,17 +245,19 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
         }
         Ok(node)
     }
-    fn entry(&mut self, node: Node<F::Key>) -> CoreResult<Entry<F::Key>> {
+    fn entry(&mut self, node: Node<F::Key, F::Value>) -> CoreResult<Entry<F::Key, F::Value>> {
         Ok(Entry {
             key: node.max.ok_or(CoreError::NonCanonicalPagePartition)?,
             id: node.id.unwrap_or_else(|| ObjectId::from_digest([0; 32])),
+            value: F::Value::default(),
             count: node.count,
             bytes: node.bytes,
             size: node.size,
+            items: node.items,
             pending: node.pending,
         })
     }
-    fn persist_entry(&mut self, entry: &mut Entry<F::Key>, level: u8) -> CoreResult<()> {
+    fn persist_entry(&mut self, entry: &mut Entry<F::Key, F::Value>, level: u8) -> CoreResult<()> {
         if let Some(page) = entry.pending.take() {
             if level == 0 {
                 return Err(CoreError::WrongLogicalRole);
@@ -263,11 +270,11 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
         }
         Ok(())
     }
-    fn child(entry: Entry<F::Key>, level: u8) -> Node<F::Key> {
+    fn child(entry: Entry<F::Key, F::Value>, level: u8) -> Node<F::Key, F::Value> {
         let items = entry
             .pending
             .as_ref()
-            .map_or_else(|| (entry.size - 44) / 64, |p| p.entries.len());
+            .map_or_else(|| entry.items, |p| p.entries.len());
         Node {
             max: Some(entry.key),
             id: Some(entry.id),
@@ -279,7 +286,7 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
             pending: entry.pending,
         }
     }
-    fn materialize(&mut self, node: Node<F::Key>) -> CoreResult<Page<F::Key>> {
+    fn materialize(&mut self, node: Node<F::Key, F::Value>) -> CoreResult<Page<F::Key, F::Value>> {
         if let Some(page) = node.pending {
             return Ok(*page);
         }
@@ -287,33 +294,37 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
         let read = self.read(id, true)?;
         self.page_from_wire(id, read)
     }
-    fn page_from_wire(&mut self, id: ObjectId, read: ReadPage<F::Key>) -> CoreResult<Page<F::Key>> {
+    fn page_from_wire(&mut self, id: ObjectId, read: ReadPage<F::Key, F::Value>) -> CoreResult<Page<F::Key, F::Value>> {
         let mut page = self.page(read.wire.level)?;
         page.origin = Some(id);
-        for (key, value) in read.wire.entries {
+        for (key, id, value) in read.wire.entries {
             if page.level == 0 {
                 self.append_entry(
                     &mut page,
                     Entry {
-                        bytes: F::width(&key) as u64,
+                        bytes: F::width(&key, 0) as u64,
                         key,
-                        id: value,
+                        id,
+                        value,
                         count: 1,
                         size: 0,
+                        items: 0,
                         pending: None,
                     },
                 )?;
             } else {
-                let child = self.read(value, false)?;
+                let child = self.read(id, false)?;
                 self.check_child(page.level, &key, &child.wire)?;
                 self.append_entry(
                     &mut page,
                     Entry {
                         key,
-                        id: value,
+                        id,
+                        value,
                         count: child.wire.count,
                         bytes: child.wire.bytes,
                         size: child.wire.size,
+                        items: child.wire.entries.len(),
                         pending: None,
                     },
                 )?;
@@ -330,7 +341,7 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
         }
         Ok(page)
     }
-    fn check_child(&self, level: u8, max: &F::Key, child: &Wire<F::Key>) -> CoreResult<()> {
+    fn check_child(&self, level: u8, max: &F::Key, child: &Wire<F::Key, F::Value>) -> CoreResult<()> {
         if child.level.checked_add(1) != Some(level)
             || child.entries.last().map(|e| &e.0) != Some(max)
         {
@@ -338,11 +349,11 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
         }
         Ok(())
     }
-    fn append_entry(&self, page: &mut Page<F::Key>, entry: Entry<F::Key>) -> CoreResult<()> {
+    fn append_entry(&self, page: &mut Page<F::Key, F::Value>, entry: Entry<F::Key, F::Value>) -> CoreResult<()> {
         if page.entries.len() == page.entries.capacity() {
             let before = page.entries.capacity();
-            let capacity = (before.max(1) * 2).min(PAGE_ITEMS);
-            let size = std::mem::size_of::<Entry<F::Key>>();
+            let capacity = (before.max(1) * 2).min(F::page_items(page.level));
+            let size = std::mem::size_of::<Entry<F::Key, F::Value>>();
             page._lease.grow(capacity * size)?;
             if page.entries.try_reserve_exact(capacity - before).is_err() {
                 page._lease.shrink(capacity * size);
@@ -356,10 +367,10 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
     }
     fn push(
         &mut self,
-        page: &mut Page<F::Key>,
-        entry: Entry<F::Key>,
-    ) -> CoreResult<Option<Node<F::Key>>> {
-        if page.entries.len() == PAGE_ITEMS {
+        page: &mut Page<F::Key, F::Value>,
+        entry: Entry<F::Key, F::Value>,
+    ) -> CoreResult<Option<Node<F::Key, F::Value>>> {
+        if page.entries.len() == F::page_items(page.level) {
             return Err(CoreError::ObjectLimitExceeded);
         }
         // Keep the outer boundary children private. A neighbouring parent's
@@ -369,13 +380,13 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
             self.persist_entry(page.entries.last_mut().unwrap(), page.level)?;
         }
         self.append_entry(page, entry)?;
-        let size = 44 + page.entries.iter().map(|e| F::width(&e.key)).sum::<usize>();
-        if F::fits(size, page.entries.len()) {
+        let size = 44 + page.entries.iter().map(|e| F::width(&e.key, page.level)).sum::<usize>();
+        if F::fits(size, page.entries.len(), page.level) {
             return Ok(None);
         }
         let mut right = self.page(page.level)?;
         let split =
-            super::directory::nearest_half(page.entries.iter().map(|e| F::width(&e.key)).collect());
+            super::directory::nearest_half(page.entries.iter().map(|e| F::width(&e.key, page.level)).collect());
         for entry in page.entries.drain(split..) {
             self.append_entry(&mut right, entry)?;
         }
@@ -386,9 +397,9 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
     #[allow(clippy::type_complexity)]
     fn merge(
         &mut self,
-        left: Node<F::Key>,
-        right: Node<F::Key>,
-        output: &mut dyn FnMut(&mut Self, Node<F::Key>) -> CoreResult<()>,
+        left: Node<F::Key, F::Value>,
+        right: Node<F::Key, F::Value>,
+        output: &mut dyn FnMut(&mut Self, Node<F::Key, F::Value>) -> CoreResult<()>,
     ) -> CoreResult<()> {
         let mut left = self.materialize(left)?;
         let right = self.materialize(right)?;
@@ -435,9 +446,9 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
     #[allow(clippy::type_complexity)]
     fn sibling(
         &mut self,
-        pending: &mut Option<Node<F::Key>>,
-        next: Node<F::Key>,
-        output: &mut dyn FnMut(&mut Self, Node<F::Key>) -> CoreResult<()>,
+        pending: &mut Option<Node<F::Key, F::Value>>,
+        next: Node<F::Key, F::Value>,
+        output: &mut dyn FnMut(&mut Self, Node<F::Key, F::Value>) -> CoreResult<()>,
     ) -> CoreResult<()> {
         let Some(previous) = pending.take() else {
             *pending = Some(next);
@@ -457,21 +468,21 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
         Ok(())
     }
     #[allow(clippy::type_complexity)]
-    fn edit<I: Iterator<Item = CoreResult<(F::Key, Option<ObjectId>)>>>(
+    fn edit<I: Iterator<Item = CoreResult<(F::Key, Option<(ObjectId, F::Value)>)>>>(
         &mut self,
-        id: ObjectId,
-        read: ReadPage<F::Key>,
+        id: Option<ObjectId>,
+        read: ReadPage<F::Key, F::Value>,
         bound: Option<&F::Key>,
-        deltas: &mut Deltas<I, F::Key>,
-        output: &mut dyn FnMut(&mut Self, Node<F::Key>) -> CoreResult<()>,
+        deltas: &mut Deltas<I, F::Key, F::Value>,
+        output: &mut dyn FnMut(&mut Self, Node<F::Key, F::Value>) -> CoreResult<()>,
     ) -> CoreResult<()> {
         if !deltas.in_range(bound) {
-            return output(self, Node::existing(id, &read.wire));
+            return output(self, Node::existing(id.ok_or(CoreError::MissingObject)?, &read.wire));
         }
         let mut page = self.page(read.wire.level)?;
-        page.origin = Some(id);
+        page.origin = id;
         if page.level == 0 {
-            let mut old = read.wire.entries.into_iter().peekable();
+            let mut old = read.wire.entries.into_iter().map(|(key, id, value)| (key, (id, value))).peekable();
             while old.peek().is_some() || deltas.in_range(bound) {
                 let delta_first = deltas.in_range(bound)
                     && old
@@ -485,19 +496,22 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
                     } else {
                         None
                     };
-                    (self.changes)(previous, value)?;
+                    (self.changes)(previous.map(|value| value.0), value.as_ref().map(|value| value.0))?;
                     (key, value)
                 } else {
                     let (key, value) = old.next().unwrap();
                     (key, Some(value))
                 };
-                if let Some(value) = value {
+                if let Some((id, value)) = value {
+                    let value = F::leaf_value(self.store, id, value)?;
                     let entry = Entry {
-                        bytes: F::width(&key) as u64,
+                        bytes: F::width(&key, 0) as u64,
                         key,
-                        id: value,
+                        id,
+                        value,
                         count: 1,
                         size: 0,
+                        items: 0,
                         pending: None,
                     };
                     if let Some(node) = self.push(&mut page, entry)? {
@@ -511,7 +525,7 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
             let mut old_count = 0u64;
             let mut old_bytes = 0u64;
             let mut pending = None;
-            for (index, (key, child_id)) in read.wire.entries.into_iter().enumerate() {
+            for (index, (key, child_id, _)) in read.wire.entries.into_iter().enumerate() {
                 let child = self.read(child_id, false)?;
                 self.check_child(level, &key, &child.wire)?;
                 old_count = old_count
@@ -525,7 +539,7 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
                 } else {
                     Some(&key)
                 };
-                self.edit(child_id, child, child_bound, deltas, &mut |engine, node| {
+                self.edit(Some(child_id), child, child_bound, deltas, &mut |engine, node| {
                     engine.sibling(&mut pending, node, &mut |engine, node| {
                         let entry = engine.entry(node)?;
                         if let Some(node) = engine.push(&mut page, entry)? {
@@ -553,11 +567,11 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
     }
 }
 
-struct Deltas<I, K> {
+struct Deltas<I, K, V> {
     source: I,
-    next: Option<(K, Option<ObjectId>)>,
+    next: Option<(K, Option<(ObjectId, V)>)>,
 }
-impl<I: Iterator<Item = CoreResult<(K, Option<ObjectId>)>>, K: Ord> Deltas<I, K> {
+impl<I: Iterator<Item = CoreResult<(K, Option<(ObjectId, V)>)>>, K: Ord, V> Deltas<I, K, V> {
     fn new(mut source: I) -> CoreResult<Self> {
         let next = source.next().transpose()?;
         Ok(Self { source, next })
@@ -567,7 +581,7 @@ impl<I: Iterator<Item = CoreResult<(K, Option<ObjectId>)>>, K: Ord> Deltas<I, K>
             .as_ref()
             .is_some_and(|v| bound.is_none_or(|bound| &v.0 <= bound))
     }
-    fn take(&mut self) -> CoreResult<(K, Option<ObjectId>)> {
+    fn take(&mut self) -> CoreResult<(K, Option<(ObjectId, V)>)> {
         let current = self.next.take().ok_or(CoreError::UnexpectedEof)?;
         self.next = self.source.next().transpose()?;
         if self.next.as_ref().is_some_and(|next| next.0 <= current.0) {
@@ -586,7 +600,7 @@ fn apply<S: ObjectStore, F: Format>(
     apply_budgeted::<S, F>(
         store,
         root,
-        source,
+        source.map(|row| row.map(|(key, id)| (key, id.map(|id| (id, F::Value::default()))))),
         SORTED_TREE_UPDATE_SCRATCH_BYTES,
         None,
         &mut |_, _| Ok(()),
@@ -595,14 +609,24 @@ fn apply<S: ObjectStore, F: Format>(
 fn apply_budgeted<S: ObjectStore, F: Format>(
     store: &mut S,
     root: ObjectId,
-    source: impl Iterator<Item = CoreResult<(F::Key, Option<ObjectId>)>>,
+    source: impl Iterator<Item = CoreResult<(F::Key, Option<(ObjectId, F::Value)>)>>,
+    scratch_limit: usize,
+    expected: Option<(u8, u64)>,
+    changes: &mut dyn FnMut(Option<ObjectId>, Option<ObjectId>) -> CoreResult<()>,
+) -> CoreResult<(ObjectId, TreeBatchCounters)> {
+    apply_budgeted_root::<S, F>(store, Some(root), source, scratch_limit, expected, changes)
+}
+fn apply_budgeted_root<S: ObjectStore, F: Format>(
+    store: &mut S,
+    root: Option<ObjectId>,
+    source: impl Iterator<Item = CoreResult<(F::Key, Option<(ObjectId, F::Value)>)>>,
     scratch_limit: usize,
     expected: Option<(u8, u64)>,
     changes: &mut dyn FnMut(Option<ObjectId>, Option<ObjectId>) -> CoreResult<()>,
 ) -> CoreResult<(ObjectId, TreeBatchCounters)> {
     let mut deltas = Deltas::new(source)?;
     if deltas.next.is_none() {
-        return Ok((root, TreeBatchCounters::default()));
+        return Ok((root.ok_or(CoreError::InvalidRecord("empty initial tree"))?, TreeBatchCounters::default()));
     }
     let mut engine = Engine::<S, F> {
         store,
@@ -614,7 +638,11 @@ fn apply_budgeted<S: ObjectStore, F: Format>(
         counters: TreeBatchCounters::default(),
         format: PhantomData,
     };
-    let read = engine.read(root, true)?;
+    let read = match root {
+        Some(root) => engine.read(root, true)?,
+        None => ReadPage { wire: Wire { level: 0, count: 0, bytes: 0, entries: Vec::new(), size: 44 },
+            _lease: engine.budget.reserve(std::mem::size_of::<Wire<F::Key, F::Value>>())? },
+    };
     if expected.is_some_and(|value| value != (read.wire.level, read.wire.count)) {
         return Err(CoreError::InvalidRecord("batched tree root summary"));
     }
@@ -622,8 +650,8 @@ fn apply_budgeted<S: ObjectStore, F: Format>(
     let mut first = None;
     let _frontier = engine
         .budget
-        .reserve(32 * std::mem::size_of::<Option<Box<Page<F::Key>>>>())?;
-    let mut levels: Vec<Option<Box<Page<F::Key>>>> = (0..32).map(|_| None).collect();
+        .reserve(32 * std::mem::size_of::<Option<Box<Page<F::Key, F::Value>>>>())?;
+    let mut levels: Vec<Option<Box<Page<F::Key, F::Value>>>> = (0..32).map(|_| None).collect();
     engine.edit(root, read, None, &mut deltas, &mut |engine, node| {
         if first.is_none() && levels.iter().all(Option::is_none) {
             first = Some(node);
@@ -652,7 +680,7 @@ fn apply_budgeted<S: ObjectStore, F: Format>(
             Some(node) => node,
             None if F::empty_allowed() => {
                 let mut page = engine.page(0)?;
-                page.origin = Some(root);
+                page.origin = root;
                 engine.node(page)?
             }
             None => return Err(CoreError::InvalidRecord("empty inode table")),
@@ -671,8 +699,8 @@ fn apply_budgeted<S: ObjectStore, F: Format>(
 }
 fn append_root<S: ObjectStore, F: Format>(
     engine: &mut Engine<'_, S, F>,
-    levels: &mut [Option<Box<Page<F::Key>>>],
-    mut node: Node<F::Key>,
+    levels: &mut [Option<Box<Page<F::Key, F::Value>>>],
+    mut node: Node<F::Key, F::Value>,
 ) -> CoreResult<()> {
     loop {
         let level = node
@@ -695,9 +723,11 @@ fn append_root<S: ObjectStore, F: Format>(
 struct Directory;
 impl Format for Directory {
     type Key = CanonicalName;
-    fn decode(bytes: &[u8]) -> CoreResult<Wire<Self::Key>> {
+    type Value = ();
+    fn decode(bytes: &[u8]) -> CoreResult<Wire<Self::Key, Self::Value>> {
         let (level, count, logical, entries) = match decode_directory_node(bytes)? {
             DirectoryNodeV1::Leaf {
+            compact: _,
                 subtree_encoded_bytes,
                 entries,
             } => (
@@ -710,6 +740,7 @@ impl Format for Directory {
                     .collect(),
             ),
             DirectoryNodeV1::Branch {
+            compact: _,
                 level,
                 subtree_entry_count,
                 subtree_encoded_bytes,
@@ -720,16 +751,17 @@ impl Format for Directory {
             level,
             count,
             bytes: logical,
-            entries,
+            entries: entries.into_iter().map(|(key, id)| (key, id, ())).collect(),
             size: bytes.len(),
         })
     }
-    fn encode(page: &Page<Self::Key>) -> CoreResult<Vec<u8>> {
+    fn encode(page: &Page<Self::Key, Self::Value>) -> CoreResult<Vec<u8>> {
         let bytes = page.entries.iter().try_fold(0u64, |n, e| {
             n.checked_add(e.bytes).ok_or(CoreError::LengthOverflow)
         })?;
         let node = if page.level == 0 {
             DirectoryNodeV1::Leaf {
+            compact: false,
                 subtree_encoded_bytes: bytes,
                 entries: page
                     .entries
@@ -739,6 +771,7 @@ impl Format for Directory {
             }
         } else {
             DirectoryNodeV1::Branch {
+            compact: false,
                 level: page.level,
                 subtree_entry_count: page.entries.iter().try_fold(0u64, |n, e| {
                     n.checked_add(e.count).ok_or(CoreError::LengthOverflow)
@@ -749,7 +782,7 @@ impl Format for Directory {
         };
         encode_directory_node(&node)
     }
-    fn width(key: &Self::Key) -> usize {
+    fn width(key: &Self::Key, _: u8) -> usize {
         34 + key.as_bytes().len()
     }
     fn heap_bytes(key: &Self::Key) -> usize {
@@ -758,10 +791,10 @@ impl Format for Directory {
     fn decode_scratch(bytes: usize) -> usize {
         bytes * 3 + bytes.saturating_sub(44) / 35 * std::mem::size_of::<(CanonicalName, ObjectId)>()
     }
-    fn filled(size: usize, _: usize) -> bool {
+    fn filled(size: usize, _: usize, _: u8) -> bool {
         size * 5 >= 8192 * 2
     }
-    fn fits(size: usize, _: usize) -> bool {
+    fn fits(size: usize, _: usize, _: u8) -> bool {
         size <= 8192
     }
     fn empty_allowed() -> bool {
@@ -771,7 +804,8 @@ impl Format for Directory {
 struct Inodes;
 impl Format for Inodes {
     type Key = InodeId;
-    fn decode(bytes: &[u8]) -> CoreResult<Wire<Self::Key>> {
+    type Value = ();
+    fn decode(bytes: &[u8]) -> CoreResult<Wire<Self::Key, Self::Value>> {
         let (level, count, entries) = match decode_inode_table_node(bytes)? {
             InodeTableNodeV1::Leaf(entries) => (0, entries.len() as u64, entries),
             InodeTableNodeV1::Branch {
@@ -784,11 +818,11 @@ impl Format for Inodes {
             level,
             count,
             bytes: count.checked_mul(64).ok_or(CoreError::LengthOverflow)?,
-            entries,
+            entries: entries.into_iter().map(|(key, id)| (key, id, ())).collect(),
             size: bytes.len(),
         })
     }
-    fn encode(page: &Page<Self::Key>) -> CoreResult<Vec<u8>> {
+    fn encode(page: &Page<Self::Key, Self::Value>) -> CoreResult<Vec<u8>> {
         let entries = page.entries.iter().map(|e| (e.key, e.id)).collect();
         let node = if page.level == 0 {
             InodeTableNodeV1::Leaf(entries)
@@ -803,7 +837,7 @@ impl Format for Inodes {
         };
         encode_inode_table_node(&node)
     }
-    fn width(_: &Self::Key) -> usize {
+    fn width(_: &Self::Key, _: u8) -> usize {
         64
     }
     fn heap_bytes(_: &Self::Key) -> usize {
@@ -812,15 +846,141 @@ impl Format for Inodes {
     fn decode_scratch(bytes: usize) -> usize {
         bytes.saturating_sub(44)
     }
-    fn filled(_: usize, count: usize) -> bool {
+    fn filled(_: usize, count: usize, _: u8) -> bool {
         count >= 64
     }
-    fn fits(_: usize, count: usize) -> bool {
+    fn fits(_: usize, count: usize, _: u8) -> bool {
         count <= 127
     }
     fn empty_allowed() -> bool {
         false
     }
+}
+
+struct CompactInodes;
+impl Format for CompactInodes {
+    type Key = super::compact::InodeSerial;
+    type Value = Option<super::inode::InodeRecordV1>;
+    fn leaf_value<S: crate::object::access::ObjectRead>(store: &S, id: ObjectId, value: Self::Value) -> CoreResult<Self::Value> {
+        match value { Some(value) => Ok(Some(value)), None => store.with_authenticated_canonical(id, super::inode::codec::decode_inode_record).map(Some) }
+    }
+    fn decode(bytes: &[u8]) -> CoreResult<Wire<Self::Key, Self::Value>> {
+        use super::compact::InodeNode;
+        let (level, count, entries) = match super::compact::decode_inode(bytes)? {
+            InodeNode::Leaf(rows) => (0, rows.len() as u64, rows.into_iter().map(|(key, record)| {
+                Ok((key, inode_value_id(record)?, Some(record)))
+            }).collect::<CoreResult<Vec<_>>>()?),
+            InodeNode::Branch { level, subtree_count, children } =>
+                (level, subtree_count, children.into_iter().map(|(key, id)| (key, id, None)).collect()),
+        };
+        Ok(Wire { level, count, bytes: count.checked_mul(81).ok_or(CoreError::LengthOverflow)?, entries, size: bytes.len() })
+    }
+    fn encode(page: &Page<Self::Key, Self::Value>) -> CoreResult<Vec<u8>> {
+        use super::compact::InodeNode;
+        let node = if page.level == 0 {
+            InodeNode::Leaf(page.entries.iter().map(|entry| {
+                Ok((entry.key, entry.value.ok_or(CoreError::WrongLogicalRole)?))
+            }).collect::<CoreResult<_>>()?)
+        } else {
+            InodeNode::Branch {
+                level: page.level,
+                subtree_count: page.entries.iter().try_fold(0u64, |sum, entry| sum.checked_add(entry.count).ok_or(CoreError::LengthOverflow))?,
+                children: page.entries.iter().map(|entry| (entry.key, entry.id)).collect(),
+            }
+        };
+        super::compact::encode_inode(&node)
+    }
+    fn width(_: &Self::Key, level: u8) -> usize { if level == 0 { 81 } else { 40 } }
+    fn heap_bytes(_: &Self::Key) -> usize { 0 }
+    fn decode_scratch(bytes: usize) -> usize { bytes * 4 + 8192 }
+    fn filled(_: usize, count: usize, level: u8) -> bool { count >= if level == 0 { 50 } else { 64 } }
+    fn fits(_: usize, count: usize, level: u8) -> bool { count <= if level == 0 { 100 } else { 127 } }
+    fn empty_allowed() -> bool { false }
+}
+
+// This comparison identity is not a separately admitted inode object. The
+// canonical leaf authenticates the actual inline value and its references.
+fn inode_value_id(record: super::inode::InodeRecordV1) -> CoreResult<ObjectId> {
+    Ok(ObjectId::for_bytes(&super::inode::codec::encode_inode_record(record)?))
+}
+
+pub fn compact_inode_table_apply_sorted<S: ObjectStore>(
+    store: &mut S,
+    root: super::inode::InodeTableRoot,
+    deltas: impl Iterator<Item = CoreResult<(super::compact::InodeSerial, Option<super::inode::InodeRecordV1>)>>,
+    scratch_limit: usize,
+) -> CoreResult<(super::inode::InodeTableRoot, TreeBatchCounters)> {
+    let deltas = deltas.map(|row| {
+        let (key, record) = row?;
+        Ok((key, record.map(|record| Ok((inode_value_id(record)?, Some(record)))).transpose()?))
+    });
+    let (root, counters) = apply_budgeted::<S, CompactInodes>(store, root.0, deltas, scratch_limit, None, &mut |_, _| Ok(()))?;
+    Ok((super::inode::InodeTableRoot(root), counters))
+}
+
+/// Construct a compact table from strictly ordered values without an admitted
+/// seed leaf or intermediate record objects. The same bounded engine seals pages.
+pub fn compact_inode_table_from_sorted<S: ObjectStore>(
+    store: &mut S,
+    rows: impl Iterator<Item = CoreResult<(super::compact::InodeSerial, super::inode::InodeRecordV1)>>,
+    scratch_limit: usize,
+) -> CoreResult<(super::inode::InodeTableRoot, TreeBatchCounters)> {
+    let rows = rows.map(|row| { let (key, record) = row?; Ok((key, Some((inode_value_id(record)?, Some(record))))) });
+    let (root, counters) = apply_budgeted_root::<S, CompactInodes>(store, None, rows, scratch_limit, None, &mut |_, _| Ok(()))?;
+    Ok((super::inode::InodeTableRoot(root), counters))
+}
+
+struct CompactDirectory;
+impl Format for CompactDirectory {
+    type Key = CanonicalName;
+    type Value = ();
+    fn decode(bytes: &[u8]) -> CoreResult<Wire<Self::Key, Self::Value>> {
+        use super::compact::DirectoryNode;
+        let (level, count, logical, entries) = match super::compact::decode_directory(bytes)? {
+            DirectoryNode::Leaf(rows) => {
+                let logical = rows.iter().try_fold(0u64, |sum, row| sum.checked_add(10 + row.0.as_bytes().len() as u64).ok_or(CoreError::LengthOverflow))?;
+                (0, rows.len() as u64, logical, rows.into_iter().map(|(name, serial)| (name, ObjectId::from_digest(serial.inode_key().0), ())).collect())
+            }
+            DirectoryNode::Branch { level, subtree_count, subtree_bytes, children } =>
+                (level, subtree_count, subtree_bytes, children.into_iter().map(|(name, id)| (name, id, ())).collect()),
+        };
+        Ok(Wire { level, count, bytes: logical, entries, size: bytes.len() })
+    }
+    fn encode(page: &Page<Self::Key, Self::Value>) -> CoreResult<Vec<u8>> {
+        use super::compact::{DirectoryNode, InodeSerial};
+        let node = if page.level == 0 {
+            DirectoryNode::Leaf(page.entries.iter().map(|entry| Ok((entry.key.clone(), InodeSerial::from_inode_key(InodeId(entry.id.to_bytes()))?))).collect::<CoreResult<_>>()?)
+        } else {
+            DirectoryNode::Branch {
+                level: page.level,
+                subtree_count: page.entries.iter().try_fold(0u64, |sum, entry| sum.checked_add(entry.count).ok_or(CoreError::LengthOverflow))?,
+                subtree_bytes: page.entries.iter().try_fold(0u64, |sum, entry| sum.checked_add(entry.bytes).ok_or(CoreError::LengthOverflow))?,
+                children: page.entries.iter().map(|entry| (entry.key.clone(), entry.id)).collect(),
+            }
+        };
+        super::compact::encode_directory(&node)
+    }
+    fn width(key: &Self::Key, level: u8) -> usize { (if level == 0 { 10 } else { 34 }) + key.as_bytes().len() }
+    fn heap_bytes(key: &Self::Key) -> usize { key.owned_capacity_bytes() }
+    fn page_items(level: u8) -> usize { if level == 0 { (8192 - 44) / 11 + 1 } else { PAGE_ITEMS } }
+    fn decode_scratch(bytes: usize) -> usize { bytes * 5 + bytes.saturating_sub(44) / 11 * std::mem::size_of::<(CanonicalName, ObjectId)>() }
+    fn filled(size: usize, _: usize, _: u8) -> bool { size * 5 >= 8192 * 2 }
+    fn fits(size: usize, _: usize, _: u8) -> bool { size <= 8192 }
+    fn empty_allowed() -> bool { true }
+}
+
+pub fn compact_directory_apply_sorted<S: ObjectStore>(
+    store: &mut S,
+    root: super::directory::DirectoryStateRoot,
+    deltas: impl Iterator<Item = CoreResult<(CanonicalName, Option<super::compact::InodeSerial>)>>,
+    scratch_limit: usize,
+    mut changes: impl FnMut(Option<InodeId>, Option<InodeId>) -> CoreResult<()>,
+) -> CoreResult<(super::directory::DirectoryStateRoot, TreeBatchCounters)> {
+    let deltas = deltas.map(|row| row.map(|(key, serial)| (key, serial.map(|serial| (ObjectId::from_digest(serial.inode_key().0), ())))));
+    let (root, counters) = apply_budgeted::<S, CompactDirectory>(store, root.0, deltas, scratch_limit, None, &mut |before, after| {
+        changes(before.map(|id| InodeId(id.to_bytes())), after.map(|id| InodeId(id.to_bytes())))
+    })?;
+    Ok((super::directory::DirectoryStateRoot(root), counters))
 }
 
 /// Sorted unique final bindings; None ensures absence, Some upserts.
@@ -852,10 +1012,19 @@ pub fn directory_apply_sorted_observed<S: ObjectStore>(
 ) -> CoreResult<(super::directory::DirectoryStateRoot, TreeBatchCounters)> {
     use super::directory::codec::{decode_directory_state, encode_directory_state};
     let mut state = store.with_authenticated_canonical(root.0, decode_directory_state)?;
+    if state.profile_id == super::compact::profile_id() {
+        let deltas = deltas.map(|row| {
+            let (name, key) = row?;
+            Ok((name, key.map(super::compact::InodeSerial::from_inode_key).transpose()?))
+        });
+        let (root, mut counters) = compact_directory_apply_sorted(store, root, deltas, scratch_limit, changes)?;
+        counters.nodes_read += 1;
+        return Ok((root, counters));
+    }
     let (mapping, mut counters) = apply_budgeted::<S, Directory>(
         store,
         state.mapping_root,
-        deltas.map(|v| v.map(|(k, v)| (k, v.map(|v| ObjectId::from_digest(v.0))))),
+        deltas.map(|v| v.map(|(k, v)| (k, v.map(|v| (ObjectId::from_digest(v.0), ()))))),
         scratch_limit,
         Some((state.tree_level, state.entry_count)),
         &mut |before, after| {
@@ -894,10 +1063,22 @@ pub fn inode_table_apply_sorted_with_budget<S: ObjectStore>(
     deltas: impl Iterator<Item = CoreResult<(InodeId, Option<ObjectId>)>>,
     scratch_limit: usize,
 ) -> CoreResult<(super::inode::InodeTableRoot, TreeBatchCounters)> {
-    let (root, counters) =
-        apply_budgeted::<S, Inodes>(store, root.0, deltas, scratch_limit, None, &mut |_, _| {
+    let mut deltas = deltas.peekable();
+    if deltas.peek().is_none() { return Ok((root, TreeBatchCounters::default())); }
+    if super::compact::is_inode_table(store, root.0)? {
+        let deltas = deltas.map(|row| {
+            let (key, id) = row?;
+            Ok((super::compact::InodeSerial::from_inode_key(key)?, id.map(|id| (id, None))))
+        });
+        let (root, mut counters) = apply_budgeted::<S, CompactInodes>(store, root.0, deltas, scratch_limit, None, &mut |_, _| Ok(()))?;
+        counters.nodes_read += 1;
+        return Ok((super::inode::InodeTableRoot(root), counters));
+    }
+    let (root, mut counters) =
+        apply_budgeted::<S, Inodes>(store, root.0, deltas.map(|row| row.map(|(key, id)| (key, id.map(|id| (id, ()))))), scratch_limit, None, &mut |_, _| {
             Ok(())
         })?;
+    counters.nodes_read += 1;
     Ok((super::inode::InodeTableRoot(root), counters))
 }
 
@@ -906,10 +1087,96 @@ mod tests {
     use super::*;
     use crate::filesystem::build_initial_directory;
     use crate::tree::directory::{
-        directory_entries, directory_lookup, empty_directory, NamespaceCounters,
+        directory_entries, directory_lookup, empty_directory, DirectoryStateRoot, NamespaceCounters,
     };
     use crate::tree::inode::{inode_table_entries, inode_table_upsert, InodeTableRoot};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn initial_compact_table_streams_only_final_reachable_nodes() {
+        use crate::tree::{compact::InodeSerial, inode::{InodeKind, InodeRecordV1}};
+        let mut store = MemoryStore::default();
+        let record = InodeRecordV1 { kind: InodeKind::RegularFile, namespace_ref_count: 1,
+            content_root: value(1), metadata_root: value(2) };
+        let (root, counters) = compact_inode_table_from_sorted(&mut store,
+            (1..=13000).map(|n| Ok((InodeSerial::new(n).unwrap(), record))), SORTED_TREE_UPDATE_SCRATCH_BYTES).unwrap();
+        assert_eq!(counters.nodes_read, 0);
+        assert!(counters.peak_scratch_bytes <= SORTED_TREE_UPDATE_SCRATCH_BYTES);
+        let mut reached = std::collections::BTreeSet::new();
+        reachable::<CompactInodes>(&store, root.0, &mut reached);
+        assert_eq!(reached, store.objects.keys().copied().collect());
+    }
+
+    #[test]
+    fn compact_inline_inode_updates_reuse_the_bounded_tree_engine() {
+        use crate::tree::compact::{self, InodeNode, InodeSerial};
+        use crate::tree::inode::{inode_record_lookup_many, InodeKind, InodeRecordV1, InodeTableCounters};
+        let mut store = MemoryStore::default();
+        let record = InodeRecordV1 { kind: InodeKind::RegularFile, namespace_ref_count: 1,
+            content_root: ObjectId::for_bytes(b"content"), metadata_root: ObjectId::for_bytes(b"metadata") };
+        let serial = |n| InodeSerial::new(n).unwrap();
+        let first = store.put(&compact::encode_inode(&InodeNode::Leaf(vec![(serial(1), record)])).unwrap()).unwrap();
+        let (initial, counters) = compact_inode_table_apply_sorted(&mut store, InodeTableRoot(first),
+            (2..=13000).map(|n| Ok((serial(n), Some(record)))), SORTED_TREE_UPDATE_SCRATCH_BYTES).unwrap();
+        assert!(counters.peak_scratch_bytes <= SORTED_TREE_UPDATE_SCRATCH_BYTES);
+        assert!(matches!(compact::decode_inode(&store.get(initial.0).unwrap()).unwrap(), InodeNode::Branch { level: 2, .. }));
+        let changed = InodeRecordV1 { namespace_ref_count: 2, ..record };
+        let (updated, _) = compact_inode_table_apply_sorted(&mut store, initial,
+            (1..=13000).step_by(3).map(|n| Ok((serial(n), if n % 2 == 0 { None } else { Some(changed) }))), SORTED_TREE_UPDATE_SCRATCH_BYTES).unwrap();
+        assert_ne!(initial, updated);
+        for (root, edited) in [(initial, false), (updated, true)] {
+            for keys in (1..=13000).map(|n| serial(n).inode_key()).collect::<Vec<_>>().chunks(128) {
+                let values = inode_record_lookup_many(&store, root, keys, &mut InodeTableCounters::default()).unwrap();
+                for (key, actual) in keys.iter().zip(values) {
+                    let n = InodeSerial::from_inode_key(*key).unwrap().get();
+                    let expected = if edited && (n - 1) % 3 == 0 { if n % 2 == 0 { None } else { Some(changed) } } else { Some(record) };
+                    assert_eq!(actual, expected);
+                }
+            }
+        }
+        assert!(store.objects.values().all(|bytes| !crate::decode_bytes_object(bytes).unwrap().starts_with(b"LFS4INO\0")));
+        assert!(compact_inode_table_apply_sorted(&mut store, updated,
+            std::iter::once(Ok((serial(2), Some(changed)))), 128).is_err());
+        assert_eq!(compact::inode_lookup(&store, updated.0, serial(2), &mut InodeTableCounters::default()).unwrap(), Some(record));
+    }
+
+    #[test]
+    fn compact_directory_updates_preserve_names_serials_and_snapshots() {
+        use crate::tree::compact::{self, DirectoryNode, InodeSerial};
+        fn rows(store: &MemoryStore, root: ObjectId, output: &mut Vec<(CanonicalName, InodeSerial)>) -> (u64, u64) {
+            match compact::decode_directory(&store.get(root).unwrap()).unwrap() {
+                DirectoryNode::Leaf(entries) => {
+                    let count = entries.len() as u64;
+                    let bytes = entries.iter().map(|row| 10 + row.0.as_bytes().len() as u64).sum();
+                    output.extend(entries); (count, bytes)
+                }
+                DirectoryNode::Branch { subtree_count, subtree_bytes, children, .. } => {
+                    let mut total = (0, 0);
+                    for (maximum, child) in children {
+                        let (count, bytes) = rows(store, child, output);
+                        assert_eq!(output.last().unwrap().0, maximum);
+                        total.0 += count; total.1 += bytes;
+                    }
+                    assert_eq!(total, (subtree_count, subtree_bytes)); total
+                }
+            }
+        }
+        let mut store = MemoryStore::default();
+        let empty = store.put(&compact::encode_directory(&DirectoryNode::Leaf(Vec::new())).unwrap()).unwrap();
+        let expected: Vec<_> = (1..=4000).map(|n| (CanonicalName::from_bytes(format!("name-{n:05}").as_bytes()).unwrap(), InodeSerial::new(n).unwrap())).collect();
+        let (initial, counters) = compact_directory_apply_sorted(&mut store, DirectoryStateRoot(empty),
+            expected.iter().cloned().map(|(key, id)| Ok((key, Some(id)))), SORTED_TREE_UPDATE_SCRATCH_BYTES, |_, _| Ok(())).unwrap();
+        assert!(counters.peak_scratch_bytes <= SORTED_TREE_UPDATE_SCRATCH_BYTES);
+        let mut observed = 0;
+        let (updated, _) = compact_directory_apply_sorted(&mut store, initial,
+            expected.iter().step_by(2).map(|(key, _)| Ok((key.clone(), None))), SORTED_TREE_UPDATE_SCRATCH_BYTES,
+            |before, after| { assert!(before.is_some()); assert!(after.is_none()); observed += 1; Ok(()) }).unwrap();
+        assert_eq!(observed, 2000);
+        for (root, expected) in [(initial, expected.clone()), (updated, expected.into_iter().skip(1).step_by(2).collect())] {
+            let mut actual = Vec::new(); rows(&store, root.0, &mut actual);
+            assert_eq!(actual, expected);
+        }
+    }
 
     #[derive(Default)]
     struct MemoryStore {
@@ -1257,7 +1524,7 @@ mod tests {
         }
         let wire = F::decode(store.objects.get(&id).unwrap()).unwrap();
         if wire.level > 0 {
-            for (_, child) in wire.entries {
+            for (_, child, _) in wire.entries {
                 reachable::<F>(store, child, output);
             }
         }
@@ -1377,6 +1644,7 @@ mod tests {
         let empty = store
             .put(
                 &encode_directory_node(&DirectoryNodeV1::Leaf {
+            compact: false,
                     subtree_encoded_bytes: 0,
                     entries: Vec::new(),
                 })

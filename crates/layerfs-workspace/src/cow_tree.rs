@@ -7,9 +7,8 @@ use layerfs_content::tree::directory::codec::decode_symlink;
 use layerfs_content::tree::directory::{
     directory_page_after, DirectoryStateRoot, NamespaceCounters,
 };
-use layerfs_content::tree::inode::codec::decode_inode_record;
 use layerfs_content::tree::inode::{
-    inode_table_lookup, inode_table_lookup_many, InodeId, InodeKind, InodeTableCounters,
+    inode_record_lookup, inode_record_lookup_many, InodeId, InodeKind, InodeTableCounters,
     InodeTableRoot,
 };
 use layerfs_content::tree::metadata::{metadata_lookup, MetadataKey, PortableMetadataV1};
@@ -35,6 +34,8 @@ pub(crate) struct WorkspaceSnapshot {
 }
 
 pub struct Workspace {
+    pub(crate) inode_scope: Option<layerfs_content::ObjectId>,
+    pub(crate) inode_serials: std::sync::Arc<std::sync::Mutex<Option<std::ops::Range<u64>>>>,
     pub(crate) remote: Option<crate::live_backing::RemoteWorkspace>,
     pub(crate) live: layerfs_workspace_core::LiveWorkspace,
     pub(crate) store: LayerStackStore,
@@ -151,6 +152,8 @@ impl Workspace {
             }),
         };
         Ok(Self {
+            inode_scope: namespace.scope,
+            inode_serials: Default::default(),
             live: layerfs_workspace_core::LiveWorkspace::new(root, policy, base_root),
             store,
             workspace_id,
@@ -415,24 +418,14 @@ pub(crate) fn acquire_inodes(
         return Ok(Vec::new());
     }
     let core = CoreReader(reader);
-    let record_ids =
-        inode_table_lookup_many(&core, inodes, ids, &mut InodeTableCounters::default())?
-            .into_iter()
-            .map(|record| record.ok_or(StorageError::Integrity("Workspace inode")))
-            .collect::<Result<Vec<_>>>()?;
-    let mut records = BTreeMap::new();
-    core.get_authenticated_batch(&record_ids, |id, payload| {
-        records.insert(
-            id,
-            decode_inode_record(&layerfs_content::encode_bytes_object(payload)?)?,
-        );
-        Ok(())
-    })?;
-    let file_states = records
-        .values()
+    let records = inode_record_lookup_many(&core, inodes, ids, &mut InodeTableCounters::default())?
+        .into_iter()
+        .map(|record| record.ok_or(StorageError::Integrity("Workspace inode")))
+        .collect::<Result<Vec<_>>>()?;
+    let file_states = records.iter()
         .filter(|record| record.kind == InodeKind::RegularFile)
         .map(|record| record.content_root)
-        .collect::<Vec<_>>();
+        .collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>();
     let mut file_lengths = BTreeMap::new();
     // A regular root can now own up to 128 KiB, not only a 106-byte extent state.
     // Preserve the existing 4-MiB acquisition bound without paging each file separately.
@@ -449,11 +442,8 @@ pub(crate) fn acquire_inodes(
     // inode kind identify the validation result without any retained cache.
     let mut metadata = BTreeMap::new();
     ids.iter()
-        .zip(record_ids)
-        .map(|(inode, record_id)| {
-            let record = *records
-                .get(&record_id)
-                .ok_or(StorageError::Integrity("Workspace inode record"))?;
+        .zip(records)
+        .map(|(inode, record)| {
             let portable = match metadata.entry((record.metadata_root, record.kind as u8)) {
                 std::collections::btree_map::Entry::Occupied(entry) => *entry.get(),
                 std::collections::btree_map::Entry::Vacant(entry) => {
@@ -477,9 +467,8 @@ pub(crate) fn acquire_inode(
     inode: InodeId,
 ) -> Result<layerfs_workspace_core::namespace::AcquiredInode> {
     let core = CoreReader(reader);
-    let record_id = inode_table_lookup(&core, inodes, inode, &mut InodeTableCounters::default())?
+    let record = inode_record_lookup(&core, inodes, inode, &mut InodeTableCounters::default())?
         .ok_or(StorageError::Integrity("Workspace inode"))?;
-    let record = core.with_authenticated_canonical(record_id, decode_inode_record)?;
     acquire_inode_record(reader, inode, record, None, None)
 }
 
@@ -810,7 +799,7 @@ mod tests {
             .collect::<Vec<_>>();
         let reader = &workspace.reader;
         let core = CoreReader(reader);
-        let record_ids = inode_table_lookup_many(
+        let records = inode_record_lookup_many(
             &core,
             workspace.base_inodes,
             &ids,
@@ -818,11 +807,8 @@ mod tests {
         )
         .unwrap();
         let mut metadata_roots = BTreeSet::new();
-        for record_id in record_ids {
-            let record = core
-                .with_authenticated_canonical(record_id.unwrap(), decode_inode_record)
-                .unwrap();
-            metadata_roots.insert(record.metadata_root);
+        for record in records {
+            metadata_roots.insert(record.unwrap().metadata_root);
         }
         assert_eq!(metadata_roots.len(), 1);
         reader.reset_read_metrics().unwrap();

@@ -33,6 +33,7 @@ pub(super) fn directory_node_shape(
     }
     let (max, entries, encoded_bytes, level) = node_fields(node);
     Ok(NodeSummary {
+        compact: node.compact(),
         id,
         min: node_min(node),
         max,
@@ -45,6 +46,7 @@ pub(super) fn directory_node_shape(
 pub(super) fn node_fields(node: &DirectoryNodeV1) -> (Option<CanonicalName>, u64, u64, u8) {
     match node {
         DirectoryNodeV1::Leaf {
+            compact: _,
             subtree_encoded_bytes,
             entries,
         } => (
@@ -54,6 +56,7 @@ pub(super) fn node_fields(node: &DirectoryNodeV1) -> (Option<CanonicalName>, u64
             0,
         ),
         DirectoryNodeV1::Branch {
+            compact: _,
             level,
             subtree_entry_count,
             subtree_encoded_bytes,

@@ -16,6 +16,30 @@ pub(super) struct Record<'a> {
 fn invalid() -> StoreError {
     StoreError::Integrity("SmallContent physical record")
 }
+
+pub(super) fn compact_record_parts(bytes: &[u8]) -> Result<(u8, &[u8])> {
+    let kind = *bytes.first().ok_or_else(invalid)?;
+    let start = match kind { 0 => 1, 1 | 2 => 33, _ => return Err(invalid()) };
+    let frame = bytes.get(start..).ok_or_else(invalid)?;
+    if !(1..=FRAME_LIMIT).contains(&frame.len()) { return Err(invalid()); }
+    Ok((kind, frame))
+}
+
+/// Restore the shared decoder's record in place. The indexed canonical length
+/// is checked again by the frame decoder and full canonical authentication.
+pub(super) fn expand_compact(bytes: &mut Vec<u8>, canonical_length: usize) -> Result<()> {
+    let raw = canonical_length.checked_sub(23).ok_or_else(invalid)?;
+    if !(1..content::SMALL_LIMIT).contains(&raw) { return Err(invalid()); }
+    let (_, frame) = compact_record_parts(bytes)?;
+    let frame_length = frame.len() as u32;
+    let old_length = bytes.len();
+    bytes.resize(old_length + 8, 0);
+    bytes.copy_within(1..old_length, 9);
+    bytes[1..5].copy_from_slice(&(raw as u32).to_le_bytes());
+    bytes[5..9].copy_from_slice(&frame_length.to_le_bytes());
+    record(bytes)?;
+    Ok(())
+}
 pub(super) fn record(bytes: &[u8]) -> Result<Record<'_>> {
     if bytes.len() < 10 || bytes.len() > 192 * 1024 {
         return Err(invalid());
