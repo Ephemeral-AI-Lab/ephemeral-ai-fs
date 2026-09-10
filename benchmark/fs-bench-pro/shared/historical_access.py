@@ -100,6 +100,7 @@ def worker(config):
         result['copy'] = runtime.closed_store_copy(Path(args['store']), host / 'store.sqlite', deadline=deadline)
         if result['copy']['master_store_sha256'] != fixture['store_sha256']:
             raise ValueError('NOT_READY: incompatible history Store')
+        result['store_before'] = runner.sdk_store_observation(host / 'store.sqlite')
         (host / 'branch-id').write_text(fixture['branch_id'])
         (output / 'container-attempted').touch(exist_ok=False)
         sample = runtime.start_sample(image['Id'], args['container'], {'family': 'historical_access', 'run': output.name}, deadline=deadline)
@@ -123,6 +124,9 @@ def worker(config):
         result['cgroup_after'] = runner.cgroup_snapshot(sample, deadline.end)
         if any(result['cgroup_after'][k] for k in ('oom', 'oom_kill', 'swap_current')):
             raise RuntimeError('container OOM/swap')
+        result['store_after'] = runner.sdk_store_observation(host / 'store.sqlite')
+        result['store_growth_allocated_bytes'] = result['store_after']['allocated_bytes'] - result['store_before']['allocated_bytes']
+        result['store_growth_scope'] = args['mode'] + '-only independent copy'
         result['attempted_operation_count'] = result['completed_operation_count'] = 1
         result['operation_surface'] = 'public SDK workspace / Linux FUSE POSIX'
         result['operation_entrypoint'] = 'storage-smoke-access'
@@ -132,7 +136,7 @@ def worker(config):
         result['seed'] = 0
         result['repetition'] = 1
         result['source_arm'] = 'candidate'
-        result['treatment'] = 'unpaired benchmark implementation qualification'
+        result['treatment'] = fixture.get('treatment', 'unpaired benchmark implementation qualification')
         result['custody_status'] = 'PASS'
         result['correctness_status'] = 'PASS'
         result['resource_status'] = 'PASS'
