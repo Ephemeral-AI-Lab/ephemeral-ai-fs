@@ -2865,7 +2865,7 @@ mod tests {
         let mut files = Vec::new();
         for index in 0..2 {
             let mut seed = 91_u64 + index;
-            let bytes = (0..layerfs_content::file::cdc::MINIMUM_CHUNK_BYTES - 1)
+            let bytes = (0..layerfs_content::file::content::SMALL_LIMIT)
                 .map(|_| {
                     seed ^= seed << 13;
                     seed ^= seed >> 7;
@@ -2891,8 +2891,8 @@ mod tests {
             .collect::<Vec<_>>();
         for (_, node, bytes) in &mut files {
             bytes[17] ^= 1;
-            // A whole-file replacement emits one new chunk with a strong prior
-            // match, rather than a one-byte patch that legitimately prefers FULL.
+            // Stay at the chunked-file threshold: this test qualifies native
+            // predecessor cursors, not the separate SmallContent encoder.
             workspace.write(*node, 0, bytes).unwrap();
         }
         workspace.invalidate_capture();
@@ -2995,10 +2995,10 @@ mod tests {
             .unwrap()
             .into_iter()
             .collect::<BTreeSet<_>>();
-        let scanned = files
-            .iter()
-            .map(|(_, bytes)| bytes.len() as u64)
-            .sum::<u64>();
+        // The injected capture explicitly uses the legacy rope builder. The
+        // remaining files are SmallContent and must not claim CDC work.
+        assert!(files.iter().all(|(_, bytes)| bytes.len() < layerfs_content::file::content::SMALL_LIMIT));
+        let scanned = files[0].1.len() as u64;
         assert_eq!(serial.built.counters.cdc_bytes_scanned, scanned);
         drop(serial);
         // Corrupt only the captured inode's backing to prove that its completed
