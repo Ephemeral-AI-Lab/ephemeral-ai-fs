@@ -1,5 +1,15 @@
 # Corrected candidate prerequisite: integrate the 65.96 MB experiment
 
+**2026-09-10 — before-compaction execution complete, qualification FAIL.**
+[#104 results](../issue104/results.md) account for all18 mandatory families,
+209/209 performance selections and237/237 routine proofs on the unchanged promoted
+product. All237 proofs pass;208 performance targets pass. The500-transition
+unrelated-history case takes23.781066044s against15s. Its500 Exec/500 Commit costs
+are retained for focused #102 follow-up. No workload/timeout relaxation or blanket
+rerun was performed. Exact family checkpoints, retained samples, build slowness,
+control inapplicability and uncompacted Store custody are explicit. #104 remains
+open for the timing failure; this is not release qualification.
+
 Tracked in [issue #103](https://github.com/Ephemeral-AI-Lab/layerfs/issues/103).
 #103 owns implementation and focused tests; #102 follows with full benchmarks.
 

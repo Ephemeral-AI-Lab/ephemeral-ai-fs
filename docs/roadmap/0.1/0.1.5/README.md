@@ -129,3 +129,13 @@ fix. Released v0.1.4 is the immutable control, not a replacement starting point.
 The original [tiny baseline](tiny-history-baseline-v1.md) and first-round reports
 retain their own fixtures and numerical scopes. Broader release qualification
 remains unrun; ordinary MEMORY/OFF acknowledgements gain no power-loss guarantee.
+
+## Before-compaction mandatory campaign (#104)
+
+[Execution report and complete matrix](issue104/results.md):18 mandatory families,
+209 performance selections and237 routine proofs have documented outcomes.
+Overall qualification **FAIL**: all237 proofs pass, but the500-transition
+unrelated-history case misses its15-second product target (23.781066044s).
+The promoted product and campaign Stores remain explicitly uncompacted. Build
+timings, exact source checkpoints, retained successes, optional exclusions and
+control inapplicability are recorded. #104 stays open; no release is implied.
