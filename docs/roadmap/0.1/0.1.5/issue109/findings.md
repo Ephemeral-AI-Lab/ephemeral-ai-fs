@@ -6,6 +6,9 @@ Recorded 2026-09-11 (Asia/Shanghai; raw UTC timestamps are retained).
 Owner: [#109](https://github.com/Ephemeral-AI-Lab/layerfs/issues/109).
 Coordinate shared admission work with [#108](https://github.com/Ephemeral-AI-Lab/layerfs/issues/108), performance tracking with [#106](https://github.com/Ephemeral-AI-Lab/layerfs/issues/106), and qualification with [#102](https://github.com/Ephemeral-AI-Lab/layerfs/issues/102).
 The primary goal remains Init <=2.7 s, preferably approximately 2.60 s.
+The [combined #108/#109 implementation plan](implementation-plan.md) maps shared
+SQL costs, isolated candidates, open questions and proposed transfer checks.
+It is a plan only; execution is pending a separate request.
 The machine-readable timings, attempt commands, source identities and evidence
 hashes are in [measurements.json](measurements.json).
 
