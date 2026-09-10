@@ -2999,6 +2999,7 @@ mod tests {
         // remaining files are SmallContent and must not claim CDC work.
         assert!(files.iter().all(|(_, bytes)| bytes.len() < layerfs_content::file::content::SMALL_LIMIT));
         let scanned = files[0].1.len() as u64;
+        let input_bytes = files.iter().map(|(_, bytes)| bytes.len() as u64).sum::<u64>();
         assert_eq!(serial.built.counters.cdc_bytes_scanned, scanned);
         drop(serial);
         // Corrupt only the captured inode's backing to prove that its completed
@@ -3049,6 +3050,9 @@ mod tests {
         assert_eq!(admitted.built.counters.cdc_bytes_scanned, scanned);
         assert!(admitted.admission.is_some());
         drop(admitted);
+        // The discarded candidate consumed the injected legacy capture. Compare
+        // publication under the same capture policy, not a fresh SmallContent rebuild.
+        arm_capture(&mut workspace);
         workspace.commit().unwrap();
         assert_eq!(workspace.base_root, expected);
         let old = workspace.reader.clone();
@@ -3065,7 +3069,7 @@ mod tests {
             serial.built.counters.cdc_bytes_scanned,
             parallel.built.counters.cdc_bytes_scanned
         );
-        assert!(parallel.built.counters.cdc_bytes_scanned < scanned);
+        assert!(parallel.built.counters.cdc_bytes_scanned < input_bytes);
         assert!(layerfs_layerstack_store::ObjectSource::read_object(&old, expected).is_ok());
         drop(serial);
         drop(parallel);
