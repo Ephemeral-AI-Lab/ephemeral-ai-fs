@@ -14,6 +14,15 @@ import runtime
 
 CONTRACT = 'docs/roadmap/0.1/0.1.5/issue103/stride3-integrated-compaction-v1.md'
 SCENARIO = 'deepseek-stride3-integrated-compaction-v1'
+PROFILES = {
+    'deepseek-stride3': {'contract': CONTRACT, 'scenario': SCENARIO,
+        'indices': tuple(range(1,158,3)), 'checkpoint_map': {65:67,57:58},
+        'access_profile': 'historical-access-stride3-integrated-v1', 'case_suffix': '-s3-v1'},
+    'deepseek-full': {'contract': 'docs/roadmap/0.1/0.1.5/issue103/full157-integrated-compaction-v1.md',
+        'scenario': 'deepseek-full157-integrated-compaction-v1',
+        'indices': tuple(range(1,158)), 'checkpoint_map': {},
+        'access_profile': 'historical-access-full157-integrated-v1', 'case_suffix': '-f157-v1'},
+}
 LIMIT = 4 * 1024**3
 
 
@@ -56,7 +65,7 @@ def compact(args, case_folder):
     command = [args.host_binary, 'storage-compact', str(source.resolve()), str(destination.resolve()),
                str(LIMIT), str((case_folder/'compaction-open-files.jsonl').resolve())]
     start = time.monotonic_ns()
-    result = {'schema': SCENARIO, 'status':'INCOMPLETE', 'command':command, 'source_before':before,
+    result = {'schema': PROFILES[args.storage_smoke]['scenario'], 'status':'INCOMPLETE', 'command':command, 'source_before':before,
               'temporary_byte_limit':LIMIT, 'source_preserved':False}
     save(case_folder/'compaction-invocation.json', result)
     try:
@@ -133,31 +142,32 @@ def prepare_access(run, destination, data):
     import hashlib
     run=Path(run).resolve(); destination=Path(destination).resolve(); data=Path(data)
     identity=json.loads((run/'identity.json').read_text())
-    if not identity.get('storage_compact') or identity['smoke']!='deepseek-stride3': raise ValueError('integrated stride3 producer required')
-    if json.loads((run/'verification-summary.json').read_text())['status']!='PASS': raise ValueError('53-state verification must finish first')
-    folder=run/'deepseek-stride3'
+    if not identity.get('storage_compact') or identity['smoke'] not in PROFILES: raise ValueError('registered integrated producer required')
+    profile=PROFILES[identity['smoke']]; count=len(profile['indices'])
+    if json.loads((run/'verification-summary.json').read_text())['status']!='PASS': raise ValueError('complete history verification must finish first')
+    folder=run/identity['smoke']
     performance=json.loads((folder/'performance-result.json').read_text())
     verification=json.loads((folder/'verification-result.json').read_text())
-    if len(performance['records'])!=53 or len(verification['records'])!=53 or verification['status']!='PASS': raise ValueError('exact state verification incomplete')
+    if len(performance['records'])!=count or len(verification['records'])!=count or verification['status']!='PASS': raise ValueError('exact state verification incomplete')
     for observed,produced in zip(verification['records'],performance['records']):
         if observed['status']!='PASS' or observed['index']!=produced['index'] or observed['identity']!=produced['identity']:
             raise ValueError('state verification identity mismatch')
-    if runtime.file_sha256(runner.REPO/CONTRACT)!=identity['integrated_contract_sha256']:
+    if identity['integrated_scenario']!=profile['scenario'] or runtime.file_sha256(runner.REPO/profile['contract'])!=identity['integrated_contract_sha256']:
         raise ValueError('prospective contract changed')
     compaction=json.loads((folder/'compaction-result.json').read_text())
     master=folder/'frozen-measured-store/store.sqlite'
     if compaction['status']!='PASS' or runtime.file_sha256(master)!=compaction['measured_store']['sha256']: raise ValueError('measured frozen image mismatch')
     indexed={r['full157_index']:r for r in performance['records']}
-    if sorted(indexed)!=list(range(1,158,3)): raise ValueError('retained checkpoint mapping')
+    if tuple(indexed)!=profile['indices'] or [r['index'] for r in performance['records']]!=list(range(1,count+1)): raise ValueError('retained checkpoint mapping')
     template=json.loads((runner.BENCH/'families/historical_access/fixture.json').read_text())
     cases=[]
     for old in template['cases']:
-        requested=old['full157_index']; index={65:67,57:58}.get(requested,requested)
+        requested=old['full157_index']; index=profile['checkpoint_map'].get(requested,requested)
         row=indexed[index]
         oracle_path=Path(row['oracle'])
         if runtime.file_sha256(oracle_path)!=row['oracle_sha256']: raise ValueError('original oracle changed')
         oracle=json.loads(oracle_path.read_text())
-        case={**old,'id':old['id'].replace('-v2','-s3-v1'),'template_case':old['id'],
+        case={**old,'id':old['id'].replace('-v2',profile['case_suffix']),'template_case':old['id'],
             'requested_original_index':requested,'full157_index':index,'retained_ordinal':row['index'],
             'commit_id':row['commit_id'],'source_commit':row['sha'],'original_oracle_sha256':row['oracle_sha256']}
         if old['operation']=='directory':
@@ -174,9 +184,10 @@ def prepare_access(run, destination, data):
                 if len(raw)!=size or hashlib.sha256(raw).hexdigest()!=digest or hashlib.sha1(b'blob '+str(size).encode()+b'\0'+raw).hexdigest()!=entry[1]: raise ValueError('original access content identity')
                 expected['sha256']=hashlib.sha256(raw[old['offset']:old['offset']+old['length']]).hexdigest()
             case['expected']=expected
+        if not profile['checkpoint_map'] and case['expected']!=old['expected']: raise ValueError('original full157 access oracle mismatch')
         cases.append(case)
-    fixture={'schema':'historical-access-v2','profile':'historical-access-stride3-integrated-v1',
-        'contract_commit':identity['source']['LAYERFS_SOURCE_COMMIT'],'contract_sha256':runtime.file_sha256(runner.REPO/CONTRACT),
+    fixture={'schema':'historical-access-v2','profile':profile['access_profile'],
+        'contract_commit':identity['source']['LAYERFS_SOURCE_COMMIT'],'contract_sha256':runtime.file_sha256(runner.REPO/profile['contract']),
         'store_sha256':compaction['measured_store']['sha256'],'store':str(master),
         'branch_id':(folder/'host-runtime/branch-id').read_text().strip(),
         'history_result_sha256':runtime.file_sha256(folder/'performance-result.json'),

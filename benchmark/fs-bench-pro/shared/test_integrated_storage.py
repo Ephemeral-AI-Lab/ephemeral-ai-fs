@@ -6,6 +6,20 @@ import unittest
 import integrated_storage as integrated
 
 class IntegratedStorageTests(unittest.TestCase):
+    def test_full_history_keeps_original_access_checkpoints_and_distinct_custody(self):
+        template=json.loads((integrated.runner.BENCH/'families/historical_access/fixture.json').read_text())
+        full=integrated.PROFILES['deepseek-full']; stride=integrated.PROFILES['deepseek-stride3']
+        self.assertEqual(full['indices'],tuple(range(1,158)))
+        self.assertEqual(stride['indices'],tuple(range(1,158,3)))
+        mapped=lambda profile: [profile['checkpoint_map'].get(c['full157_index'],c['full157_index']) for c in template['cases']]
+        self.assertEqual(mapped(full),[c['full157_index'] for c in template['cases']])
+        self.assertEqual(set(mapped(full)),{1,57,65,157})
+        self.assertEqual(set(mapped(stride)),{1,58,67,157})
+        for profile in (full,stride):
+            self.assertTrue(set(mapped(profile))<=set(profile['indices']))
+            self.assertTrue((integrated.runner.REPO/profile['contract']).is_file())
+        for field in ('contract','scenario','access_profile','case_suffix'):
+            self.assertNotEqual(full[field],stride[field])
     def test_freeze_counts_complete_directory_and_rejects_sidecars(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);store=root/'store.sqlite';store.write_bytes(b'x'*12345)

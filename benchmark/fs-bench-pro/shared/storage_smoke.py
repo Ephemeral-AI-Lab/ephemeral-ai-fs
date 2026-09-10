@@ -445,10 +445,11 @@ def prepare_compatibility(args, current, host_identity, image, deadline):
 
 
 def main(argv=None):
+    from integrated_storage import PROFILES as integrated_profiles
     p = argparse.ArgumentParser()
     p.add_argument("--storage-smoke", choices=tuple(CASES), required=True)
     p.add_argument("--storage-verify-run", type=Path)
-    p.add_argument("--storage-compact", action="store_true", help="issue103 stride3 public compaction phase")
+    p.add_argument("--storage-compact", action="store_true", help="issue103 stride3/full157 public compaction phase")
     p.add_argument("--storage-compat-run", type=Path)
     p.add_argument("--source-arm", choices=("baseline","candidate"), default="candidate")
     p.add_argument("--repetition", type=int, choices=(1,2,3), default=1)
@@ -460,8 +461,8 @@ def main(argv=None):
     args = p.parse_args(argv)
     if not args.image or (args.output is None) == (args.storage_verify_run is None) or (args.storage_compat_run and (not args.output or args.storage_verify_run)):
         p.error("--image and exactly one of --output / --storage-verify-run required")
-    if args.storage_compact and (args.storage_smoke != "deepseek-stride3" or args.storage_compat_run):
-        p.error("integrated compaction is registered only for stride3")
+    if args.storage_compact and (args.storage_smoke not in integrated_profiles or args.storage_compat_run):
+        p.error("integrated compaction is registered only for stride3/full157")
     with (Path(os.environ.get("TMPDIR","/tmp"))/"layerfs-infra-measurement.lock").open("a") as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         start = time.monotonic_ns()
@@ -491,6 +492,10 @@ def main(argv=None):
             saved = json.loads((output/"identity.json").read_text())
             if args.storage_compact and not saved.get("storage_compact",False): raise ValueError("compaction verification profile mismatch")
             args.storage_compact = saved.get("storage_compact",False)
+            if args.storage_compact:
+                profile=integrated_profiles[args.storage_smoke]
+                if saved.get("integrated_scenario")!=profile["scenario"] or saved.get("integrated_contract_sha256")!=runtime.file_sha256(runner.REPO/profile["contract"]):
+                    raise ValueError("integrated verification contract mismatch")
             if saved["host_identity"]["binary_sha256"] != host_identity["binary_sha256"] or saved["image_id"] != image["Id"] or saved["fixtures"] != fixtures:
                 raise ValueError("verification custody mismatch")
             if args.storage_smoke in ("deepseek-full", "deepseek-ten", "deepseek-stride3", "deepseek-stride10", "small-file-delta-10x30-v1"):
@@ -515,8 +520,8 @@ def main(argv=None):
             save(output/"identity.json", {"schema":"deepseek-full-issue100-v1" if args.storage_smoke == "deepseek-full" else "storage-smoke-v1","smoke":args.storage_smoke,"family":"small_file_delta_smoke" if args.storage_smoke == "small-file-delta-10x30-v1" else "storage-smoke-v1","source_arm":args.source_arm,"repetition":args.repetition,
                 "host_identity":host_identity,"image_id":image["Id"],"source":current,"fixtures":fixtures,
                 "storage_compact":args.storage_compact,
-                "integrated_contract_sha256":runtime.file_sha256(runner.REPO/"docs/roadmap/0.1/0.1.5/issue103/stride3-integrated-compaction-v1.md") if args.storage_compact else None,
-                "integrated_scenario":"deepseek-stride3-integrated-compaction-v1" if args.storage_compact else None,
+                "integrated_contract_sha256":runtime.file_sha256(runner.REPO/integrated_profiles[args.storage_smoke]["contract"]) if args.storage_compact else None,
+                "integrated_scenario":integrated_profiles[args.storage_smoke]["scenario"] if args.storage_compact else None,
                 "contract_sha256":runtime.file_sha256(runner.REPO/(SELECTED_DEEPSEEK[args.storage_smoke][2] if args.storage_smoke in SELECTED_DEEPSEEK else "docs/roadmap/0.1/0.1.5/delta-encoding-benchmarks.md" if args.storage_smoke == "small-file-delta-10x30-v1" else CONTRACT)),"preparation_ns":preparation_ns,
                 "full_run_contract_sha256":runtime.file_sha256(runner.REPO/"docs/roadmap/0.1/0.1.5/full157-execution-contract.md") if args.storage_smoke == "deepseek-full" else None,
                 "phase_operation_verification_limits_seconds":LIMITS[args.storage_smoke],
