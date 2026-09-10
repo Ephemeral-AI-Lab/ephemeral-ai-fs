@@ -2,8 +2,10 @@ use super::*;
 
 fn small(raw: &[u8]) -> AuthenticatedCanonicalObject {
     AuthenticatedCanonicalObject::new(
-        layerfs_content::file::content::encode_small(raw).unwrap(), None,
-    ).unwrap()
+        layerfs_content::file::content::encode_small(raw).unwrap(),
+        None,
+    )
+    .unwrap()
 }
 
 #[test]
@@ -18,8 +20,11 @@ fn selected_small_candidate_reuse_late_cas_and_rollback() {
     prepared.final_batch = false;
     f.publish(prepared);
     let prepare = |object: AuthenticatedCanonicalObject| {
-        PreparedAdmission::prepare_missing(&f.db,
-            crate::objects::MissingBatch(vec![object], session.clone(), false, None)).unwrap()
+        PreparedAdmission::prepare_missing(
+            &f.db,
+            crate::objects::MissingBatch(vec![object], session.clone(), false, None),
+        )
+        .unwrap()
     };
     let mut changed = b"shifted new path\n".to_vec();
     changed.extend_from_slice(&raw);
@@ -33,7 +38,12 @@ fn selected_small_candidate_reuse_late_cas_and_rollback() {
     f.publish(prepare(target.clone()));
     let before = f.db.physical_storage_receipt();
     f.publish(prepared);
-    assert_eq!(f.db.physical_storage_receipt().since(before).diag_selected_pack_count, 0);
+    assert_eq!(
+        f.db.physical_storage_receipt()
+            .since(before)
+            .diag_selected_pack_count,
+        0
+    );
     assert_eq!(f.db.small_physical_base(target.id).unwrap(), Some(base.id));
     assert_eq!(f.db.read_object_row(target.id).unwrap(), target.bytes);
 
@@ -47,14 +57,20 @@ fn selected_small_candidate_reuse_late_cas_and_rollback() {
     drop(pending);
     session.rollback().unwrap();
     assert!(session.ensure_active().is_err());
-    assert!(f.db.object_locations(&[base.id, target.id]).unwrap().is_empty());
+    assert!(f
+        .db
+        .object_locations(&[base.id, target.id])
+        .unwrap()
+        .is_empty());
     assert_eq!(f.db.read_object_row(old.id).unwrap(), old.bytes);
 }
 
 #[test]
 #[ignore = "uses the sealed original Git matcher fixture"]
 fn selected_small_candidate_original_tool_schema_pair() {
-    let root = std::path::Path::new("/Users/yifanxu/Ephemeral-AI-Lab/layerfs-issue100-45mb-evidence/git-matcher-study");
+    let root = std::path::Path::new(
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-issue100-45mb-evidence/git-matcher-study",
+    );
     let f = Fixture::new();
     let base = small(&std::fs::read(root.join("tool-schemas.base")).unwrap());
     let target = small(&std::fs::read(root.join("tool-schemas.target")).unwrap());
@@ -62,8 +78,11 @@ fn selected_small_candidate_original_tool_schema_pair() {
     let session = prepared.session.clone();
     prepared.final_batch = false;
     f.publish(prepared);
-    let prepared = PreparedAdmission::prepare_missing(&f.db,
-        crate::objects::MissingBatch(vec![target.clone()], session.clone(), false, None)).unwrap();
+    let prepared = PreparedAdmission::prepare_missing(
+        &f.db,
+        crate::objects::MissingBatch(vec![target.clone()], session.clone(), false, None),
+    )
+    .unwrap();
     assert!(prepared.objects[0].delta);
     f.publish(prepared);
     assert_eq!(f.db.small_physical_base(target.id).unwrap(), Some(base.id));
@@ -83,14 +102,28 @@ fn selected_small_candidate_fingerprint_bounds() {
     shifted.extend_from_slice(&raw);
     assert_eq!(candidates.find(target, &signature(&shifted)), Some(id));
     assert_eq!(candidates.find(id, &signature(&raw)), None);
-    assert_eq!(candidates.find(target, &signature(b"unrelated short literal")), None);
+    assert_eq!(
+        candidates.find(target, &signature(b"unrelated short literal")),
+        None
+    );
     assert_eq!(candidates.find(target, &signature(b"")), None);
 }
 
 #[test]
 fn selected_small_candidate_compact_references_and_eviction() {
     use super::super::super::small_candidates::Candidates;
-    let pair = |a| [a, a + 1, u64::MAX, u64::MAX, u64::MAX, u64::MAX, u64::MAX, u64::MAX];
+    let pair = |a| {
+        [
+            a,
+            a + 1,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+        ]
+    };
     let base = ObjectId::for_bytes(b"base");
     let target = ObjectId::for_bytes(b"target");
     let mut candidates = Candidates::new();
@@ -104,7 +137,10 @@ fn selected_small_candidate_compact_references_and_eviction() {
     assert_eq!(candidates.find(target, &pair(2)), Some(base));
     candidates.insert(ObjectId::for_bytes(b"replacement"), pair(6000));
     assert_eq!(candidates.find(target, &pair(2)), None);
-    assert_eq!(candidates.find(target, &pair(1026)), Some(ObjectId::for_bytes(b"other")));
+    assert_eq!(
+        candidates.find(target, &pair(1026)),
+        Some(ObjectId::for_bytes(b"other"))
+    );
     candidates.insert(ObjectId::for_bytes(b"collision"), pair(1026 + 8192));
     assert_eq!(candidates.find(target, &pair(1026)), None);
 }

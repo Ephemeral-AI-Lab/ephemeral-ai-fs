@@ -410,9 +410,16 @@ impl LayerStackStore {
 }
 
 impl crate::objects::ObjectSource for LayerStackStore {
-    fn small_content_format(&self) -> bool { self.db.small_content_format() }
-    fn compact_namespace(&self) -> bool { self.db.compact_namespace() }
-    fn allocate_inode_serial(&self, scope: ObjectId) -> Result<layerfs_content::tree::compact::InodeSerial> {
+    fn small_content_format(&self) -> bool {
+        self.db.small_content_format()
+    }
+    fn compact_namespace(&self) -> bool {
+        self.db.compact_namespace()
+    }
+    fn allocate_inode_serial(
+        &self,
+        scope: ObjectId,
+    ) -> Result<layerfs_content::tree::compact::InodeSerial> {
         crate::objects::ObjectSource::allocate_inode_serial(&self.db, scope)
     }
     fn read_object(&self, id: ObjectId) -> Result<Vec<u8>> {
@@ -477,9 +484,13 @@ fn traverse_root(
     *objects = objects.saturating_add(1);
     *encoded_bytes = encoded_bytes.saturating_add(canonical.len() as u64);
     let mut children = layerfs_content::object::references::referenced_objects(&canonical)?;
-    if layerfs_content::file::content::small_bytes(&canonical).ok().flatten().is_some()
+    if layerfs_content::file::content::small_bytes(&canonical)
+        .ok()
+        .flatten()
+        .is_some()
         || matches!(canonical.get(13..21), Some(b"LFSWFL1\0" | b"LFS4CHK\0"))
-        || (canonical.get(13..21) == Some(b"LFS6INT\0") && canonical.get(23) == Some(&7)) {
+        || (canonical.get(13..21) == Some(b"LFS6INT\0") && canonical.get(23) == Some(&7))
+    {
         children.extend(store.db.small_physical_base(id)?);
     }
     children.sort();

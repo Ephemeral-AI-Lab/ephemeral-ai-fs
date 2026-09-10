@@ -136,13 +136,7 @@ fn apply_change<S: ObjectStore>(
         ContentChange::Mkdir { path: value, mode } => {
             let metadata = metadata(store, InodeKind::Directory, *mode)?;
             let inode = allocate_for_root(store, root, seed, &path(value)?)?;
-            filesystem::create_directory(
-                store,
-                root,
-                &path(value)?,
-                inode,
-                metadata,
-            )?
+            filesystem::create_directory(store, root, &path(value)?, inode, metadata)?
         }
         ContentChange::Symlink {
             path: value,
@@ -150,14 +144,7 @@ fn apply_change<S: ObjectStore>(
         } => {
             let metadata = metadata(store, InodeKind::Symlink, 0o777)?;
             let inode = allocate_for_root(store, root, seed, &path(value)?)?;
-            filesystem::create_symlink(
-                store,
-                root,
-                &path(value)?,
-                inode,
-                target.clone(),
-                metadata,
-            )?
+            filesystem::create_symlink(store, root, &path(value)?, inode, target.clone(), metadata)?
         }
         ContentChange::HardLink { source, target } => {
             filesystem::hard_link(store, root, &path(source)?, &path(target)?)?
@@ -424,9 +411,16 @@ fn path(value: &str) -> CoreResult<CanonicalPath> {
 }
 
 #[doc(hidden)]
-fn allocate_for_root<S: ObjectStore>(store: &mut S, root: ObjectId, seed: [u8; 32], path: &CanonicalPath) -> CoreResult<InodeId> {
+fn allocate_for_root<S: ObjectStore>(
+    store: &mut S,
+    root: ObjectId,
+    seed: [u8; 32],
+    path: &CanonicalPath,
+) -> CoreResult<InodeId> {
     match filesystem::namespace(store, root)?.scope {
-        Some(scope) => store.allocate_inode_serial(scope).map(|serial| serial.inode_key()),
+        Some(scope) => store
+            .allocate_inode_serial(scope)
+            .map(|serial| serial.inode_key()),
         None => Ok(allocated_inode(seed, path)),
     }
 }

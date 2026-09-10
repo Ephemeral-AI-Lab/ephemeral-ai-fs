@@ -9,7 +9,7 @@ use crate::tree::directory::{
 };
 use crate::tree::inode::codec::encode_inode_record;
 use crate::tree::inode::{
-    inode_table_apply_insertions, inode_table_entries, inode_record_lookup, inode_table_remove,
+    inode_record_lookup, inode_table_apply_insertions, inode_table_entries, inode_table_remove,
     inode_table_upsert, DeferredInodes, InodeId, InodeKind, InodeRecordV1, InodeTableCounters,
     InodeTableRoot,
 };
@@ -277,16 +277,27 @@ pub fn build_initial_namespace(
     if store.compact_namespace() {
         use crate::tree::compact::{self, InodeSerial};
         let mut rows = mutations.into_iter().map(|mutation| match mutation {
-            InodeMutation::Upsert { inode, record } => Ok((InodeSerial::from_inode_key(inode)?, record)),
+            InodeMutation::Upsert { inode, record } => {
+                Ok((InodeSerial::from_inode_key(inode)?, record))
+            }
             InodeMutation::Remove { .. } => Err(CoreError::InvalidRecord("initial inode removal")),
         });
-        let first = rows.next().transpose()?.ok_or(CoreError::InvalidRecord("initial root inode"))?;
+        let first = rows
+            .next()
+            .transpose()?
+            .ok_or(CoreError::InvalidRecord("initial root inode"))?;
         first.1.validate(true)?;
         let root_inode = first.0;
-        let (table, _) = crate::tree::batch::compact_inode_table_from_sorted(store,
-            std::iter::once(Ok(first)).chain(rows), crate::tree::batch::SORTED_TREE_UPDATE_SCRATCH_BYTES)?;
+        let (table, _) = crate::tree::batch::compact_inode_table_from_sorted(
+            store,
+            std::iter::once(Ok(first)).chain(rows),
+            crate::tree::batch::SORTED_TREE_UPDATE_SCRATCH_BYTES,
+        )?;
         return store.put_owned(compact::encode_root(compact::NamespaceRoot {
-            profile_id: compact::profile_id(), scope: compact::scope_for_seed(seed), root_inode, inode_table: table.0,
+            profile_id: compact::profile_id(),
+            scope: compact::scope_for_seed(seed),
+            root_inode,
+            inode_table: table.0,
         })?);
     }
     let root_inode = InodeId::allocate(seed, 0);
@@ -342,32 +353,48 @@ fn apply_inode_mutations_deferred(
                 InodeMutation::Remove { inode } => (inode, None),
             };
             let (next, batch) = crate::tree::batch::compact_inode_table_apply_sorted(
-                &mut deferred, table,
-                std::iter::once(Ok((crate::tree::compact::InodeSerial::from_inode_key(inode)?, record))),
+                &mut deferred,
+                table,
+                std::iter::once(Ok((
+                    crate::tree::compact::InodeSerial::from_inode_key(inode)?,
+                    record,
+                ))),
                 crate::tree::batch::SORTED_TREE_UPDATE_SCRATCH_BYTES,
             )?;
-            merge_inode(&mut counters, InodeTableCounters { nodes_read: batch.nodes_read, nodes_created: batch.nodes_created })?;
-            counters.structural_deferred_peak_bytes = counters.structural_deferred_peak_bytes.max(batch.peak_scratch_bytes as u64);
+            merge_inode(
+                &mut counters,
+                InodeTableCounters {
+                    nodes_read: batch.nodes_read,
+                    nodes_created: batch.nodes_created,
+                },
+            )?;
+            counters.structural_deferred_peak_bytes = counters
+                .structural_deferred_peak_bytes
+                .max(batch.peak_scratch_bytes as u64);
             table = next;
-        } else { match mutation {
-            InodeMutation::Upsert { inode, record } => {
-                let record = deferred.put_persistent(&encode_inode_record(record)?)?;
-                let (next, visits) = inode_table_upsert(&mut deferred, table, inode, record)?;
-                merge_inode(&mut counters, visits)?;
-                table = next;
+        } else {
+            match mutation {
+                InodeMutation::Upsert { inode, record } => {
+                    let record = deferred.put_persistent(&encode_inode_record(record)?)?;
+                    let (next, visits) = inode_table_upsert(&mut deferred, table, inode, record)?;
+                    merge_inode(&mut counters, visits)?;
+                    table = next;
+                }
+                InodeMutation::Remove { inode } => {
+                    let (next, _, visits) = inode_table_remove(&mut deferred, table, inode)?;
+                    merge_inode(&mut counters, visits)?;
+                    table = next;
+                }
             }
-            InodeMutation::Remove { inode } => {
-                let (next, _, visits) = inode_table_remove(&mut deferred, table, inode)?;
-                merge_inode(&mut counters, visits)?;
-                table = next;
-            }
-        }
         }
         deferred.prune_to(table.0)?;
     }
     let peak_bytes = deferred.peak_charged_bytes();
     let prunes = deferred.prunes();
-    counters.structural_deferred_peak_bytes = counters.structural_deferred_peak_bytes.checked_add(peak_bytes as u64).ok_or(CoreError::LengthOverflow)?;
+    counters.structural_deferred_peak_bytes = counters
+        .structural_deferred_peak_bytes
+        .checked_add(peak_bytes as u64)
+        .ok_or(CoreError::LengthOverflow)?;
     counters.structural_deferred_prunes = prunes;
     counters.inode_table.nodes_created = deferred.commit(table.0)?;
     let candidate = deferred.put_persistent(&encode_namespace_root(NamespaceRootV1 {
@@ -1186,7 +1213,7 @@ mod tests {
         let root = store
             .put(
                 &encode_namespace_root(NamespaceRootV1 {
-        scope: None,
+                    scope: None,
                     profile_id: crate::tree::directory::codec::profile_id(),
                     root_directory_inode: root_inode,
                     inode_table_root: table.0,

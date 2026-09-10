@@ -67,7 +67,7 @@ fn compact(
     let mut trace = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(&trace_path)?;
+        .open(trace_path)?;
     let trace_inode = trace.metadata()?.ino();
     let signal = stop.clone();
     let observer = std::thread::spawn(move || -> std::io::Result<(u64, u64, u64)> {

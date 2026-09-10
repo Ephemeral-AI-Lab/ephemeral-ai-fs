@@ -168,53 +168,90 @@ impl StoreDb {
         self.0.format_version >= 7
     }
 
-    pub(crate) fn small_content_format(&self) -> bool { self.0.format_version >= 8 }
+    pub(crate) fn small_content_format(&self) -> bool {
+        self.0.format_version >= 8
+    }
 
-    pub(crate) fn small_chain_format(&self) -> bool { self.0.format_version >= 9 }
+    pub(crate) fn small_chain_format(&self) -> bool {
+        self.0.format_version >= 9
+    }
 
-    pub(crate) fn compact_framing(&self) -> bool { self.0.format_version >= 10 }
-    pub(crate) fn compact_namespace(&self) -> bool { self.0.format_version >= 10 }
-    pub(crate) fn metadata_index(&self) -> Result<MutexGuard<'_, Option<crate::objects::metadata::ValueIndex>>> {
-        self.0.metadata_index.lock().map_err(|_| StoreError::Integrity("metadata index ownership"))
+    pub(crate) fn compact_framing(&self) -> bool {
+        self.0.format_version >= 10
+    }
+    pub(crate) fn compact_namespace(&self) -> bool {
+        self.0.format_version >= 10
+    }
+    pub(crate) fn metadata_index(
+        &self,
+    ) -> Result<MutexGuard<'_, Option<crate::objects::metadata::ValueIndex>>> {
+        self.0
+            .metadata_index
+            .lock()
+            .map_err(|_| StoreError::Integrity("metadata index ownership"))
     }
     pub(crate) fn clear_metadata_index(&self) -> Result<()> {
         *self.metadata_index()? = None;
         Ok(())
     }
 
-
     /// Burn a range before canonical construction/admission. A failed candidate
     /// cannot roll this reservation back or reuse an identity exposed by it.
-    pub(crate) fn reserve_inode_serials(&self, scope: layerfs_content::ObjectId, count: u64) -> Result<std::ops::Range<u64>> {
+    pub(crate) fn reserve_inode_serials(
+        &self,
+        scope: layerfs_content::ObjectId,
+        count: u64,
+    ) -> Result<std::ops::Range<u64>> {
         use rusqlite::OptionalExtension;
         if !self.compact_namespace() || count == 0 || count > i64::MAX as u64 {
             return Err(StoreError::InvalidInput("compact inode reservation"));
         }
         let _permit = self.enter_operation()?;
         let mut connection = self.writer()?;
-        if !connection.is_autocommit() { return Err(StoreError::Integrity("inode reservation must precede admission")); }
+        if !connection.is_autocommit() {
+            return Err(StoreError::Integrity(
+                "inode reservation must precede admission",
+            ));
+        }
         let result = (|| {
             // Allocation is durable before its serials escape. Keep the normal
             // publication policy unchanged after this isolated transaction.
             connection.pragma_update(None, "journal_mode", "DELETE")?;
             connection.pragma_update(None, "synchronous", "FULL")?;
-            let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let end = transaction.query_row(statements::schema::RESERVE_INODE_SERIALS,
-                rusqlite::params![scope.as_bytes().as_slice(), count as i64], |row| row.get::<_, i64>(0))
-                .optional()?.ok_or(StoreError::InvalidInput("inode serial space exhausted"))?;
-            let end = u64::try_from(end).map_err(|_| StoreError::Integrity("inode allocator highwater"))?;
-            let start = end.checked_sub(count).and_then(|value| value.checked_add(1)).ok_or(StoreError::Integrity("inode allocator range"))?;
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let end = transaction
+                .query_row(
+                    statements::schema::RESERVE_INODE_SERIALS,
+                    rusqlite::params![scope.as_bytes().as_slice(), count as i64],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .ok_or(StoreError::InvalidInput("inode serial space exhausted"))?;
+            let end = u64::try_from(end)
+                .map_err(|_| StoreError::Integrity("inode allocator highwater"))?;
+            let start = end
+                .checked_sub(count)
+                .and_then(|value| value.checked_add(1))
+                .ok_or(StoreError::Integrity("inode allocator range"))?;
             transaction.commit()?;
             Ok(start..end + 1)
         })();
-        let restored = connection.pragma_update(None, "journal_mode", "MEMORY")
+        let restored = connection
+            .pragma_update(None, "journal_mode", "MEMORY")
             .and_then(|_| connection.pragma_update(None, "synchronous", "OFF"));
         if restored.is_err() {
             self.quarantine_writes();
-            return Err(StoreError::Integrity("inode allocator connection restoration"));
+            return Err(StoreError::Integrity(
+                "inode allocator connection restoration",
+            ));
         }
         let cleanup = (|| {
-            if !connection.is_autocommit() { return Err(StoreError::Integrity("inode allocator transaction remains active")); }
+            if !connection.is_autocommit() {
+                return Err(StoreError::Integrity(
+                    "inode allocator transaction remains active",
+                ));
+            }
             // EXCLUSIVE locking leaves a zeroed rollback journal after commit.
             // Switching to MEMORY closes SQLite's disk journal handle without
             // releasing the exclusive database lock. Remove only that inactive
@@ -227,11 +264,15 @@ impl StoreDb {
             };
             let mut header = Vec::with_capacity(8);
             file.take(8).read_to_end(&mut header)?;
-            if header.iter().any(|byte| *byte != 0) { return Err(StoreError::Integrity("inode allocator journal remains hot")); }
+            if header.iter().any(|byte| *byte != 0) {
+                return Err(StoreError::Integrity("inode allocator journal remains hot"));
+            }
             std::fs::remove_file(journal)?;
             Ok(())
         })();
-        if cleanup.is_err() { self.quarantine_writes(); }
+        if cleanup.is_err() {
+            self.quarantine_writes();
+        }
         cleanup?;
         result
     }
@@ -324,7 +365,9 @@ impl StoreDb {
 
     // Called under the existing admission writer permit. Poisoned optional hints
     // are discarded; they are never an authentication or membership authority.
-    pub(crate) fn take_small_candidates(&self) -> Option<crate::objects::small_candidates::Candidates> {
+    pub(crate) fn take_small_candidates(
+        &self,
+    ) -> Option<crate::objects::small_candidates::Candidates> {
         match self.0.idle_small_candidates.lock() {
             Ok(mut idle) => idle.take(),
             Err(poisoned) => {
@@ -334,10 +377,15 @@ impl StoreDb {
         }
     }
 
-    pub(crate) fn return_small_candidates(&self, candidates: crate::objects::small_candidates::Candidates) {
+    pub(crate) fn return_small_candidates(
+        &self,
+        candidates: crate::objects::small_candidates::Candidates,
+    ) {
         if let Ok(mut idle) = self.0.idle_small_candidates.lock() {
             debug_assert!(idle.is_none());
-            if idle.is_none() { *idle = Some(candidates); }
+            if idle.is_none() {
+                *idle = Some(candidates);
+            }
         }
     }
 
@@ -513,7 +561,9 @@ fn verify_schema(connection: &Connection, version: i64) -> Result<()> {
 fn prepare_manifest(connection: &Connection) -> Result<()> {
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     for (name, sql) in statements::ALL {
-        if *name == "schema/reserve_inode_serials.sql" && version < 10 { continue; }
+        if *name == "schema/reserve_inode_serials.sql" && version < 10 {
+            continue;
+        }
         if matches!(
             *name,
             "schema/v4.sql"
@@ -863,27 +913,48 @@ mod compatibility;
 /// Offline promotion never acquires a normal MEMORY/OFF connection.
 pub(crate) fn upgrade_format(path: &Path) -> Result<()> {
     let version = preflight_connect(path)?;
-    if !matches!(version, 7 | 8 | 9) { return Err(StoreError::InvalidInput("format upgrade requires schema 7, 8 or 9")); }
-    let mut connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
+    if !matches!(version, 7..=9) {
+        return Err(StoreError::InvalidInput(
+            "format upgrade requires schema 7, 8 or 9",
+        ));
+    }
+    let mut connection = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
     connection.busy_timeout(std::time::Duration::ZERO)?;
     connection.pragma_update(None, "locking_mode", "EXCLUSIVE")?;
     connection.pragma_update(None, "journal_mode", "DELETE")?;
     connection.pragma_update(None, "synchronous", "FULL")?;
     let journal: String = connection.pragma_query_value(None, "journal_mode", |r| r.get(0))?;
     let synchronous: i64 = connection.pragma_query_value(None, "synchronous", |r| r.get(0))?;
-    if journal != "delete" || synchronous != 2 { return Err(StoreError::WrongStoreSchema); }
+    if journal != "delete" || synchronous != 2 {
+        return Err(StoreError::WrongStoreSchema);
+    }
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Exclusive)?;
     let current: i64 = transaction.pragma_query_value(None, "user_version", |r| r.get(0))?;
-    if !matches!(current, 7 | 8 | 9) { return Err(StoreError::WrongStoreSchema); }
+    if !matches!(current, 7..=9) {
+        return Err(StoreError::WrongStoreSchema);
+    }
     verify_schema(&transaction, current)?;
-    if current != 9 { transaction.execute_batch(statements::schema::MIGRATE_TO_V9)?; }
+    if current != 9 {
+        transaction.execute_batch(statements::schema::MIGRATE_TO_V9)?;
+    }
     match transaction.commit() {
         Ok(()) => Ok(()),
         Err(error) => {
-            let promoted = connection.is_autocommit() && connection.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).ok() == Some(9);
+            let promoted = connection.is_autocommit()
+                && connection
+                    .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                    .ok()
+                    == Some(9);
             if promoted {
-                Err(StoreError::Io(std::io::Error::other(format!("schema 9 promotion occurred; commit reported: {error}"))))
-            } else { Err(error.into()) }
+                Err(StoreError::Io(std::io::Error::other(format!(
+                    "schema 9 promotion occurred; commit reported: {error}"
+                ))))
+            } else {
+                Err(error.into())
+            }
         }
     }
 }

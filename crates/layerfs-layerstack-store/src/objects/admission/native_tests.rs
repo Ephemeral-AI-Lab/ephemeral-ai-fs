@@ -73,9 +73,13 @@ fn compact_namespace_admission_and_reads_require_the_new_schema() {
     let mut f = Fixture::new();
     let path = f.folder.join("legacy9.sqlite");
     let db = rusqlite::Connection::open(&path).unwrap();
-    db.execute_batch(crate::statements::schema::V9).unwrap(); drop(db);
+    db.execute_batch(crate::statements::schema::V9).unwrap();
+    drop(db);
     f.db = StoreDb::connect(&path).unwrap();
-    let canonical = layerfs_content::tree::compact::encode_directory(&layerfs_content::tree::compact::DirectoryNode::Leaf(Vec::new())).unwrap();
+    let canonical = layerfs_content::tree::compact::encode_directory(
+        &layerfs_content::tree::compact::DirectoryNode::Leaf(Vec::new()),
+    )
+    .unwrap();
     let object = AuthenticatedCanonicalObject::new(canonical.clone(), None).unwrap();
     let result = (|| -> Result<()> {
         let mut owner = CheckedOutputAdmission::new(&f.db)?;
@@ -83,8 +87,19 @@ fn compact_namespace_admission_and_reads_require_the_new_schema() {
         PreparedAdmission::prepare_missing(&f.db, owner.finish()?.final_batch)?;
         Ok(())
     })();
-    assert!(matches!(result, Err(StoreError::Integrity("compact namespace requires schema 10"))));
-    assert_eq!(f.db.reader().unwrap().query_row("SELECT count(*) FROM objects", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    assert!(matches!(
+        result,
+        Err(StoreError::Integrity(
+            "compact namespace requires schema 10"
+        ))
+    ));
+    assert_eq!(
+        f.db.reader()
+            .unwrap()
+            .query_row("SELECT count(*) FROM objects", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
 
     let mut native = Fixture::new();
     let object = AuthenticatedCanonicalObject::new(canonical, None).unwrap();
@@ -95,9 +110,18 @@ fn compact_namespace_admission_and_reads_require_the_new_schema() {
     drop(std::mem::replace(&mut native.db, replacement));
     // Disposable deliberately mislabeled Store: no supported downgrade is implied.
     let db = rusqlite::Connection::open(&malformed).unwrap();
-    db.execute_batch("DROP TABLE scope_allocator; DROP TABLE metadata_value_groups; PRAGMA user_version=9;").unwrap(); drop(db);
+    db.execute_batch(
+        "DROP TABLE scope_allocator; DROP TABLE metadata_value_groups; PRAGMA user_version=9;",
+    )
+    .unwrap();
+    drop(db);
     let db = StoreDb::connect(&malformed).unwrap();
-    assert!(matches!(db.read_object_row(id), Err(StoreError::Integrity("compact namespace requires schema 10"))));
+    assert!(matches!(
+        db.read_object_row(id),
+        Err(StoreError::Integrity(
+            "compact namespace requires schema 10"
+        ))
+    ));
 }
 
 #[test]
@@ -644,8 +668,10 @@ fn small_content_upper_range_exact_cas_reuse() {
     let mut raw = random().repeat(3);
     let small = |raw: &[u8], prior| {
         let mut object = AuthenticatedCanonicalObject::new(
-            layerfs_content::file::content::encode_small(raw).unwrap(), None,
-        ).unwrap();
+            layerfs_content::file::content::encode_small(raw).unwrap(),
+            None,
+        )
+        .unwrap();
         object.1.prior_ids[0] = prior;
         object
     };
@@ -657,18 +683,31 @@ fn small_content_upper_range_exact_cas_reuse() {
     assert!(prepared.objects[0].delta);
     f.publish(prepared);
     let legacy = AuthenticatedCanonicalObject::new(
-        layerfs_content::encode_bytes_object(&raw).unwrap(), None,
-    ).unwrap();
+        layerfs_content::encode_bytes_object(&raw).unwrap(),
+        None,
+    )
+    .unwrap();
     f.publish(f.prepare(vec![legacy.clone()]));
     for object in [full, delta, legacy] {
         let before = f.db.physical_storage_receipt();
         f.publish(f.prepare(vec![object.clone()]));
-        assert_eq!(f.db.physical_storage_receipt().since(before).diag_selected_pack_count, 0);
+        assert_eq!(
+            f.db.physical_storage_receipt()
+                .since(before)
+                .diag_selected_pack_count,
+            0
+        );
         let known = f.db.object_locations(&[object.id]).unwrap();
         let mut changed = object.bytes.clone();
         *changed.last_mut().unwrap() ^= 1;
-        assert!(compare(&f.db, &known, &mut vec![(object.id, &changed)],
-            &mut ObjectInsertMetrics::default(), 0).is_err());
+        assert!(compare(
+            &f.db,
+            &known,
+            &mut vec![(object.id, &changed)],
+            &mut ObjectInsertMetrics::default(),
+            0
+        )
+        .is_err());
         assert_eq!(f.db.read_object_row(object.id).unwrap(), object.bytes);
     }
 }
@@ -682,8 +721,16 @@ mod small_chain_tests;
 #[test]
 #[ignore = "fixed external Git2.47.1 programs, identical original fixture pairs"]
 fn issue100_identical_base_git_matcher() {
-    let root = std::path::Path::new("/Users/yifanxu/Ephemeral-AI-Lab/layerfs-issue100-45mb-evidence/git-matcher-study");
-    for name in ["translation-growth", "catalog-growth", "icons-growth", "rename-ledger", "tool-schemas"] {
+    let root = std::path::Path::new(
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-issue100-45mb-evidence/git-matcher-study",
+    );
+    for name in [
+        "translation-growth",
+        "catalog-growth",
+        "icons-growth",
+        "rename-ledger",
+        "tool-schemas",
+    ] {
         let base = std::fs::read(root.join(format!("{name}.base"))).unwrap();
         let target = std::fs::read(root.join(format!("{name}.target"))).unwrap();
         let program = std::fs::read(root.join(format!("{name}.gitdelta"))).unwrap();
@@ -700,11 +747,20 @@ fn issue100_identical_base_git_matcher() {
         let git = encoder.compress(&program, None).unwrap();
         let git_compress_ns = started.elapsed().as_nanos();
         drop(encoder);
-        assert_eq!(pack::small_decompress(&prefix, target.len(), Some(&base)).unwrap(), target);
-        assert_eq!(pack::small_decompress(&full, target.len(), None).unwrap(), target);
+        assert_eq!(
+            pack::small_decompress(&prefix, target.len(), Some(&base)).unwrap(),
+            target
+        );
+        assert_eq!(
+            pack::small_decompress(&full, target.len(), None).unwrap(),
+            target
+        );
         // Upstream patch_delta already replayed this exact program to target.
         // Equality after decoding preserves that proof without another parser.
-        assert_eq!(pack::small_decompress(&git, program.len(), None).unwrap(), program);
+        assert_eq!(
+            pack::small_decompress(&git, program.len(), None).unwrap(),
+            program
+        );
         println!("pair\t{name}\tbase_raw={}\ttarget_raw={}\tbase_FULL_cost={}\tFULL_target_cost={}\tprefix_DELTA_cost={}\tgit_program_raw={}\tgit_program_DELTA_cost={}\tFULL_encode_ns={full_ns}\tprefix_encode_ns={prefix_ns}\tgit_program_compress_ns={git_compress_ns}\tverified=true", base.len(),target.len(),base_full.len()+25,full.len()+25,prefix.len()+57,program.len(),git.len()+61);
     }
 }

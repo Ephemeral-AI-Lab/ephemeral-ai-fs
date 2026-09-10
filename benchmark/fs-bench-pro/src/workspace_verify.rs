@@ -297,7 +297,9 @@ impl AuthenticatedNamespaceIndex {
             &mut Default::default(),
             |id, record| {
                 if records.insert(id, record).is_some() {
-                    return Err(layerfs_content::CoreError::InvalidRecord("duplicate global inode"));
+                    return Err(layerfs_content::CoreError::InvalidRecord(
+                        "duplicate global inode",
+                    ));
                 }
                 Ok(())
             },
@@ -497,7 +499,10 @@ pub(crate) fn verify_root(
     namespace.require_complete_membership(&namespace_inodes)?;
     drop(namespace);
     let (mut receipt, canonical_objects) = typed_census(source, root)?;
-    receipt.insert("regular_content_schema".into(), "authenticated-filecontent-v2".into());
+    receipt.insert(
+        "regular_content_schema".into(),
+        "authenticated-filecontent-v2".into(),
+    );
     receipt.insert("verification_status".into(), "pass".into());
     receipt.insert("canonical_root".into(), root.to_string());
     receipt.insert("verified_paths".into(), entries.len().to_string());
@@ -538,8 +543,15 @@ fn read_file_extents(
     reader: &CoreReader<'_>,
     file_root: rope::FileStateRoot,
 ) -> AnyResult<Vec<Extent>> {
-    if let Some(length) = reader.with_authenticated_canonical(file_root.0, |canonical| Ok(small_bytes(canonical)?.map(|raw| raw.len() as u64)))? {
-        return Ok(vec![Extent { id: file_root.0, source_offset: 0, len: length, payload_len: length }]);
+    if let Some(length) = reader.with_authenticated_canonical(file_root.0, |canonical| {
+        Ok(small_bytes(canonical)?.map(|raw| raw.len() as u64))
+    })? {
+        return Ok(vec![Extent {
+            id: file_root.0,
+            source_offset: 0,
+            len: length,
+            payload_len: length,
+        }]);
     }
     let mut file_extents = Vec::new();
     rope::visit_extents(reader, file_root, |page| {
@@ -734,12 +746,17 @@ pub(crate) fn typed_census(
             let bytes = &object.bytes;
             layerfs_content::authenticate_identity(bytes, id)?;
             let role = if role == Role::DirectoryState
-                && layerfs_content::decode_bytes_object(bytes)?.starts_with(b"LFS6NSP\0") {
+                && layerfs_content::decode_bytes_object(bytes)?.starts_with(b"LFS6NSP\0")
+            {
                 Role::DirectoryNode
             } else if role == Role::FileState && small_bytes(bytes)?.is_some() {
-                if origin != Origin::RegularFile { return Err("SmallContent is not a metadata rope".into()); }
+                if origin != Origin::RegularFile {
+                    return Err("SmallContent is not a metadata rope".into());
+                }
                 Role::SmallContent
-            } else { role };
+            } else {
+                role
+            };
             let observed = CanonicalObject {
                 role,
                 canonical_bytes: bytes.len() as u64,
@@ -768,13 +785,21 @@ pub(crate) fn typed_census(
                     Role::InodeTable,
                     Origin::Structure,
                 )),
-                Role::InodeTable if layerfs_content::decode_bytes_object(bytes)?.starts_with(b"LFS6INT\0") => {
+                Role::InodeTable
+                    if layerfs_content::decode_bytes_object(bytes)?.starts_with(b"LFS6INT\0") =>
+                {
                     match layerfs_content::tree::compact::decode_inode(bytes)? {
                         layerfs_content::tree::compact::InodeNode::Leaf(records) => {
-                            for (_, record) in records { census_inode(&mut pending, record); }
+                            for (_, record) in records {
+                                census_inode(&mut pending, record);
+                            }
                         }
                         layerfs_content::tree::compact::InodeNode::Branch { children, .. } => {
-                            pending.extend(children.into_iter().map(|(_, id)| (id, Role::InodeTable, Origin::Structure)));
+                            pending.extend(
+                                children
+                                    .into_iter()
+                                    .map(|(_, id)| (id, Role::InodeTable, Origin::Structure)),
+                            );
                         }
                     }
                 }
@@ -847,7 +872,9 @@ pub(crate) fn typed_census(
                         bytes,
                     )?)?;
                 }
-                Role::SmallContent => { small_bytes(bytes)?.ok_or("SmallContent role mismatch")?; }
+                Role::SmallContent => {
+                    small_bytes(bytes)?.ok_or("SmallContent role mismatch")?;
+                }
                 Role::Symlink => {
                     directory::codec::decode_symlink(bytes)?;
                 }
@@ -1976,7 +2003,6 @@ mod sampled_tests {
         Ok(())
     }
 }
-
 
 #[cfg(test)]
 mod small_content_checks {

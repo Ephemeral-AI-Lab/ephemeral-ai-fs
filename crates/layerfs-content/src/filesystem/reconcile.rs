@@ -1,7 +1,7 @@
 use super::apply::{apply_directory_changes, CandidateRoot, InodeMutation};
 use super::apply_inode_mutations;
 use super::resolve::{namespace, resolve_parent, LogicalCounters};
-use crate::file::content::{read_all, length, FileContentRoot};
+use crate::file::content::{length, read_all, FileContentRoot};
 use crate::object::access::{ObjectRead, ObjectStore};
 use crate::object::ContentDigestWriter;
 use crate::tree::directory::codec::encode_namespace_root;
@@ -314,7 +314,13 @@ fn copy_snapshot_inode<S: ObjectStore>(
     if !active.insert(inode) {
         return Err(CoreError::InvalidRecord("directory cycle"));
     }
-    let record = inode_record_lookup(store, source_table, inode, &mut InodeTableCounters::default())?.ok_or(CoreError::MissingObject)?;
+    let record = inode_record_lookup(
+        store,
+        source_table,
+        inode,
+        &mut InodeTableCounters::default(),
+    )?
+    .ok_or(CoreError::MissingObject)?;
     let record_id = store.put(&encode_inode_record(record)?)?;
     if record.kind == InodeKind::Directory {
         let mut cursor = DirectoryCursor::new(record.content_root);
@@ -337,7 +343,8 @@ fn release_namespace_reference<S: ObjectStore>(
     if !active.insert(inode) {
         return Err(CoreError::InvalidRecord("directory cycle"));
     }
-    let record = inode_record_lookup(store, *table, inode, &mut InodeTableCounters::default())?.ok_or(CoreError::MissingObject)?;
+    let record = inode_record_lookup(store, *table, inode, &mut InodeTableCounters::default())?
+        .ok_or(CoreError::MissingObject)?;
     if record.namespace_ref_count > 1 {
         let record_id = store.put(&encode_inode_record(InodeRecordV1 {
             namespace_ref_count: record.namespace_ref_count - 1,
@@ -609,7 +616,9 @@ fn semantic_eq<S: ObjectRead>(
     {
         return Ok(false);
     }
-    if length(store, FileContentRoot(left.content_root))? != length(store, FileContentRoot(right.content_root))? {
+    if length(store, FileContentRoot(left.content_root))?
+        != length(store, FileContentRoot(right.content_root))?
+    {
         return Ok(false);
     }
     Ok(file_digest(store, left.content_root, digests)?
@@ -871,9 +880,20 @@ fn record<S: ObjectRead>(store: &S, entry: TreeEntry) -> CoreResult<Option<Loade
     let Some(inode) = entry.inode else {
         return Ok(None);
     };
-    let Some(record) = inode_record_lookup(store, entry.table, inode, &mut InodeTableCounters::default())? else { return Ok(None); };
+    let Some(record) = inode_record_lookup(
+        store,
+        entry.table,
+        inode,
+        &mut InodeTableCounters::default(),
+    )?
+    else {
+        return Ok(None);
+    };
     // A logical comparison identity, not a required separately stored object.
-    Ok(Some((ObjectId::for_bytes(&encode_inode_record(record)?), record)))
+    Ok(Some((
+        ObjectId::for_bytes(&encode_inode_record(record)?),
+        record,
+    )))
 }
 
 fn record_eq(left: Option<LoadedRecord>, right: Option<LoadedRecord>) -> bool {

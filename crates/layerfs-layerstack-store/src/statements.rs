@@ -6,7 +6,10 @@ pub const ALL: &[(&str, &str)] = &[
     ("schema/v8.sql", schema::V8),
     ("schema/v9.sql", schema::V9),
     ("schema/v10.sql", schema::V10),
-    ("schema/reserve_inode_serials.sql", schema::RESERVE_INODE_SERIALS),
+    (
+        "schema/reserve_inode_serials.sql",
+        schema::RESERVE_INODE_SERIALS,
+    ),
     ("schema/migrate_to_v9.sql", schema::MIGRATE_TO_V9),
     ("schema/migrate_v7_to_v8.sql", schema::MIGRATE_V7_TO_V8),
     ("schema/migrate_v4_to_v5.sql", schema::MIGRATE_V4_TO_V5),
@@ -221,7 +224,11 @@ mod tests {
                 sql.contains("\n-- parameters:"),
                 "missing parameter header: {name}"
             );
-            let owner = if *name == "schema/reserve_inode_serials.sql" { &compact } else { &connection };
+            let owner = if *name == "schema/reserve_inode_serials.sql" {
+                &compact
+            } else {
+                &connection
+            };
             use rusqlite::fallible_iterator::FallibleIterator;
             assert_eq!(
                 rusqlite::Batch::new(owner, sql).count().unwrap(),

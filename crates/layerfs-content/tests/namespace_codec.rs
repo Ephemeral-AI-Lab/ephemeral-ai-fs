@@ -95,7 +95,7 @@ fn directory_inode_and_metadata_nodes_are_strict_and_ordered() {
     let first = InodeId::allocate([1; 32], 1);
     let second = InodeId::allocate([1; 32], 2);
     let directory = DirectoryNodeV1::Leaf {
-            compact: false,
+        compact: false,
         subtree_encoded_bytes: (34 + 1 + 34 + 2) as u64,
         entries: vec![
             ("a".try_into().unwrap(), first),
@@ -107,7 +107,7 @@ fn directory_inode_and_metadata_nodes_are_strict_and_ordered() {
         directory
     );
     let reversed = DirectoryNodeV1::Leaf {
-            compact: false,
+        compact: false,
         subtree_encoded_bytes: 71,
         entries: vec![
             ("bb".try_into().unwrap(), second),

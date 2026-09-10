@@ -1,5 +1,5 @@
-pub mod compact;
 pub mod batch;
+pub mod compact;
 pub mod directory;
 pub mod inode;
 pub mod metadata;

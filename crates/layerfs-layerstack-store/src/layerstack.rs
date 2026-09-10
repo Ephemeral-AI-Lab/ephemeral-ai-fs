@@ -1,12 +1,12 @@
 use crate::ids::TypedId;
-use crate::objects::{
-    CheckedOutputAdmission, InitializationDirectAdmissionWriter,
-    InitializationSqlPhase, OutputWriterMetrics, PreparedAdmission,
-};
 #[cfg(test)]
 use crate::objects::{
     AppendOnlyInitializationSegment, AppendOnlyInitializationWriter, BuiltRoot,
     DeferredObjectStore, InitializationTaskBlock, ObjectBuffer,
+};
+use crate::objects::{
+    CheckedOutputAdmission, InitializationDirectAdmissionWriter, InitializationSqlPhase,
+    OutputWriterMetrics, PreparedAdmission,
 };
 use crate::records::decode_object_id;
 use crate::{
@@ -343,13 +343,23 @@ fn serial_initialize(
     crate::objects::FinishedOutputAdmission,
 )> {
     let namespace = if db.compact_namespace() {
-        Some(db.reserve_inode_serials(layerfs_content::tree::compact::scope_for_seed(seed), 1u64 << 32)?)
-    } else { None };
+        Some(db.reserve_inode_serials(
+            layerfs_content::tree::compact::scope_for_seed(seed),
+            1u64 << 32,
+        )?)
+    } else {
+        None
+    };
     let mut admission = CheckedOutputAdmission::new_for_initialization(db)?;
     let session = admission.session();
     let result = (|| {
         let mut output = InitializationDirectAdmissionWriter::new(&mut admission);
-        output.set_namespace_allocation(namespace.map(|range| crate::objects::NamespaceAllocation::new(layerfs_content::tree::compact::scope_for_seed(seed), range)));
+        output.set_namespace_allocation(namespace.map(|range| {
+            crate::objects::NamespaceAllocation::new(
+                layerfs_content::tree::compact::scope_for_seed(seed),
+                range,
+            )
+        }));
 
         let mut import = NativeImport::new(seed, &mut output);
         import.directory(path, &layerfs_content::CanonicalPath::root(), true)?;
@@ -489,8 +499,12 @@ impl SourceImportMetrics {
             .symlink_metadata_calls
             .saturating_add(other.symlink_metadata_calls);
         self.read_dir_calls = self.read_dir_calls.saturating_add(other.read_dir_calls);
-        self.small_content_files = self.small_content_files.saturating_add(other.small_content_files);
-        self.small_content_scratch_bound_bytes = self.small_content_scratch_bound_bytes.max(other.small_content_scratch_bound_bytes);
+        self.small_content_files = self
+            .small_content_files
+            .saturating_add(other.small_content_files);
+        self.small_content_scratch_bound_bytes = self
+            .small_content_scratch_bound_bytes
+            .max(other.small_content_scratch_bound_bytes);
         self.single_chunk_files = self
             .single_chunk_files
             .saturating_add(other.single_chunk_files);
@@ -631,7 +645,9 @@ impl InitializationDiagnostic {
         let parent_merge_bytes = if fast_path == 1 { "0" } else { "na" };
         let fast = self.fast.unwrap_or_default();
         let admission = fast.admission;
-        let source_scratch_bound = fast.source.cdc_scratch_peak_bytes
+        let source_scratch_bound = fast
+            .source
+            .cdc_scratch_peak_bytes
             .max(fast.source.small_content_scratch_bound_bytes)
             .saturating_mul(fast.worker_count);
         let explicit_buffer_peak_bytes = if fast.slab.handoffs == 0 {
@@ -694,7 +710,13 @@ impl InitializationDiagnostic {
         };
         let explicit_buffer_peak_bytes = explicit_buffer_peak_bytes
             .saturating_add(fast.compact_tree_scratch_peak_bytes)
-            .saturating_add(if fast.compact_tree_scratch_peak_bytes != 0 { fast.worker_count.saturating_mul(std::mem::size_of::<crate::objects::NamespaceAllocation>() as u64) } else { 0 });
+            .saturating_add(if fast.compact_tree_scratch_peak_bytes != 0 {
+                fast.worker_count.saturating_mul(std::mem::size_of::<
+                    crate::objects::NamespaceAllocation,
+                >() as u64)
+            } else {
+                0
+            });
         eprintln!(
             "layerfs-initialization-diagnostic-v3 nonce={} fast_path={} worker_count={} prepare_import_wall_ns={} source_file_open_calls={} source_file_read_calls={} source_file_read_bytes={} source_symlink_metadata_calls={} source_read_dir_calls={} small_content_files={} small_content_scratch_bound_bytes={} single_chunk_files={} streaming_files={} cdc_scratch_peak_bytes={} metadata_cache_hits={} metadata_cache_misses={} metadata_cache_peak_entries={} explicit_buffer_peak_bytes={} explicit_slab_payload_limit_bytes={} explicit_slab_object_limit={} explicit_canonical_object_header_bytes={} explicit_pair_pending_limit_bytes={} canonical_frame_count={} canonical_payload_bytes={} canonical_payload_capacity_bytes={} canonical_payload_capacity_slack_bytes={} canonical_encode_calls={} canonical_hash_calls={} canonical_framing_bytes={} object_segment_write_calls={} object_segment_write_bytes={} object_segment_raw_read_calls={} object_segment_raw_read_bytes={} object_segment_passes={} slab_handoffs={} slab_sent_objects={} slab_sent_bytes={} slab_send_blocked_ns={} slab_partial_peak_objects={} slab_partial_peak_payload_bytes={} slab_queue_peak={} slab_queue_peak_bytes={} slab_consumer_idle_ns={} last_slab_receive_offset_ns={} direct_pipeline_wall_ns={} import_pipeline_thread_peak={} active_producers_after={} task_state_bytes={} completed_result_peak_bytes={} parent_final_state_peak_bytes={} candidate_copy_bytes={} structural_peak_bytes={} parent_payload_copy_bytes={} pair_segment_write_calls={} pair_segment_write_bytes={} pair_segment_raw_read_calls={} pair_segment_raw_read_bytes={} pair_segment_passes={} parent_merge_bytes={} pending_duplicate_objects={} pending_duplicate_bytes={} cross_batch_skipped_objects={} cross_batch_skipped_bytes={} collision_checks={} admission_batch_peak_objects={} admission_batch_peak_payload_bytes={} admission_batch_peak_vec_capacity={} pending_index_peak_entries={} pending_index_peak_bytes={} final_batch_peak_payload_bytes={} final_batch_peak_vec_capacity={} final_pending_index_peak_bytes={} final_simultaneous_owned_peak_bytes={} sql_batch_count={} sql_row_count_shape_count={} sql_submitted_rows={} sql_returned_ids={} sql_skipped_ids={} sql_string_build_ns={} sql_prepare_ns={} sql_bind_step_returning_ns={} conflict_read_calls={} conflict_read_rows={} conflict_read_bytes={} conflict_read_ns={} sql_begin_ns={} sql_commit_ns={} final_root_inode_table_wall_ns={} insert_node_peak_len={} insert_node_peak_capacity={} compact_tree_scratch_peak_bytes={}",
             self.nonce,
@@ -1231,20 +1253,40 @@ fn direct_initialize_frontier(
     // Conservative reserved planning capacity, including unused allowance for vectors.
     let task_state_bytes = owned_bytes as u64;
     attempted.merge(discovery_source);
-    let workers = worker_limit.min(tasks.len()).min(if db.small_content_format() { crate::objects::SMALL_CONTENT_WORKERS } else { usize::MAX });
+    let workers = worker_limit
+        .min(tasks.len())
+        .min(if db.small_content_format() {
+            crate::objects::SMALL_CONTENT_WORKERS
+        } else {
+            usize::MAX
+        });
     let pair_pending_bytes = INITIALIZATION_PAIR_PENDING_BYTES
         .div_ceil(workers.max(1))
         .max(64);
     let fallback = std::sync::atomic::AtomicBool::new(false);
     let scope = layerfs_content::tree::compact::scope_for_seed(seed);
     let namespace = if db.compact_namespace() {
-        let count = (tasks.len() as u64 + 1).checked_mul(INITIALIZATION_INODE_LANE_WIDTH).ok_or(StoreError::Integrity("initial inode range"))?;
+        let count = (tasks.len() as u64 + 1)
+            .checked_mul(INITIALIZATION_INODE_LANE_WIDTH)
+            .ok_or(StoreError::Integrity("initial inode range"))?;
         Some(db.reserve_inode_serials(scope, count)?)
-    } else { None };
+    } else {
+        None
+    };
     let parent_inode = |index: usize| -> Result<layerfs_content::tree::inode::InodeId> {
-        if let Some(range) = &namespace { Ok(layerfs_content::tree::compact::InodeSerial::new(range.start + index as u64)?.inode_key()) }
-        else if index == 0 { Ok(layerfs_content::tree::inode::InodeId::allocate(seed, 0)) }
-        else { Ok(layerfs_content::filesystem::allocated_inode(seed, &directories[index].logical)) }
+        if let Some(range) = &namespace {
+            Ok(
+                layerfs_content::tree::compact::InodeSerial::new(range.start + index as u64)?
+                    .inode_key(),
+            )
+        } else if index == 0 {
+            Ok(layerfs_content::tree::inode::InodeId::allocate(seed, 0))
+        } else {
+            Ok(layerfs_content::filesystem::allocated_inode(
+                seed,
+                &directories[index].logical,
+            ))
+        }
     };
     let mut admission = CheckedOutputAdmission::new_for_initialization(db)?;
     let session = admission.session();
@@ -1260,7 +1302,13 @@ fn direct_initialize_frontier(
                     index,
                     tasks: Vec::new(),
                     pair_blocks: Vec::new(),
-                    pairs: if namespace.is_some() { crate::objects::CompactInodePairWriter::new_inline(pair_pending_bytes.max(81))? } else { crate::objects::CompactInodePairWriter::new(pair_pending_bytes)? },
+                    pairs: if namespace.is_some() {
+                        crate::objects::CompactInodePairWriter::new_inline(
+                            pair_pending_bytes.max(81),
+                        )?
+                    } else {
+                        crate::objects::CompactInodePairWriter::new(pair_pending_bytes)?
+                    },
                     metadata_cache: Default::default(),
                     source: SourceImportMetrics::default(),
                 })
@@ -1269,7 +1317,10 @@ fn direct_initialize_frontier(
                 objects.set_small_content_format(db.small_content_format());
                 objects.set_namespace_allocation(namespace.as_ref().map(|range| {
                     let start = range.start + (index as u64 + 1) * INITIALIZATION_INODE_LANE_WIDTH;
-                    crate::objects::NamespaceAllocation::new(scope, start..start + INITIALIZATION_INODE_LANE_WIDTH)
+                    crate::objects::NamespaceAllocation::new(
+                        scope,
+                        start..start + INITIALIZATION_INODE_LANE_WIDTH,
+                    )
                 }));
                 #[cfg(test)]
                 task_hook(index, true);
@@ -1479,10 +1530,7 @@ fn direct_initialize_frontier(
         for (index, directory) in directories.iter().enumerate() {
             for entry in &directory.entries {
                 if let FrontierEntryKind::Expanded(child) = entry.kind {
-                    directory_children[index].push((
-                        entry.path.name.clone(),
-                        parent_inode(child)?,
-                    ));
+                    directory_children[index].push((entry.path.name.clone(), parent_inode(child)?));
                 }
             }
             directory_children[index]
@@ -1513,13 +1561,15 @@ fn direct_initialize_frontier(
             + (parent_pairs.capacity()
                 * std::mem::size_of::<(
                     u64,
-                    (
-                        layerfs_content::tree::inode::InodeId,
-                        InitialInodeValue,
-                    ),
+                    (layerfs_content::tree::inode::InodeId, InitialInodeValue),
                 )>()) as u64;
         let mut final_objects = InitializationDirectAdmissionWriter::new(&mut admission);
-        final_objects.set_namespace_allocation(namespace.as_ref().map(|range| crate::objects::NamespaceAllocation::new(scope, range.start..range.start + INITIALIZATION_INODE_LANE_WIDTH)));
+        final_objects.set_namespace_allocation(namespace.as_ref().map(|range| {
+            crate::objects::NamespaceAllocation::new(
+                scope,
+                range.start..range.start + INITIALIZATION_INODE_LANE_WIDTH,
+            )
+        }));
         final_objects.note_transient_owned_bytes(parent_final_state_peak_bytes)?;
         let root_inode = parent_inode(0)?;
         let mut pair_count = 0_u64;
@@ -1556,45 +1606,67 @@ fn direct_initialize_frontier(
             let inode = parent_inode(index)?;
             let record = layerfs_content::tree::inode::InodeRecordV1 {
                 kind: layerfs_content::tree::inode::InodeKind::Directory,
-                namespace_ref_count: u64::from(index != 0), content_root: content.0, metadata_root,
+                namespace_ref_count: u64::from(index != 0),
+                content_root: content.0,
+                metadata_root,
             };
-            let record = if namespace.is_some() { InitialInodeValue::Inline(record) }
-                else { InitialInodeValue::Legacy(final_objects.put_owned(layerfs_content::tree::inode::codec::encode_inode_record(record)?)?) };
+            let record = if namespace.is_some() {
+                InitialInodeValue::Inline(record)
+            } else {
+                InitialInodeValue::Legacy(final_objects.put_owned(
+                    layerfs_content::tree::inode::codec::encode_inode_record(record)?,
+                )?)
+            };
             parent_pairs.push((pair_count, (inode, record)));
         }
         final_objects.note_transient_owned_bytes(0)?;
         let mut pair_stream = crate::objects::CompactInodePairStream::new(pairs, pair_blocks)?;
-        let (inode_table, insert_node_peak_len, insert_node_peak_capacity, compact_tree_scratch_peak_bytes) = if namespace.is_some() {
+        let (
+            inode_table,
+            insert_node_peak_len,
+            insert_node_peak_capacity,
+            compact_tree_scratch_peak_bytes,
+        ) = if namespace.is_some() {
             parent_pairs.sort_by_key(|(_, (inode, _))| *inode);
-            if parent_pairs.first().map(|(_, (inode, _))| *inode) != Some(root_inode) { return Err(StoreError::Integrity("initial root inode")); }
-            let parents = parent_pairs.into_iter().map(|(_, (inode, value))| match value {
-                InitialInodeValue::Inline(record) => Ok((layerfs_content::tree::compact::InodeSerial::from_inode_key(inode)?, record)),
-                _ => Err(layerfs_content::CoreError::WrongLogicalRole),
-            });
-            let rows = parents.chain(std::iter::from_fn(|| pair_stream.next_inline()));
-            let (table, counters) = layerfs_content::tree::batch::compact_inode_table_from_sorted(&mut final_objects, rows,
-                layerfs_content::tree::batch::SORTED_TREE_UPDATE_SCRATCH_BYTES).map_err(|error| final_objects.error(error))?;
-            (table, 0, 0, counters.peak_scratch_bytes as u64)
-        } else {
-        let mut parent_pairs = parent_pairs.into_iter().peekable();
-        let mut pair_offset = 0_u64;
-        // Ancestors sharing a task boundary are already in canonical preorder.
-        let ordered_pairs = std::iter::from_fn(|| {
-            if parent_pairs
-                .peek()
-                .is_some_and(|(offset, _)| *offset == pair_offset)
-            {
-                return parent_pairs.next().map(|(_, (inode, value))| match value {
-                    InitialInodeValue::Legacy(id) => Ok((inode, id)),
+            if parent_pairs.first().map(|(_, (inode, _))| *inode) != Some(root_inode) {
+                return Err(StoreError::Integrity("initial root inode"));
+            }
+            let parents = parent_pairs
+                .into_iter()
+                .map(|(_, (inode, value))| match value {
+                    InitialInodeValue::Inline(record) => Ok((
+                        layerfs_content::tree::compact::InodeSerial::from_inode_key(inode)?,
+                        record,
+                    )),
                     _ => Err(layerfs_content::CoreError::WrongLogicalRole),
                 });
-            }
-            let pair = pair_stream.next();
-            pair_offset += u64::from(pair.is_some());
-            pair
-        });
-        let result =
-            match layerfs_content::tree::inode::build_initial_inode_table_from_pairs(
+            let rows = parents.chain(std::iter::from_fn(|| pair_stream.next_inline()));
+            let (table, counters) = layerfs_content::tree::batch::compact_inode_table_from_sorted(
+                &mut final_objects,
+                rows,
+                layerfs_content::tree::batch::SORTED_TREE_UPDATE_SCRATCH_BYTES,
+            )
+            .map_err(|error| final_objects.error(error))?;
+            (table, 0, 0, counters.peak_scratch_bytes as u64)
+        } else {
+            let mut parent_pairs = parent_pairs.into_iter().peekable();
+            let mut pair_offset = 0_u64;
+            // Ancestors sharing a task boundary are already in canonical preorder.
+            let ordered_pairs = std::iter::from_fn(|| {
+                if parent_pairs
+                    .peek()
+                    .is_some_and(|(offset, _)| *offset == pair_offset)
+                {
+                    return parent_pairs.next().map(|(_, (inode, value))| match value {
+                        InitialInodeValue::Legacy(id) => Ok((inode, id)),
+                        _ => Err(layerfs_content::CoreError::WrongLogicalRole),
+                    });
+                }
+                let pair = pair_stream.next();
+                pair_offset += u64::from(pair.is_some());
+                pair
+            });
+            let result = match layerfs_content::tree::inode::build_initial_inode_table_from_pairs(
                 &mut final_objects,
                 root_inode,
                 ordered_pairs,
@@ -1602,15 +1674,21 @@ fn direct_initialize_frontier(
                 Ok(table) => table,
                 Err(error) => return Err(final_objects.error(error)),
             };
-        if parent_pairs.next().is_some() { return Err(StoreError::Integrity("initialization ancestor coverage")); }
-        (result.0, result.1, result.2, 0)
+            if parent_pairs.next().is_some() {
+                return Err(StoreError::Integrity("initialization ancestor coverage"));
+            }
+            (result.0, result.1, result.2, 0)
         };
         let pair_io = pair_stream.finish()?;
         let root_id = match final_objects.put_owned(
             layerfs_content::tree::directory::codec::encode_namespace_root(
                 layerfs_content::tree::NamespaceRootV1 {
                     scope: namespace.as_ref().map(|_| scope),
-                    profile_id: if namespace.is_some() { layerfs_content::tree::compact::profile_id() } else { layerfs_content::tree::directory::codec::profile_id() },
+                    profile_id: if namespace.is_some() {
+                        layerfs_content::tree::compact::profile_id()
+                    } else {
+                        layerfs_content::tree::directory::codec::profile_id()
+                    },
                     root_directory_inode: root_inode,
                     inode_table_root: inode_table.0,
                 },
@@ -1994,11 +2072,25 @@ impl<'objects, S: ObjectStore> NativeImport<'objects, S> {
             metadata_cache: Default::default(),
         }
     }
-    fn inode(&mut self, logical: &layerfs_content::CanonicalPath, root: bool) -> Result<layerfs_content::tree::inode::InodeId> {
+    fn inode(
+        &mut self,
+        logical: &layerfs_content::CanonicalPath,
+        root: bool,
+    ) -> Result<layerfs_content::tree::inode::InodeId> {
         if self.objects.compact_namespace() {
-            Ok(self.objects.allocate_inode_serial(layerfs_content::tree::compact::scope_for_seed(self.seed))?.inode_key())
-        } else if root { Ok(layerfs_content::tree::inode::InodeId::allocate(self.seed, 0)) }
-        else { Ok(layerfs_content::filesystem::allocated_inode(self.seed, logical)) }
+            Ok(self
+                .objects
+                .allocate_inode_serial(layerfs_content::tree::compact::scope_for_seed(self.seed))?
+                .inode_key())
+        } else if root {
+            Ok(layerfs_content::tree::inode::InodeId::allocate(
+                self.seed, 0,
+            ))
+        } else {
+            Ok(layerfs_content::filesystem::allocated_inode(
+                self.seed, logical,
+            ))
+        }
     }
     fn portable_metadata(
         &mut self,
@@ -2085,12 +2177,17 @@ impl<'objects, S: ObjectStore> NativeImport<'objects, S> {
         let record_len = self.records.len();
         #[cfg(test)]
         let record_capacity = self.records.capacity();
-        if pairs.inline() != self.objects.compact_namespace() { return Err(StoreError::Integrity("initial inode pair format")); }
+        if pairs.inline() != self.objects.compact_namespace() {
+            return Err(StoreError::Integrity("initial inode pair format"));
+        }
         for record in self.records {
             let (inode, record) =
                 record.ok_or(StoreError::Integrity("Layer initialization inode record"))?;
             if pairs.inline() {
-                pairs.push_inline(layerfs_content::tree::compact::InodeSerial::from_inode_key(inode)?, record)?;
+                pairs.push_inline(
+                    layerfs_content::tree::compact::InodeSerial::from_inode_key(inode)?,
+                    record,
+                )?;
             } else {
                 let canonical = layerfs_content::tree::inode::codec::encode_inode_record(record)?;
                 let record = self.objects.put_owned(canonical)?;
@@ -2175,7 +2272,9 @@ impl<'objects, S: ObjectStore> NativeImport<'objects, S> {
             self.source.small_content_files += 1;
             // Input, framed value and canonical output coexist during encoding.
             // Include Vec growth headroom; this is a conservative owned-buffer bound.
-            self.source.small_content_scratch_bound_bytes = self.source.small_content_scratch_bound_bytes
+            self.source.small_content_scratch_bound_bytes = self
+                .source
+                .small_content_scratch_bound_bytes
                 .max(metadata.len().saturating_add(32).saturating_mul(4));
         } else if metadata.len() > 0
             && metadata.len() < layerfs_content::file::cdc::MINIMUM_CHUNK_BYTES as u64
@@ -2350,7 +2449,11 @@ fn legacy_directory_root(path: &std::path::Path, seed: [u8; 32]) -> Result<(Buil
 }
 
 #[cfg(test)]
-fn reference_directory_root(path: &std::path::Path, seed: [u8; 32], small: bool) -> Result<(BuiltRoot, u64, u64)> {
+fn reference_directory_root(
+    path: &std::path::Path,
+    seed: [u8; 32],
+    small: bool,
+) -> Result<(BuiltRoot, u64, u64)> {
     use layerfs_content::filesystem;
     use layerfs_content::CanonicalPath;
     use std::collections::HashMap;
@@ -2359,7 +2462,9 @@ fn reference_directory_root(path: &std::path::Path, seed: [u8; 32], small: bool)
     // The serial oracle shares only format policy, never actual Store objects.
     struct Format(bool);
     impl crate::ObjectSource for Format {
-        fn small_content_format(&self) -> bool { self.0 }
+        fn small_content_format(&self) -> bool {
+            self.0
+        }
         fn read_object(&self, _: layerfs_content::ObjectId) -> Result<Vec<u8>> {
             Err(StoreError::NotFound("independent reference object"))
         }
@@ -2747,7 +2852,8 @@ mod tests {
             .unwrap()
             .unwrap();
         let layer = reopened.layer(stack.head_layer_id).unwrap().unwrap();
-        let (legacy, legacy_files, legacy_bytes) = reference_directory_root(&source, seed, true).unwrap();
+        let (legacy, legacy_files, legacy_bytes) =
+            reference_directory_root(&source, seed, true).unwrap();
         assert_eq!((legacy_files, legacy_bytes), (2, 6));
         assert_eq!(layer.root_id, legacy.root_id);
         let mut ids = legacy.objects.ids_in_order(usize::MAX).unwrap().unwrap();
@@ -3690,28 +3796,63 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    fn semantic_inventory(source: &dyn crate::ObjectSource, root: layerfs_content::ObjectId) -> (
-        std::collections::BTreeMap<String, (layerfs_content::tree::inode::InodeKind, u64, layerfs_content::ObjectId, Option<[u8; 32]>)>,
+    fn semantic_inventory(
+        source: &dyn crate::ObjectSource,
+        root: layerfs_content::ObjectId,
+    ) -> (
+        std::collections::BTreeMap<
+            String,
+            (
+                layerfs_content::tree::inode::InodeKind,
+                u64,
+                layerfs_content::ObjectId,
+                Option<[u8; 32]>,
+            ),
+        >,
         Vec<Vec<String>>,
     ) {
-        use layerfs_content::{filesystem, tree::{directory::{visit_directory_entries, DirectoryStateRoot, NamespaceCounters}, inode::InodeKind}, CanonicalPath};
+        use layerfs_content::{
+            filesystem,
+            tree::{
+                directory::{visit_directory_entries, DirectoryStateRoot, NamespaceCounters},
+                inode::InodeKind,
+            },
+            CanonicalPath,
+        };
         let core = crate::CoreReader(source);
         let mut rows = std::collections::BTreeMap::new();
         let mut aliases = std::collections::BTreeMap::<_, Vec<String>>::new();
         let mut pending = vec![String::new()];
         while let Some(path) = pending.pop() {
             let logical = CanonicalPath::new(&path).unwrap();
-            let resolved = filesystem::resolve(&core, root, &logical, &mut filesystem::LogicalCounters::default()).unwrap();
+            let resolved = filesystem::resolve(
+                &core,
+                root,
+                &logical,
+                &mut filesystem::LogicalCounters::default(),
+            )
+            .unwrap();
             let record = resolved.record;
             let content = match record.kind {
                 InodeKind::Directory => {
-                    visit_directory_entries(&core, DirectoryStateRoot(record.content_root), &mut NamespaceCounters::default(), |entries| {
-                        for (name, _) in entries {
-                            let name = std::str::from_utf8(name.as_bytes()).unwrap();
-                            pending.push(if path.is_empty() { name.to_owned() } else { format!("{path}/{name}") });
-                        }
-                        Ok(())
-                    }).unwrap(); None
+                    visit_directory_entries(
+                        &core,
+                        DirectoryStateRoot(record.content_root),
+                        &mut NamespaceCounters::default(),
+                        |entries| {
+                            for (name, _) in entries {
+                                let name = std::str::from_utf8(name.as_bytes()).unwrap();
+                                pending.push(if path.is_empty() {
+                                    name.to_owned()
+                                } else {
+                                    format!("{path}/{name}")
+                                });
+                            }
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+                    None
                 }
                 InodeKind::RegularFile => {
                     let mut hash = layerfs_content::object::ContentDigestWriter::new();
@@ -3724,58 +3865,111 @@ mod tests {
                     Some(record.content_root.to_bytes())
                 }
             };
-            aliases.entry(resolved.inode).or_default().push(path.clone());
-            rows.insert(path, (record.kind, record.namespace_ref_count, record.metadata_root, content));
+            aliases
+                .entry(resolved.inode)
+                .or_default()
+                .push(path.clone());
+            rows.insert(
+                path,
+                (
+                    record.kind,
+                    record.namespace_ref_count,
+                    record.metadata_root,
+                    content,
+                ),
+            );
         }
         let mut aliases = aliases.into_values().collect::<Vec<_>>();
-        for paths in &mut aliases { paths.sort(); }
-        aliases.sort(); (rows, aliases)
+        for paths in &mut aliases {
+            paths.sort();
+        }
+        aliases.sort();
+        (rows, aliases)
     }
 
     #[test]
-    fn compact_directory_initialization_matches_all_legacy_semantics_and_retains_only_required_objects() {
+    fn compact_directory_initialization_matches_all_legacy_semantics_and_retains_only_required_objects(
+    ) {
         for shape in 0..4 {
             let folder = temporary(&format!("native-initial-{shape}"));
             let source = folder.join("source");
             std::fs::create_dir(&source).unwrap();
             match shape {
-                0 => { std::fs::create_dir_all(source.join("a/b/c")).unwrap(); std::fs::create_dir(source.join("z")).unwrap(); }
-                1 => { for n in 0..600u32 { std::fs::write(source.join(format!("f{n:04}")), n.to_be_bytes()).unwrap(); } }
+                0 => {
+                    std::fs::create_dir_all(source.join("a/b/c")).unwrap();
+                    std::fs::create_dir(source.join("z")).unwrap();
+                }
+                1 => {
+                    for n in 0..600u32 {
+                        std::fs::write(source.join(format!("f{n:04}")), n.to_be_bytes()).unwrap();
+                    }
+                }
                 2 => {
                     std::fs::create_dir_all(source.join("a/b")).unwrap();
-                    for n in 0..130u32 { std::fs::write(source.join(format!("a/b/f{n:04}")), n.to_be_bytes()).unwrap(); }
+                    for n in 0..130u32 {
+                        std::fs::write(source.join(format!("a/b/f{n:04}")), n.to_be_bytes())
+                            .unwrap();
+                    }
                     std::fs::write(source.join("large"), vec![13; 2 * 1024 * 1024 + 1]).unwrap();
                     symlink("a/b/f0000", source.join("link")).unwrap();
                 }
                 _ => {
-                    for n in 0..40 { std::fs::create_dir(source.join(format!("d{n:02}"))).unwrap(); }
+                    for n in 0..40 {
+                        std::fs::create_dir(source.join(format!("d{n:02}"))).unwrap();
+                    }
                     std::fs::write(source.join("d00/file"), b"aliased").unwrap();
                     std::fs::hard_link(source.join("d00/file"), source.join("d39/alias")).unwrap();
                 }
             }
             let path = folder.join("store.sqlite");
             let store = LayerStackStore::create(&path).unwrap();
-            let initialized = store.initialize_layerstack(EntityName::new("native").unwrap(), LayerStackInitialization::Directory(source.clone())).unwrap();
-            let root = store.layer(initialized.genesis_layer_id).unwrap().unwrap().root_id;
+            let initialized = store
+                .initialize_layerstack(
+                    EntityName::new("native").unwrap(),
+                    LayerStackInitialization::Directory(source.clone()),
+                )
+                .unwrap();
+            let root = store
+                .layer(initialized.genesis_layer_id)
+                .unwrap()
+                .unwrap()
+                .root_id;
             let seed = *blake3::hash(initialized.layer_stack_id.as_slice()).as_bytes();
             let (reference, _, _) = reference_directory_root(&source, seed, true).unwrap();
-            assert!(layerfs_content::filesystem::namespace(&crate::CoreReader(&store), root).unwrap().scope.is_some());
-            assert_eq!(semantic_inventory(&store, root), semantic_inventory(&reference.objects, reference.root_id));
+            assert!(
+                layerfs_content::filesystem::namespace(&crate::CoreReader(&store), root)
+                    .unwrap()
+                    .scope
+                    .is_some()
+            );
+            assert_eq!(
+                semantic_inventory(&store, root),
+                semantic_inventory(&reference.objects, reference.root_id)
+            );
             let mut reached = std::collections::BTreeSet::new();
             let mut pending = vec![root];
             while let Some(id) = pending.pop() {
-                if !reached.insert(id) { continue; }
+                if !reached.insert(id) {
+                    continue;
+                }
                 let bytes = crate::ObjectSource::read_object(&store, id).unwrap();
                 layerfs_content::authenticate_identity(&bytes, id).unwrap();
                 let value = layerfs_content::decode_bytes_object(&bytes).unwrap();
                 assert!(!value.starts_with(b"LFS4INO\0") && !value.starts_with(b"LFS4DIR\0"));
-                pending.extend(layerfs_content::object::references::referenced_objects(&bytes).unwrap());
+                pending.extend(
+                    layerfs_content::object::references::referenced_objects(&bytes).unwrap(),
+                );
             }
             assert_eq!(reached.len() as u64, store.store_counts().unwrap().objects);
             drop(store);
             let reopened = LayerStackStore::connect(&path).unwrap();
-            assert_eq!(semantic_inventory(&reopened, root), semantic_inventory(&reference.objects, reference.root_id));
-            drop(reopened); drop(reference); std::fs::remove_dir_all(folder).unwrap();
+            assert_eq!(
+                semantic_inventory(&reopened, root),
+                semantic_inventory(&reference.objects, reference.root_id)
+            );
+            drop(reopened);
+            drop(reference);
+            std::fs::remove_dir_all(folder).unwrap();
         }
     }
 

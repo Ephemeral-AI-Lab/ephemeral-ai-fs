@@ -45,9 +45,18 @@ pub trait ObjectRead {
 }
 
 pub trait ObjectStore {
-    fn small_content_format(&self) -> bool { false }
-    fn compact_namespace(&self) -> bool { false }
-    fn allocate_inode_serial(&mut self, _scope: ObjectId) -> CoreResult<crate::tree::compact::InodeSerial> { Err(CoreError::Unsupported) }
+    fn small_content_format(&self) -> bool {
+        false
+    }
+    fn compact_namespace(&self) -> bool {
+        false
+    }
+    fn allocate_inode_serial(
+        &mut self,
+        _scope: ObjectId,
+    ) -> CoreResult<crate::tree::compact::InodeSerial> {
+        Err(CoreError::Unsupported)
+    }
 
     fn get(&self, id: ObjectId) -> CoreResult<Vec<u8>>;
     fn put(&mut self, canonical: &[u8]) -> CoreResult<ObjectId>;

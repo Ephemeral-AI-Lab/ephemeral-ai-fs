@@ -13,14 +13,20 @@ pub const WHOLE_LIMIT: usize = 2 * 1024 * 1024;
 /// An authenticated physical owner for native chunk slices, not a logical file root.
 pub fn whole_bytes(canonical: &[u8]) -> CoreResult<Option<&[u8]>> {
     let value = crate::decode_bytes_object(canonical)?;
-    if !value.starts_with(WHOLE_MAGIC) { return Ok(None); }
+    if !value.starts_with(WHOLE_MAGIC) {
+        return Ok(None);
+    }
     let raw = &value[8..];
-    if !(SMALL_LIMIT..=WHOLE_LIMIT).contains(&raw.len()) { return Err(CoreError::InvalidRecord("whole-file owner length")); }
+    if !(SMALL_LIMIT..=WHOLE_LIMIT).contains(&raw.len()) {
+        return Err(CoreError::InvalidRecord("whole-file owner length"));
+    }
     Ok(Some(raw))
 }
 
 pub fn encode_whole(bytes: &[u8]) -> CoreResult<Vec<u8>> {
-    if !(SMALL_LIMIT..=WHOLE_LIMIT).contains(&bytes.len()) { return Err(CoreError::InvalidRecord("whole-file owner length")); }
+    if !(SMALL_LIMIT..=WHOLE_LIMIT).contains(&bytes.len()) {
+        return Err(CoreError::InvalidRecord("whole-file owner length"));
+    }
     let mut value = Vec::with_capacity(8 + bytes.len());
     value.extend_from_slice(WHOLE_MAGIC);
     value.extend_from_slice(bytes);

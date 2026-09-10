@@ -36,7 +36,7 @@ impl Role {
             Self::Native => extent_codec::encode_chunk_object(raw)?,
         })
     }
-    pub(super) fn raw<'a>(self, canonical: &'a [u8]) -> Result<&'a [u8]> {
+    pub(super) fn raw(self, canonical: &[u8]) -> Result<&[u8]> {
         match self {
             Self::Small => content::small_bytes(canonical)?.ok_or_else(invalid),
             Self::Whole => content::whole_bytes(canonical)?.ok_or_else(invalid),
@@ -242,7 +242,7 @@ impl StoreDb {
     pub(super) fn whole_record(
         &self,
         location: Location,
-        mut budget: Option<&mut HintReadBudget>,
+        budget: Option<&mut HintReadBudget>,
     ) -> Result<Option<Vec<u8>>> {
         if !self.compact_namespace() || location.record != 0 {
             return Err(invalid());
@@ -256,7 +256,7 @@ impl StoreDb {
         let starts = &mut starts[..4 * count];
         blob.read_at_exact(starts, 16)?;
         let range = range(starts, blob.len(), location.group)?;
-        if budget.as_deref_mut().is_some_and(|budget| {
+        if budget.is_some_and(|budget| {
             !budget.charge(16 + starts.len() + range.len(), location.canonical_length)
         }) {
             return Ok(None);

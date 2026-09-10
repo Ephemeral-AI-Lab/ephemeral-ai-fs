@@ -48,7 +48,11 @@ pub(super) fn state(object: &AuthenticatedCanonicalObject) -> u8 {
     // Whole-file units carry a root hint, not a native-chunk span/cursor.
     // Their hint coverage is complete without granting any CDC correspondence work.
     if object.is_small_content() {
-        return if object.1.prior_ids.iter().any(Option::is_some) { BASE } else { NO_OVERLAP };
+        return if object.1.prior_ids.iter().any(Option::is_some) {
+            BASE
+        } else {
+            NO_OVERLAP
+        };
     }
     if object.1.first_span.is_none() {
         return MISSING_SPAN;
@@ -367,110 +371,118 @@ mod tests {
     #[test]
     fn spill_handoff_admission_and_pack_provenance_conserve_the_file_cohort() {
         for version in [7, 10] {
-
-        let folder = std::env::temp_dir().join(format!(
-            "layerfs-diagnostic-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            let folder = std::env::temp_dir().join(format!(
+                "layerfs-diagnostic-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&folder).unwrap();
+            let path = folder.join("store.sqlite");
+            let db = rusqlite::Connection::open(&path).unwrap();
+            db.execute_batch(if version == 7 {
+                crate::statements::schema::V7
+            } else {
+                crate::statements::schema::V10
+            })
+            .unwrap();
+            drop(db);
+            let store = crate::LayerStackStore::connect(&path).unwrap();
+            let base = ObjectBuffer::build_complete_file(b"abcdefgh".as_slice(), 8).unwrap();
+            let prior_root = base.root_id;
+            admit(&store.db, base.objects);
+            let before = store.db.physical_storage_receipt();
+            let mut target = ObjectBuffer::new(&store).unwrap();
+            target
+                .set_physical_predecessor(
+                    store.snapshot_reader(prior_root),
+                    layerfs_content::file::rope::FileStateRoot(prior_root),
+                    std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                )
+                .unwrap();
+            let mut built = target
+                .build_complete_with_predecessor(b"abcDefgh".as_slice(), 8)
+                .unwrap();
+            built.objects.spill().unwrap();
+            admit(&store.db, built.objects.all_reachable().unwrap());
+            let stats = store.db.physical_storage_receipt().since(before);
+            assert_eq!(
+                (stats.diag_eligible_count, stats.diag_eligible_bytes),
+                (1, if version == 7 { 29 } else { 31 })
+            );
+            assert_eq!(stats.diag_complete_hints_count, 1);
+            assert_eq!(stats.diag_cursor_grants, if version == 7 { 2 } else { 0 });
+            assert_eq!(
+                stats.diag_occurrence_missing_grants,
+                if version == 7 { 2 } else { 0 }
+            );
+            assert_eq!(stats.diag_new_full_count + stats.diag_new_delta_count, 1);
+            assert_eq!((stats.diag_race_count, stats.diag_invalid), (0, 0));
+            assert!(stats.diag_selected_pack_count > 0);
+            let last: i64 = store
+                .db
+                .reader()
                 .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&folder).unwrap();
-        let path = folder.join("store.sqlite");
-        let db = rusqlite::Connection::open(&path).unwrap();
-        db.execute_batch(if version == 7 { crate::statements::schema::V7 } else { crate::statements::schema::V10 }).unwrap();
-        drop(db);
-        let store = crate::LayerStackStore::connect(&path).unwrap();
-        let base = ObjectBuffer::build_complete_file(b"abcdefgh".as_slice(), 8).unwrap();
-        let prior_root = base.root_id;
-        admit(&store.db, base.objects);
-        let before = store.db.physical_storage_receipt();
-        let mut target = ObjectBuffer::new(&store).unwrap();
-        target
-            .set_physical_predecessor(
-                store.snapshot_reader(prior_root),
-                layerfs_content::file::rope::FileStateRoot(prior_root),
-                std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            )
-            .unwrap();
-        let mut built = target
-            .build_complete_with_predecessor(b"abcDefgh".as_slice(), 8)
-            .unwrap();
-        built.objects.spill().unwrap();
-        admit(&store.db, built.objects.all_reachable().unwrap());
-        let stats = store.db.physical_storage_receipt().since(before);
-        assert_eq!(
-            (stats.diag_eligible_count, stats.diag_eligible_bytes),
-            (1, if version == 7 { 29 } else { 31 })
-        );
-        assert_eq!(stats.diag_complete_hints_count, 1);
-        assert_eq!(stats.diag_cursor_grants, if version == 7 { 2 } else { 0 });
-        assert_eq!(stats.diag_occurrence_missing_grants, if version == 7 { 2 } else { 0 });
-        assert_eq!(stats.diag_new_full_count + stats.diag_new_delta_count, 1);
-        assert_eq!((stats.diag_race_count, stats.diag_invalid), (0, 0));
-        assert!(stats.diag_selected_pack_count > 0);
-        let last: i64 = store
-            .db
-            .reader()
-            .unwrap()
-            .query_row("SELECT max(pack_id) FROM object_packs", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(stats.diag_selected_pack_last_id, last as u64);
-        assert_eq!(stats.diag_selected_unlocated_records, 0);
+                .query_row("SELECT max(pack_id) FROM object_packs", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(stats.diag_selected_pack_last_id, last as u64);
+            assert_eq!(stats.diag_selected_unlocated_records, 0);
 
-        let before = store.db.physical_storage_receipt();
-        let mut limited = ObjectBuffer::new(&store).unwrap();
-        limited
-            .set_physical_predecessor(
-                store.snapshot_reader(prior_root),
-                layerfs_content::file::rope::FileStateRoot(prior_root),
-                std::sync::Arc::new(std::sync::atomic::AtomicU64::new(
-                    super::super::CORRESPONDENCE_OPERATION_RESERVATION_BYTES / 131136 * 131136,
-                )),
-            )
-            .unwrap();
-        let bytes = vec![b'z'; 40000];
-        let built = limited
-            .build_complete_with_predecessor(bytes.as_slice(), bytes.len() as u64)
-            .unwrap();
-        admit(&store.db, built.objects);
-        let limited = store.db.physical_storage_receipt().since(before);
-        if version == 7 {
-        assert_eq!(limited.diag_cursor_operation_limit, 1);
-        assert_eq!(limited.diag_cursor_grants, 0);
-        assert_eq!(limited.diag_limit_operation_first_empty_count, 1);
-        assert!(limited.diag_limit_operation_inherited_empty_count > 0);
-        assert_eq!(
-            limited.diag_limited_empty_count,
-            limited.diag_eligible_count
-        );
-        } else {
-            // SmallContent never ran native CDC correspondence; do not charge it
-            // native cursor work or manufacture an inherited-limit receipt.
-            assert_eq!(limited.diag_cursor_operation_limit, 0);
-            assert_eq!(limited.diag_cursor_grants, 0);
-            assert_eq!(limited.diag_limit_operation_first_empty_count, 0);
-            assert_eq!(limited.diag_limit_operation_inherited_empty_count, 0);
-            assert_eq!(limited.diag_limited_empty_count, 0);
-            assert_eq!(limited.diag_eligible_count, 1);
-        }
+            let before = store.db.physical_storage_receipt();
+            let mut limited = ObjectBuffer::new(&store).unwrap();
+            limited
+                .set_physical_predecessor(
+                    store.snapshot_reader(prior_root),
+                    layerfs_content::file::rope::FileStateRoot(prior_root),
+                    std::sync::Arc::new(std::sync::atomic::AtomicU64::new(
+                        super::super::CORRESPONDENCE_OPERATION_RESERVATION_BYTES / 131136 * 131136,
+                    )),
+                )
+                .unwrap();
+            let bytes = vec![b'z'; 40000];
+            let built = limited
+                .build_complete_with_predecessor(bytes.as_slice(), bytes.len() as u64)
+                .unwrap();
+            admit(&store.db, built.objects);
+            let limited = store.db.physical_storage_receipt().since(before);
+            if version == 7 {
+                assert_eq!(limited.diag_cursor_operation_limit, 1);
+                assert_eq!(limited.diag_cursor_grants, 0);
+                assert_eq!(limited.diag_limit_operation_first_empty_count, 1);
+                assert!(limited.diag_limit_operation_inherited_empty_count > 0);
+                assert_eq!(
+                    limited.diag_limited_empty_count,
+                    limited.diag_eligible_count
+                );
+            } else {
+                // SmallContent never ran native CDC correspondence; do not charge it
+                // native cursor work or manufacture an inherited-limit receipt.
+                assert_eq!(limited.diag_cursor_operation_limit, 0);
+                assert_eq!(limited.diag_cursor_grants, 0);
+                assert_eq!(limited.diag_limit_operation_first_empty_count, 0);
+                assert_eq!(limited.diag_limit_operation_inherited_empty_count, 0);
+                assert_eq!(limited.diag_limited_empty_count, 0);
+                assert_eq!(limited.diag_eligible_count, 1);
+            }
 
-        let before = store.store_counts().unwrap();
-        let missing = layerfs_content::ObjectId::for_bytes(b"not an admitted predecessor");
-        let mut broken = ObjectBuffer::new(&store).unwrap();
-        // Format inspection now authenticates the predecessor eagerly. An absent
-        // predecessor must fail before publishing any candidate or Store changes.
-        assert!(broken.set_physical_predecessor(
-            store.snapshot_reader(missing),
-            layerfs_content::file::rope::FileStateRoot(missing),
-            std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
-        ).is_err());
-        assert_eq!(store.store_counts().unwrap(), before);
-        drop(broken);
-        drop(store);
-        std::fs::remove_dir_all(folder).unwrap();
-
+            let before = store.store_counts().unwrap();
+            let missing = layerfs_content::ObjectId::for_bytes(b"not an admitted predecessor");
+            let mut broken = ObjectBuffer::new(&store).unwrap();
+            // Format inspection now authenticates the predecessor eagerly. An absent
+            // predecessor must fail before publishing any candidate or Store changes.
+            assert!(broken
+                .set_physical_predecessor(
+                    store.snapshot_reader(missing),
+                    layerfs_content::file::rope::FileStateRoot(missing),
+                    std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                )
+                .is_err());
+            assert_eq!(store.store_counts().unwrap(), before);
+            drop(broken);
+            drop(store);
+            std::fs::remove_dir_all(folder).unwrap();
         }
     }
 

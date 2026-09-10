@@ -56,11 +56,18 @@ fn directory_and_fallback_import_encode_only_regular_payloads_and_reopen() {
         assert_eq!(native.native_admitted_full_count, 0,
             "this small regular payload uses SmallContent; metadata must not enter native admission");
         let reader = CoreReader(&store);
-        let (stat, _) = filesystem::stat(&reader, layer.root_id,
-            &layerfs_content::CanonicalPath::new("nested/file").unwrap()).unwrap();
+        let (stat, _) = filesystem::stat(
+            &reader,
+            layer.root_id,
+            &layerfs_content::CanonicalPath::new("nested/file").unwrap(),
+        )
+        .unwrap();
         let canonical = crate::ObjectSource::read_object(&store, stat.content_root).unwrap();
         layerfs_content::authenticate_identity(&canonical, stat.content_root).unwrap();
-        assert_eq!(layerfs_content::file::content::small_bytes(&canonical).unwrap(), Some(data.as_slice()));
+        assert_eq!(
+            layerfs_content::file::content::small_bytes(&canonical).unwrap(),
+            Some(data.as_slice())
+        );
         drop(store);
         let reopened = LayerStackStore::connect(&path).unwrap();
         let reader = CoreReader(&reopened);

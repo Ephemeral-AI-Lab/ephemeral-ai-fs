@@ -130,14 +130,18 @@ impl PreparedAdmission {
         objects: Vec<AuthenticatedCanonicalObject>,
         stats: &mut crate::PhysicalStorageReceipt,
     ) -> Result<()> {
-        for object in &objects { db.check_canonical_format(&object.bytes)?; }
+        for object in &objects {
+            db.check_canonical_format(&object.bytes)?;
+        }
         let input_associations =
             objects.capacity() * std::mem::size_of::<AuthenticatedCanonicalObject>();
         let mut search = DeltaSearch {
             input_associations,
             ..Default::default()
         };
-        let (small, objects): (Vec<_>, Vec<_>) = objects.into_iter().partition(|object| object.is_small_content());
+        let (small, objects): (Vec<_>, Vec<_>) = objects
+            .into_iter()
+            .partition(|object| object.is_small_content());
         self.prepare_small(db, small, stats)?;
         // Native and legacy lanes preserve canonical input order independently.
         // Publish the native lane first; no prepared record can become a base.
@@ -148,37 +152,44 @@ impl PreparedAdmission {
         search.input_associations = (native.capacity() + objects.capacity())
             * std::mem::size_of::<AuthenticatedCanonicalObject>();
         self.prepare_native(db, native, &mut search, stats)?;
-        let (metadata, ordinary_objects): (Vec<_>, Vec<_>) = objects.into_iter().partition(|object|
-            db.compact_namespace() && read::metadata_leaf(&object.bytes));
+        let (metadata, ordinary_objects): (Vec<_>, Vec<_>) = objects
+            .into_iter()
+            .partition(|object| db.compact_namespace() && read::metadata_leaf(&object.bytes));
         for objects in [metadata, ordinary_objects] {
-        let metadata_lane = objects.first().is_some_and(|object| read::metadata_leaf(&object.bytes));
-        let pack_limit = if metadata_lane { 128 * 1024 } else { pack::PACK_LIMIT };
-        let mut ordinary = Vec::new();
-        let mut bytes = 0usize;
-        let mut count = 0usize;
-        for object in objects {
-            if object.bytes.len() + 9 > pack::GROUP_LIMIT {
-                self.prepare_ordinary(db, std::mem::take(&mut ordinary), &mut search, stats)?;
-                bytes = 0;
-                count = 0;
-                stats.full_alternative_bytes += (object.bytes.len() + 9) as u64;
-                stats.selected_encoded_bytes += (object.bytes.len() + 9) as u64;
-                self.prepare_singleton(object)?;
-                continue;
+            let metadata_lane = objects
+                .first()
+                .is_some_and(|object| read::metadata_leaf(&object.bytes));
+            let pack_limit = if metadata_lane {
+                128 * 1024
+            } else {
+                pack::PACK_LIMIT
+            };
+            let mut ordinary = Vec::new();
+            let mut bytes = 0usize;
+            let mut count = 0usize;
+            for object in objects {
+                if object.bytes.len() + 9 > pack::GROUP_LIMIT {
+                    self.prepare_ordinary(db, std::mem::take(&mut ordinary), &mut search, stats)?;
+                    bytes = 0;
+                    count = 0;
+                    stats.full_alternative_bytes += (object.bytes.len() + 9) as u64;
+                    stats.selected_encoded_bytes += (object.bytes.len() + 9) as u64;
+                    self.prepare_singleton(object)?;
+                    continue;
+                }
+                // Charge one directory entry per possible group. This conservative
+                // incremental bound avoids growing-prefix group recounts.
+                let next = object.bytes.len() + 5 + 20;
+                if bytes + next + 16 > pack_limit || count == pack::RECORD_COUNT_LIMIT {
+                    self.prepare_ordinary(db, std::mem::take(&mut ordinary), &mut search, stats)?;
+                    bytes = 0;
+                    count = 0;
+                }
+                bytes += next;
+                count += 1;
+                ordinary.push(object);
             }
-            // Charge one directory entry per possible group. This conservative
-            // incremental bound avoids growing-prefix group recounts.
-            let next = object.bytes.len() + 5 + 20;
-            if bytes + next + 16 > pack_limit || count == pack::RECORD_COUNT_LIMIT {
-                self.prepare_ordinary(db, std::mem::take(&mut ordinary), &mut search, stats)?;
-                bytes = 0;
-                count = 0;
-            }
-            bytes += next;
-            count += 1;
-            ordinary.push(object);
-        }
-        self.prepare_ordinary(db, ordinary, &mut search, stats)?;
+            self.prepare_ordinary(db, ordinary, &mut search, stats)?;
         }
         Ok(())
     }
@@ -221,10 +232,26 @@ impl PreparedAdmission {
         Ok(())
     }
 
-    fn prepare_small(&mut self, db: &StoreDb, objects: Vec<AuthenticatedCanonicalObject>, stats: &mut crate::PhysicalStorageReceipt) -> Result<()> {
-        if objects.is_empty() { return Ok(()); }
-        if !db.small_content_format() { return Err(StoreError::Integrity("SmallContent write requires schema 8")); }
-        let predecessors = objects.iter().filter_map(|o| o.1.prior_ids[0]).collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>();
+    fn prepare_small(
+        &mut self,
+        db: &StoreDb,
+        objects: Vec<AuthenticatedCanonicalObject>,
+        stats: &mut crate::PhysicalStorageReceipt,
+    ) -> Result<()> {
+        if objects.is_empty() {
+            return Ok(());
+        }
+        if !db.small_content_format() {
+            return Err(StoreError::Integrity(
+                "SmallContent write requires schema 8",
+            ));
+        }
+        let predecessors = objects
+            .iter()
+            .filter_map(|o| o.1.prior_ids[0])
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
         let locations = db.object_locations(&predecessors)?;
         drop(predecessors);
         let mut groups = Vec::new();
@@ -236,7 +263,8 @@ impl PreparedAdmission {
             if self.physical_backing() + group_bytes * 2 + 1024 * 1024 > 2 * 1024 * 1024 {
                 return Err(StoreError::Integrity("SmallContent physical output budget"));
             }
-            let raw = layerfs_content::file::content::small_bytes(&object.bytes)?.ok_or(StoreError::Integrity("SmallContent role"))?;
+            let raw = layerfs_content::file::content::small_bytes(&object.bytes)?
+                .ok_or(StoreError::Integrity("SmallContent role"))?;
             let mut anchor = if let Some(prior) = object.1.prior_ids[0] {
                 // Decoder and encoder never overlap; carry authenticated closure facts forward.
                 drop(encoder.take());
@@ -247,42 +275,56 @@ impl PreparedAdmission {
                     db.small_anchor(prior, locations.get(&prior).copied())?
                         .map(|(canonical, location)| (canonical, location, 0, 1))
                 }
-            } else { None };
+            } else {
+                None
+            };
             if anchor.is_none() {
                 if let Some(candidates) = &self.session.small_candidates {
                     let signature = super::small_candidates::signature(raw);
-                    let candidate = candidates.lock()
+                    let candidate = candidates
+                        .lock()
                         .map_err(|_| StoreError::Integrity("small candidate cache"))?
                         .find(object.id, &signature);
                     if let Some(id) = candidate {
                         drop(encoder.take());
-                        let location = db.object_locations(&[id])?.remove(&id)
+                        let location = db
+                            .object_locations(&[id])?
+                            .remove(&id)
                             .ok_or(StoreError::Integrity("selected small candidate missing"))?;
-                        let (canonical, location) = db.small_anchor(id, Some(location))?
+                        let (canonical, location) = db
+                            .small_anchor(id, Some(location))?
                             .ok_or(StoreError::Integrity("selected small candidate role"))?;
                         if canonical.id != id {
-                            return Err(StoreError::Integrity("selected small candidate is not FULL"));
+                            return Err(StoreError::Integrity(
+                                "selected small candidate is not FULL",
+                            ));
                         }
                         anchor = Some((canonical, location, 0, 1));
                     }
                 }
             }
-            if encoder.is_none() { encoder = Some(pack::NativeEncoder::new_small()?); }
+            if encoder.is_none() {
+                encoder = Some(pack::NativeEncoder::new_small()?);
+            }
             let started = Instant::now();
             let full = encoder.as_mut().unwrap().compress(raw, None)?;
             stats.encoding_calls += 1;
-            stats.full_alternative_bytes += (full.len() + if db.compact_framing() { 5 } else { 25 }) as u64;
+            stats.full_alternative_bytes +=
+                (full.len() + if db.compact_framing() { 5 } else { 25 }) as u64;
             let mut base = None;
             let mut kind = 0;
             let mut frame = full;
             if let Some((anchor, location, encoded_closure, candidate_kind)) = anchor {
-                let prefix = layerfs_content::file::content::small_bytes(&anchor.bytes)?.ok_or(StoreError::Integrity("SmallContent anchor role"))?;
+                let prefix = layerfs_content::file::content::small_bytes(&anchor.bytes)?
+                    .ok_or(StoreError::Integrity("SmallContent anchor role"))?;
                 stats.usable_bases += 1;
                 stats.candidate_trials += 1;
                 let delta = encoder.as_mut().unwrap().compress(raw, Some(prefix))?;
                 stats.encoding_calls += 1;
                 if delta.len() + 32 < frame.len()
-                    && (candidate_kind != 2 || encoded_closure + delta.len() + 41 <= super::delta::CHAIN_ENCODED_LIMIT) {
+                    && (candidate_kind != 2
+                        || encoded_closure + delta.len() + 41 <= super::delta::CHAIN_ENCODED_LIMIT)
+                {
                     base = Some(anchor.id);
                     kind = candidate_kind;
                     frame = delta;
@@ -292,25 +334,48 @@ impl PreparedAdmission {
             stats.encoding_ns += started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
             let delta = base.is_some();
             let group = super::delta::encode(kind, raw.len(), base, frame)?;
-            if 16 + 16 * (groups.len() + 1) + group_bytes + group.bytes.len() > pack::PACK_LIMIT || groups.len() == pack::GROUP_COUNT_LIMIT {
-                self.packs.push(if db.compact_framing() { pack::assemble_compact_small(&groups)? } else { pack::assemble_small(&groups)? });
+            if 16 + 16 * (groups.len() + 1) + group_bytes + group.bytes.len() > pack::PACK_LIMIT
+                || groups.len() == pack::GROUP_COUNT_LIMIT
+            {
+                self.packs.push(if db.compact_framing() {
+                    pack::assemble_compact_small(&groups)?
+                } else {
+                    pack::assemble_small(&groups)?
+                });
                 groups.clear();
                 group_bytes = 0;
             }
             stats.eligible_targets += 1;
             stats.full_selected += u64::from(!delta);
             stats.delta_selected += u64::from(delta);
-            stats.selected_encoded_bytes += (group.bytes.len() - if db.compact_framing() { 8 } else { 0 }) as u64;
+            stats.selected_encoded_bytes +=
+                (group.bytes.len() - if db.compact_framing() { 8 } else { 0 }) as u64;
             self.objects.push(PreparedObject {
-                id: object.id, length: object.bytes.len(), pack: self.packs.len(), group: groups.len(), record: 0,
-                canonical: 0..0, retained: Some(object.0.bytes), delta,
-                diagnostic_terminal: if delta { diagnostic::DELTA } else { diagnostic::NO_DELTA },
+                id: object.id,
+                length: object.bytes.len(),
+                pack: self.packs.len(),
+                group: groups.len(),
+                record: 0,
+                canonical: 0..0,
+                retained: Some(object.0.bytes),
+                delta,
+                diagnostic_terminal: if delta {
+                    diagnostic::DELTA
+                } else {
+                    diagnostic::NO_DELTA
+                },
             });
             group_bytes += group.bytes.len();
             groups.push(group);
         }
         drop(encoder);
-        if !groups.is_empty() { self.packs.push(if db.compact_framing() { pack::assemble_compact_small(&groups)? } else { pack::assemble_small(&groups)? }); }
+        if !groups.is_empty() {
+            self.packs.push(if db.compact_framing() {
+                pack::assemble_compact_small(&groups)?
+            } else {
+                pack::assemble_small(&groups)?
+            });
+        }
         Ok(())
     }
 
@@ -667,8 +732,23 @@ impl PreparedAdmission {
         if objects.is_empty() {
             return Ok(());
         }
-        let metadata = db.compact_namespace() && objects.iter().all(|object| read::metadata_leaf(&object.bytes));
-        let mut values = if metadata { Some(prepare_values(db, &objects, self.pool_groups.last().map(|group| group.first + group.count as u64), &mut self.pending_values, stats)?) } else { None };
+        let metadata = db.compact_namespace()
+            && objects
+                .iter()
+                .all(|object| read::metadata_leaf(&object.bytes));
+        let mut values = if metadata {
+            Some(prepare_values(
+                db,
+                &objects,
+                self.pool_groups
+                    .last()
+                    .map(|group| group.first + group.count as u64),
+                &mut self.pending_values,
+                stats,
+            )?)
+        } else {
+            None
+        };
         let mut groups = Vec::<Vec<usize>>::new();
         let mut pending = [Vec::new(), Vec::new()];
         let mut sizes = [4usize, 4usize];
@@ -676,7 +756,9 @@ impl PreparedAdmission {
             let content = is_content(&object.bytes)?;
             let role = usize::from(content);
             let target = if content { 32 * 1024 } else { 16 * 1024 };
-            let next = 5 + values.as_ref().map_or(object.bytes.len(), |values| values.physical[index].len());
+            let next = 5 + values
+                .as_ref()
+                .map_or(object.bytes.len(), |values| values.physical[index].len());
             if !pending[role].is_empty() && sizes[role] + next > target {
                 groups.push(std::mem::take(&mut pending[role]));
                 sizes[role] = 4;
@@ -732,7 +814,16 @@ impl PreparedAdmission {
                 let before_instruction = stats.instruction_budget_skips;
                 let before_memory = stats.memory_budget_skips;
                 if optional {
-                    deltas.push(search.candidate(db, object, values.as_ref().map(|values| values.physical[*index].as_slice()), stats)?);
+                    deltas.push(
+                        search.candidate(
+                            db,
+                            object,
+                            values
+                                .as_ref()
+                                .map(|values| values.physical[*index].as_slice()),
+                            stats,
+                        )?,
+                    );
                 } else {
                     stats.memory_budget_skips += 1;
                     stats.budget_skips += 1;
@@ -788,7 +879,13 @@ impl PreparedAdmission {
             }
             let canonical = group
                 .iter()
-                .map(|index| values.as_ref().map_or(objects[*index].bytes.as_slice(), |values| values.physical[*index].as_slice()))
+                .map(|index| {
+                    values
+                        .as_ref()
+                        .map_or(objects[*index].bytes.as_slice(), |values| {
+                            values.physical[*index].as_slice()
+                        })
+                })
                 .collect::<Vec<_>>();
             let (selected, mixed) = pack::encode_group(&canonical, &deltas, stats)?;
             let mut cursor = offset + 4 + 4 * group.len();
@@ -798,7 +895,9 @@ impl PreparedAdmission {
                 let record_length = if delta {
                     deltas[record_number].as_ref().unwrap().len()
                 } else {
-                    1 + values.as_ref().map_or(object.bytes.len(), |values| values.physical[*index].len())
+                    1 + values
+                        .as_ref()
+                        .map_or(object.bytes.len(), |values| values.physical[*index].len())
                 };
                 let end = cursor + record_length;
                 let mut diagnostic_terminal = object.1.diagnostic_grants;
@@ -848,7 +947,9 @@ impl PreparedAdmission {
             )));
         }
         let mut bytes = pack::assemble(&encoded)?;
-        if metadata { bytes[8..12].copy_from_slice(&6u32.to_le_bytes()); }
+        if metadata {
+            bytes[8..12].copy_from_slice(&6u32.to_le_bytes());
+        }
         self.packs.push(bytes);
         Ok(())
     }
@@ -1007,13 +1108,19 @@ impl PreparedAdmission {
         if !self.final_batch {
             if let Some(candidates) = &self.session.small_candidates {
                 for object in winners.iter().flatten().filter(|object| !object.delta) {
-                    if !matches!(&self.packs[object.pack][8..12], [3, 0, 0, 0] | [4, 0, 0, 0]) { continue; }
-                    let canonical = object.retained.as_ref()
+                    if !matches!(&self.packs[object.pack][8..12], [3, 0, 0, 0] | [4, 0, 0, 0]) {
+                        continue;
+                    }
+                    let canonical = object
+                        .retained
+                        .as_ref()
                         .ok_or(StoreError::Integrity("selected small candidate ownership"))?;
                     let raw = layerfs_content::file::content::small_bytes(canonical)?
                         .ok_or(StoreError::Integrity("selected small candidate role"))?;
                     let signature = super::small_candidates::signature(raw);
-                    candidates.lock().map_err(|_| StoreError::Integrity("small candidate cache"))?
+                    candidates
+                        .lock()
+                        .map_err(|_| StoreError::Integrity("small candidate cache"))?
                         .insert(object.id, signature);
                 }
             }
@@ -1090,12 +1197,16 @@ impl PreparedAdmission {
         if self.native_base_max_pack > next {
             return Err(StoreError::Integrity("native base publication chronology"));
         }
-        let keep_pools = winners.iter().enumerate().any(|(index, objects)| !objects.is_empty() && self.packs[index][8..12] == 6u32.to_le_bytes());
+        let keep_pools = winners.iter().enumerate().any(|(index, objects)| {
+            !objects.is_empty() && self.packs[index][8..12] == 6u32.to_le_bytes()
+        });
         let mut pool_packs = BTreeMap::new();
         let mut packs = Vec::new();
         let mut locators = Vec::new();
         for (index, objects) in winners.iter().enumerate() {
-            if objects.is_empty() && !(keep_pools && self.pool_groups.iter().any(|group| group.pack == index)) {
+            if objects.is_empty()
+                && !(keep_pools && self.pool_groups.iter().any(|group| group.pack == index))
+            {
                 continue;
             }
             next = next
@@ -1157,10 +1268,25 @@ impl PreparedAdmission {
             }
             start = end;
         }
-        let mut next_ordinal: i64 = if keep_pools { transaction.query_row(
-            "SELECT COALESCE(MAX(first_ordinal+count),1) FROM metadata_value_groups", [], |row| row.get(0))? } else { 1 };
-        for group in self.pool_groups.iter().filter(|group| keep_pools && pool_packs.contains_key(&group.pack)) {
-            if group.first as i64 != next_ordinal { return Err(StoreError::Integrity("metadata pool publication epoch moved")); }
+        let mut next_ordinal: i64 = if keep_pools {
+            transaction.query_row(
+                "SELECT COALESCE(MAX(first_ordinal+count),1) FROM metadata_value_groups",
+                [],
+                |row| row.get(0),
+            )?
+        } else {
+            1
+        };
+        for group in self
+            .pool_groups
+            .iter()
+            .filter(|group| keep_pools && pool_packs.contains_key(&group.pack))
+        {
+            if group.first as i64 != next_ordinal {
+                return Err(StoreError::Integrity(
+                    "metadata pool publication epoch moved",
+                ));
+            }
             *statement_number += 1;
             crate::schema::fail_transaction_statement(*statement_number)?;
             transaction.execute("INSERT INTO metadata_value_groups(first_ordinal,count,pack_id,group_number,digest) VALUES (?1,?2,?3,?4,?5)",
@@ -1317,11 +1443,22 @@ impl DeltaSearch {
             stats.predecessor_hints += 1;
             let prior = if db.compact_namespace() && read::metadata_leaf(&object.bytes) {
                 match db.metadata_predecessor(id, &mut self.reads)? {
-                    Some(base) if base.pooled && base.depth < read::METADATA_EDGES
-                        && base.canonical_closure + object.bytes.len() <= read::METADATA_CLOSURE => Some(read::HintRecord::Full(super::CanonicalObject { id: base.canonical.id, bytes: base.physical })),
+                    Some(base)
+                        if base.pooled
+                            && base.depth < read::METADATA_EDGES
+                            && base.canonical_closure + object.bytes.len()
+                                <= read::METADATA_CLOSURE =>
+                    {
+                        Some(read::HintRecord::Full(super::CanonicalObject {
+                            id: base.canonical.id,
+                            bytes: base.physical,
+                        }))
+                    }
                     _ => None,
                 }
-            } else { db.read_hint(id, false, &mut self.reads)? };
+            } else {
+                db.read_hint(id, false, &mut self.reads)?
+            };
             let base = match prior {
                 Some(read::HintRecord::Full(base)) => base,
                 Some(read::HintRecord::Anchor(_)) if inode_leaf => continue,

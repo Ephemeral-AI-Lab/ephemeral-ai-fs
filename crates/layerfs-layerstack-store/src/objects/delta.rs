@@ -19,9 +19,15 @@ fn invalid() -> StoreError {
 
 pub(super) fn compact_record_parts(bytes: &[u8]) -> Result<(u8, &[u8])> {
     let kind = *bytes.first().ok_or_else(invalid)?;
-    let start = match kind { 0 => 1, 1 | 2 => 33, _ => return Err(invalid()) };
+    let start = match kind {
+        0 => 1,
+        1 | 2 => 33,
+        _ => return Err(invalid()),
+    };
     let frame = bytes.get(start..).ok_or_else(invalid)?;
-    if !(1..=FRAME_LIMIT).contains(&frame.len()) { return Err(invalid()); }
+    if !(1..=FRAME_LIMIT).contains(&frame.len()) {
+        return Err(invalid());
+    }
     Ok((kind, frame))
 }
 
@@ -29,7 +35,9 @@ pub(super) fn compact_record_parts(bytes: &[u8]) -> Result<(u8, &[u8])> {
 /// is checked again by the frame decoder and full canonical authentication.
 pub(super) fn expand_compact(bytes: &mut Vec<u8>, canonical_length: usize) -> Result<()> {
     let raw = canonical_length.checked_sub(23).ok_or_else(invalid)?;
-    if !(1..content::SMALL_LIMIT).contains(&raw) { return Err(invalid()); }
+    if !(1..content::SMALL_LIMIT).contains(&raw) {
+        return Err(invalid());
+    }
     let (_, frame) = compact_record_parts(bytes)?;
     let frame_length = frame.len() as u32;
     let old_length = bytes.len();
@@ -76,8 +84,10 @@ pub(super) fn encode(
     base: Option<ObjectId>,
     frame: Vec<u8>,
 ) -> Result<pack::EncodedGroup> {
-    if kind > 2 || (kind == 0) != base.is_none()
-        || !(1..content::SMALL_LIMIT).contains(&raw_length) || !(1..=FRAME_LIMIT).contains(&frame.len())
+    if kind > 2
+        || (kind == 0) != base.is_none()
+        || !(1..content::SMALL_LIMIT).contains(&raw_length)
+        || !(1..=FRAME_LIMIT).contains(&frame.len())
     {
         return Err(invalid());
     }

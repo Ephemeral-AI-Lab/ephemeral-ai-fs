@@ -8,7 +8,9 @@ use crate::tree::NamespaceRootV1;
 use crate::{CoreResult, ObjectId};
 
 pub fn empty_root<S: ObjectStore>(store: &mut S, seed: [u8; 32]) -> CoreResult<ObjectId> {
-    let scope = store.compact_namespace().then(|| crate::tree::compact::scope_for_seed(seed));
+    let scope = store
+        .compact_namespace()
+        .then(|| crate::tree::compact::scope_for_seed(seed));
     let root_inode = match scope {
         Some(scope) => store.allocate_inode_serial(scope)?.inode_key(),
         None => InodeId::allocate(seed, 0),
@@ -23,7 +25,10 @@ pub fn empty_root<S: ObjectStore>(store: &mut S, seed: [u8; 32]) -> CoreResult<O
     };
     let table = if scope.is_some() {
         crate::tree::inode::InodeTableRoot(store.put_owned(crate::tree::compact::encode_inode(
-            &crate::tree::compact::InodeNode::Leaf(vec![(crate::tree::compact::InodeSerial::from_inode_key(root_inode)?, record)]),
+            &crate::tree::compact::InodeNode::Leaf(vec![(
+                crate::tree::compact::InodeSerial::from_inode_key(root_inode)?,
+                record,
+            )]),
         )?)?)
     } else {
         let record = store.put(&encode_inode_record(record)?)?;
@@ -31,7 +36,11 @@ pub fn empty_root<S: ObjectStore>(store: &mut S, seed: [u8; 32]) -> CoreResult<O
     };
     store.put(&encode_namespace_root(NamespaceRootV1 {
         scope,
-        profile_id: if scope.is_some() { crate::tree::compact::profile_id() } else { profile_id() },
+        profile_id: if scope.is_some() {
+            crate::tree::compact::profile_id()
+        } else {
+            profile_id()
+        },
         root_directory_inode: root_inode,
         inode_table_root: table.0,
     })?)

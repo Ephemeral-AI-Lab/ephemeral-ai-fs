@@ -198,16 +198,28 @@ fn schema9_small_records_remain_nonpromoting_after_reopen() {
         assert!(!db.compact_framing());
         let canonical = layerfs_content::file::content::encode_small(b"legacy small file").unwrap();
         let mut buffer = ObjectBuffer::empty().unwrap();
-        let id = layerfs_content::object::access::ObjectStore::put(&mut buffer, &canonical).unwrap();
+        let id =
+            layerfs_content::object::access::ObjectStore::put(&mut buffer, &canonical).unwrap();
         let built = buffer.finish(id, 0).unwrap();
         let mut owner = CheckedOutputAdmission::new(&db).unwrap();
         owner.admit(built.objects).unwrap();
         let finished = owner.finish().unwrap();
-        PreparedAdmission::prepare_missing(&db, finished.final_batch).unwrap()
-            .publish(&db, &mut 0, |_, _, _| Ok(())).unwrap();
+        PreparedAdmission::prepare_missing(&db, finished.final_batch)
+            .unwrap()
+            .publish(&db, &mut 0, |_, _, _| Ok(()))
+            .unwrap();
         assert_eq!(db.read_object_row(id).unwrap(), canonical);
-        assert_eq!(pack_versions(&db), BTreeSet::from([3u32.to_le_bytes().to_vec()]));
-        assert_eq!(db.reader().unwrap().pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 9);
+        assert_eq!(
+            pack_versions(&db),
+            BTreeSet::from([3u32.to_le_bytes().to_vec()])
+        );
+        assert_eq!(
+            db.reader()
+                .unwrap()
+                .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            9
+        );
     }
     std::fs::remove_dir_all(directory).unwrap();
 }
@@ -221,23 +233,46 @@ fn scoped_inode_reservations_are_durable_disjoint_and_never_recycled() {
     assert_eq!(db.reserve_inode_serials(scope, 4).unwrap(), 1..5);
     // Abandon the first range, as after a failed construction/publication.
     assert_eq!(db.reserve_inode_serials(scope, 2).unwrap(), 5..7);
-    let workers: Vec<_> = (0..4).map(|_| {
-        let db = db.clone();
-        std::thread::spawn(move || db.reserve_inode_serials(scope, 3).unwrap())
-    }).collect();
-    let mut ranges: Vec<_> = workers.into_iter().map(|worker| worker.join().unwrap()).collect();
+    let workers: Vec<_> = (0..4)
+        .map(|_| {
+            let db = db.clone();
+            std::thread::spawn(move || db.reserve_inode_serials(scope, 3).unwrap())
+        })
+        .collect();
+    let mut ranges: Vec<_> = workers
+        .into_iter()
+        .map(|worker| worker.join().unwrap())
+        .collect();
     ranges.sort_by_key(|range| range.start);
     assert_eq!(ranges, [7..10, 10..13, 13..16, 16..19]);
     assert!(db.reserve_inode_serials(scope, 0).is_err());
     assert!(db.reserve_inode_serials(scope, u64::MAX).is_err());
     let other = ObjectId::for_bytes(b"another origin");
-    assert_eq!(db.reserve_inode_serials(other, i64::MAX as u64).unwrap(), 1..(i64::MAX as u64 + 1));
+    assert_eq!(
+        db.reserve_inode_serials(other, i64::MAX as u64).unwrap(),
+        1..(i64::MAX as u64 + 1)
+    );
     assert!(db.reserve_inode_serials(other, 1).is_err());
     {
         let connection = db.reader().unwrap();
-        assert_eq!(connection.pragma_query_value(None, "journal_mode", |r| r.get::<_, String>(0)).unwrap(), "memory");
-        assert_eq!(connection.pragma_query_value(None, "synchronous", |r| r.get::<_, i64>(0)).unwrap(), 0);
-        assert_eq!(connection.pragma_query_value(None, "locking_mode", |r| r.get::<_, String>(0)).unwrap(), "exclusive");
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "journal_mode", |r| r.get::<_, String>(0))
+                .unwrap(),
+            "memory"
+        );
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "synchronous", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "locking_mode", |r| r.get::<_, String>(0))
+                .unwrap(),
+            "exclusive"
+        );
     }
     assert!(!appended(&path, "-journal").exists());
     drop(db);

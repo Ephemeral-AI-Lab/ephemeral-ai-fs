@@ -98,11 +98,19 @@ struct ReadPage<K, V> {
 trait Format {
     type Key: Ord + Clone;
     type Value: Default + Clone;
-    fn leaf_value<S: crate::object::access::ObjectRead>(_store: &S, _id: ObjectId, value: Self::Value) -> CoreResult<Self::Value> { Ok(value) }
+    fn leaf_value<S: crate::object::access::ObjectRead>(
+        _store: &S,
+        _id: ObjectId,
+        value: Self::Value,
+    ) -> CoreResult<Self::Value> {
+        Ok(value)
+    }
     fn decode(bytes: &[u8]) -> CoreResult<Wire<Self::Key, Self::Value>>;
     fn encode(page: &Page<Self::Key, Self::Value>) -> CoreResult<Vec<u8>>;
     fn width(key: &Self::Key, level: u8) -> usize;
-    fn page_items(_level: u8) -> usize { PAGE_ITEMS }
+    fn page_items(_level: u8) -> usize {
+        PAGE_ITEMS
+    }
     fn heap_bytes(key: &Self::Key) -> usize;
     fn decode_scratch(bytes: usize) -> usize;
     fn filled(size: usize, count: usize, level: u8) -> bool;
@@ -120,6 +128,8 @@ struct Entry<K, V> {
     items: usize,
     pending: Option<Box<Page<K, V>>>,
 }
+type PageSlot<K, V> = Option<Box<Page<K, V>>>;
+
 struct Page<K, V> {
     level: u8,
     entries: Vec<Entry<K, V>>,
@@ -162,7 +172,9 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
         if level > 31 {
             return Err(CoreError::MappingDepthExceeded);
         }
-        let lease = self.budget.reserve(std::mem::size_of::<Page<F::Key, F::Value>>())?;
+        let lease = self
+            .budget
+            .reserve(std::mem::size_of::<Page<F::Key, F::Value>>())?;
         Ok(Page {
             level,
             entries: Vec::new(),
@@ -177,8 +189,9 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
             if bytes.len() > 8192 {
                 return Err(CoreError::ObjectLimitExceeded);
             }
-            let lease = budget
-                .reserve(F::decode_scratch(bytes.len()) + std::mem::size_of::<Wire<F::Key, F::Value>>())?;
+            let lease = budget.reserve(
+                F::decode_scratch(bytes.len()) + std::mem::size_of::<Wire<F::Key, F::Value>>(),
+            )?;
             Ok((F::decode(bytes)?, lease))
         })?;
         if (!root && !F::filled(wire.size, wire.entries.len(), wire.level))
@@ -201,7 +214,12 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
         let bytes = page.entries.iter().try_fold(0u64, |n, e| {
             n.checked_add(e.bytes).ok_or(CoreError::LengthOverflow)
         })?;
-        let size = 44 + page.entries.iter().map(|e| F::width(&e.key, page.level)).sum::<usize>();
+        let size = 44
+            + page
+                .entries
+                .iter()
+                .map(|e| F::width(&e.key, page.level))
+                .sum::<usize>();
         Ok(Node {
             max: page.entries.last().map(|e| e.key.clone()),
             id: page.origin,
@@ -294,7 +312,11 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
         let read = self.read(id, true)?;
         self.page_from_wire(id, read)
     }
-    fn page_from_wire(&mut self, id: ObjectId, read: ReadPage<F::Key, F::Value>) -> CoreResult<Page<F::Key, F::Value>> {
+    fn page_from_wire(
+        &mut self,
+        id: ObjectId,
+        read: ReadPage<F::Key, F::Value>,
+    ) -> CoreResult<Page<F::Key, F::Value>> {
         let mut page = self.page(read.wire.level)?;
         page.origin = Some(id);
         for (key, id, value) in read.wire.entries {
@@ -341,7 +363,12 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
         }
         Ok(page)
     }
-    fn check_child(&self, level: u8, max: &F::Key, child: &Wire<F::Key, F::Value>) -> CoreResult<()> {
+    fn check_child(
+        &self,
+        level: u8,
+        max: &F::Key,
+        child: &Wire<F::Key, F::Value>,
+    ) -> CoreResult<()> {
         if child.level.checked_add(1) != Some(level)
             || child.entries.last().map(|e| &e.0) != Some(max)
         {
@@ -349,7 +376,11 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
         }
         Ok(())
     }
-    fn append_entry(&self, page: &mut Page<F::Key, F::Value>, entry: Entry<F::Key, F::Value>) -> CoreResult<()> {
+    fn append_entry(
+        &self,
+        page: &mut Page<F::Key, F::Value>,
+        entry: Entry<F::Key, F::Value>,
+    ) -> CoreResult<()> {
         if page.entries.len() == page.entries.capacity() {
             let before = page.entries.capacity();
             let capacity = (before.max(1) * 2).min(F::page_items(page.level));
@@ -380,13 +411,22 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
             self.persist_entry(page.entries.last_mut().unwrap(), page.level)?;
         }
         self.append_entry(page, entry)?;
-        let size = 44 + page.entries.iter().map(|e| F::width(&e.key, page.level)).sum::<usize>();
+        let size = 44
+            + page
+                .entries
+                .iter()
+                .map(|e| F::width(&e.key, page.level))
+                .sum::<usize>();
         if F::fits(size, page.entries.len(), page.level) {
             return Ok(None);
         }
         let mut right = self.page(page.level)?;
-        let split =
-            super::directory::nearest_half(page.entries.iter().map(|e| F::width(&e.key, page.level)).collect());
+        let split = super::directory::nearest_half(
+            page.entries
+                .iter()
+                .map(|e| F::width(&e.key, page.level))
+                .collect(),
+        );
         for entry in page.entries.drain(split..) {
             self.append_entry(&mut right, entry)?;
         }
@@ -477,12 +517,20 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
         output: &mut dyn FnMut(&mut Self, Node<F::Key, F::Value>) -> CoreResult<()>,
     ) -> CoreResult<()> {
         if !deltas.in_range(bound) {
-            return output(self, Node::existing(id.ok_or(CoreError::MissingObject)?, &read.wire));
+            return output(
+                self,
+                Node::existing(id.ok_or(CoreError::MissingObject)?, &read.wire),
+            );
         }
         let mut page = self.page(read.wire.level)?;
         page.origin = id;
         if page.level == 0 {
-            let mut old = read.wire.entries.into_iter().map(|(key, id, value)| (key, (id, value))).peekable();
+            let mut old = read
+                .wire
+                .entries
+                .into_iter()
+                .map(|(key, id, value)| (key, (id, value)))
+                .peekable();
             while old.peek().is_some() || deltas.in_range(bound) {
                 let delta_first = deltas.in_range(bound)
                     && old
@@ -496,7 +544,10 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
                     } else {
                         None
                     };
-                    (self.changes)(previous.map(|value| value.0), value.as_ref().map(|value| value.0))?;
+                    (self.changes)(
+                        previous.map(|value| value.0),
+                        value.as_ref().map(|value| value.0),
+                    )?;
                     (key, value)
                 } else {
                     let (key, value) = old.next().unwrap();
@@ -539,15 +590,21 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
                 } else {
                     Some(&key)
                 };
-                self.edit(Some(child_id), child, child_bound, deltas, &mut |engine, node| {
-                    engine.sibling(&mut pending, node, &mut |engine, node| {
-                        let entry = engine.entry(node)?;
-                        if let Some(node) = engine.push(&mut page, entry)? {
-                            output(engine, node)?;
-                        }
-                        Ok(())
-                    })
-                })?;
+                self.edit(
+                    Some(child_id),
+                    child,
+                    child_bound,
+                    deltas,
+                    &mut |engine, node| {
+                        engine.sibling(&mut pending, node, &mut |engine, node| {
+                            let entry = engine.entry(node)?;
+                            if let Some(node) = engine.push(&mut page, entry)? {
+                                output(engine, node)?;
+                            }
+                            Ok(())
+                        })
+                    },
+                )?;
             }
             if old_count != read.wire.count || old_bytes != read.wire.bytes {
                 return Err(CoreError::InvalidRecord("batched tree subtree summary"));
@@ -626,7 +683,10 @@ fn apply_budgeted_root<S: ObjectStore, F: Format>(
 ) -> CoreResult<(ObjectId, TreeBatchCounters)> {
     let mut deltas = Deltas::new(source)?;
     if deltas.next.is_none() {
-        return Ok((root.ok_or(CoreError::InvalidRecord("empty initial tree"))?, TreeBatchCounters::default()));
+        return Ok((
+            root.ok_or(CoreError::InvalidRecord("empty initial tree"))?,
+            TreeBatchCounters::default(),
+        ));
     }
     let mut engine = Engine::<S, F> {
         store,
@@ -640,8 +700,18 @@ fn apply_budgeted_root<S: ObjectStore, F: Format>(
     };
     let read = match root {
         Some(root) => engine.read(root, true)?,
-        None => ReadPage { wire: Wire { level: 0, count: 0, bytes: 0, entries: Vec::new(), size: 44 },
-            _lease: engine.budget.reserve(std::mem::size_of::<Wire<F::Key, F::Value>>())? },
+        None => ReadPage {
+            wire: Wire {
+                level: 0,
+                count: 0,
+                bytes: 0,
+                entries: Vec::new(),
+                size: 44,
+            },
+            _lease: engine
+                .budget
+                .reserve(std::mem::size_of::<Wire<F::Key, F::Value>>())?,
+        },
     };
     if expected.is_some_and(|value| value != (read.wire.level, read.wire.count)) {
         return Err(CoreError::InvalidRecord("batched tree root summary"));
@@ -650,8 +720,8 @@ fn apply_budgeted_root<S: ObjectStore, F: Format>(
     let mut first = None;
     let _frontier = engine
         .budget
-        .reserve(32 * std::mem::size_of::<Option<Box<Page<F::Key, F::Value>>>>())?;
-    let mut levels: Vec<Option<Box<Page<F::Key, F::Value>>>> = (0..32).map(|_| None).collect();
+        .reserve(32 * std::mem::size_of::<PageSlot<F::Key, F::Value>>())?;
+    let mut levels: Vec<PageSlot<F::Key, F::Value>> = (0..32).map(|_| None).collect();
     engine.edit(root, read, None, &mut deltas, &mut |engine, node| {
         if first.is_none() && levels.iter().all(Option::is_none) {
             first = Some(node);
@@ -699,7 +769,7 @@ fn apply_budgeted_root<S: ObjectStore, F: Format>(
 }
 fn append_root<S: ObjectStore, F: Format>(
     engine: &mut Engine<'_, S, F>,
-    levels: &mut [Option<Box<Page<F::Key, F::Value>>>],
+    levels: &mut [PageSlot<F::Key, F::Value>],
     mut node: Node<F::Key, F::Value>,
 ) -> CoreResult<()> {
     loop {
@@ -727,7 +797,7 @@ impl Format for Directory {
     fn decode(bytes: &[u8]) -> CoreResult<Wire<Self::Key, Self::Value>> {
         let (level, count, logical, entries) = match decode_directory_node(bytes)? {
             DirectoryNodeV1::Leaf {
-            compact: _,
+                compact: _,
                 subtree_encoded_bytes,
                 entries,
             } => (
@@ -740,7 +810,7 @@ impl Format for Directory {
                     .collect(),
             ),
             DirectoryNodeV1::Branch {
-            compact: _,
+                compact: _,
                 level,
                 subtree_entry_count,
                 subtree_encoded_bytes,
@@ -761,7 +831,7 @@ impl Format for Directory {
         })?;
         let node = if page.level == 0 {
             DirectoryNodeV1::Leaf {
-            compact: false,
+                compact: false,
                 subtree_encoded_bytes: bytes,
                 entries: page
                     .entries
@@ -771,7 +841,7 @@ impl Format for Directory {
             }
         } else {
             DirectoryNodeV1::Branch {
-            compact: false,
+                compact: false,
                 level: page.level,
                 subtree_entry_count: page.entries.iter().try_fold(0u64, |n, e| {
                     n.checked_add(e.count).ok_or(CoreError::LengthOverflow)
@@ -861,60 +931,134 @@ struct CompactInodes;
 impl Format for CompactInodes {
     type Key = super::compact::InodeSerial;
     type Value = Option<super::inode::InodeRecordV1>;
-    fn leaf_value<S: crate::object::access::ObjectRead>(store: &S, id: ObjectId, value: Self::Value) -> CoreResult<Self::Value> {
-        match value { Some(value) => Ok(Some(value)), None => store.with_authenticated_canonical(id, super::inode::codec::decode_inode_record).map(Some) }
+    fn leaf_value<S: crate::object::access::ObjectRead>(
+        store: &S,
+        id: ObjectId,
+        value: Self::Value,
+    ) -> CoreResult<Self::Value> {
+        match value {
+            Some(value) => Ok(Some(value)),
+            None => store
+                .with_authenticated_canonical(id, super::inode::codec::decode_inode_record)
+                .map(Some),
+        }
     }
     fn decode(bytes: &[u8]) -> CoreResult<Wire<Self::Key, Self::Value>> {
         use super::compact::InodeNode;
         let (level, count, entries) = match super::compact::decode_inode(bytes)? {
-            InodeNode::Leaf(rows) => (0, rows.len() as u64, rows.into_iter().map(|(key, record)| {
-                Ok((key, inode_value_id(record)?, Some(record)))
-            }).collect::<CoreResult<Vec<_>>>()?),
-            InodeNode::Branch { level, subtree_count, children } =>
-                (level, subtree_count, children.into_iter().map(|(key, id)| (key, id, None)).collect()),
+            InodeNode::Leaf(rows) => (
+                0,
+                rows.len() as u64,
+                rows.into_iter()
+                    .map(|(key, record)| Ok((key, inode_value_id(record)?, Some(record))))
+                    .collect::<CoreResult<Vec<_>>>()?,
+            ),
+            InodeNode::Branch {
+                level,
+                subtree_count,
+                children,
+            } => (
+                level,
+                subtree_count,
+                children
+                    .into_iter()
+                    .map(|(key, id)| (key, id, None))
+                    .collect(),
+            ),
         };
-        Ok(Wire { level, count, bytes: count.checked_mul(81).ok_or(CoreError::LengthOverflow)?, entries, size: bytes.len() })
+        Ok(Wire {
+            level,
+            count,
+            bytes: count.checked_mul(81).ok_or(CoreError::LengthOverflow)?,
+            entries,
+            size: bytes.len(),
+        })
     }
     fn encode(page: &Page<Self::Key, Self::Value>) -> CoreResult<Vec<u8>> {
         use super::compact::InodeNode;
         let node = if page.level == 0 {
-            InodeNode::Leaf(page.entries.iter().map(|entry| {
-                Ok((entry.key, entry.value.ok_or(CoreError::WrongLogicalRole)?))
-            }).collect::<CoreResult<_>>()?)
+            InodeNode::Leaf(
+                page.entries
+                    .iter()
+                    .map(|entry| Ok((entry.key, entry.value.ok_or(CoreError::WrongLogicalRole)?)))
+                    .collect::<CoreResult<_>>()?,
+            )
         } else {
             InodeNode::Branch {
                 level: page.level,
-                subtree_count: page.entries.iter().try_fold(0u64, |sum, entry| sum.checked_add(entry.count).ok_or(CoreError::LengthOverflow))?,
-                children: page.entries.iter().map(|entry| (entry.key, entry.id)).collect(),
+                subtree_count: page.entries.iter().try_fold(0u64, |sum, entry| {
+                    sum.checked_add(entry.count)
+                        .ok_or(CoreError::LengthOverflow)
+                })?,
+                children: page
+                    .entries
+                    .iter()
+                    .map(|entry| (entry.key, entry.id))
+                    .collect(),
             }
         };
         super::compact::encode_inode(&node)
     }
-    fn width(_: &Self::Key, level: u8) -> usize { if level == 0 { 81 } else { 40 } }
-    fn heap_bytes(_: &Self::Key) -> usize { 0 }
-    fn decode_scratch(bytes: usize) -> usize { bytes * 4 + 8192 }
-    fn filled(_: usize, count: usize, level: u8) -> bool { count >= if level == 0 { 50 } else { 64 } }
-    fn fits(_: usize, count: usize, level: u8) -> bool { count <= if level == 0 { 100 } else { 127 } }
-    fn empty_allowed() -> bool { false }
+    fn width(_: &Self::Key, level: u8) -> usize {
+        if level == 0 {
+            81
+        } else {
+            40
+        }
+    }
+    fn heap_bytes(_: &Self::Key) -> usize {
+        0
+    }
+    fn decode_scratch(bytes: usize) -> usize {
+        bytes * 4 + 8192
+    }
+    fn filled(_: usize, count: usize, level: u8) -> bool {
+        count >= if level == 0 { 50 } else { 64 }
+    }
+    fn fits(_: usize, count: usize, level: u8) -> bool {
+        count <= if level == 0 { 100 } else { 127 }
+    }
+    fn empty_allowed() -> bool {
+        false
+    }
 }
 
 // This comparison identity is not a separately admitted inode object. The
 // canonical leaf authenticates the actual inline value and its references.
 fn inode_value_id(record: super::inode::InodeRecordV1) -> CoreResult<ObjectId> {
-    Ok(ObjectId::for_bytes(&super::inode::codec::encode_inode_record(record)?))
+    Ok(ObjectId::for_bytes(
+        &super::inode::codec::encode_inode_record(record)?,
+    ))
 }
 
 pub fn compact_inode_table_apply_sorted<S: ObjectStore>(
     store: &mut S,
     root: super::inode::InodeTableRoot,
-    deltas: impl Iterator<Item = CoreResult<(super::compact::InodeSerial, Option<super::inode::InodeRecordV1>)>>,
+    deltas: impl Iterator<
+        Item = CoreResult<(
+            super::compact::InodeSerial,
+            Option<super::inode::InodeRecordV1>,
+        )>,
+    >,
     scratch_limit: usize,
 ) -> CoreResult<(super::inode::InodeTableRoot, TreeBatchCounters)> {
     let deltas = deltas.map(|row| {
         let (key, record) = row?;
-        Ok((key, record.map(|record| Ok((inode_value_id(record)?, Some(record)))).transpose()?))
+        Ok((
+            key,
+            record
+                .map(|record| Ok((inode_value_id(record)?, Some(record))))
+                .transpose()?,
+        ))
     });
-    let (root, counters) = apply_budgeted::<S, CompactInodes>(store, root.0, deltas, scratch_limit, None, &mut |_, _| Ok(()))?;
+    let (root, counters) = apply_budgeted::<S, CompactInodes>(
+        store,
+        root.0,
+        deltas,
+        scratch_limit,
+        None,
+        &mut |_, _| Ok(()),
+    )?;
     Ok((super::inode::InodeTableRoot(root), counters))
 }
 
@@ -925,8 +1069,18 @@ pub fn compact_inode_table_from_sorted<S: ObjectStore>(
     rows: impl Iterator<Item = CoreResult<(super::compact::InodeSerial, super::inode::InodeRecordV1)>>,
     scratch_limit: usize,
 ) -> CoreResult<(super::inode::InodeTableRoot, TreeBatchCounters)> {
-    let rows = rows.map(|row| { let (key, record) = row?; Ok((key, Some((inode_value_id(record)?, Some(record))))) });
-    let (root, counters) = apply_budgeted_root::<S, CompactInodes>(store, None, rows, scratch_limit, None, &mut |_, _| Ok(()))?;
+    let rows = rows.map(|row| {
+        let (key, record) = row?;
+        Ok((key, Some((inode_value_id(record)?, Some(record)))))
+    });
+    let (root, counters) = apply_budgeted_root::<S, CompactInodes>(
+        store,
+        None,
+        rows,
+        scratch_limit,
+        None,
+        &mut |_, _| Ok(()),
+    )?;
     Ok((super::inode::InodeTableRoot(root), counters))
 }
 
@@ -938,35 +1092,103 @@ impl Format for CompactDirectory {
         use super::compact::DirectoryNode;
         let (level, count, logical, entries) = match super::compact::decode_directory(bytes)? {
             DirectoryNode::Leaf(rows) => {
-                let logical = rows.iter().try_fold(0u64, |sum, row| sum.checked_add(10 + row.0.as_bytes().len() as u64).ok_or(CoreError::LengthOverflow))?;
-                (0, rows.len() as u64, logical, rows.into_iter().map(|(name, serial)| (name, ObjectId::from_digest(serial.inode_key().0), ())).collect())
+                let logical = rows.iter().try_fold(0u64, |sum, row| {
+                    sum.checked_add(10 + row.0.as_bytes().len() as u64)
+                        .ok_or(CoreError::LengthOverflow)
+                })?;
+                (
+                    0,
+                    rows.len() as u64,
+                    logical,
+                    rows.into_iter()
+                        .map(|(name, serial)| {
+                            (name, ObjectId::from_digest(serial.inode_key().0), ())
+                        })
+                        .collect(),
+                )
             }
-            DirectoryNode::Branch { level, subtree_count, subtree_bytes, children } =>
-                (level, subtree_count, subtree_bytes, children.into_iter().map(|(name, id)| (name, id, ())).collect()),
+            DirectoryNode::Branch {
+                level,
+                subtree_count,
+                subtree_bytes,
+                children,
+            } => (
+                level,
+                subtree_count,
+                subtree_bytes,
+                children
+                    .into_iter()
+                    .map(|(name, id)| (name, id, ()))
+                    .collect(),
+            ),
         };
-        Ok(Wire { level, count, bytes: logical, entries, size: bytes.len() })
+        Ok(Wire {
+            level,
+            count,
+            bytes: logical,
+            entries,
+            size: bytes.len(),
+        })
     }
     fn encode(page: &Page<Self::Key, Self::Value>) -> CoreResult<Vec<u8>> {
         use super::compact::{DirectoryNode, InodeSerial};
         let node = if page.level == 0 {
-            DirectoryNode::Leaf(page.entries.iter().map(|entry| Ok((entry.key.clone(), InodeSerial::from_inode_key(InodeId(entry.id.to_bytes()))?))).collect::<CoreResult<_>>()?)
+            DirectoryNode::Leaf(
+                page.entries
+                    .iter()
+                    .map(|entry| {
+                        Ok((
+                            entry.key.clone(),
+                            InodeSerial::from_inode_key(InodeId(entry.id.to_bytes()))?,
+                        ))
+                    })
+                    .collect::<CoreResult<_>>()?,
+            )
         } else {
             DirectoryNode::Branch {
                 level: page.level,
-                subtree_count: page.entries.iter().try_fold(0u64, |sum, entry| sum.checked_add(entry.count).ok_or(CoreError::LengthOverflow))?,
-                subtree_bytes: page.entries.iter().try_fold(0u64, |sum, entry| sum.checked_add(entry.bytes).ok_or(CoreError::LengthOverflow))?,
-                children: page.entries.iter().map(|entry| (entry.key.clone(), entry.id)).collect(),
+                subtree_count: page.entries.iter().try_fold(0u64, |sum, entry| {
+                    sum.checked_add(entry.count)
+                        .ok_or(CoreError::LengthOverflow)
+                })?,
+                subtree_bytes: page.entries.iter().try_fold(0u64, |sum, entry| {
+                    sum.checked_add(entry.bytes)
+                        .ok_or(CoreError::LengthOverflow)
+                })?,
+                children: page
+                    .entries
+                    .iter()
+                    .map(|entry| (entry.key.clone(), entry.id))
+                    .collect(),
             }
         };
         super::compact::encode_directory(&node)
     }
-    fn width(key: &Self::Key, level: u8) -> usize { (if level == 0 { 10 } else { 34 }) + key.as_bytes().len() }
-    fn heap_bytes(key: &Self::Key) -> usize { key.owned_capacity_bytes() }
-    fn page_items(level: u8) -> usize { if level == 0 { (8192 - 44) / 11 + 1 } else { PAGE_ITEMS } }
-    fn decode_scratch(bytes: usize) -> usize { bytes * 5 + bytes.saturating_sub(44) / 11 * std::mem::size_of::<(CanonicalName, ObjectId)>() }
-    fn filled(size: usize, _: usize, _: u8) -> bool { size * 5 >= 8192 * 2 }
-    fn fits(size: usize, _: usize, _: u8) -> bool { size <= 8192 }
-    fn empty_allowed() -> bool { true }
+    fn width(key: &Self::Key, level: u8) -> usize {
+        (if level == 0 { 10 } else { 34 }) + key.as_bytes().len()
+    }
+    fn heap_bytes(key: &Self::Key) -> usize {
+        key.owned_capacity_bytes()
+    }
+    fn page_items(level: u8) -> usize {
+        if level == 0 {
+            (8192 - 44) / 11 + 1
+        } else {
+            PAGE_ITEMS
+        }
+    }
+    fn decode_scratch(bytes: usize) -> usize {
+        bytes * 5 + bytes.saturating_sub(44) / 11 * std::mem::size_of::<(CanonicalName, ObjectId)>()
+    }
+    fn filled(size: usize, _: usize, _: u8) -> bool {
+        size * 5 >= 8192 * 2
+    }
+    fn fits(size: usize, _: usize, _: u8) -> bool {
+        size <= 8192
+    }
+    fn empty_allowed() -> bool {
+        true
+    }
 }
 
 pub fn compact_directory_apply_sorted<S: ObjectStore>(
@@ -976,10 +1198,27 @@ pub fn compact_directory_apply_sorted<S: ObjectStore>(
     scratch_limit: usize,
     mut changes: impl FnMut(Option<InodeId>, Option<InodeId>) -> CoreResult<()>,
 ) -> CoreResult<(super::directory::DirectoryStateRoot, TreeBatchCounters)> {
-    let deltas = deltas.map(|row| row.map(|(key, serial)| (key, serial.map(|serial| (ObjectId::from_digest(serial.inode_key().0), ())))));
-    let (root, counters) = apply_budgeted::<S, CompactDirectory>(store, root.0, deltas, scratch_limit, None, &mut |before, after| {
-        changes(before.map(|id| InodeId(id.to_bytes())), after.map(|id| InodeId(id.to_bytes())))
-    })?;
+    let deltas = deltas.map(|row| {
+        row.map(|(key, serial)| {
+            (
+                key,
+                serial.map(|serial| (ObjectId::from_digest(serial.inode_key().0), ())),
+            )
+        })
+    });
+    let (root, counters) = apply_budgeted::<S, CompactDirectory>(
+        store,
+        root.0,
+        deltas,
+        scratch_limit,
+        None,
+        &mut |before, after| {
+            changes(
+                before.map(|id| InodeId(id.to_bytes())),
+                after.map(|id| InodeId(id.to_bytes())),
+            )
+        },
+    )?;
     Ok((super::directory::DirectoryStateRoot(root), counters))
 }
 
@@ -1015,9 +1254,14 @@ pub fn directory_apply_sorted_observed<S: ObjectStore>(
     if state.profile_id == super::compact::profile_id() {
         let deltas = deltas.map(|row| {
             let (name, key) = row?;
-            Ok((name, key.map(super::compact::InodeSerial::from_inode_key).transpose()?))
+            Ok((
+                name,
+                key.map(super::compact::InodeSerial::from_inode_key)
+                    .transpose()?,
+            ))
         });
-        let (root, mut counters) = compact_directory_apply_sorted(store, root, deltas, scratch_limit, changes)?;
+        let (root, mut counters) =
+            compact_directory_apply_sorted(store, root, deltas, scratch_limit, changes)?;
         counters.nodes_read += 1;
         return Ok((root, counters));
     }
@@ -1064,20 +1308,36 @@ pub fn inode_table_apply_sorted_with_budget<S: ObjectStore>(
     scratch_limit: usize,
 ) -> CoreResult<(super::inode::InodeTableRoot, TreeBatchCounters)> {
     let mut deltas = deltas.peekable();
-    if deltas.peek().is_none() { return Ok((root, TreeBatchCounters::default())); }
+    if deltas.peek().is_none() {
+        return Ok((root, TreeBatchCounters::default()));
+    }
     if super::compact::is_inode_table(store, root.0)? {
         let deltas = deltas.map(|row| {
             let (key, id) = row?;
-            Ok((super::compact::InodeSerial::from_inode_key(key)?, id.map(|id| (id, None))))
+            Ok((
+                super::compact::InodeSerial::from_inode_key(key)?,
+                id.map(|id| (id, None)),
+            ))
         });
-        let (root, mut counters) = apply_budgeted::<S, CompactInodes>(store, root.0, deltas, scratch_limit, None, &mut |_, _| Ok(()))?;
+        let (root, mut counters) = apply_budgeted::<S, CompactInodes>(
+            store,
+            root.0,
+            deltas,
+            scratch_limit,
+            None,
+            &mut |_, _| Ok(()),
+        )?;
         counters.nodes_read += 1;
         return Ok((super::inode::InodeTableRoot(root), counters));
     }
-    let (root, mut counters) =
-        apply_budgeted::<S, Inodes>(store, root.0, deltas.map(|row| row.map(|(key, id)| (key, id.map(|id| (id, ()))))), scratch_limit, None, &mut |_, _| {
-            Ok(())
-        })?;
+    let (root, mut counters) = apply_budgeted::<S, Inodes>(
+        store,
+        root.0,
+        deltas.map(|row| row.map(|(key, id)| (key, id.map(|id| (id, ()))))),
+        scratch_limit,
+        None,
+        &mut |_, _| Ok(()),
+    )?;
     counters.nodes_read += 1;
     Ok((super::inode::InodeTableRoot(root), counters))
 }
@@ -1094,12 +1354,23 @@ mod tests {
 
     #[test]
     fn initial_compact_table_streams_only_final_reachable_nodes() {
-        use crate::tree::{compact::InodeSerial, inode::{InodeKind, InodeRecordV1}};
+        use crate::tree::{
+            compact::InodeSerial,
+            inode::{InodeKind, InodeRecordV1},
+        };
         let mut store = MemoryStore::default();
-        let record = InodeRecordV1 { kind: InodeKind::RegularFile, namespace_ref_count: 1,
-            content_root: value(1), metadata_root: value(2) };
-        let (root, counters) = compact_inode_table_from_sorted(&mut store,
-            (1..=13000).map(|n| Ok((InodeSerial::new(n).unwrap(), record))), SORTED_TREE_UPDATE_SCRATCH_BYTES).unwrap();
+        let record = InodeRecordV1 {
+            kind: InodeKind::RegularFile,
+            namespace_ref_count: 1,
+            content_root: value(1),
+            metadata_root: value(2),
+        };
+        let (root, counters) = compact_inode_table_from_sorted(
+            &mut store,
+            (1..=13000).map(|n| Ok((InodeSerial::new(n).unwrap(), record))),
+            SORTED_TREE_UPDATE_SCRATCH_BYTES,
+        )
+        .unwrap();
         assert_eq!(counters.nodes_read, 0);
         assert!(counters.peak_scratch_bytes <= SORTED_TREE_UPDATE_SCRATCH_BYTES);
         let mut reached = std::collections::BTreeSet::new();
@@ -1110,70 +1381,183 @@ mod tests {
     #[test]
     fn compact_inline_inode_updates_reuse_the_bounded_tree_engine() {
         use crate::tree::compact::{self, InodeNode, InodeSerial};
-        use crate::tree::inode::{inode_record_lookup_many, InodeKind, InodeRecordV1, InodeTableCounters};
+        use crate::tree::inode::{
+            inode_record_lookup_many, InodeKind, InodeRecordV1, InodeTableCounters,
+        };
         let mut store = MemoryStore::default();
-        let record = InodeRecordV1 { kind: InodeKind::RegularFile, namespace_ref_count: 1,
-            content_root: ObjectId::for_bytes(b"content"), metadata_root: ObjectId::for_bytes(b"metadata") };
+        let record = InodeRecordV1 {
+            kind: InodeKind::RegularFile,
+            namespace_ref_count: 1,
+            content_root: ObjectId::for_bytes(b"content"),
+            metadata_root: ObjectId::for_bytes(b"metadata"),
+        };
         let serial = |n| InodeSerial::new(n).unwrap();
-        let first = store.put(&compact::encode_inode(&InodeNode::Leaf(vec![(serial(1), record)])).unwrap()).unwrap();
-        let (initial, counters) = compact_inode_table_apply_sorted(&mut store, InodeTableRoot(first),
-            (2..=13000).map(|n| Ok((serial(n), Some(record)))), SORTED_TREE_UPDATE_SCRATCH_BYTES).unwrap();
+        let first = store
+            .put(&compact::encode_inode(&InodeNode::Leaf(vec![(serial(1), record)])).unwrap())
+            .unwrap();
+        let (initial, counters) = compact_inode_table_apply_sorted(
+            &mut store,
+            InodeTableRoot(first),
+            (2..=13000).map(|n| Ok((serial(n), Some(record)))),
+            SORTED_TREE_UPDATE_SCRATCH_BYTES,
+        )
+        .unwrap();
         assert!(counters.peak_scratch_bytes <= SORTED_TREE_UPDATE_SCRATCH_BYTES);
-        assert!(matches!(compact::decode_inode(&store.get(initial.0).unwrap()).unwrap(), InodeNode::Branch { level: 2, .. }));
-        let changed = InodeRecordV1 { namespace_ref_count: 2, ..record };
-        let (updated, _) = compact_inode_table_apply_sorted(&mut store, initial,
-            (1..=13000).step_by(3).map(|n| Ok((serial(n), if n % 2 == 0 { None } else { Some(changed) }))), SORTED_TREE_UPDATE_SCRATCH_BYTES).unwrap();
+        assert!(matches!(
+            compact::decode_inode(&store.get(initial.0).unwrap()).unwrap(),
+            InodeNode::Branch { level: 2, .. }
+        ));
+        let changed = InodeRecordV1 {
+            namespace_ref_count: 2,
+            ..record
+        };
+        let (updated, _) = compact_inode_table_apply_sorted(
+            &mut store,
+            initial,
+            (1..=13000)
+                .step_by(3)
+                .map(|n| Ok((serial(n), if n % 2 == 0 { None } else { Some(changed) }))),
+            SORTED_TREE_UPDATE_SCRATCH_BYTES,
+        )
+        .unwrap();
         assert_ne!(initial, updated);
         for (root, edited) in [(initial, false), (updated, true)] {
-            for keys in (1..=13000).map(|n| serial(n).inode_key()).collect::<Vec<_>>().chunks(128) {
-                let values = inode_record_lookup_many(&store, root, keys, &mut InodeTableCounters::default()).unwrap();
+            for keys in (1..=13000)
+                .map(|n| serial(n).inode_key())
+                .collect::<Vec<_>>()
+                .chunks(128)
+            {
+                let values = inode_record_lookup_many(
+                    &store,
+                    root,
+                    keys,
+                    &mut InodeTableCounters::default(),
+                )
+                .unwrap();
                 for (key, actual) in keys.iter().zip(values) {
                     let n = InodeSerial::from_inode_key(*key).unwrap().get();
-                    let expected = if edited && (n - 1) % 3 == 0 { if n % 2 == 0 { None } else { Some(changed) } } else { Some(record) };
+                    let expected = if edited && (n - 1) % 3 == 0 {
+                        if n % 2 == 0 {
+                            None
+                        } else {
+                            Some(changed)
+                        }
+                    } else {
+                        Some(record)
+                    };
                     assert_eq!(actual, expected);
                 }
             }
         }
-        assert!(store.objects.values().all(|bytes| !crate::decode_bytes_object(bytes).unwrap().starts_with(b"LFS4INO\0")));
-        assert!(compact_inode_table_apply_sorted(&mut store, updated,
-            std::iter::once(Ok((serial(2), Some(changed)))), 128).is_err());
-        assert_eq!(compact::inode_lookup(&store, updated.0, serial(2), &mut InodeTableCounters::default()).unwrap(), Some(record));
+        assert!(store
+            .objects
+            .values()
+            .all(|bytes| !crate::decode_bytes_object(bytes)
+                .unwrap()
+                .starts_with(b"LFS4INO\0")));
+        assert!(compact_inode_table_apply_sorted(
+            &mut store,
+            updated,
+            std::iter::once(Ok((serial(2), Some(changed)))),
+            128
+        )
+        .is_err());
+        assert_eq!(
+            compact::inode_lookup(
+                &store,
+                updated.0,
+                serial(2),
+                &mut InodeTableCounters::default()
+            )
+            .unwrap(),
+            Some(record)
+        );
     }
 
     #[test]
     fn compact_directory_updates_preserve_names_serials_and_snapshots() {
         use crate::tree::compact::{self, DirectoryNode, InodeSerial};
-        fn rows(store: &MemoryStore, root: ObjectId, output: &mut Vec<(CanonicalName, InodeSerial)>) -> (u64, u64) {
+        fn rows(
+            store: &MemoryStore,
+            root: ObjectId,
+            output: &mut Vec<(CanonicalName, InodeSerial)>,
+        ) -> (u64, u64) {
             match compact::decode_directory(&store.get(root).unwrap()).unwrap() {
                 DirectoryNode::Leaf(entries) => {
                     let count = entries.len() as u64;
-                    let bytes = entries.iter().map(|row| 10 + row.0.as_bytes().len() as u64).sum();
-                    output.extend(entries); (count, bytes)
+                    let bytes = entries
+                        .iter()
+                        .map(|row| 10 + row.0.as_bytes().len() as u64)
+                        .sum();
+                    output.extend(entries);
+                    (count, bytes)
                 }
-                DirectoryNode::Branch { subtree_count, subtree_bytes, children, .. } => {
+                DirectoryNode::Branch {
+                    subtree_count,
+                    subtree_bytes,
+                    children,
+                    ..
+                } => {
                     let mut total = (0, 0);
                     for (maximum, child) in children {
                         let (count, bytes) = rows(store, child, output);
                         assert_eq!(output.last().unwrap().0, maximum);
-                        total.0 += count; total.1 += bytes;
+                        total.0 += count;
+                        total.1 += bytes;
                     }
-                    assert_eq!(total, (subtree_count, subtree_bytes)); total
+                    assert_eq!(total, (subtree_count, subtree_bytes));
+                    total
                 }
             }
         }
         let mut store = MemoryStore::default();
-        let empty = store.put(&compact::encode_directory(&DirectoryNode::Leaf(Vec::new())).unwrap()).unwrap();
-        let expected: Vec<_> = (1..=4000).map(|n| (CanonicalName::from_bytes(format!("name-{n:05}").as_bytes()).unwrap(), InodeSerial::new(n).unwrap())).collect();
-        let (initial, counters) = compact_directory_apply_sorted(&mut store, DirectoryStateRoot(empty),
-            expected.iter().cloned().map(|(key, id)| Ok((key, Some(id)))), SORTED_TREE_UPDATE_SCRATCH_BYTES, |_, _| Ok(())).unwrap();
+        let empty = store
+            .put(&compact::encode_directory(&DirectoryNode::Leaf(Vec::new())).unwrap())
+            .unwrap();
+        let expected: Vec<_> = (1..=4000)
+            .map(|n| {
+                (
+                    CanonicalName::from_bytes(format!("name-{n:05}").as_bytes()).unwrap(),
+                    InodeSerial::new(n).unwrap(),
+                )
+            })
+            .collect();
+        let (initial, counters) = compact_directory_apply_sorted(
+            &mut store,
+            DirectoryStateRoot(empty),
+            expected
+                .iter()
+                .cloned()
+                .map(|(key, id)| Ok((key, Some(id)))),
+            SORTED_TREE_UPDATE_SCRATCH_BYTES,
+            |_, _| Ok(()),
+        )
+        .unwrap();
         assert!(counters.peak_scratch_bytes <= SORTED_TREE_UPDATE_SCRATCH_BYTES);
         let mut observed = 0;
-        let (updated, _) = compact_directory_apply_sorted(&mut store, initial,
-            expected.iter().step_by(2).map(|(key, _)| Ok((key.clone(), None))), SORTED_TREE_UPDATE_SCRATCH_BYTES,
-            |before, after| { assert!(before.is_some()); assert!(after.is_none()); observed += 1; Ok(()) }).unwrap();
+        let (updated, _) = compact_directory_apply_sorted(
+            &mut store,
+            initial,
+            expected
+                .iter()
+                .step_by(2)
+                .map(|(key, _)| Ok((key.clone(), None))),
+            SORTED_TREE_UPDATE_SCRATCH_BYTES,
+            |before, after| {
+                assert!(before.is_some());
+                assert!(after.is_none());
+                observed += 1;
+                Ok(())
+            },
+        )
+        .unwrap();
         assert_eq!(observed, 2000);
-        for (root, expected) in [(initial, expected.clone()), (updated, expected.into_iter().skip(1).step_by(2).collect())] {
-            let mut actual = Vec::new(); rows(&store, root.0, &mut actual);
+        for (root, expected) in [
+            (initial, expected.clone()),
+            (updated, expected.into_iter().skip(1).step_by(2).collect()),
+        ] {
+            let mut actual = Vec::new();
+            rows(&store, root.0, &mut actual);
             assert_eq!(actual, expected);
         }
     }
@@ -1644,7 +2028,7 @@ mod tests {
         let empty = store
             .put(
                 &encode_directory_node(&DirectoryNodeV1::Leaf {
-            compact: false,
+                    compact: false,
                     subtree_encoded_bytes: 0,
                     entries: Vec::new(),
                 })

@@ -1,5 +1,5 @@
-use layerfs_content::file::content::{self, FileContentRoot};
 use crate::cow_tree::{Data, FileData, NodeId, Workspace};
+use layerfs_content::file::content::{self, FileContentRoot};
 use layerfs_content::file::rope::RopeCounters;
 use layerfs_layerstack_store::{DeferredObjectStore, ObjectBuffer, Result};
 use std::io::{Cursor, Read};
@@ -194,7 +194,10 @@ impl Read for CaptureReader {
     }
 }
 
-fn build_capture(receiver: Receiver<CaptureMessage>, reader: layerfs_layerstack_store::SnapshotReader) -> Result<CapturedContent> {
+fn build_capture(
+    receiver: Receiver<CaptureMessage>,
+    reader: layerfs_layerstack_store::SnapshotReader,
+) -> Result<CapturedContent> {
     let mut objects = ObjectBuffer::bounded_output(Some(&reader))?;
     objects.diagnostic_file_payloads();
     let reader = CaptureReader {

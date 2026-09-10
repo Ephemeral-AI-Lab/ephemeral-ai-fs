@@ -24,10 +24,19 @@ pub fn directory_insert<S: ObjectStore>(
     let mut counters = NamespaceCounters::default();
     let state = load_directory_state(store, root, &mut counters)?;
     if state.profile_id == crate::tree::compact::profile_id() {
-        if directory_lookup(store, root, &name, &mut counters)?.is_some() { return Err(CoreError::NameCollision); }
-        let (root, batch) = crate::tree::batch::compact_directory_apply_sorted(store, root,
-            std::iter::once(Ok((name, Some(crate::tree::compact::InodeSerial::from_inode_key(inode)?)))),
-            crate::tree::batch::SORTED_TREE_UPDATE_SCRATCH_BYTES, |_, _| Ok(()))?;
+        if directory_lookup(store, root, &name, &mut counters)?.is_some() {
+            return Err(CoreError::NameCollision);
+        }
+        let (root, batch) = crate::tree::batch::compact_directory_apply_sorted(
+            store,
+            root,
+            std::iter::once(Ok((
+                name,
+                Some(crate::tree::compact::InodeSerial::from_inode_key(inode)?),
+            ))),
+            crate::tree::batch::SORTED_TREE_UPDATE_SCRATCH_BYTES,
+            |_, _| Ok(()),
+        )?;
         counters.nodes_read += batch.nodes_read;
         counters.nodes_created += batch.nodes_created;
         return Ok((root, counters));
@@ -70,9 +79,15 @@ fn directory_remove_inner<S: ObjectStore>(
     let mut counters = NamespaceCounters::default();
     let state = load_directory_state(store, root, &mut counters)?;
     if state.profile_id == crate::tree::compact::profile_id() {
-        let removed = directory_lookup(store, root, name, &mut counters)?.ok_or(CoreError::PathNotFound)?;
-        let (root, batch) = crate::tree::batch::compact_directory_apply_sorted(store, root,
-            std::iter::once(Ok((name.clone(), None))), crate::tree::batch::SORTED_TREE_UPDATE_SCRATCH_BYTES, |_, _| Ok(()))?;
+        let removed =
+            directory_lookup(store, root, name, &mut counters)?.ok_or(CoreError::PathNotFound)?;
+        let (root, batch) = crate::tree::batch::compact_directory_apply_sorted(
+            store,
+            root,
+            std::iter::once(Ok((name.clone(), None))),
+            crate::tree::batch::SORTED_TREE_UPDATE_SCRATCH_BYTES,
+            |_, _| Ok(()),
+        )?;
         counters.nodes_read += batch.nodes_read;
         counters.nodes_created += batch.nodes_created;
         return Ok((root, removed, counters));
@@ -164,7 +179,9 @@ impl<'a, S: ObjectStore> DeferredDirectory<'a, S> {
             return Ok(());
         };
         let state = decode_directory_state(canonical)?;
-        if state.mapping_root != root.0 { reachable.insert(root.0); }
+        if state.mapping_root != root.0 {
+            reachable.insert(root.0);
+        }
         self.collect_node(state.mapping_root, reachable)
     }
 
@@ -192,8 +209,9 @@ impl<'a, S: ObjectStore> DeferredDirectory<'a, S> {
     }
 
     pub(crate) fn commit(&mut self, root: DirectoryStateRoot) -> CoreResult<u64> {
-        if self.objects.get(&root.0).is_some_and(|bytes|
-            crate::decode_bytes_object(bytes).is_ok_and(|value| value.starts_with(b"LFS6NSP\0"))) {
+        if self.objects.get(&root.0).is_some_and(|bytes| {
+            crate::decode_bytes_object(bytes).is_ok_and(|value| value.starts_with(b"LFS6NSP\0"))
+        }) {
             let mut committed = BTreeSet::new();
             self.commit_node(root.0, &mut committed)?;
             return u64::try_from(committed.len()).map_err(|_| CoreError::LengthOverflow);
@@ -230,8 +248,15 @@ impl<'a, S: ObjectStore> DeferredDirectory<'a, S> {
 }
 
 impl<S: ObjectStore> ObjectStore for DeferredDirectory<'_, S> {
-    fn compact_namespace(&self) -> bool { self.store.compact_namespace() }
-    fn allocate_inode_serial(&mut self, scope: ObjectId) -> CoreResult<crate::tree::compact::InodeSerial> { self.store.allocate_inode_serial(scope) }
+    fn compact_namespace(&self) -> bool {
+        self.store.compact_namespace()
+    }
+    fn allocate_inode_serial(
+        &mut self,
+        scope: ObjectId,
+    ) -> CoreResult<crate::tree::compact::InodeSerial> {
+        self.store.allocate_inode_serial(scope)
+    }
     fn get(&self, id: ObjectId) -> CoreResult<Vec<u8>> {
         self.objects
             .get(&id)
@@ -332,7 +357,7 @@ fn remove_node<S: ObjectStore>(
                 .and_then(|value| value.checked_add(next.encoded_bytes))
                 .ok_or(CoreError::LengthOverflow)?;
             let node = DirectoryNodeV1::Branch {
-            compact: false,
+                compact: false,
                 level,
                 subtree_entry_count: entries,
                 subtree_encoded_bytes: bytes,
@@ -647,7 +672,7 @@ fn split_branch_if_needed<S: ObjectStore>(
     counters: &mut NamespaceCounters,
 ) -> CoreResult<Vec<NodeSummary>> {
     let node = DirectoryNodeV1::Branch {
-            compact: false,
+        compact: false,
         level,
         subtree_entry_count: entries,
         subtree_encoded_bytes: bytes,
@@ -682,7 +707,7 @@ pub(super) fn leaf(entries: Vec<(CanonicalName, InodeId)>) -> CoreResult<Directo
             .ok_or(CoreError::LengthOverflow)
     })?;
     Ok(DirectoryNodeV1::Leaf {
-            compact: false,
+        compact: false,
         subtree_encoded_bytes: bytes,
         entries,
     })
@@ -706,7 +731,7 @@ pub(super) fn branch<S: ObjectRead>(
             .ok_or(CoreError::LengthOverflow)?;
     }
     Ok(DirectoryNodeV1::Branch {
-            compact: false,
+        compact: false,
         level,
         subtree_entry_count: entry_count,
         subtree_encoded_bytes: encoded_bytes,
@@ -733,7 +758,7 @@ fn emit_branch_from_summaries<S: ObjectStore>(
         .map(|child| (child.max.expect("nonempty child"), child.id))
         .collect();
     let node = DirectoryNodeV1::Branch {
-            compact: false,
+        compact: false,
         level,
         subtree_entry_count: entries,
         subtree_encoded_bytes: bytes,

@@ -1,5 +1,5 @@
-use layerfs_content::file::content::{self, FileContentRoot};
 use crate::{ResourcePolicy, WorkspaceState};
+use layerfs_content::file::content::{self, FileContentRoot};
 use layerfs_content::file::rope::{read_all_bounded, FileStateRoot};
 use layerfs_content::filesystem::{self as logical, LogicalCounters};
 use layerfs_content::object::access::ObjectRead;
@@ -422,16 +422,21 @@ pub(crate) fn acquire_inodes(
         .into_iter()
         .map(|record| record.ok_or(StorageError::Integrity("Workspace inode")))
         .collect::<Result<Vec<_>>>()?;
-    let file_states = records.iter()
+    let file_states = records
+        .iter()
         .filter(|record| record.kind == InodeKind::RegularFile)
         .map(|record| record.content_root)
-        .collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>();
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
     let mut file_lengths = BTreeMap::new();
     // A regular root can now own up to 128 KiB, not only a 106-byte extent state.
     // Preserve the existing 4-MiB acquisition bound without paging each file separately.
     let page = if layerfs_layerstack_store::ObjectSource::small_content_format(reader) {
         layerfs_layerstack_store::OBJECT_PAGE_BYTES / (content::SMALL_LIMIT + 23)
-    } else { layerfs_layerstack_store::OBJECT_PAGE_COUNT };
+    } else {
+        layerfs_layerstack_store::OBJECT_PAGE_COUNT
+    };
     for roots in file_states.chunks(page) {
         core.get_authenticated_batch(roots, |id, payload| {
             file_lengths.insert(id, content::length_from_payload(payload)?);
@@ -489,9 +494,7 @@ fn acquire_inode_record(
         InodeKind::RegularFile => {
             let len = match file_len {
                 Some(len) => len,
-                None => {
-                    content::length(&reader, FileContentRoot(record.content_root))?
-                }
+                None => content::length(&reader, FileContentRoot(record.content_root))?,
             };
             Data::File(FileData::Base {
                 root: FileContentRoot(record.content_root),

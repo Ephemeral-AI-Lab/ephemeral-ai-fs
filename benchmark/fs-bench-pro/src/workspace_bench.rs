@@ -1862,11 +1862,19 @@ fn run_case(
     if verification {
         // Read before the public Store reacquires its exclusive SQLite lock.
         let boundary_small_content = if case.kind == "boundaries" {
-            let connection = rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-            let schema: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-            if !matches!(schema, 7 | 9 | 10) { return Err("unqualified boundary Store schema".into()); }
+            let connection = rusqlite::Connection::open_with_flags(
+                &path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )?;
+            let schema: i64 =
+                connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            if !matches!(schema, 7 | 9 | 10) {
+                return Err("unqualified boundary Store schema".into());
+            }
             schema >= 9
-        } else { false };
+        } else {
+            false
+        };
         let reopened = Arc::new(LayerStackStore::connect(&path)?);
         store_metrics(
             &reopened,

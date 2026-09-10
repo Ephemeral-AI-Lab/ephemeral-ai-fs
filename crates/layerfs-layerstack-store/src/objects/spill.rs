@@ -813,7 +813,10 @@ pub(super) fn temporary_file(label: &str) -> Result<(std::fs::File, PathBuf)> {
     temporary_file_in(&std::env::temp_dir(), label)
 }
 
-pub(super) fn temporary_file_in(directory: &std::path::Path, label: &str) -> Result<(std::fs::File, PathBuf)> {
+pub(super) fn temporary_file_in(
+    directory: &std::path::Path,
+    label: &str,
+) -> Result<(std::fs::File, PathBuf)> {
     static SERIAL: AtomicU64 = AtomicU64::new(0);
     for _ in 0..32 {
         let path = directory.join(format!(

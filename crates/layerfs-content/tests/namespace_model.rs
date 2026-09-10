@@ -258,7 +258,7 @@ fn directory_diff_merges_unequal_canonical_heights_without_collecting_entries() 
         })
         .collect::<Vec<_>>();
     let leaf = |entries: &[(CanonicalName, InodeId)]| DirectoryNodeV1::Leaf {
-            compact: false,
+        compact: false,
         subtree_encoded_bytes: entries
             .iter()
             .map(|entry| 34 + entry.0.as_bytes().len() as u64)
@@ -281,7 +281,7 @@ fn directory_diff_merges_unequal_canonical_heights_without_collecting_entries() 
     let new_mapping = store
         .put(
             &encode_directory_node(&DirectoryNodeV1::Branch {
-            compact: false,
+                compact: false,
                 level: 1,
                 subtree_entry_count: 128,
                 subtree_encoded_bytes: bytes,
@@ -338,7 +338,7 @@ fn directory_diff_streams_valid_unmatched_prefixes_tails_and_renames() {
         let id = store
             .put(
                 &encode_directory_node(&DirectoryNodeV1::Leaf {
-            compact: false,
+                    compact: false,
                     subtree_encoded_bytes: bytes,
                     entries: entries.clone(),
                 })
@@ -357,7 +357,7 @@ fn directory_diff_streams_valid_unmatched_prefixes_tails_and_renames() {
         for (_, child) in &children {
             match decode_directory_node(store.0.get(child).unwrap()).unwrap() {
                 DirectoryNodeV1::Leaf {
-            compact: _,
+                    compact: _,
                     subtree_encoded_bytes,
                     entries,
                 } => {
@@ -370,7 +370,7 @@ fn directory_diff_streams_valid_unmatched_prefixes_tails_and_renames() {
         let mapping_root = store
             .put(
                 &encode_directory_node(&DirectoryNodeV1::Branch {
-            compact: false,
+                    compact: false,
                     level: 1,
                     subtree_entry_count: entry_count,
                     subtree_encoded_bytes: encoded_bytes,
@@ -477,7 +477,7 @@ fn underfull_middle_directory_borrows_right_before_merging_left() {
         let id = store
             .put(
                 &encode_directory_node(&DirectoryNodeV1::Leaf {
-            compact: false,
+                    compact: false,
                     subtree_encoded_bytes: bytes,
                     entries: entries.to_vec(),
                 })
@@ -489,7 +489,7 @@ fn underfull_middle_directory_borrows_right_before_merging_left() {
     let mapping = store
         .put(
             &encode_directory_node(&DirectoryNodeV1::Branch {
-            compact: false,
+                compact: false,
                 level: 1,
                 subtree_entry_count: 193,
                 subtree_encoded_bytes: entries
@@ -570,7 +570,7 @@ fn variable_width_directory_borrows_until_both_leaves_are_filled() {
         let id = store
             .put(
                 &encode_directory_node(&DirectoryNodeV1::Leaf {
-            compact: false,
+                    compact: false,
                     subtree_encoded_bytes: entries
                         .iter()
                         .map(|(name, _)| 34 + name.as_bytes().len() as u64)
@@ -585,7 +585,7 @@ fn variable_width_directory_borrows_until_both_leaves_are_filled() {
     let mapping = store
         .put(
             &encode_directory_node(&DirectoryNodeV1::Branch {
-            compact: false,
+                compact: false,
                 level: 1,
                 subtree_entry_count: serial,
                 subtree_encoded_bytes: groups
@@ -1055,7 +1055,7 @@ fn directory_state_and_branch_summaries_are_authoritative() {
         let id = store
             .put(
                 &encode_directory_node(&DirectoryNodeV1::Leaf {
-            compact: false,
+                    compact: false,
                     subtree_encoded_bytes: bytes,
                     entries,
                 })
@@ -1065,7 +1065,7 @@ fn directory_state_and_branch_summaries_are_authoritative() {
         leaves.push((max, id, bytes));
     }
     let branch = DirectoryNodeV1::Branch {
-            compact: false,
+        compact: false,
         level: 1,
         subtree_entry_count: 25,
         subtree_encoded_bytes: leaves[0].2 + leaves[1].2,
@@ -1188,7 +1188,7 @@ fn directory_and_inode_child_ranges_must_not_overlap() {
         let id = store
             .put(
                 &encode_directory_node(&DirectoryNodeV1::Leaf {
-            compact: false,
+                    compact: false,
                     subtree_encoded_bytes: bytes,
                     entries,
                 })
@@ -1200,7 +1200,7 @@ fn directory_and_inode_child_ranges_must_not_overlap() {
     let mapping_root = store
         .put(
             &encode_directory_node(&DirectoryNodeV1::Branch {
-            compact: false,
+                compact: false,
                 level: 1,
                 subtree_entry_count: 24,
                 subtree_encoded_bytes: total_bytes,
@@ -1287,7 +1287,7 @@ fn level_two_ranges_use_true_leftmost_leaf_minimum() {
         let id = store
             .put(
                 &encode_directory_node(&DirectoryNodeV1::Leaf {
-            compact: false,
+                    compact: false,
                     subtree_encoded_bytes: bytes,
                     entries,
                 })
@@ -1330,7 +1330,7 @@ fn level_two_ranges_use_true_leftmost_leaf_minimum() {
             let id = store
                 .put(
                     &encode_directory_node(&DirectoryNodeV1::Branch {
-            compact: false,
+                        compact: false,
                         level,
                         subtree_entry_count: children.len() as u64 * 12,
                         subtree_encoded_bytes: bytes,
@@ -1347,7 +1347,7 @@ fn level_two_ranges_use_true_leftmost_leaf_minimum() {
     let left = directory_branch(&mut store, 1, &left_leaves);
     let right = directory_branch(&mut store, 1, &right_leaves);
     let root_branch = DirectoryNodeV1::Branch {
-            compact: false,
+        compact: false,
         level: 2,
         subtree_entry_count: 288,
         subtree_encoded_bytes: left.2 + right.2,
@@ -1484,7 +1484,7 @@ fn repeated_child_levels_are_rejected_before_loading_grandchildren() {
     let child = store
         .put(
             &encode_directory_node(&DirectoryNodeV1::Branch {
-            compact: false,
+                compact: false,
                 level: 2,
                 subtree_entry_count: 12,
                 subtree_encoded_bytes: 12,
@@ -1499,7 +1499,7 @@ fn repeated_child_levels_are_rejected_before_loading_grandchildren() {
     let mapping = store
         .put(
             &encode_directory_node(&DirectoryNodeV1::Branch {
-            compact: false,
+                compact: false,
                 level: 2,
                 subtree_entry_count: 24,
                 subtree_encoded_bytes: 24,

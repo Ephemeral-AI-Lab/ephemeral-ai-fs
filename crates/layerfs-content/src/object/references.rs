@@ -25,13 +25,19 @@ pub fn referenced_objects(canonical: &[u8]) -> CoreResult<Vec<ObjectId>> {
     Ok(match magic {
         b"LFS6FSR\0" => vec![crate::tree::compact::decode_root(canonical)?.inode_table],
         b"LFS6INT\0" => match crate::tree::compact::decode_inode(canonical)? {
-            crate::tree::compact::InodeNode::Leaf(rows) => rows.into_iter()
-                .flat_map(|(_, record)| [record.content_root, record.metadata_root]).collect(),
-            crate::tree::compact::InodeNode::Branch { children, .. } => children.into_iter().map(|(_, id)| id).collect(),
+            crate::tree::compact::InodeNode::Leaf(rows) => rows
+                .into_iter()
+                .flat_map(|(_, record)| [record.content_root, record.metadata_root])
+                .collect(),
+            crate::tree::compact::InodeNode::Branch { children, .. } => {
+                children.into_iter().map(|(_, id)| id).collect()
+            }
         },
         b"LFS6NSP\0" => match crate::tree::compact::decode_directory(canonical)? {
             crate::tree::compact::DirectoryNode::Leaf(_) => Vec::new(),
-            crate::tree::compact::DirectoryNode::Branch { children, .. } => children.into_iter().map(|(_, id)| id).collect(),
+            crate::tree::compact::DirectoryNode::Branch { children, .. } => {
+                children.into_iter().map(|(_, id)| id).collect()
+            }
         },
         b"LFS4FSR\0" => vec![decode_namespace_root(canonical)?.inode_table_root],
         b"LFS4INT\0" => match decode_inode_table_node(canonical)? {
@@ -76,8 +82,14 @@ pub fn referenced_objects(canonical: &[u8]) -> CoreResult<Vec<ObjectId>> {
                 }
             }
         }
-        b"LFSWFL1\0" => { crate::file::content::whole_bytes(canonical)?; Vec::new() },
-        b"LFS5SML\0" => { crate::file::content::small_bytes(canonical)?; Vec::new() },
+        b"LFSWFL1\0" => {
+            crate::file::content::whole_bytes(canonical)?;
+            Vec::new()
+        }
+        b"LFS5SML\0" => {
+            crate::file::content::small_bytes(canonical)?;
+            Vec::new()
+        }
         b"LFS4CHK\0" => Vec::new(),
         b"LFS4LNK\0" => Vec::new(),
         _ => Vec::new(),

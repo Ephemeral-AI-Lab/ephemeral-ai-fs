@@ -2,7 +2,7 @@
 use super::{pack, CanonicalObject, OBJECT_PAGE_COUNT};
 use crate::schema::StoreDb;
 use crate::{PhysicalStorageReceipt, Result, StoreError};
-use layerfs_content::{ObjectId, file::content};
+use layerfs_content::{file::content, ObjectId};
 use rusqlite::{limits::Limit, params_from_iter, OptionalExtension};
 use std::collections::BTreeMap;
 
@@ -48,7 +48,8 @@ impl HintReadBudget {
     pub(super) fn charge_metadata_pool(&mut self, decoded: usize) -> bool {
         self.batch_exhausted |= self.batch_pool_decoded + decoded > 64 * 1024 * 1024;
         if self.batch_exhausted || self.target_pool_decoded + decoded > 8 * 1024 * 1024 {
-            self.exhausted = true; return false;
+            self.exhausted = true;
+            return false;
         }
         self.target_pool_decoded += decoded;
         self.batch_pool_decoded += decoded;
@@ -155,11 +156,21 @@ pub(super) fn metadata_leaf(bytes: &[u8]) -> bool {
 fn metadata_record(decoded: &[u8], ordinal: usize) -> Result<Vec<u8>> {
     let mut selected = None;
     pack::visit_records(decoded, false, |index, record| {
-        if index != ordinal { return Ok(()); }
+        if index != ordinal {
+            return Ok(());
+        }
         let mut bytes = Vec::new();
         match record {
-            pack::Record::Full(canonical) => { bytes.push(0); bytes.extend_from_slice(canonical); }
-            pack::Record::Delta { base, output_length, instructions, count } => {
+            pack::Record::Full(canonical) => {
+                bytes.push(0);
+                bytes.extend_from_slice(canonical);
+            }
+            pack::Record::Delta {
+                base,
+                output_length,
+                instructions,
+                count,
+            } => {
                 bytes.push(1);
                 bytes.extend_from_slice(base.as_bytes());
                 bytes.extend_from_slice(&(output_length as u32).to_le_bytes());
@@ -167,7 +178,9 @@ fn metadata_record(decoded: &[u8], ordinal: usize) -> Result<Vec<u8>> {
                 bytes.extend_from_slice(instructions);
             }
         }
-        if bytes.len() > 8193 { return Err(StoreError::Integrity("metadata record bound")); }
+        if bytes.len() > 8193 {
+            return Err(StoreError::Integrity("metadata record bound"));
+        }
         selected = Some(bytes);
         Ok(())
     })?;
@@ -175,12 +188,21 @@ fn metadata_record(decoded: &[u8], ordinal: usize) -> Result<Vec<u8>> {
 }
 
 impl StoreDb {
-    pub(super) fn read_metadata_values(&self, group: super::metadata::Group) -> Result<Vec<[u8; 73]>> {
-        let Some(Extraction::Metadata(true, entry, encoded)) = self.extract_record_group(
-            group.pack, group.number, 0, 0, true, None,
-        )? else { return Err(StoreError::Integrity("metadata value group format")); };
+    pub(super) fn read_metadata_values(
+        &self,
+        group: super::metadata::Group,
+    ) -> Result<Vec<[u8; 73]>> {
+        let Some(Extraction::Metadata(true, entry, encoded)) =
+            self.extract_record_group(group.pack, group.number, 0, 0, true, None)?
+        else {
+            return Err(StoreError::Integrity("metadata value group format"));
+        };
         let body = self.decode_metadata_group(entry, encoded)?;
-        self.note_physical(PhysicalStorageReceipt { metadata_pool_group_fetches: 1, metadata_pool_decoded_bytes: body.len() as u64, ..Default::default() });
+        self.note_physical(PhysicalStorageReceipt {
+            metadata_pool_group_fetches: 1,
+            metadata_pool_decoded_bytes: body.len() as u64,
+            ..Default::default()
+        });
         super::metadata::decode_values(&body, group)
     }
 
@@ -196,11 +218,25 @@ impl StoreDb {
         pack::decode_group(entry, encoded)
     }
 
-    pub(super) fn metadata_predecessor(&self, id: ObjectId, budget: &mut HintReadBudget) -> Result<Option<MetadataPredecessor>> {
-        let Some(location) = self.object_locations(&[id])?.remove(&id) else { return Ok(None); };
+    pub(super) fn metadata_predecessor(
+        &self,
+        id: ObjectId,
+        budget: &mut HintReadBudget,
+    ) -> Result<Option<MetadataPredecessor>> {
+        let Some(location) = self.object_locations(&[id])?.remove(&id) else {
+            return Ok(None);
+        };
         let Some(Extraction::Metadata(pooled, entry, encoded)) = self.extract_record_group(
-            location.pack, location.group, location.record, location.canonical_length, true, Some(budget),
-        )? else { return Ok(None); };
+            location.pack,
+            location.group,
+            location.record,
+            location.canonical_length,
+            true,
+            Some(budget),
+        )?
+        else {
+            return Ok(None);
+        };
         let decoded = self.decode_metadata_group(entry, encoded)?;
         let record = metadata_record(&decoded, location.record)?;
         drop(decoded);
@@ -210,8 +246,14 @@ impl StoreDb {
     // Every intermediate canonical object is authenticated, including bytes that
     // a later COPY/INSERT does not use. Chronology makes cycles impossible; the
     // independent work bounds are checked before fetching another dependency.
-    fn metadata_chain(&self, mut id: ObjectId, mut location: Location, pooled: bool, mut record: Vec<u8>,
-        mut budget: Option<&mut HintReadBudget>) -> Result<Option<MetadataPredecessor>> {
+    fn metadata_chain(
+        &self,
+        mut id: ObjectId,
+        mut location: Location,
+        pooled: bool,
+        mut record: Vec<u8>,
+        mut budget: Option<&mut HintReadBudget>,
+    ) -> Result<Option<MetadataPredecessor>> {
         let target_id = id;
         let mut pool = super::metadata::PoolRead::default();
         let mut nodes = Vec::with_capacity(METADATA_EDGES);
@@ -221,30 +263,64 @@ impl StoreDb {
         loop {
             canonical_closure += location.canonical_length;
             encoded_closure += record.len();
-            if location.canonical_length > 8192 || canonical_closure > METADATA_CLOSURE
-                || encoded_closure > 17 * 8193 || record.len() > 8193 {
+            if location.canonical_length > 8192
+                || canonical_closure > METADATA_CLOSURE
+                || encoded_closure > 17 * 8193
+                || record.len() > 8193
+            {
                 return Err(StoreError::Integrity("metadata chain work bound"));
             }
             match pack::record(&record)? {
-                pack::Record::Full(canonical) => { bytes = canonical.to_vec(); break; }
-                pack::Record::Delta { base, output_length, .. } => {
-                    if nodes.len() == METADATA_EDGES || output_length != if pooled { super::metadata::physical_length(location.canonical_length)? } else { location.canonical_length } {
+                pack::Record::Full(canonical) => {
+                    bytes = canonical.to_vec();
+                    break;
+                }
+                pack::Record::Delta {
+                    base,
+                    output_length,
+                    ..
+                } => {
+                    if nodes.len() == METADATA_EDGES
+                        || output_length
+                            != if pooled {
+                                super::metadata::physical_length(location.canonical_length)?
+                            } else {
+                                location.canonical_length
+                            }
+                    {
                         return Err(StoreError::Integrity("metadata chain depth/length"));
                     }
-                    let next = self.object_locations(&[base])?.remove(&base)
+                    let next = self
+                        .object_locations(&[base])?
+                        .remove(&base)
                         .ok_or(StoreError::Integrity("metadata base missing"))?;
-                    if next.pack >= location.pack || next.canonical_length > 8192
-                        || canonical_closure + next.canonical_length > METADATA_CLOSURE {
+                    if next.pack >= location.pack
+                        || next.canonical_length > 8192
+                        || canonical_closure + next.canonical_length > METADATA_CLOSURE
+                    {
                         return Err(StoreError::Integrity("metadata base chronology/closure"));
                     }
-                    self.note_physical(PhysicalStorageReceipt { base_fetches: 1, ..Default::default() });
-                    let extracted = self.extract_record_group(next.pack, next.group, next.record,
-                        next.canonical_length, true, budget.as_deref_mut())?;
-                    let Some(extracted) = extracted else { return Ok(None); };
+                    self.note_physical(PhysicalStorageReceipt {
+                        base_fetches: 1,
+                        ..Default::default()
+                    });
+                    let extracted = self.extract_record_group(
+                        next.pack,
+                        next.group,
+                        next.record,
+                        next.canonical_length,
+                        true,
+                        budget.as_deref_mut(),
+                    )?;
+                    let Some(extracted) = extracted else {
+                        return Ok(None);
+                    };
                     let Extraction::Metadata(base_pooled, entry, encoded) = extracted else {
                         return Err(StoreError::Integrity("metadata base format"));
                     };
-                    if base_pooled != pooled { return Err(StoreError::Integrity("metadata base pool format")); }
+                    if base_pooled != pooled {
+                        return Err(StoreError::Integrity("metadata base pool format"));
+                    }
                     let decoded = self.decode_metadata_group(entry, encoded)?;
                     let next_record = metadata_record(&decoded, next.record)?;
                     nodes.push((id, location.canonical_length, record));
@@ -255,22 +331,53 @@ impl StoreDb {
             }
         }
         let mut canonical = if pooled {
-            let Some(canonical) = pool.expand(self, &bytes, location.canonical_length, budget.as_deref_mut())? else { return Ok(None); }; canonical
-        } else { bytes.clone() };
+            let Some(canonical) = pool.expand(
+                self,
+                &bytes,
+                location.canonical_length,
+                budget.as_deref_mut(),
+            )?
+            else {
+                return Ok(None);
+            };
+            canonical
+        } else {
+            bytes.clone()
+        };
         authenticate_metadata(id, &canonical, location.canonical_length)?;
         let depth = nodes.len();
         while let Some((id, length, program)) = nodes.pop() {
-            let pack::Record::Delta { instructions, count, output_length, .. } = pack::record(&program)? else {
+            let pack::Record::Delta {
+                instructions,
+                count,
+                output_length,
+                ..
+            } = pack::record(&program)?
+            else {
                 return Err(StoreError::Integrity("metadata chain program"));
             };
             bytes = pack::apply_delta(instructions, count, output_length, &bytes)?;
             canonical = if pooled {
-                let Some(canonical) = pool.expand(self, &bytes, length, budget.as_deref_mut())? else { return Ok(None); }; canonical
-            } else { bytes.clone() };
+                let Some(canonical) = pool.expand(self, &bytes, length, budget.as_deref_mut())?
+                else {
+                    return Ok(None);
+                };
+                canonical
+            } else {
+                bytes.clone()
+            };
             authenticate_metadata(id, &canonical, length)?;
         }
-        Ok(Some(MetadataPredecessor { canonical: CanonicalObject { id: target_id, bytes: canonical },
-            physical: bytes, pooled, depth, canonical_closure }))
+        Ok(Some(MetadataPredecessor {
+            canonical: CanonicalObject {
+                id: target_id,
+                bytes: canonical,
+            },
+            physical: bytes,
+            pooled,
+            depth,
+            canonical_closure,
+        }))
     }
 
     /// Logical closure needs presence, not a second set of allocated locators.
@@ -373,24 +480,39 @@ impl StoreDb {
                 let connection = self.reader()?;
                 connection.query_row("SELECT pack_id, length(data) FROM object_packs WHERE pack_id > ?1 AND substr(data,9,4) IN (x'03000000', x'04000000') ORDER BY pack_id LIMIT 1", [after], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))).optional()?
             };
-            let Some((id, length)) = next else { return Ok(()); };
-            let length = usize::try_from(length).map_err(|_| StoreError::Integrity("SmallContent pack length"))?;
-            if !self.small_content_format() || length > pack::PACK_LIMIT { return Err(StoreError::Integrity("SmallContent pack bound/format")); }
+            let Some((id, length)) = next else {
+                return Ok(());
+            };
+            let length = usize::try_from(length)
+                .map_err(|_| StoreError::Integrity("SmallContent pack length"))?;
+            if !self.small_content_format() || length > pack::PACK_LIMIT {
+                return Err(StoreError::Integrity("SmallContent pack bound/format"));
+            }
             let bytes = {
                 let connection = self.reader()?;
                 let blob = connection.blob_open("main", "object_packs", "data", id, true)?;
-                if blob.len() != length { return Err(StoreError::Integrity("pack changed during integrity traversal")); }
+                if blob.len() != length {
+                    return Err(StoreError::Integrity(
+                        "pack changed during integrity traversal",
+                    ));
+                }
                 let mut bytes = vec![0; length];
                 blob.read_at_exact(&mut bytes, 0)?;
                 bytes
             };
-            if bytes.get(8..12) == Some(&[4, 0, 0, 0]) && !self.compact_framing() { return Err(StoreError::Integrity("compact framing requires schema 10")); }
+            if bytes.get(8..12) == Some(&[4, 0, 0, 0]) && !self.compact_framing() {
+                return Err(StoreError::Integrity("compact framing requires schema 10"));
+            }
             pack::validate_small_pack(&bytes)?;
             if !self.small_chain_format() {
                 let count = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
                 for directory in bytes[16..16 + 16 * count].chunks_exact(16) {
                     let start = u32::from_le_bytes(directory[..4].try_into().unwrap()) as usize;
-                    if bytes[start] == 2 { return Err(StoreError::Integrity("SmallContent chain requires schema 9")); }
+                    if bytes[start] == 2 {
+                        return Err(StoreError::Integrity(
+                            "SmallContent chain requires schema 9",
+                        ));
+                    }
                 }
             }
             after = id;
@@ -398,61 +520,163 @@ impl StoreDb {
     }
 
     pub(crate) fn small_physical_base(&self, id: ObjectId) -> Result<Option<ObjectId>> {
-        let location = self.object_locations(&[id])?.remove(&id).ok_or(StoreError::MissingObject(id))?;
-        match self.extract_record_group(location.pack, location.group, location.record, location.canonical_length, true, None)? {
-            Some(Extraction::Whole(bytes)) => Ok(super::whole::record(&bytes, location.canonical_length)?.base),
+        let location = self
+            .object_locations(&[id])?
+            .remove(&id)
+            .ok_or(StoreError::MissingObject(id))?;
+        match self.extract_record_group(
+            location.pack,
+            location.group,
+            location.record,
+            location.canonical_length,
+            true,
+            None,
+        )? {
+            Some(Extraction::Whole(bytes)) => {
+                Ok(super::whole::record(&bytes, location.canonical_length)?.base)
+            }
             Some(Extraction::Small(bytes)) => Ok(super::delta::record(&bytes)?.base),
             Some(Extraction::Metadata(_, entry, encoded)) => {
                 let decoded = self.decode_metadata_group(entry, encoded)?;
                 let record = metadata_record(&decoded, location.record)?;
-                Ok(match pack::record(&record)? { pack::Record::Full(_) => None, pack::Record::Delta { base, .. } => Some(base) })
+                Ok(match pack::record(&record)? {
+                    pack::Record::Full(_) => None,
+                    pack::Record::Delta { base, .. } => Some(base),
+                })
             }
             _ => Ok(None),
         }
     }
 
-    fn read_small_full(&self, id: ObjectId, location: Location, record: Vec<u8>) -> Result<CanonicalObject> {
+    fn read_small_full(
+        &self,
+        id: ObjectId,
+        location: Location,
+        record: Vec<u8>,
+    ) -> Result<CanonicalObject> {
         let parsed = super::delta::record(&record)?;
-        if parsed.base.is_some() || location.record != 0 || location.canonical_length != parsed.raw_length + 23 {
+        if parsed.base.is_some()
+            || location.record != 0
+            || location.canonical_length != parsed.raw_length + 23
+        {
             return Err(StoreError::Integrity("SmallContent FULL base role/length"));
         }
         let bytes = super::delta::decode(&record, None)?;
         authenticate(id, &bytes, location.canonical_length)?;
-        self.note_physical(PhysicalStorageReceipt { decompression_calls: 1, decoded_read_bytes: bytes.len() as u64, ..Default::default() });
+        self.note_physical(PhysicalStorageReceipt {
+            decompression_calls: 1,
+            decoded_read_bytes: bytes.len() as u64,
+            ..Default::default()
+        });
         Ok(CanonicalObject { id, bytes })
     }
 
     // The selected record establishes encoding; a DELTA's named base is required.
-    pub(super) fn small_anchor(&self, predecessor: ObjectId, location: Option<Location>) -> Result<Option<(CanonicalObject, Location)>> {
-        let Some(location) = location else { return Ok(None); };
-        let Some(Extraction::Small(record)) = self.extract_record_group(location.pack, location.group, location.record, location.canonical_length, true, None)? else { return Ok(None); };
+    pub(super) fn small_anchor(
+        &self,
+        predecessor: ObjectId,
+        location: Option<Location>,
+    ) -> Result<Option<(CanonicalObject, Location)>> {
+        let Some(location) = location else {
+            return Ok(None);
+        };
+        let Some(Extraction::Small(record)) = self.extract_record_group(
+            location.pack,
+            location.group,
+            location.record,
+            location.canonical_length,
+            true,
+            None,
+        )?
+        else {
+            return Ok(None);
+        };
         let parsed = super::delta::record(&record)?;
-        if location.canonical_length != parsed.raw_length + 23 { return Err(StoreError::Integrity("SmallContent predecessor length")); }
-        if let Some(base) = parsed.base {
-            if base == predecessor { return Err(StoreError::Integrity("SmallContent dependency cycle")); }
-            let base_location = self.object_locations(&[base])?.remove(&base).ok_or(StoreError::Integrity("SmallContent base missing"))?;
-            if base_location.pack > location.pack { return Err(StoreError::Integrity("SmallContent base chronology")); }
-            let Some(Extraction::Small(record)) = self.extract_record_group(base_location.pack, base_location.group, base_location.record, base_location.canonical_length, true, None)? else { return Err(StoreError::Integrity("SmallContent base encoding")); };
-            return Ok(Some((self.read_small_full(base, base_location, record)?, base_location)));
+        if location.canonical_length != parsed.raw_length + 23 {
+            return Err(StoreError::Integrity("SmallContent predecessor length"));
         }
-        Ok(Some((self.read_small_full(predecessor, location, record)?, location)))
+        if let Some(base) = parsed.base {
+            if base == predecessor {
+                return Err(StoreError::Integrity("SmallContent dependency cycle"));
+            }
+            let base_location = self
+                .object_locations(&[base])?
+                .remove(&base)
+                .ok_or(StoreError::Integrity("SmallContent base missing"))?;
+            if base_location.pack > location.pack {
+                return Err(StoreError::Integrity("SmallContent base chronology"));
+            }
+            let Some(Extraction::Small(record)) = self.extract_record_group(
+                base_location.pack,
+                base_location.group,
+                base_location.record,
+                base_location.canonical_length,
+                true,
+                None,
+            )?
+            else {
+                return Err(StoreError::Integrity("SmallContent base encoding"));
+            };
+            return Ok(Some((
+                self.read_small_full(base, base_location, record)?,
+                base_location,
+            )));
+        }
+        Ok(Some((
+            self.read_small_full(predecessor, location, record)?,
+            location,
+        )))
     }
 
     /// The immediate predecessor is optional; selected physical dependencies are not.
-    pub(super) fn small_predecessor(&self, id: ObjectId, location: Option<Location>, target_canonical_length: usize) -> Result<Option<SmallPredecessor>> {
+    pub(super) fn small_predecessor(
+        &self,
+        id: ObjectId,
+        location: Option<Location>,
+        target_canonical_length: usize,
+    ) -> Result<Option<SmallPredecessor>> {
         if !(24..content::SMALL_LIMIT + 23).contains(&target_canonical_length) {
-            return Err(StoreError::Integrity("SmallContent prospective target length"));
+            return Err(StoreError::Integrity(
+                "SmallContent prospective target length",
+            ));
         }
-        let Some(location) = location else { return Ok(None); };
-        let Some(Extraction::Small(record)) = self.extract_record_group(location.pack, location.group, location.record, location.canonical_length, true, None)? else { return Ok(None); };
-        let Some(prior) = self.small_chain(id, location, record, true, target_canonical_length)? else { return Ok(None); };
+        let Some(location) = location else {
+            return Ok(None);
+        };
+        let Some(Extraction::Small(record)) = self.extract_record_group(
+            location.pack,
+            location.group,
+            location.record,
+            location.canonical_length,
+            true,
+            None,
+        )?
+        else {
+            return Ok(None);
+        };
+        let Some(prior) = self.small_chain(id, location, record, true, target_canonical_length)?
+        else {
+            return Ok(None);
+        };
         if prior.depth + 1 > super::delta::CHAIN_EDGES
-            || prior.canonical_closure.checked_add(target_canonical_length).is_none_or(|size| size > super::delta::CHAIN_CANONICAL_LIMIT)
-        { return Ok(None); }
+            || prior
+                .canonical_closure
+                .checked_add(target_canonical_length)
+                .is_none_or(|size| size > super::delta::CHAIN_CANONICAL_LIMIT)
+        {
+            return Ok(None);
+        }
         Ok(Some(prior))
     }
 
-    fn small_chain(&self, target: ObjectId, target_location: Location, initial: Vec<u8>, optional: bool, retained: usize) -> Result<Option<SmallPredecessor>> {
+    fn small_chain(
+        &self,
+        target: ObjectId,
+        target_location: Location,
+        initial: Vec<u8>,
+        optional: bool,
+        retained: usize,
+    ) -> Result<Option<SmallPredecessor>> {
         use super::delta::{CHAIN_CANONICAL_LIMIT, CHAIN_EDGES, CHAIN_ENCODED_LIMIT};
         let legacy_hint = optional && super::delta::record(&initial)?.kind != 2;
         let mut nodes = Vec::<NativeNode>::with_capacity(CHAIN_EDGES + 1);
@@ -466,9 +690,12 @@ impl StoreDb {
         loop {
             let parsed = super::delta::record(&record)?;
             if (parsed.kind == 2 && !self.small_chain_format())
-                || location.record != 0 || location.canonical_length != parsed.raw_length + 23
+                || location.record != 0
+                || location.canonical_length != parsed.raw_length + 23
                 || (require_full && parsed.kind != 0)
-            { return Err(StoreError::Integrity("SmallContent chain role/locator")); }
+            {
+                return Err(StoreError::Integrity("SmallContent chain role/locator"));
+            }
             let base = parsed.base;
             require_full = parsed.kind == 1;
             canonical_closure += location.canonical_length;
@@ -477,20 +704,37 @@ impl StoreDb {
             // A valid old kind-1 predecessor may exceed the new chain budget.
             // That only makes the optional new encoding ineligible.
             if canonical_closure > CHAIN_CANONICAL_LIMIT || owned_frames > CHAIN_ENCODED_LIMIT {
-                if legacy_hint { return Ok(None); }
+                if legacy_hint {
+                    return Ok(None);
+                }
                 return Err(StoreError::Integrity("SmallContent chain closure bound"));
             }
             let associations = nodes.capacity() * std::mem::size_of::<NativeNode>();
             if associations > 16 * 1024
-                || retained + owned_frames + associations + 1024 * 1024
-                    + 4 * (content::SMALL_LIMIT + 23) > 2 * 1024 * 1024
-            { return Err(StoreError::Integrity("SmallContent chain scratch bound")); }
-            nodes.push(NativeNode { id, location, record });
-            let Some(base) = base else { break; };
+                || retained
+                    + owned_frames
+                    + associations
+                    + 1024 * 1024
+                    + 4 * (content::SMALL_LIMIT + 23)
+                    > 2 * 1024 * 1024
+            {
+                return Err(StoreError::Integrity("SmallContent chain scratch bound"));
+            }
+            nodes.push(NativeNode {
+                id,
+                location,
+                record,
+            });
+            let Some(base) = base else {
+                break;
+            };
             if nodes.len() > CHAIN_EDGES || nodes.iter().any(|node| node.id == base) {
                 return Err(StoreError::Integrity("SmallContent chain depth/cycle"));
             }
-            let next = self.object_locations(&[base])?.remove(&base).ok_or(StoreError::Integrity("SmallContent base missing"))?;
+            let next = self
+                .object_locations(&[base])?
+                .remove(&base)
+                .ok_or(StoreError::Integrity("SmallContent base missing"))?;
             if next.pack > location.pack {
                 return Err(StoreError::Integrity("SmallContent base chronology"));
             }
@@ -498,12 +742,25 @@ impl StoreDb {
             // largest selected group before fetching; the stricter retained-frame
             // cap is checked on the next iteration before any reconstruction.
             if retained + owned_frames + associations + 192 * 1024 + 16 * 1024 > 2 * 1024 * 1024 {
-                return Err(StoreError::Integrity("SmallContent chain acquisition bound"));
+                return Err(StoreError::Integrity(
+                    "SmallContent chain acquisition bound",
+                ));
             }
-            let Some(Extraction::Small(next_record)) = self.extract_record_group(next.pack, next.group, next.record, next.canonical_length, true, None)? else {
+            let Some(Extraction::Small(next_record)) = self.extract_record_group(
+                next.pack,
+                next.group,
+                next.record,
+                next.canonical_length,
+                true,
+                None,
+            )?
+            else {
                 return Err(StoreError::Integrity("SmallContent base encoding"));
             };
-            self.note_physical(PhysicalStorageReceipt { base_fetches: 1, ..Default::default() });
+            self.note_physical(PhysicalStorageReceipt {
+                base_fetches: 1,
+                ..Default::default()
+            });
             id = base;
             location = next;
             record = next_record;
@@ -511,45 +768,99 @@ impl StoreDb {
         let depth = nodes.len() - 1;
         let mut canonical: Option<CanonicalObject> = None;
         while let Some(node) = nodes.pop() {
-            let prefix = canonical.as_ref().map(|base| content::small_bytes(&base.bytes))
-                .transpose()?.flatten();
+            let prefix = canonical
+                .as_ref()
+                .map(|base| content::small_bytes(&base.bytes))
+                .transpose()?
+                .flatten();
             let bytes = super::delta::decode(&node.record, prefix)?;
             if bytes.capacity() > content::SMALL_LIMIT + 23 {
                 return Err(StoreError::Integrity("SmallContent canonical capacity"));
             }
             authenticate(node.id, &bytes, node.location.canonical_length)?;
-            self.note_physical(PhysicalStorageReceipt { decompression_calls: 1, decoded_read_bytes: bytes.len() as u64, ..Default::default() });
+            self.note_physical(PhysicalStorageReceipt {
+                decompression_calls: 1,
+                decoded_read_bytes: bytes.len() as u64,
+                ..Default::default()
+            });
             canonical = Some(CanonicalObject { id: node.id, bytes });
         }
         Ok(Some(SmallPredecessor {
             canonical: canonical.ok_or(StoreError::Integrity("SmallContent empty chain"))?,
-            location: target_location, depth, canonical_closure, encoded_closure,
+            location: target_location,
+            depth,
+            canonical_closure,
+            encoded_closure,
         }))
     }
 
-    fn read_small(&self, id: ObjectId, location: Location, record: Vec<u8>, bases: &mut BTreeMap<ObjectId, CanonicalObject>) -> Result<CanonicalObject> {
+    fn read_small(
+        &self,
+        id: ObjectId,
+        location: Location,
+        record: Vec<u8>,
+        bases: &mut BTreeMap<ObjectId, CanonicalObject>,
+    ) -> Result<CanonicalObject> {
         let parsed = super::delta::record(&record)?;
         if parsed.kind == 2 {
             bases.clear();
-            return self.small_chain(id, location, record, false, 0)?
-                .map(|prior| prior.canonical).ok_or(StoreError::Integrity("SmallContent required chain"));
+            return self
+                .small_chain(id, location, record, false, 0)?
+                .map(|prior| prior.canonical)
+                .ok_or(StoreError::Integrity("SmallContent required chain"));
         }
-        if location.canonical_length != parsed.raw_length + 23 || location.record != 0 { return Err(StoreError::Integrity("SmallContent locator length")); }
-        let Some(base) = parsed.base else { return self.read_small_full(id, location, record); };
-        if base == id { return Err(StoreError::Integrity("SmallContent dependency cycle")); }
+        if location.canonical_length != parsed.raw_length + 23 || location.record != 0 {
+            return Err(StoreError::Integrity("SmallContent locator length"));
+        }
+        let Some(base) = parsed.base else {
+            return self.read_small_full(id, location, record);
+        };
+        if base == id {
+            return Err(StoreError::Integrity("SmallContent dependency cycle"));
+        }
         if !bases.contains_key(&base) {
             // The read wave retains at most 256 KiB of authenticated FULL operands.
-            if bases.values().map(|v| v.bytes.capacity()).sum::<usize>() + content::SMALL_LIMIT + 23 > 256 * 1024 { bases.clear(); }
-            let base_location = self.object_locations(&[base])?.remove(&base).ok_or(StoreError::Integrity("SmallContent base missing"))?;
-            if base_location.pack > location.pack { return Err(StoreError::Integrity("SmallContent base chronology")); }
-            let Some(Extraction::Small(base_record)) = self.extract_record_group(base_location.pack, base_location.group, base_location.record, base_location.canonical_length, true, None)? else { return Err(StoreError::Integrity("SmallContent base encoding")); };
-            bases.insert(base, self.read_small_full(base, base_location, base_record)?);
-            self.note_physical(PhysicalStorageReceipt { base_fetches: 1, ..Default::default() });
+            if bases.values().map(|v| v.bytes.capacity()).sum::<usize>() + content::SMALL_LIMIT + 23
+                > 256 * 1024
+            {
+                bases.clear();
+            }
+            let base_location = self
+                .object_locations(&[base])?
+                .remove(&base)
+                .ok_or(StoreError::Integrity("SmallContent base missing"))?;
+            if base_location.pack > location.pack {
+                return Err(StoreError::Integrity("SmallContent base chronology"));
+            }
+            let Some(Extraction::Small(base_record)) = self.extract_record_group(
+                base_location.pack,
+                base_location.group,
+                base_location.record,
+                base_location.canonical_length,
+                true,
+                None,
+            )?
+            else {
+                return Err(StoreError::Integrity("SmallContent base encoding"));
+            };
+            bases.insert(
+                base,
+                self.read_small_full(base, base_location, base_record)?,
+            );
+            self.note_physical(PhysicalStorageReceipt {
+                base_fetches: 1,
+                ..Default::default()
+            });
         }
-        let raw = content::small_bytes(&bases[&base].bytes)?.ok_or(StoreError::Integrity("SmallContent base canonical role"))?;
+        let raw = content::small_bytes(&bases[&base].bytes)?
+            .ok_or(StoreError::Integrity("SmallContent base canonical role"))?;
         let bytes = super::delta::decode(&record, Some(raw))?;
         authenticate(id, &bytes, location.canonical_length)?;
-        self.note_physical(PhysicalStorageReceipt { decompression_calls: 1, decoded_read_bytes: bytes.len() as u64, ..Default::default() });
+        self.note_physical(PhysicalStorageReceipt {
+            decompression_calls: 1,
+            decoded_read_bytes: bytes.len() as u64,
+            ..Default::default()
+        });
         Ok(CanonicalObject { id, bytes })
     }
 
@@ -579,19 +890,41 @@ impl StoreDb {
         let mut header_bytes = [0; 16];
         blob.read_at_exact(&mut header_bytes, 0)?;
         if &header_bytes[..8] == super::whole::MAGIC {
-            if !self.compact_namespace() { return Err(StoreError::Integrity("whole-file pack requires schema 10")); }
-            if !native { return Ok(Some(Extraction::NativeUnsupported)); }
-            drop(blob); drop(connection);
-            return Ok(self.whole_record(Location { canonical_length, pack: pack_id, group, record: ordinal }, budget)?.map(Extraction::Whole));
+            if !self.compact_namespace() {
+                return Err(StoreError::Integrity("whole-file pack requires schema 10"));
+            }
+            if !native {
+                return Ok(Some(Extraction::NativeUnsupported));
+            }
+            drop(blob);
+            drop(connection);
+            return Ok(self
+                .whole_record(
+                    Location {
+                        canonical_length,
+                        pack: pack_id,
+                        group,
+                        record: ordinal,
+                    },
+                    budget,
+                )?
+                .map(Extraction::Whole));
         }
         let header = pack::versioned_header(&header_bytes, length)?;
         if group >= header.group_count {
             return Err(StoreError::Integrity("object group locator"));
         }
         if header.version == pack::Version::CompactSmall
-            && budget.as_deref_mut().is_some_and(|b| !b.charge(4 * header.group_count, 8)) { return Ok(None); }
+            && budget
+                .as_deref_mut()
+                .is_some_and(|b| !b.charge(4 * header.group_count, 8))
+        {
+            return Ok(None);
+        }
         let entry = if header.version == pack::Version::CompactSmall {
-            if !self.compact_framing() { return Err(StoreError::Integrity("compact framing requires schema 10")); }
+            if !self.compact_framing() {
+                return Err(StoreError::Integrity("compact framing requires schema 10"));
+            }
             let mut starts = [0; 4 * pack::GROUP_COUNT_LIMIT];
             let starts = &mut starts[..4 * header.group_count];
             blob.read_at_exact(starts, 16)?;
@@ -606,8 +939,13 @@ impl StoreDb {
             blob_ranges: 2,
             ..Default::default()
         });
-        if matches!(header.version, pack::Version::Legacy | pack::Version::Metadata | pack::Version::PooledMetadata) {
-            if header.version != pack::Version::Legacy && !self.compact_namespace() { return Err(StoreError::Integrity("metadata framing requires schema 10")); }
+        if matches!(
+            header.version,
+            pack::Version::Legacy | pack::Version::Metadata | pack::Version::PooledMetadata
+        ) {
+            if header.version != pack::Version::Legacy && !self.compact_namespace() {
+                return Err(StoreError::Integrity("metadata framing requires schema 10"));
+            }
             if budget
                 .as_deref_mut()
                 .is_some_and(|b| !b.charge(entry.range.len(), entry.decoded_length))
@@ -624,12 +962,32 @@ impl StoreDb {
                 blob_ranges: 1,
                 ..Default::default()
             });
-            return Ok(Some(if header.version != pack::Version::Legacy { Extraction::Metadata(header.version == pack::Version::PooledMetadata, entry, encoded) } else { Extraction::Legacy(entry, encoded) }));
+            return Ok(Some(if header.version != pack::Version::Legacy {
+                Extraction::Metadata(
+                    header.version == pack::Version::PooledMetadata,
+                    entry,
+                    encoded,
+                )
+            } else {
+                Extraction::Legacy(entry, encoded)
+            }));
         }
-        if matches!(header.version, pack::Version::Small | pack::Version::CompactSmall) {
-            if !self.small_content_format() || ordinal != 0 { return Err(StoreError::Integrity("SmallContent format/ordinal")); }
-            if !native { return Ok(Some(Extraction::NativeUnsupported)); }
-            if budget.as_deref_mut().is_some_and(|b| !b.charge(entry.range.len(), entry.range.len())) { return Ok(None); }
+        if matches!(
+            header.version,
+            pack::Version::Small | pack::Version::CompactSmall
+        ) {
+            if !self.small_content_format() || ordinal != 0 {
+                return Err(StoreError::Integrity("SmallContent format/ordinal"));
+            }
+            if !native {
+                return Ok(Some(Extraction::NativeUnsupported));
+            }
+            if budget
+                .as_deref_mut()
+                .is_some_and(|b| !b.charge(entry.range.len(), entry.range.len()))
+            {
+                return Ok(None);
+            }
             let mut record = Vec::with_capacity(entry.range.len() + 8);
             record.resize(entry.range.len(), 0);
             blob.read_at_exact(&mut record, entry.range.start)?;
@@ -638,9 +996,15 @@ impl StoreDb {
                 super::delta::expand_compact(&mut record, canonical_length)?;
             }
             if super::delta::record(&record)?.kind == 2 && !self.small_chain_format() {
-                return Err(StoreError::Integrity("SmallContent chain requires schema 9"));
+                return Err(StoreError::Integrity(
+                    "SmallContent chain requires schema 9",
+                ));
             }
-            self.note_physical(PhysicalStorageReceipt { encoded_read_bytes: encoded_length as u64, blob_ranges: 1, ..Default::default() });
+            self.note_physical(PhysicalStorageReceipt {
+                encoded_read_bytes: encoded_length as u64,
+                blob_ranges: 1,
+                ..Default::default()
+            });
             return Ok(Some(Extraction::Small(record)));
         }
         self.note_physical(PhysicalStorageReceipt {
@@ -706,7 +1070,14 @@ impl StoreDb {
         }
         if targets.len() == 1 {
             return Ok(vec![self
-                .extract_record_group(pack_id, group, targets[0].1.record, targets[0].1.canonical_length, true, None)?
+                .extract_record_group(
+                    pack_id,
+                    group,
+                    targets[0].1.record,
+                    targets[0].1.canonical_length,
+                    true,
+                    None,
+                )?
                 .ok_or(StoreError::Integrity("required extraction"))?]);
         }
         let connection = self.reader()?;
@@ -714,13 +1085,17 @@ impl StoreDb {
         let length = blob.len();
         let mut header_bytes = [0; 16];
         blob.read_at_exact(&mut header_bytes, 0)?;
-        if &header_bytes[..8] == super::whole::MAGIC { return Err(StoreError::Integrity("whole-file record locator alias")); }
+        if &header_bytes[..8] == super::whole::MAGIC {
+            return Err(StoreError::Integrity("whole-file record locator alias"));
+        }
         let header = pack::versioned_header(&header_bytes, length)?;
         if group >= header.group_count {
             return Err(StoreError::Integrity("object group locator"));
         }
         let entry = if header.version == pack::Version::CompactSmall {
-            if !self.compact_framing() { return Err(StoreError::Integrity("compact framing requires schema 10")); }
+            if !self.compact_framing() {
+                return Err(StoreError::Integrity("compact framing requires schema 10"));
+            }
             let mut starts = [0; 4 * pack::GROUP_COUNT_LIMIT];
             let starts = &mut starts[..4 * header.group_count];
             blob.read_at_exact(starts, 16)?;
@@ -735,8 +1110,13 @@ impl StoreDb {
             blob_ranges: 2,
             ..Default::default()
         });
-        if matches!(header.version, pack::Version::Legacy | pack::Version::Metadata | pack::Version::PooledMetadata) {
-            if header.version != pack::Version::Legacy && !self.compact_namespace() { return Err(StoreError::Integrity("metadata framing requires schema 10")); }
+        if matches!(
+            header.version,
+            pack::Version::Legacy | pack::Version::Metadata | pack::Version::PooledMetadata
+        ) {
+            if header.version != pack::Version::Legacy && !self.compact_namespace() {
+                return Err(StoreError::Integrity("metadata framing requires schema 10"));
+            }
             if entry.oversized {
                 return Ok(vec![Extraction::Legacy(entry, Vec::new())]);
             }
@@ -747,10 +1127,23 @@ impl StoreDb {
                 blob_ranges: 1,
                 ..Default::default()
             });
-            return Ok(vec![if header.version != pack::Version::Legacy { Extraction::Metadata(header.version == pack::Version::PooledMetadata, entry, encoded) } else { Extraction::Legacy(entry, encoded) }]);
+            return Ok(vec![if header.version != pack::Version::Legacy {
+                Extraction::Metadata(
+                    header.version == pack::Version::PooledMetadata,
+                    entry,
+                    encoded,
+                )
+            } else {
+                Extraction::Legacy(entry, encoded)
+            }]);
         }
-        if matches!(header.version, pack::Version::Small | pack::Version::CompactSmall) {
-            if !self.small_content_format() || targets.len() != 1 || targets[0].1.record != 0 { return Err(StoreError::Integrity("SmallContent selected locator")); }
+        if matches!(
+            header.version,
+            pack::Version::Small | pack::Version::CompactSmall
+        ) {
+            if !self.small_content_format() || targets.len() != 1 || targets[0].1.record != 0 {
+                return Err(StoreError::Integrity("SmallContent selected locator"));
+            }
             let mut record = Vec::with_capacity(entry.range.len() + 8);
             record.resize(entry.range.len(), 0);
             blob.read_at_exact(&mut record, entry.range.start)?;
@@ -759,9 +1152,15 @@ impl StoreDb {
                 super::delta::expand_compact(&mut record, targets[0].1.canonical_length)?;
             }
             if super::delta::record(&record)?.kind == 2 && !self.small_chain_format() {
-                return Err(StoreError::Integrity("SmallContent chain requires schema 9"));
+                return Err(StoreError::Integrity(
+                    "SmallContent chain requires schema 9",
+                ));
             }
-            self.note_physical(PhysicalStorageReceipt { encoded_read_bytes: encoded_length as u64, blob_ranges: 1, ..Default::default() });
+            self.note_physical(PhysicalStorageReceipt {
+                encoded_read_bytes: encoded_length as u64,
+                blob_ranges: 1,
+                ..Default::default()
+            });
             return Ok(vec![Extraction::Small(record)]);
         }
         if entry.range.len() < 8 || entry.range.len() > pack::GROUP_LIMIT {
@@ -973,8 +1372,13 @@ impl StoreDb {
                     None => return Ok(NativePriorOutcome::Budget),
                 },
             };
-            if matches!(&extracted, Extraction::Small(_) | Extraction::Whole(_) | Extraction::Metadata(..)) {
-                if optional && nodes.is_empty() { return Ok(NativePriorOutcome::UnsupportedRole); }
+            if matches!(
+                &extracted,
+                Extraction::Small(_) | Extraction::Whole(_) | Extraction::Metadata(..)
+            ) {
+                if optional && nodes.is_empty() {
+                    return Ok(NativePriorOutcome::UnsupportedRole);
+                }
                 return Err(StoreError::Integrity("native dependency is SmallContent"));
             }
             if !(21..=21 + pack::NATIVE_RAW_LIMIT).contains(&location.canonical_length) {
@@ -988,7 +1392,10 @@ impl StoreDb {
                 Extraction::Native {
                     requested, parsed, ..
                 } => (*requested, *parsed),
-                Extraction::Small(_) | Extraction::Whole(_) | Extraction::Metadata(..) | Extraction::NativeUnsupported => unreachable!(),
+                Extraction::Small(_)
+                | Extraction::Whole(_)
+                | Extraction::Metadata(..)
+                | Extraction::NativeUnsupported => unreachable!(),
             };
             encoded_work += requested;
             decoded_work += parsed + location.canonical_length;
@@ -1099,7 +1506,10 @@ impl StoreDb {
                     id = base;
                     location = next;
                 }
-                Extraction::Small(_) | Extraction::Whole(_) | Extraction::Metadata(..) | Extraction::NativeUnsupported => unreachable!(),
+                Extraction::Small(_)
+                | Extraction::Whole(_)
+                | Extraction::Metadata(..)
+                | Extraction::NativeUnsupported => unreachable!(),
             }
         }
         let depth = if canonical.is_empty() {
@@ -1215,11 +1625,25 @@ impl StoreDb {
         // Canonical length does not identify the physical grammar: upper-range
         // SmallContent uses pack v3, while legacy oversized objects stream below.
         let entry = match self.extract_record_group(
-            location.pack, location.group, location.record, location.canonical_length, true, None,
+            location.pack,
+            location.group,
+            location.record,
+            location.canonical_length,
+            true,
+            None,
         )? {
             Some(Extraction::Whole(record)) => {
-                let object = self.read_whole(id, location, record, &mut super::whole::OwnerCache::default())?;
-                return if object.bytes == canonical { Ok(()) } else { Err(StoreError::Integrity("object collision")) };
+                let object = self.read_whole(
+                    id,
+                    location,
+                    record,
+                    &mut super::whole::OwnerCache::default(),
+                )?;
+                return if object.bytes == canonical {
+                    Ok(())
+                } else {
+                    Err(StoreError::Integrity("object collision"))
+                };
             }
             Some(Extraction::Small(record)) => {
                 let object = self.read_small(id, location, record, &mut BTreeMap::new())?;
@@ -1325,12 +1749,16 @@ impl StoreDb {
             let first = extracted.remove(0);
             let (entry, encoded) = match first {
                 Extraction::Whole(record) => {
-                    let [(id, location)] = ordered.as_slice() else { return Err(StoreError::Integrity("whole-file locator alias")); };
+                    let [(id, location)] = ordered.as_slice() else {
+                        return Err(StoreError::Integrity("whole-file locator alias"));
+                    };
                     emit(self.read_whole(*id, *location, record, &mut whole_owners)?)?;
                     continue;
                 }
                 Extraction::Small(record) => {
-                    let [(id, location)] = ordered.as_slice() else { return Err(StoreError::Integrity("SmallContent locator alias")); };
+                    let [(id, location)] = ordered.as_slice() else {
+                        return Err(StoreError::Integrity("SmallContent locator alias"));
+                    };
                     emit(self.read_small(*id, *location, record, &mut small_bases)?)?;
                     continue;
                 }
@@ -1338,7 +1766,11 @@ impl StoreDb {
                     let decoded = self.decode_metadata_group(entry, encoded)?;
                     for (id, location) in ordered {
                         let record = metadata_record(&decoded, location.record)?;
-                        emit(self.metadata_chain(id, location, pooled, record, None)?.ok_or(StoreError::Integrity("required metadata chain"))?.canonical)?;
+                        emit(
+                            self.metadata_chain(id, location, pooled, record, None)?
+                                .ok_or(StoreError::Integrity("required metadata chain"))?
+                                .canonical,
+                        )?;
                     }
                     continue;
                 }
@@ -1578,7 +2010,9 @@ fn group_locations(
 
 fn authenticate_metadata(id: ObjectId, bytes: &[u8], length: usize) -> Result<()> {
     authenticate(id, bytes, length)?;
-    if !metadata_leaf(bytes) { return Err(StoreError::Integrity("metadata dependency role")); }
+    if !metadata_leaf(bytes) {
+        return Err(StoreError::Integrity("metadata dependency role"));
+    }
     layerfs_content::tree::compact::decode_inode(bytes)?;
     Ok(())
 }

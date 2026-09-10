@@ -119,7 +119,7 @@ pub(super) fn versioned_header(bytes: &[u8; 16], blob_length: usize) -> Result<H
             version: Version::Legacy,
             group_count: header(bytes, blob_length)?,
         }),
-        version @ (2 | 3 | 4 | 5 | 6) => {
+        version @ 2..=6 => {
             let count = u32_at(bytes, 12)?;
             if &bytes[..8] != MAGIC
                 || blob_length > PACK_LIMIT
@@ -129,7 +129,13 @@ pub(super) fn versioned_header(bytes: &[u8; 16], blob_length: usize) -> Result<H
                 return Err(invalid());
             }
             Ok(Header {
-                version: match version { 6 => Version::PooledMetadata, 5 => Version::Metadata, 4 => Version::CompactSmall, 3 => Version::Small, _ => Version::Native },
+                version: match version {
+                    6 => Version::PooledMetadata,
+                    5 => Version::Metadata,
+                    4 => Version::CompactSmall,
+                    3 => Version::Small,
+                    _ => Version::Native,
+                },
                 group_count: count,
             })
         }
@@ -142,20 +148,36 @@ pub(super) fn versioned_entry(
     header: Header,
     blob_length: usize,
 ) -> Result<GroupEntry> {
-    if header.version == Version::CompactSmall { return Err(invalid()); }
+    if header.version == Version::CompactSmall {
+        return Err(invalid());
+    }
     if header.version == Version::Small {
         let start = u32_at(bytes, 0)?;
         let encoded = u32_at(bytes, 4)?;
         let decoded = u32_at(bytes, 8)?;
         let end = start.checked_add(encoded).ok_or_else(invalid)?;
-        if bytes[12..] != [0; 4] || encoded != decoded || !(10..=192 * 1024).contains(&encoded)
-            || start < 16 + 16 * header.group_count || end > blob_length || blob_length > PACK_LIMIT {
+        if bytes[12..] != [0; 4]
+            || encoded != decoded
+            || !(10..=192 * 1024).contains(&encoded)
+            || start < 16 + 16 * header.group_count
+            || end > blob_length
+            || blob_length > PACK_LIMIT
+        {
             return Err(invalid());
         }
-        return Ok(GroupEntry { range: start..end, decoded_length: decoded, codec: Codec::Raw, oversized: false });
+        return Ok(GroupEntry {
+            range: start..end,
+            decoded_length: decoded,
+            codec: Codec::Raw,
+            oversized: false,
+        });
     }
     let parsed = entry(bytes, header.group_count, blob_length)?;
-    if matches!(header.version, Version::Metadata | Version::PooledMetadata) && (parsed.oversized || parsed.decoded_length > 16 * 1024) { return Err(invalid()); }
+    if matches!(header.version, Version::Metadata | Version::PooledMetadata)
+        && (parsed.oversized || parsed.decoded_length > 16 * 1024)
+    {
+        return Err(invalid());
+    }
     if header.version == Version::Native
         && (parsed.oversized || parsed.codec != Codec::Raw || blob_length > PACK_LIMIT)
     {
@@ -166,22 +188,46 @@ pub(super) fn versioned_entry(
 
 /// Pack v4 stores only group starts. Validate the complete bounded directory
 /// before selecting a range; the final end is the SQLite BLOB length.
-pub(super) fn compact_entry(starts: &[u8], header: Header, blob_length: usize, group: usize) -> Result<GroupEntry> {
-    if header.version != Version::CompactSmall || !(1..=GROUP_COUNT_LIMIT).contains(&header.group_count) || group >= header.group_count
-        || starts.len() != 4 * header.group_count || blob_length > PACK_LIMIT {
+pub(super) fn compact_entry(
+    starts: &[u8],
+    header: Header,
+    blob_length: usize,
+    group: usize,
+) -> Result<GroupEntry> {
+    if header.version != Version::CompactSmall
+        || !(1..=GROUP_COUNT_LIMIT).contains(&header.group_count)
+        || group >= header.group_count
+        || starts.len() != 4 * header.group_count
+        || blob_length > PACK_LIMIT
+    {
         return Err(invalid());
     }
     let mut start = 16 + starts.len();
     let mut selected = 0..0;
     for index in 0..header.group_count {
-        if u32_at(starts, 4 * index)? != start { return Err(invalid()); }
-        let end = if index + 1 == header.group_count { blob_length } else { u32_at(starts, 4 * (index + 1))? };
+        if u32_at(starts, 4 * index)? != start {
+            return Err(invalid());
+        }
+        let end = if index + 1 == header.group_count {
+            blob_length
+        } else {
+            u32_at(starts, 4 * (index + 1))?
+        };
         let size = end.checked_sub(start).ok_or_else(invalid)?;
-        if !(2..=1 + 32 + super::delta::FRAME_LIMIT).contains(&size) || end > blob_length { return Err(invalid()); }
-        if index == group { selected = start..end; }
+        if !(2..=1 + 32 + super::delta::FRAME_LIMIT).contains(&size) || end > blob_length {
+            return Err(invalid());
+        }
+        if index == group {
+            selected = start..end;
+        }
         start = end;
     }
-    Ok(GroupEntry { decoded_length: selected.len(), range: selected, codec: Codec::Raw, oversized: false })
+    Ok(GroupEntry {
+        decoded_length: selected.len(),
+        range: selected,
+        codec: Codec::Raw,
+        oversized: false,
+    })
 }
 
 pub(super) const NATIVE_RAW_LIMIT: usize = 32_768;
@@ -332,13 +378,47 @@ pub(super) fn assemble_native(groups: &[EncodedGroup]) -> Result<Vec<u8>> {
 /// One bounded encoder scratch allocation, owned by one admission preparation.
 /// The cached context points only into owned scratch; borrowed inputs reset on every call.
 #[derive(Clone, Copy, PartialEq)]
-pub(super) enum ContentProfile { Native, Small, Whole }
+pub(super) enum ContentProfile {
+    Native,
+    Small,
+    Whole,
+}
 impl ContentProfile {
-    fn raw_limit(self) -> usize { match self { Self::Native => NATIVE_RAW_LIMIT, Self::Small => 131071, Self::Whole => layerfs_content::file::content::WHOLE_LIMIT } }
-    fn frame_limit(self) -> usize { match self { Self::Native => NATIVE_FRAME_LIMIT, Self::Small => 135168, Self::Whole => layerfs_content::file::content::WHOLE_LIMIT + 1024 } }
-    fn output_limit(self) -> usize { if self == Self::Whole { self.raw_limit() + 16 * 1024 } else { self.frame_limit() } }
-    fn window(self) -> i32 { if self == Self::Small { 18 } else { 20 } }
-    fn decode_workspace(self) -> usize { if self == Self::Native { NATIVE_DECODE_WORKSPACE } else { 1024 * 1024 } }
+    fn raw_limit(self) -> usize {
+        match self {
+            Self::Native => NATIVE_RAW_LIMIT,
+            Self::Small => 131071,
+            Self::Whole => layerfs_content::file::content::WHOLE_LIMIT,
+        }
+    }
+    fn frame_limit(self) -> usize {
+        match self {
+            Self::Native => NATIVE_FRAME_LIMIT,
+            Self::Small => 135168,
+            Self::Whole => layerfs_content::file::content::WHOLE_LIMIT + 1024,
+        }
+    }
+    fn output_limit(self) -> usize {
+        if self == Self::Whole {
+            self.raw_limit() + 16 * 1024
+        } else {
+            self.frame_limit()
+        }
+    }
+    fn window(self) -> i32 {
+        if self == Self::Small {
+            18
+        } else {
+            20
+        }
+    }
+    fn decode_workspace(self) -> usize {
+        if self == Self::Native {
+            NATIVE_DECODE_WORKSPACE
+        } else {
+            1024 * 1024
+        }
+    }
 }
 
 pub(super) struct NativeEncoder {
@@ -357,15 +437,29 @@ impl NativeEncoder {
     }
 
     pub(super) fn new_small() -> Result<Self> {
-        Ok(Self { profile: ContentProfile::Small, memory: zstandard::small_workspace()?, context: None })
+        Ok(Self {
+            profile: ContentProfile::Small,
+            memory: zstandard::small_workspace()?,
+            context: None,
+        })
     }
 
     pub(super) fn new_whole() -> Result<Self> {
-        Ok(Self { profile: ContentProfile::Whole, memory: zstandard::whole_workspace()?, context: None })
+        Ok(Self {
+            profile: ContentProfile::Whole,
+            memory: zstandard::whole_workspace()?,
+            context: None,
+        })
     }
 
     pub(super) fn compress(&mut self, raw: &[u8], prefix: Option<&[u8]>) -> Result<Vec<u8>> {
-        zstandard::native_compress_in(&mut self.memory, &mut self.context, raw, prefix, self.profile)
+        zstandard::native_compress_in(
+            &mut self.memory,
+            &mut self.context,
+            raw,
+            prefix,
+            self.profile,
+        )
     }
 }
 
@@ -382,60 +476,103 @@ pub(super) fn native_decompress(
     zstandard::decompress_profile(frame, raw_length, prefix, ContentProfile::Native)
 }
 
-pub(super) fn small_decompress(frame: &[u8], raw_length: usize, prefix: Option<&[u8]>) -> Result<Vec<u8>> {
+pub(super) fn small_decompress(
+    frame: &[u8],
+    raw_length: usize,
+    prefix: Option<&[u8]>,
+) -> Result<Vec<u8>> {
     zstandard::decompress_profile(frame, raw_length, prefix, ContentProfile::Small)
 }
 
-pub(super) fn whole_decompress(frame: &[u8], raw_length: usize, prefix: Option<&[u8]>) -> Result<Vec<u8>> {
+pub(super) fn whole_decompress(
+    frame: &[u8],
+    raw_length: usize,
+    prefix: Option<&[u8]>,
+) -> Result<Vec<u8>> {
     zstandard::decompress_profile(frame, raw_length, prefix, ContentProfile::Whole)
 }
 
 pub(super) fn validate_small_pack(bytes: &[u8]) -> Result<()> {
-    let header_bytes: &[u8; 16] = bytes.get(..16).ok_or_else(invalid)?.try_into().map_err(|_| invalid())?;
+    let header_bytes: &[u8; 16] = bytes
+        .get(..16)
+        .ok_or_else(invalid)?
+        .try_into()
+        .map_err(|_| invalid())?;
     let header = versioned_header(header_bytes, bytes.len())?;
     if header.version == Version::CompactSmall {
-        let starts = bytes.get(16..16 + 4 * header.group_count).ok_or_else(invalid)?;
+        let starts = bytes
+            .get(16..16 + 4 * header.group_count)
+            .ok_or_else(invalid)?;
         for index in 0..header.group_count {
             let entry = compact_entry(starts, header, bytes.len(), index)?;
             super::delta::compact_record_parts(&bytes[entry.range])?;
         }
         return Ok(());
     }
-    if header.version != Version::Small { return Err(invalid()); }
+    if header.version != Version::Small {
+        return Err(invalid());
+    }
     let mut offset = 16 + 16 * header.group_count;
     for index in 0..header.group_count {
-        let directory: &[u8; 16] = bytes.get(16 + 16 * index..32 + 16 * index).ok_or_else(invalid)?.try_into().map_err(|_| invalid())?;
+        let directory: &[u8; 16] = bytes
+            .get(16 + 16 * index..32 + 16 * index)
+            .ok_or_else(invalid)?
+            .try_into()
+            .map_err(|_| invalid())?;
         let entry = versioned_entry(directory, header, bytes.len())?;
-        if entry.range.start != offset { return Err(invalid()); }
+        if entry.range.start != offset {
+            return Err(invalid());
+        }
         offset = entry.range.end;
         super::delta::record(&bytes[entry.range])?;
     }
-    if offset != bytes.len() { return Err(invalid()); }
+    if offset != bytes.len() {
+        return Err(invalid());
+    }
     Ok(())
 }
 
 pub(super) fn assemble_compact_small(groups: &[EncodedGroup]) -> Result<Vec<u8>> {
     let mut size = 16 + 4 * groups.len();
-    if groups.is_empty() || groups.len() > GROUP_COUNT_LIMIT { return Err(invalid()); }
+    if groups.is_empty() || groups.len() > GROUP_COUNT_LIMIT {
+        return Err(invalid());
+    }
     for group in groups {
         super::delta::record(&group.bytes)?;
-        if group.records != 1 || group.codec != Codec::Raw || group.decoded_length != group.bytes.len() { return Err(invalid()); }
-        size = size.checked_add(group.bytes.len() - 8).ok_or_else(invalid)?;
+        if group.records != 1
+            || group.codec != Codec::Raw
+            || group.decoded_length != group.bytes.len()
+        {
+            return Err(invalid());
+        }
+        size = size
+            .checked_add(group.bytes.len() - 8)
+            .ok_or_else(invalid)?;
     }
-    if size > PACK_LIMIT { return Err(invalid()); }
+    if size > PACK_LIMIT {
+        return Err(invalid());
+    }
     let mut bytes = Vec::with_capacity(size);
     bytes.extend_from_slice(MAGIC);
     put_u32(&mut bytes, 4)?;
     put_u32(&mut bytes, groups.len())?;
     let mut offset = 16 + 4 * groups.len();
-    for group in groups { put_u32(&mut bytes, offset)?; offset += group.bytes.len() - 8; }
-    for group in groups { bytes.push(group.bytes[0]); bytes.extend_from_slice(&group.bytes[9..]); }
+    for group in groups {
+        put_u32(&mut bytes, offset)?;
+        offset += group.bytes.len() - 8;
+    }
+    for group in groups {
+        bytes.push(group.bytes[0]);
+        bytes.extend_from_slice(&group.bytes[9..]);
+    }
     Ok(bytes)
 }
 
 pub(super) fn assemble_small(groups: &[EncodedGroup]) -> Result<Vec<u8>> {
     let len = 16 + 16 * groups.len() + groups.iter().map(|g| g.bytes.len()).sum::<usize>();
-    if groups.is_empty() || groups.len() > GROUP_COUNT_LIMIT || len > PACK_LIMIT { return Err(invalid()); }
+    if groups.is_empty() || groups.len() > GROUP_COUNT_LIMIT || len > PACK_LIMIT {
+        return Err(invalid());
+    }
     let mut bytes = Vec::with_capacity(len);
     bytes.extend_from_slice(MAGIC);
     put_u32(&mut bytes, 3)?;
@@ -443,14 +580,21 @@ pub(super) fn assemble_small(groups: &[EncodedGroup]) -> Result<Vec<u8>> {
     let mut offset = 16 + 16 * groups.len();
     for group in groups {
         super::delta::record(&group.bytes)?;
-        if group.records != 1 || group.codec != Codec::Raw || group.decoded_length != group.bytes.len() { return Err(invalid()); }
+        if group.records != 1
+            || group.codec != Codec::Raw
+            || group.decoded_length != group.bytes.len()
+        {
+            return Err(invalid());
+        }
         put_u32(&mut bytes, offset)?;
         put_u32(&mut bytes, group.bytes.len())?;
         put_u32(&mut bytes, group.bytes.len())?;
         bytes.extend_from_slice(&[0; 4]);
         offset += group.bytes.len();
     }
-    for group in groups { bytes.extend_from_slice(&group.bytes); }
+    for group in groups {
+        bytes.extend_from_slice(&group.bytes);
+    }
     Ok(bytes)
 }
 
@@ -1010,7 +1154,10 @@ mod zstandard {
 
     /// Exact S2 requested setter sequence, shared with the dynamic-equivalence
     /// test. No CParams substitution or parameter adjustment to fit workspace.
-    unsafe fn native_parameters(context: *mut ZSTD_CCtx, profile: super::ContentProfile) -> Result<()> {
+    unsafe fn native_parameters(
+        context: *mut ZSTD_CCtx,
+        profile: super::ContentProfile,
+    ) -> Result<()> {
         // SAFETY: Caller supplies a live initialized context, exclusively owned.
         unsafe {
             checked(ZSTD_CCtx_reset(
@@ -1038,7 +1185,9 @@ mod zstandard {
             let mut parameters = ZSTD_getCParams(3, 131071, 131071);
             parameters.windowLog = 18;
             let size = checked(ZSTD_estimateCCtxSize_usingCParams(parameters))?;
-            if size > 2 * 1024 * 1024 || checked(ZSTD_compressBound(131071))? > 135168 { return Err(resource()); }
+            if size > 2 * 1024 * 1024 || checked(ZSTD_compressBound(131071))? > 135168 {
+                return Err(resource());
+            }
         }
         workspace(2 * 1024 * 1024, 2 * 1024 * 1024)
     }
@@ -1048,7 +1197,10 @@ mod zstandard {
             let mut parameters = ZSTD_getCParams(3, 2 * 1024 * 1024, 2 * 1024 * 1024);
             parameters.windowLog = 20;
             if checked(ZSTD_estimateCCtxSize_usingCParams(parameters))? > 8 * 1024 * 1024
-                || checked(ZSTD_compressBound(2 * 1024 * 1024))? > 2 * 1024 * 1024 + 16 * 1024 { return Err(resource()); }
+                || checked(ZSTD_compressBound(2 * 1024 * 1024))? > 2 * 1024 * 1024 + 16 * 1024
+            {
+                return Err(resource());
+            }
         }
         workspace(8 * 1024 * 1024, 8 * 1024 * 1024)
     }
@@ -1647,8 +1799,16 @@ mod native_framing_tests {
             super::super::delta::expand_compact(&mut record, raw + 23).unwrap();
             assert_eq!(record, group.bytes);
         }
-        for end in 0..bytes.len() { assert!(validate_small_pack(&bytes[..end]).is_err()); }
-        for (offset, replacement) in [(12, 0), (12, 257), (16, 27), (20, 28), (24, bytes.len() as u32 + 1)] {
+        for end in 0..bytes.len() {
+            assert!(validate_small_pack(&bytes[..end]).is_err());
+        }
+        for (offset, replacement) in [
+            (12, 0),
+            (12, 257),
+            (16, 27),
+            (20, 28),
+            (24, bytes.len() as u32 + 1),
+        ] {
             let mut corrupt = bytes.clone();
             corrupt[offset..offset + 4].copy_from_slice(&replacement.to_le_bytes());
             assert!(validate_small_pack(&corrupt).is_err());

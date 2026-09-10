@@ -768,7 +768,6 @@ pub(crate) fn verify_file_transcripts(
     Ok(receipt)
 }
 
-
 fn verify_expected_contract(
     case: &super::workload_source::workspace_common::Case,
     seed: u8,
@@ -1319,7 +1318,6 @@ pub(crate) fn verify_boundaries(
     );
     Ok(receipt)
 }
-
 
 fn verify_boundary_contract(
     expected: &BTreeMap<String, Vec<Extent>>,

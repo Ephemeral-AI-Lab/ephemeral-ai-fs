@@ -65,7 +65,9 @@ fn diff_directory_nodes<S: ObjectRead>(
     }
     let old_node = load_directory_node_shallow(store, old, root, None, counters)?;
     let new_node = load_directory_node_shallow(store, new, root, None, counters)?;
-    if old_node.summary.compact != new_node.summary.compact { return Err(CoreError::ProfileMismatch); }
+    if old_node.summary.compact != new_node.summary.compact {
+        return Err(CoreError::ProfileMismatch);
+    }
     match (&old_node.node, &new_node.node) {
         (
             DirectoryNodeV1::Leaf { entries: old, .. },

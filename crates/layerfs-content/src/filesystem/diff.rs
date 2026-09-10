@@ -180,11 +180,21 @@ fn load_pair(
     is_root: bool,
 ) -> CoreResult<(Option<LoadedNode>, Option<LoadedNode>)> {
     if old.compact || new.compact {
-        let read = |view: RootView, inode: Option<InodeId>| inode.map(|inode| {
-            let record = crate::tree::inode::inode_record_lookup(store, view.table, inode, &mut InodeTableCounters::default())?.ok_or(CoreError::MissingObject)?;
-            record.validate(is_root)?;
-            Ok(loaded(inode, record))
-        }).transpose();
+        let read = |view: RootView, inode: Option<InodeId>| {
+            inode
+                .map(|inode| {
+                    let record = crate::tree::inode::inode_record_lookup(
+                        store,
+                        view.table,
+                        inode,
+                        &mut InodeTableCounters::default(),
+                    )?
+                    .ok_or(CoreError::MissingObject)?;
+                    record.validate(is_root)?;
+                    Ok(loaded(inode, record))
+                })
+                .transpose()
+        };
         return Ok((read(old, old_inode)?, read(new, new_inode)?));
     }
     let (old_record, new_record) = match (old_inode, new_inode) {

@@ -681,10 +681,18 @@ fn run() -> AnyResult<()> {
     {
         return workspace_bench::dispatch(&args);
     }
-    if args
-        .first()
-        .is_some_and(|arg| matches!(arg.to_str(), Some("storage-smoke-session" | "historical-access-session" | "storage-compact" | "storage-format-probe" | "storage-integration-smoke")))
-    {
+    if args.first().is_some_and(|arg| {
+        matches!(
+            arg.to_str(),
+            Some(
+                "storage-smoke-session"
+                    | "historical-access-session"
+                    | "storage-compact"
+                    | "storage-format-probe"
+                    | "storage-integration-smoke"
+            )
+        )
+    }) {
         return storage_smoke::dispatch(&args);
     }
     match args.as_slice() {

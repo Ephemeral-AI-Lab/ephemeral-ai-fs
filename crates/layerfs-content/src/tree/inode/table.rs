@@ -51,28 +51,66 @@ pub fn inode_record_lookup_many<S: ObjectRead>(
     keys: &[InodeId],
     counters: &mut InodeTableCounters,
 ) -> CoreResult<Vec<Option<InodeRecordV1>>> {
-    if keys.len() > 128 { return Err(CoreError::ObjectLimitExceeded); }
-    if keys.is_empty() { return Ok(Vec::new()); }
-    enum Root { Legacy(InodeTableNodeV1), Compact(super::super::compact::InodeNode) }
+    if keys.len() > 128 {
+        return Err(CoreError::ObjectLimitExceeded);
+    }
+    if keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    enum Root {
+        Legacy(InodeTableNodeV1),
+        Compact(super::super::compact::InodeNode),
+    }
     let node = store.with_authenticated_canonical(root.0, |bytes| {
         if crate::decode_bytes_object(bytes)?.starts_with(b"LFS6INT\0") {
             Ok(Root::Compact(super::super::compact::decode_inode(bytes)?))
-        } else { Ok(Root::Legacy(decode_inode_table_node(bytes)?)) }
+        } else {
+            Ok(Root::Legacy(decode_inode_table_node(bytes)?))
+        }
     })?;
-    counters.nodes_read = counters.nodes_read.checked_add(1).ok_or(CoreError::LengthOverflow)?;
+    counters.nodes_read = counters
+        .nodes_read
+        .checked_add(1)
+        .ok_or(CoreError::LengthOverflow)?;
     let ids = match node {
-        Root::Compact(node) => return keys.iter().map(|key| super::super::compact::inode_lookup_from_node(
-            store, node.clone(), super::super::compact::InodeSerial::from_inode_key(*key)?, counters,
-        )).collect(),
-        Root::Legacy(node) => inode_table_lookup_many_prefetched(store, root, keys, counters, Some(node))?,
+        Root::Compact(node) => {
+            return keys
+                .iter()
+                .map(|key| {
+                    super::super::compact::inode_lookup_from_node(
+                        store,
+                        node.clone(),
+                        super::super::compact::InodeSerial::from_inode_key(*key)?,
+                        counters,
+                    )
+                })
+                .collect()
+        }
+        Root::Legacy(node) => {
+            inode_table_lookup_many_prefetched(store, root, keys, counters, Some(node))?
+        }
     };
-    let unique = ids.iter().flatten().copied().collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>();
+    let unique = ids
+        .iter()
+        .flatten()
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
     let mut records = BTreeMap::new();
     store.get_authenticated_batch(&unique, |id, payload| {
-        records.insert(id, super::codec::decode_inode_record(&crate::encode_bytes_object(payload)?)?);
+        records.insert(
+            id,
+            super::codec::decode_inode_record(&crate::encode_bytes_object(payload)?)?,
+        );
         Ok(())
     })?;
-    ids.into_iter().map(|id| id.map(|id| records.get(&id).copied().ok_or(CoreError::MissingObject)).transpose()).collect()
+    ids.into_iter()
+        .map(|id| {
+            id.map(|id| records.get(&id).copied().ok_or(CoreError::MissingObject))
+                .transpose()
+        })
+        .collect()
 }
 
 pub fn inode_table_lookup_many<S: ObjectRead>(
@@ -118,7 +156,9 @@ fn inode_table_lookup_many_prefetched<S: ObjectRead>(
     let mut output = vec![None; keys.len()];
     while !pending.is_empty() {
         let mut nodes = BTreeMap::new();
-        if let Some(node) = prefetched.take() { nodes.insert(root.0, node); }
+        if let Some(node) = prefetched.take() {
+            nodes.insert(root.0, node);
+        }
         let ids = pending
             .iter()
             .map(|pending| pending.node)
@@ -126,15 +166,23 @@ fn inode_table_lookup_many_prefetched<S: ObjectRead>(
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
-        counters.nodes_read = counters.nodes_read.checked_add(ids.len() as u64).ok_or(CoreError::LengthOverflow)?;
+        counters.nodes_read = counters
+            .nodes_read
+            .checked_add(ids.len() as u64)
+            .ok_or(CoreError::LengthOverflow)?;
         let expected_count = nodes.len() + ids.len();
         if !ids.is_empty() {
             store.get_authenticated_batch(&ids, |id, payload| {
-                nodes.insert(id, decode_inode_table_node(&crate::encode_bytes_object(payload)?)?);
+                nodes.insert(
+                    id,
+                    decode_inode_table_node(&crate::encode_bytes_object(payload)?)?,
+                );
                 Ok(())
             })?;
         }
-        if nodes.len() != expected_count { return Err(CoreError::MissingObject); }
+        if nodes.len() != expected_count {
+            return Err(CoreError::MissingObject);
+        }
         let mut next = Vec::new();
         for lookup in pending {
             let node = nodes.get(&lookup.node).ok_or(CoreError::MissingObject)?;
@@ -324,21 +372,38 @@ pub fn visit_inode_table_entries<S: ObjectRead>(
 }
 
 /// Stream authenticated logical values in key order for either namespace format.
-pub fn visit_inode_records<S: ObjectRead>(store: &S, root: InodeTableRoot, counters: &mut InodeTableCounters,
-    mut visitor: impl FnMut(InodeId, InodeRecordV1) -> CoreResult<()>) -> CoreResult<()> {
+pub fn visit_inode_records<S: ObjectRead>(
+    store: &S,
+    root: InodeTableRoot,
+    counters: &mut InodeTableCounters,
+    mut visitor: impl FnMut(InodeId, InodeRecordV1) -> CoreResult<()>,
+) -> CoreResult<()> {
     counters.nodes_read += 1;
     if super::super::compact::is_inode_table(store, root.0)? {
         let mut cursor = super::super::compact::InodeCursor::new(root.0);
-        while let Some((key, record)) = cursor.next(store, counters)? { visitor(key.inode_key(), record)?; }
+        while let Some((key, record)) = cursor.next(store, counters)? {
+            visitor(key.inode_key(), record)?;
+        }
         return Ok(());
     }
     visit_inode_table_entries(store, root, counters, |rows| {
-        let ids = rows.iter().map(|row| row.1).collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>();
+        let ids = rows
+            .iter()
+            .map(|row| row.1)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
         let mut records = BTreeMap::new();
         store.get_authenticated_batch(&ids, |id, bytes| {
-            records.insert(id, super::codec::decode_inode_record(&crate::encode_bytes_object(bytes)?)?); Ok(())
+            records.insert(
+                id,
+                super::codec::decode_inode_record(&crate::encode_bytes_object(bytes)?)?,
+            );
+            Ok(())
         })?;
-        for (key, id) in rows { visitor(*key, *records.get(id).ok_or(CoreError::MissingObject)?)?; }
+        for (key, id) in rows {
+            visitor(*key, *records.get(id).ok_or(CoreError::MissingObject)?)?;
+        }
         Ok(())
     })
 }
@@ -350,10 +415,23 @@ pub fn inode_table_upsert<S: ObjectStore>(
     record: ObjectId,
 ) -> CoreResult<(InodeTableRoot, InodeTableCounters)> {
     if super::super::compact::is_inode_table(store, root.0)? {
-        let (root, batch) = super::super::batch::inode_table_apply_sorted(store, root, std::iter::once(Ok((key, Some(record)))))?;
-        return Ok((root, InodeTableCounters { nodes_read: batch.nodes_read + 1, nodes_created: batch.nodes_created }));
+        let (root, batch) = super::super::batch::inode_table_apply_sorted(
+            store,
+            root,
+            std::iter::once(Ok((key, Some(record)))),
+        )?;
+        return Ok((
+            root,
+            InodeTableCounters {
+                nodes_read: batch.nodes_read + 1,
+                nodes_created: batch.nodes_created,
+            },
+        ));
     }
-    let mut counters = InodeTableCounters { nodes_read: 1, nodes_created: 0 };
+    let mut counters = InodeTableCounters {
+        nodes_read: 1,
+        nodes_created: 0,
+    };
     let summary = summary(store, root.0, &mut counters)?;
     upsert_validated(store, summary, key, record, counters)
 }
@@ -364,20 +442,33 @@ pub fn inode_table_remove<S: ObjectStore>(
     key: InodeId,
 ) -> CoreResult<(InodeTableRoot, ObjectId, InodeTableCounters)> {
     if super::super::compact::is_inode_table(store, root.0)? {
-        let mut counters = InodeTableCounters { nodes_read: 1, nodes_created: 0 };
-        let record = inode_record_lookup(store, root, key, &mut counters)?.ok_or(CoreError::PathNotFound)?;
+        let mut counters = InodeTableCounters {
+            nodes_read: 1,
+            nodes_created: 0,
+        };
+        let record =
+            inode_record_lookup(store, root, key, &mut counters)?.ok_or(CoreError::PathNotFound)?;
         // Preserve the legacy API's returned canonical record for immediate
         // callers; reachability-selected publication omits this removed value.
         let id = store.put_owned(super::codec::encode_inode_record(record)?)?;
-        let (root, batch) = super::super::batch::compact_inode_table_apply_sorted(store, root,
-            std::iter::once(Ok((super::super::compact::InodeSerial::from_inode_key(key)?, None))),
-            super::super::batch::SORTED_TREE_UPDATE_SCRATCH_BYTES)?;
+        let (root, batch) = super::super::batch::compact_inode_table_apply_sorted(
+            store,
+            root,
+            std::iter::once(Ok((
+                super::super::compact::InodeSerial::from_inode_key(key)?,
+                None,
+            ))),
+            super::super::batch::SORTED_TREE_UPDATE_SCRATCH_BYTES,
+        )?;
         counters.nodes_read += batch.nodes_read;
         counters.nodes_created += batch.nodes_created;
         return Ok((root, id, counters));
     }
     let mut deferred = DeferredInodes::new(store);
-    let mut counters = InodeTableCounters { nodes_read: 1, nodes_created: 0 };
+    let mut counters = InodeTableCounters {
+        nodes_read: 1,
+        nodes_created: 0,
+    };
     let current = summary(&deferred, root.0, &mut counters)?;
     let (mut next, removed) = remove(&mut deferred, current, true, key, &mut counters)?;
     if let InodeTableNodeV1::Branch { children, .. } = load(&deferred, next.id, &mut counters)? {
@@ -438,7 +529,9 @@ impl<'a, S: ObjectStore> DeferredInodes<'a, S> {
         if !reachable.insert(id) {
             return Ok(());
         }
-        for child in inode_child_ids(canonical)? { self.collect_node(child, reachable)?; }
+        for child in inode_child_ids(canonical)? {
+            self.collect_node(child, reachable)?;
+        }
         Ok(())
     }
 
@@ -467,7 +560,9 @@ impl<'a, S: ObjectStore> DeferredInodes<'a, S> {
         if !committed.insert(id) {
             return Ok(());
         }
-        for child in inode_child_ids(&canonical)? { self.commit_node(child, committed)?; }
+        for child in inode_child_ids(&canonical)? {
+            self.commit_node(child, committed)?;
+        }
         if self.store.put(&canonical)? != id {
             return Err(CoreError::IdentityMismatch);
         }
@@ -478,20 +573,31 @@ impl<'a, S: ObjectStore> DeferredInodes<'a, S> {
 fn inode_child_ids(canonical: &[u8]) -> CoreResult<Vec<ObjectId>> {
     if crate::decode_bytes_object(canonical)?.starts_with(b"LFS6INT\0") {
         Ok(match super::super::compact::decode_inode(canonical)? {
-            super::super::compact::InodeNode::Branch { children, .. } => children.into_iter().map(|(_, id)| id).collect(),
+            super::super::compact::InodeNode::Branch { children, .. } => {
+                children.into_iter().map(|(_, id)| id).collect()
+            }
             super::super::compact::InodeNode::Leaf(_) => Vec::new(),
         })
     } else {
         Ok(match decode_inode_table_node(canonical)? {
-            InodeTableNodeV1::Branch { children, .. } => children.into_iter().map(|(_, id)| id).collect(),
+            InodeTableNodeV1::Branch { children, .. } => {
+                children.into_iter().map(|(_, id)| id).collect()
+            }
             InodeTableNodeV1::Leaf(_) => Vec::new(),
         })
     }
 }
 
 impl<S: ObjectStore> ObjectStore for DeferredInodes<'_, S> {
-    fn compact_namespace(&self) -> bool { self.store.compact_namespace() }
-    fn allocate_inode_serial(&mut self, scope: ObjectId) -> CoreResult<crate::tree::compact::InodeSerial> { self.store.allocate_inode_serial(scope) }
+    fn compact_namespace(&self) -> bool {
+        self.store.compact_namespace()
+    }
+    fn allocate_inode_serial(
+        &mut self,
+        scope: ObjectId,
+    ) -> CoreResult<crate::tree::compact::InodeSerial> {
+        self.store.allocate_inode_serial(scope)
+    }
     fn get(&self, id: ObjectId) -> CoreResult<Vec<u8>> {
         self.nodes
             .get(&id)
@@ -782,7 +888,11 @@ pub fn reconcile_inode_tables<S: ObjectStore>(
         return Ok(Ok((source, counters, namespace)));
     }
     if super::super::compact::is_inode_table(store, base.0)? {
-        if !super::super::compact::is_inode_table(store, source.0)? || !super::super::compact::is_inode_table(store, destination.0)? { return Err(CoreError::ProfileMismatch); }
+        if !super::super::compact::is_inode_table(store, source.0)?
+            || !super::super::compact::is_inode_table(store, destination.0)?
+        {
+            return Err(CoreError::ProfileMismatch);
+        }
         return reconcile_compact_inodes(store, base, source, destination);
     }
     let mut reconciled = destination;
@@ -800,39 +910,93 @@ pub fn reconcile_inode_tables<S: ObjectStore>(
     Ok(Ok((reconciled, counters, namespace)))
 }
 
-fn reconcile_compact_inodes<S: ObjectStore>(store: &mut S, base: InodeTableRoot, source: InodeTableRoot, mut destination: InodeTableRoot)
-    -> CoreResult<Result<(InodeTableRoot, InodeTableCounters, crate::tree::directory::NamespaceCounters), InodeTableReconcileConflict>> {
+fn reconcile_compact_inodes<S: ObjectStore>(
+    store: &mut S,
+    base: InodeTableRoot,
+    source: InodeTableRoot,
+    mut destination: InodeTableRoot,
+) -> CoreResult<
+    Result<
+        (
+            InodeTableRoot,
+            InodeTableCounters,
+            crate::tree::directory::NamespaceCounters,
+        ),
+        InodeTableReconcileConflict,
+    >,
+> {
     use super::super::compact::InodeCursor;
-    let mut counters = InodeTableCounters { nodes_read: 3, nodes_created: 0 };
+    let mut counters = InodeTableCounters {
+        nodes_read: 3,
+        nodes_created: 0,
+    };
     let mut namespace = crate::tree::directory::NamespaceCounters::default();
     let mut left = InodeCursor::new(base.0);
     let mut right = InodeCursor::new(source.0);
     let mut before = left.next(store, &mut counters)?;
     let mut after = right.next(store, &mut counters)?;
     while before.is_some() || after.is_some() {
-        let key = match (before, after) { (Some(a), Some(b)) => a.0.min(b.0), (Some(a), None) | (None, Some(a)) => a.0, _ => unreachable!() };
+        let key = match (before, after) {
+            (Some(a), Some(b)) => a.0.min(b.0),
+            (Some(a), None) | (None, Some(a)) => a.0,
+            _ => unreachable!(),
+        };
         let old = before.filter(|row| row.0 == key).map(|row| row.1);
         let new = after.filter(|row| row.0 == key).map(|row| row.1);
-        if before.is_some_and(|row| row.0 == key) { before = left.next(store, &mut counters)?; }
-        if after.is_some_and(|row| row.0 == key) { after = right.next(store, &mut counters)?; }
-        if old == new { continue; }
+        if before.is_some_and(|row| row.0 == key) {
+            before = left.next(store, &mut counters)?;
+        }
+        if after.is_some_and(|row| row.0 == key) {
+            after = right.next(store, &mut counters)?;
+        }
+        if old == new {
+            continue;
+        }
         let current = inode_record_lookup(store, destination, key.inode_key(), &mut counters)?;
-        let conflict = || -> CoreResult<_> { Ok(InodeTableReconcileConflict {
-            inode: key.inode_key(),
-            source: new.map(|record| super::codec::encode_inode_record(record).map(|bytes| ObjectId::for_bytes(&bytes))).transpose()?,
-            destination: current.map(|record| super::codec::encode_inode_record(record).map(|bytes| ObjectId::for_bytes(&bytes))).transpose()?,
-        }) };
-        let selected = if current == old { new }
-        else if current == new {
-            if old.is_none() || old.zip(new).is_some_and(|(a, b)| a.namespace_ref_count != b.namespace_ref_count) { return Ok(Err(conflict()?)); }
+        let conflict = || -> CoreResult<_> {
+            Ok(InodeTableReconcileConflict {
+                inode: key.inode_key(),
+                source: new
+                    .map(|record| {
+                        super::codec::encode_inode_record(record)
+                            .map(|bytes| ObjectId::for_bytes(&bytes))
+                    })
+                    .transpose()?,
+                destination: current
+                    .map(|record| {
+                        super::codec::encode_inode_record(record)
+                            .map(|bytes| ObjectId::for_bytes(&bytes))
+                    })
+                    .transpose()?,
+            })
+        };
+        let selected = if current == old {
+            new
+        } else if current == new {
+            if old.is_none()
+                || old
+                    .zip(new)
+                    .is_some_and(|(a, b)| a.namespace_ref_count != b.namespace_ref_count)
+            {
+                return Ok(Err(conflict()?));
+            }
             current
         } else if let (Some(old), Some(new), Some(current)) = (old, new, current) {
-            let Some(merged) = reconcile_inode_values(store, old, new, current, &mut namespace)? else { return Ok(Err(conflict()?)); };
+            let Some(merged) = reconcile_inode_values(store, old, new, current, &mut namespace)?
+            else {
+                return Ok(Err(conflict()?));
+            };
             Some(merged)
-        } else { return Ok(Err(conflict()?)); };
+        } else {
+            return Ok(Err(conflict()?));
+        };
         if selected != current {
-            let (next, batch) = super::super::batch::compact_inode_table_apply_sorted(store, destination,
-                std::iter::once(Ok((key, selected))), super::super::batch::SORTED_TREE_UPDATE_SCRATCH_BYTES)?;
+            let (next, batch) = super::super::batch::compact_inode_table_apply_sorted(
+                store,
+                destination,
+                std::iter::once(Ok((key, selected))),
+                super::super::batch::SORTED_TREE_UPDATE_SCRATCH_BYTES,
+            )?;
             counters.nodes_read += batch.nodes_read;
             counters.nodes_created += batch.nodes_created;
             destination = next;
@@ -1000,18 +1164,26 @@ fn concurrent_namespace_identity_change<S: ObjectStore>(
 }
 
 fn reconcile_inode_records<S: ObjectStore>(
-    store: &mut S, base: ObjectId, source: ObjectId, destination: ObjectId,
+    store: &mut S,
+    base: ObjectId,
+    source: ObjectId,
+    destination: ObjectId,
     namespace: &mut crate::tree::directory::NamespaceCounters,
 ) -> CoreResult<Option<ObjectId>> {
     let base = store.with_authenticated_canonical(base, super::codec::decode_inode_record)?;
     let source = store.with_authenticated_canonical(source, super::codec::decode_inode_record)?;
-    let destination = store.with_authenticated_canonical(destination, super::codec::decode_inode_record)?;
+    let destination =
+        store.with_authenticated_canonical(destination, super::codec::decode_inode_record)?;
     reconcile_inode_values(store, base, source, destination, namespace)?
-        .map(|record| store.put(&super::codec::encode_inode_record(record)?)).transpose()
+        .map(|record| store.put(&super::codec::encode_inode_record(record)?))
+        .transpose()
 }
 
 fn reconcile_inode_values<S: ObjectStore>(
-    store: &mut S, base: InodeRecordV1, source: InodeRecordV1, destination: InodeRecordV1,
+    store: &mut S,
+    base: InodeRecordV1,
+    source: InodeRecordV1,
+    destination: InodeRecordV1,
     namespace: &mut crate::tree::directory::NamespaceCounters,
 ) -> CoreResult<Option<InodeRecordV1>> {
     use crate::tree::directory::{reconcile_directory_roots, DirectoryStateRoot};
@@ -1075,7 +1247,12 @@ fn reconcile_inode_values<S: ObjectStore>(
     {
         return Ok(None);
     }
-    Ok(Some(InodeRecordV1 { kind, namespace_ref_count, content_root, metadata_root }))
+    Ok(Some(InodeRecordV1 {
+        kind,
+        namespace_ref_count,
+        content_root,
+        metadata_root,
+    }))
 }
 
 fn add_namespace_counters(

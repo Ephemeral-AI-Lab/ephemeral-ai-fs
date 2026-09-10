@@ -1,8 +1,6 @@
-use layerfs_content::file::content::{self, FileContentRoot};
 use crate::cow_tree::{portable_metadata, Attr, Data, FileData, Kind, NodeId, Workspace, ROOT};
-use layerfs_content::file::rope::{
-    self, FileMutationBatch, ObjectStore, RopeCounters,
-};
+use layerfs_content::file::content::{self, FileContentRoot};
+use layerfs_content::file::rope::{self, FileMutationBatch, ObjectStore, RopeCounters};
 use layerfs_content::filesystem::{self, InodeMutation, LogicalCounters, PortableMetadataCache};
 use layerfs_content::object::access::ObjectRead;
 use layerfs_content::object::{ContentDigestWriter, ObjectId};
@@ -15,9 +13,7 @@ use layerfs_content::tree::directory::{
     directory_lookup, directory_page_after, empty_directory, DirectoryStateRoot, NamespaceCounters,
 };
 use layerfs_content::tree::inode::codec::{decode_inode_record, encode_inode_record};
-use layerfs_content::tree::inode::{
-    InodeTableCounters,
-};
+use layerfs_content::tree::inode::InodeTableCounters;
 use layerfs_content::tree::inode::{InodeId, InodeKind, InodeRecordV1, InodeTableRoot};
 use layerfs_content::tree::NamespaceRootV1;
 use layerfs_content::{CanonicalName, CanonicalPath};
@@ -398,7 +394,7 @@ impl Workspace {
     fn candidate_inputs(&self) -> CandidateInputs<'_> {
         CandidateInputs {
             scope: self.inode_scope,
-                serials: self.inode_serials.clone(),
+            serials: self.inode_serials.clone(),
             live: self.live.frozen_changes(),
             store: &self.store,
             workspace_id: self.workspace_id,
@@ -565,15 +561,32 @@ struct CandidateInputs<'a> {
 
 impl CandidateInputs<'_> {
     fn prepare_inode_serials(&self) -> Result<()> {
-        let mut serials = self.serials.lock().map_err(|_| StorageError::Integrity("workspace inode reservation lock"))?;
-        if serials.is_some() { return Ok(()); }
-        let Some(scope) = self.scope else { return Ok(()); };
-        let Some(maximum) = self.live.nodes.iter().filter(|(_, node)| node.canonical.is_none() && !node.paths.is_empty())
-            .map(|(id, _)| id.0).max() else { return Ok(()); };
+        let mut serials = self
+            .serials
+            .lock()
+            .map_err(|_| StorageError::Integrity("workspace inode reservation lock"))?;
+        if serials.is_some() {
+            return Ok(());
+        }
+        let Some(scope) = self.scope else {
+            return Ok(());
+        };
+        let Some(maximum) = self
+            .live
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.canonical.is_none() && !node.paths.is_empty())
+            .map(|(id, _)| id.0)
+            .max()
+        else {
+            return Ok(());
+        };
         // ponytail: one 32-bit NodeId range per mutable Workspace; chunked
         // reservations are needed only for a lifetime exceeding 2^32 nodes.
         const WIDTH: u64 = 1u64 << 32;
-        if maximum >= WIDTH { return Err(StorageError::InvalidInput("workspace inode serial range")); }
+        if maximum >= WIDTH {
+            return Err(StorageError::InvalidInput("workspace inode serial range"));
+        }
         *serials = Some(self.store.reserve_inode_serials(scope, WIDTH)?);
         Ok(())
     }
@@ -949,9 +962,19 @@ impl CandidateInputs<'_> {
             .map_err(crate::live_error)?;
         layerfs_layerstack_store::note_workspace_namespace_visits(0, 1, 0, 0, 0);
         self.prepare_inode_serials()?;
-        if let Some(range) = self.serials.lock().map_err(|_| StorageError::Integrity("workspace inode reservation lock"))?.as_ref() {
-            let serial = range.start.checked_add(node.0).filter(|serial| *serial < range.end)
-                .ok_or(StorageError::Integrity("workspace inode reservation coverage"))?;
+        if let Some(range) = self
+            .serials
+            .lock()
+            .map_err(|_| StorageError::Integrity("workspace inode reservation lock"))?
+            .as_ref()
+        {
+            let serial = range
+                .start
+                .checked_add(node.0)
+                .filter(|serial| *serial < range.end)
+                .ok_or(StorageError::Integrity(
+                    "workspace inode reservation coverage",
+                ))?;
             return Ok(layerfs_content::tree::compact::InodeSerial::new(serial)?.inode_key());
         }
         // Bind new identity to this base snapshot: replacing one alias must not
@@ -1090,9 +1113,16 @@ impl RemovedSmallCandidates {
     const MEMORY_LIMIT: usize = 1024 * 1024;
 
     fn find(&self, name: &[u8]) -> Option<ObjectId> {
-        let index = self.entries.partition_point(|entry| entry.0.as_slice() < name);
+        let index = self
+            .entries
+            .partition_point(|entry| entry.0.as_slice() < name);
         let entry = self.entries.get(index)?;
-        if entry.0 != name || self.entries.get(index + 1).is_some_and(|next| next.0 == name) {
+        if entry.0 != name
+            || self
+                .entries
+                .get(index + 1)
+                .is_some_and(|next| next.0 == name)
+        {
             return None;
         }
         Some(entry.1)
@@ -1106,7 +1136,9 @@ impl RemovedSmallCandidates {
             return Ok(Self::default());
         }
         let mut discovery = RemovedSmallDiscovery {
-            candidates: Self { entries: Vec::with_capacity(Self::ENTRY_LIMIT) },
+            candidates: Self {
+                entries: Vec::with_capacity(Self::ENTRY_LIMIT),
+            },
             directories: Vec::with_capacity(Self::ENTRY_LIMIT),
             name_bytes: 0,
             entries: 0,
@@ -1116,16 +1148,29 @@ impl RemovedSmallCandidates {
         let mut changes = 0;
         let mut pending = Vec::with_capacity(limit);
         for id in inputs.dirty {
-            let node = inputs.nodes.get(id).ok_or(StorageError::Integrity("frozen removal node"))?;
-            let Data::Directory(directory) = &node.data else { continue; };
-            let Some(base) = directory.base else { continue; };
+            let node = inputs
+                .nodes
+                .get(id)
+                .ok_or(StorageError::Integrity("frozen removal node"))?;
+            let Data::Directory(directory) = &node.data else {
+                continue;
+            };
+            let Some(base) = directory.base else {
+                continue;
+            };
             for (name, value) in &directory.changes {
                 changes += 1;
-                if changes > 32768 { return Ok(Self::default()); }
-                if value.is_some() { continue; }
+                if changes > 32768 {
+                    return Ok(Self::default());
+                }
+                if value.is_some() {
+                    continue;
+                }
                 pending.push((base, CanonicalName::from_bytes(name)?));
                 if pending.len() == limit {
-                    if !discovery.bindings(inputs, &pending, limit)? { return Ok(Self::default()); }
+                    if !discovery.bindings(inputs, &pending, limit)? {
+                        return Ok(Self::default());
+                    }
                     pending.clear();
                 }
             }
@@ -1137,18 +1182,31 @@ impl RemovedSmallCandidates {
         let mut visits = 0;
         while let Some((root, depth)) = discovery.directories.pop() {
             visits += 1;
-            if visits > Self::ENTRY_LIMIT { return Ok(Self::default()); }
+            if visits > Self::ENTRY_LIMIT {
+                return Ok(Self::default());
+            }
             let mut after = None;
             loop {
-                if !discovery.charge(0, 1) { return Ok(Self::default()); }
-                let page = directory_page_after(&core, root, after.as_ref(), limit, limit * 512,
-                    &mut NamespaceCounters::default())?;
+                if !discovery.charge(0, 1) {
+                    return Ok(Self::default());
+                }
+                let page = directory_page_after(
+                    &core,
+                    root,
+                    after.as_ref(),
+                    limit,
+                    limit * 512,
+                    &mut NamespaceCounters::default(),
+                )?;
                 if !discovery.charge(page.entries.len(), 0)
-                    || !discovery.records(inputs, &page.entries, depth, limit)? {
+                    || !discovery.records(inputs, &page.entries, depth, limit)?
+                {
                     return Ok(Self::default());
                 }
                 after = page.continuation;
-                if after.is_none() { break; }
+                if after.is_none() {
+                    break;
+                }
             }
         }
         discovery.candidates.entries.sort_unstable();
@@ -1172,37 +1230,74 @@ impl RemovedSmallDiscovery {
         self.entries <= RemovedSmallCandidates::ENTRY_LIMIT && self.calls <= 8192
     }
 
-    fn bindings(&mut self, inputs: &StableFileInputs<'_>, keys: &[(DirectoryStateRoot, CanonicalName)], limit: usize) -> Result<bool> {
-        if !self.charge(keys.len(), 1) { return Ok(false); }
+    fn bindings(
+        &mut self,
+        inputs: &StableFileInputs<'_>,
+        keys: &[(DirectoryStateRoot, CanonicalName)],
+        limit: usize,
+    ) -> Result<bool> {
+        if !self.charge(keys.len(), 1) {
+            return Ok(false);
+        }
         let found = layerfs_content::tree::directory::directory_lookup_many(
-            &CoreReader(&inputs.reader), keys, &mut NamespaceCounters::default())?;
-        let records: Vec<_> = keys.iter().zip(found)
-            .filter_map(|((_, name), inode)| inode.map(|id| (name.clone(), id))).collect();
+            &CoreReader(&inputs.reader),
+            keys,
+            &mut NamespaceCounters::default(),
+        )?;
+        let records: Vec<_> = keys
+            .iter()
+            .zip(found)
+            .filter_map(|((_, name), inode)| inode.map(|id| (name.clone(), id)))
+            .collect();
         self.records(inputs, &records, 0, limit)
     }
 
-    fn records(&mut self, inputs: &StableFileInputs<'_>, names: &[(CanonicalName, InodeId)], depth: usize, limit: usize) -> Result<bool> {
-        if names.is_empty() { return Ok(true); }
-        if !self.charge(0, 1) { return Ok(false); }
+    fn records(
+        &mut self,
+        inputs: &StableFileInputs<'_>,
+        names: &[(CanonicalName, InodeId)],
+        depth: usize,
+        limit: usize,
+    ) -> Result<bool> {
+        if names.is_empty() {
+            return Ok(true);
+        }
+        if !self.charge(0, 1) {
+            return Ok(false);
+        }
         let ids: Vec<_> = names.iter().map(|(_, id)| *id).collect();
-        let records = FrontierInodes::base_records(&CoreReader(&inputs.reader), inputs.base_inodes, &ids, limit)?;
+        let records = FrontierInodes::base_records(
+            &CoreReader(&inputs.reader),
+            inputs.base_inodes,
+            &ids,
+            limit,
+        )?;
         for ((name, _), record) in names.iter().zip(records) {
             match record.kind {
                 InodeKind::RegularFile => {
-                    let fixed = self.candidates.entries.capacity() * std::mem::size_of::<(Vec<u8>, ObjectId)>()
-                        + self.directories.capacity() * std::mem::size_of::<(DirectoryStateRoot, usize)>();
+                    let fixed = self.candidates.entries.capacity()
+                        * std::mem::size_of::<(Vec<u8>, ObjectId)>()
+                        + self.directories.capacity()
+                            * std::mem::size_of::<(DirectoryStateRoot, usize)>();
                     if self.candidates.entries.len() == self.candidates.entries.capacity()
-                        || fixed + self.name_bytes + name.as_bytes().len() > RemovedSmallCandidates::MEMORY_LIMIT {
+                        || fixed + self.name_bytes + name.as_bytes().len()
+                            > RemovedSmallCandidates::MEMORY_LIMIT
+                    {
                         return Ok(false);
                     }
                     let name = name.as_bytes().to_vec();
                     self.name_bytes += name.capacity();
-                    if fixed + self.name_bytes > RemovedSmallCandidates::MEMORY_LIMIT { return Ok(false); }
+                    if fixed + self.name_bytes > RemovedSmallCandidates::MEMORY_LIMIT {
+                        return Ok(false);
+                    }
                     self.candidates.entries.push((name, record.content_root));
                 }
                 InodeKind::Directory => {
-                    if depth == 64 || self.directories.len() == self.directories.capacity() { return Ok(false); }
-                    self.directories.push((DirectoryStateRoot(record.content_root), depth + 1));
+                    if depth == 64 || self.directories.len() == self.directories.capacity() {
+                        return Ok(false);
+                    }
+                    self.directories
+                        .push((DirectoryStateRoot(record.content_root), depth + 1));
                 }
                 _ => {}
             }
@@ -1250,7 +1345,12 @@ impl StableFileInputs<'_> {
         })
     }
 
-    fn prepare_page(&self, page: &[NodeId], removed: &RemovedSmallCandidates, writer: &mut impl Write) -> Result<bool> {
+    fn prepare_page(
+        &self,
+        page: &[NodeId],
+        removed: &RemovedSmallCandidates,
+        writer: &mut impl Write,
+    ) -> Result<bool> {
         let core = CoreReader(&self.reader);
         let mut before = vec![None; page.len()];
         let known: Vec<_> = page
@@ -1356,7 +1456,8 @@ impl StableFileInputs<'_> {
         for (slot, id) in page.iter().enumerate() {
             let mut encoded = [0; FILE_TASK_BYTES as usize];
             encoded[..8].copy_from_slice(&id.0.to_le_bytes());
-            let base = prior[slot].filter(|record| record.kind == InodeKind::RegularFile)
+            let base = prior[slot]
+                .filter(|record| record.kind == InodeKind::RegularFile)
                 .map(|record| record.content_root)
                 .or_else(|| {
                     let node = &self.nodes[id];
@@ -1443,11 +1544,21 @@ impl StableFileInputs<'_> {
                 None
             }
         };
-        let (root, counters) = if writer.supports_small_content() && input.len > 0 && input.len < content::SMALL_LIMIT as u64 && captured.is_none() {
-            if let Some(record) = before.filter(|r| matches!(&input.data, FileData::Base { root, .. } if root.0 == r.content_root)) {
+        let (root, counters) = if writer.supports_small_content()
+            && input.len > 0
+            && input.len < content::SMALL_LIMIT as u64
+            && captured.is_none()
+        {
+            if let Some(record) = before.filter(
+                |r| matches!(&input.data, FileData::Base { root, .. } if root.0 == r.content_root),
+            ) {
                 (record.content_root, Default::default())
             } else {
-                writer.build_small_file(input.reader(), input.len, predecessor.map(|r| r.0).or(before.map(|r| r.content_root)))?
+                writer.build_small_file(
+                    input.reader(),
+                    input.len,
+                    predecessor.map(|r| r.0).or(before.map(|r| r.content_root)),
+                )?
             }
         } else if before.is_none() && predecessor.is_none() && captured.is_none() {
             // Complete new-file prefixes are final; keep the root private until
@@ -1667,11 +1778,25 @@ impl FrozenFile {
             )?;
         }
 
-        let small_result = ObjectStore::small_content_format(&objects) && self.len > 0 && self.len < content::SMALL_LIMIT as u64;
-        let small_base = if let Some(record) = before { matches!(content::inspect(&CoreReader(&self.reader), FileContentRoot(record.content_root))?, content::Content::Small { .. }) } else { false };
+        let small_result = ObjectStore::small_content_format(&objects)
+            && self.len > 0
+            && self.len < content::SMALL_LIMIT as u64;
+        let small_base = if let Some(record) = before {
+            matches!(
+                content::inspect(
+                    &CoreReader(&self.reader),
+                    FileContentRoot(record.content_root)
+                )?,
+                content::Content::Small { .. }
+            )
+        } else {
+            false
+        };
         if captured_root.is_none() && (small_result || small_base) {
             if let Some(record) = before {
-                if !self.file_may_differ(record.content_root)? { return objects.finish(record.content_root, 0); }
+                if !self.file_may_differ(record.content_root)? {
+                    return objects.finish(record.content_root, 0);
+                }
             }
             return objects.build_complete_with_predecessor(self.reader(), self.len);
         }
@@ -1679,13 +1804,17 @@ impl FrozenFile {
             captured
         } else if let Some(record) = before {
             if !self.file_may_differ(record.content_root)? {
-                (FileContentRoot(record.content_root), RopeCounters::default())
+                (
+                    FileContentRoot(record.content_root),
+                    RopeCounters::default(),
+                )
             } else {
                 match self.mutate_existing_file(&mut objects, BaseEntry { record })? {
                     Some(changed) => changed,
-                    None if self.incremental_file_supported(record.content_root) => {
-                        (FileContentRoot(record.content_root), RopeCounters::default())
-                    }
+                    None if self.incremental_file_supported(record.content_root) => (
+                        FileContentRoot(record.content_root),
+                        RopeCounters::default(),
+                    ),
                     None => {
                         return objects.build_complete_with_predecessor(self.reader(), self.len)
                     }
@@ -2033,8 +2162,13 @@ impl FrontierInodes {
             return Ok(record);
         }
         let namespace = filesystem::namespace(objects, self.root)?;
-        layerfs_content::tree::inode::inode_record_lookup(objects, InodeTableRoot(namespace.inode_table_root), inode, &mut InodeTableCounters::default())?
-            .ok_or(StorageError::Integrity("frontier inode record"))
+        layerfs_content::tree::inode::inode_record_lookup(
+            objects,
+            InodeTableRoot(namespace.inode_table_root),
+            inode,
+            &mut InodeTableCounters::default(),
+        )?
+        .ok_or(StorageError::Integrity("frontier inode record"))
     }
 
     #[cfg(test)]
@@ -2351,7 +2485,12 @@ impl FrontierInodes {
     ) -> Result<Vec<InodeRecordV1>> {
         let mut records = Vec::with_capacity(keys.len());
         for keys in keys.chunks(lookup_limit) {
-            for record in layerfs_content::tree::inode::inode_record_lookup_many(base, table, keys, &mut InodeTableCounters::default())? {
+            for record in layerfs_content::tree::inode::inode_record_lookup_many(
+                base,
+                table,
+                keys,
+                &mut InodeTableCounters::default(),
+            )? {
                 records.push(record.ok_or(StorageError::Integrity("referenced inode record"))?);
             }
         }
@@ -2718,38 +2857,63 @@ mod tests {
         for remove_parent in [false, true] {
             let (root, mut workspace) = empty_workspace("removed-small");
             let old_dir = workspace.mkdir(ROOT, b"old", 0o750).unwrap().node;
-            let old_file = workspace.create_file(old_dir, b"payload", 0o640).unwrap().node;
+            let old_file = workspace
+                .create_file(old_dir, b"payload", 0o640)
+                .unwrap()
+                .node;
             let data: Vec<_> = (0..8192_u32).flat_map(u32::to_le_bytes).collect();
             workspace.write(old_file, 0, &data).unwrap();
             let left = workspace.mkdir(ROOT, b"left", 0o700).unwrap().node;
             let right = workspace.mkdir(ROOT, b"right", 0o700).unwrap().node;
             for (dir, bytes) in [(left, b"left".as_slice()), (right, b"right".as_slice())] {
-                let file = workspace.create_file(dir, b"ambiguous", 0o600).unwrap().node;
+                let file = workspace
+                    .create_file(dir, b"ambiguous", 0o600)
+                    .unwrap()
+                    .node;
                 workspace.write(file, 0, bytes).unwrap();
             }
             workspace.commit().unwrap();
             let old = workspace.reader.clone();
             let old_root = workspace.base_root;
             let path = CanonicalPath::new("old/payload").unwrap();
-            let content_root = filesystem::resolve(&CoreReader(&old), old_root, &path,
-                &mut LogicalCounters::default()).unwrap().record.content_root;
+            let content_root = filesystem::resolve(
+                &CoreReader(&old),
+                old_root,
+                &path,
+                &mut LogicalCounters::default(),
+            )
+            .unwrap()
+            .record
+            .content_root;
             workspace.unlink(old_dir, b"payload", false).unwrap();
-            if remove_parent { workspace.unlink(ROOT, b"old", true).unwrap(); }
+            if remove_parent {
+                workspace.unlink(ROOT, b"old", true).unwrap();
+            }
             workspace.unlink(left, b"ambiguous", false).unwrap();
             workspace.unlink(right, b"ambiguous", false).unwrap();
             let new_dir = workspace.mkdir(ROOT, b"new", 0o750).unwrap().node;
-            let new_file = workspace.create_file(new_dir, b"payload", 0o600).unwrap().node;
+            let new_file = workspace
+                .create_file(new_dir, b"payload", 0o600)
+                .unwrap()
+                .node;
             let mut changed = data.clone();
             changed[100..104].copy_from_slice(b"edit");
             workspace.write(new_file, 0, &changed).unwrap();
             {
                 let mut inputs = StableFileInputs {
-                    nodes: &workspace.live.nodes, dirty: &workspace.live.dirty,
-                    reader: workspace.reader.clone(), base_inodes: workspace.base_inodes,
-                    generation: workspace.live.mutation_generation, spool: &workspace.spool,
-                    io_bytes: 32768, planning_bytes: 8 * 1024 * 1024,
-                    captured: std::sync::Mutex::new(None), base_root: workspace.base_root,
-                    correspondence_reserved: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                    nodes: &workspace.live.nodes,
+                    dirty: &workspace.live.dirty,
+                    reader: workspace.reader.clone(),
+                    base_inodes: workspace.base_inodes,
+                    generation: workspace.live.mutation_generation,
+                    spool: &workspace.spool,
+                    io_bytes: 32768,
+                    planning_bytes: 8 * 1024 * 1024,
+                    captured: std::sync::Mutex::new(None),
+                    base_root: workspace.base_root,
+                    correspondence_reserved: std::sync::Arc::new(
+                        std::sync::atomic::AtomicU64::new(0),
+                    ),
                 };
                 let candidates = RemovedSmallCandidates::discover(&inputs, 2).unwrap();
                 assert_eq!(candidates.find(b"payload"), Some(content_root));
@@ -2761,13 +2925,23 @@ mod tests {
                 let mut slot = [0; FILE_TASK_BYTES as usize];
                 plan.file.read_exact_at(&mut slot, 0).unwrap();
                 assert_eq!(&slot[32..64], content_root.as_bytes());
-                assert_eq!(&slot[64..68], &[0; 4], "compression hint must not become before inode");
+                assert_eq!(
+                    &slot[64..68],
+                    &[0; 4],
+                    "compression hint must not become before inode"
+                );
                 inputs.planning_bytes = 1024;
-                assert!(RemovedSmallCandidates::discover(&inputs, 2).unwrap().entries.is_empty());
+                assert!(RemovedSmallCandidates::discover(&inputs, 2)
+                    .unwrap()
+                    .entries
+                    .is_empty());
                 inputs.planning_bytes = 8 * 1024 * 1024;
                 let too_many: BTreeSet<_> = (0..16385).map(NodeId).collect();
                 inputs.dirty = &too_many;
-                assert!(RemovedSmallCandidates::discover(&inputs, 2).unwrap().entries.is_empty());
+                assert!(RemovedSmallCandidates::discover(&inputs, 2)
+                    .unwrap()
+                    .entries
+                    .is_empty());
             }
             workspace.commit().unwrap();
             assert_eq!(workspace.read(new_file, 0, changed.len()).unwrap(), changed);
@@ -2780,8 +2954,11 @@ mod tests {
             std::fs::remove_dir_all(root).unwrap();
         }
         let mut discovery = RemovedSmallDiscovery {
-            candidates: Default::default(), directories: Vec::new(), name_bytes: 0,
-            entries: 4096, calls: 8191,
+            candidates: Default::default(),
+            directories: Vec::new(),
+            name_bytes: 0,
+            entries: 4096,
+            calls: 8191,
         };
         assert!(discovery.charge(0, 1));
         assert!(!discovery.charge(1, 0));
@@ -3003,9 +3180,14 @@ mod tests {
             .collect::<BTreeSet<_>>();
         // The injected capture explicitly uses the legacy rope builder. The
         // remaining files are SmallContent and must not claim CDC work.
-        assert!(files.iter().all(|(_, bytes)| bytes.len() < layerfs_content::file::content::SMALL_LIMIT));
+        assert!(files
+            .iter()
+            .all(|(_, bytes)| bytes.len() < layerfs_content::file::content::SMALL_LIMIT));
         let scanned = files[0].1.len() as u64;
-        let input_bytes = files.iter().map(|(_, bytes)| bytes.len() as u64).sum::<u64>();
+        let input_bytes = files
+            .iter()
+            .map(|(_, bytes)| bytes.len() as u64)
+            .sum::<u64>();
         assert_eq!(serial.built.counters.cdc_bytes_scanned, scanned);
         drop(serial);
         // Corrupt only the captured inode's backing to prove that its completed
@@ -3701,7 +3883,16 @@ mod tests {
         .unwrap()
         .is_none());
         let mut entry_count = 0;
-        layerfs_content::tree::inode::visit_inode_records(&core, table, &mut InodeTableCounters::default(), |_, _| { entry_count += 1; Ok(()) }).unwrap();
+        layerfs_content::tree::inode::visit_inode_records(
+            &core,
+            table,
+            &mut InodeTableCounters::default(),
+            |_, _| {
+                entry_count += 1;
+                Ok(())
+            },
+        )
+        .unwrap();
         // root + background directory/files + kept directory/file + outside +
         // hidden + replacement + aliased new file + new directory + 120 files.
         assert_eq!(entry_count, 329);
@@ -4185,10 +4376,14 @@ mod tests {
             _ => panic!("base file"),
         };
         let mut base_payloads = BTreeSet::new();
-        rope::visit_extents(&CoreReader(&workspace.reader), rope::FileStateRoot(base_root.0), |extents| {
-            base_payloads.extend(extents.iter().map(|extent| extent.payload_object_id));
-            Ok(())
-        })
+        rope::visit_extents(
+            &CoreReader(&workspace.reader),
+            rope::FileStateRoot(base_root.0),
+            |extents| {
+                base_payloads.extend(extents.iter().map(|extent| extent.payload_object_id));
+                Ok(())
+            },
+        )
         .unwrap();
         workspace
             .edit_many(
