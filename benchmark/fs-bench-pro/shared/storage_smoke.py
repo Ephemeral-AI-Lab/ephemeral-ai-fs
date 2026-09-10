@@ -280,6 +280,9 @@ def run_case(args, output, case, fixture, image, mode, remaining_phase_seconds, 
             # and cardinality belong to this runner, not another compiled workload.
             session_case = "deepseek-full" if case in SELECTED_DEEPSEEK else case
             command = [args.host_binary, "storage-smoke-session", str(host), sample.id, session_mode, session_case, fixture["input"]]
+            if mode == "verification" and getattr(args,"storage_compact",False):
+                measured = json.loads((output/"compaction-result.json").read_text())["measured_store"]
+                command.append(measured["path"])
             result["command"] = command
             proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr, text=True, bufsize=1, env=env, start_new_session=True)
             messages = queue.Queue()
@@ -445,6 +448,7 @@ def main(argv=None):
     p = argparse.ArgumentParser()
     p.add_argument("--storage-smoke", choices=tuple(CASES), required=True)
     p.add_argument("--storage-verify-run", type=Path)
+    p.add_argument("--storage-compact", action="store_true", help="issue103 stride3 public compaction phase")
     p.add_argument("--storage-compat-run", type=Path)
     p.add_argument("--source-arm", choices=("baseline","candidate"), default="candidate")
     p.add_argument("--repetition", type=int, choices=(1,2,3), default=1)
@@ -456,6 +460,8 @@ def main(argv=None):
     args = p.parse_args(argv)
     if not args.image or (args.output is None) == (args.storage_verify_run is None) or (args.storage_compat_run and (not args.output or args.storage_verify_run)):
         p.error("--image and exactly one of --output / --storage-verify-run required")
+    if args.storage_compact and (args.storage_smoke != "deepseek-stride3" or args.storage_compat_run):
+        p.error("integrated compaction is registered only for stride3")
     with (Path(os.environ.get("TMPDIR","/tmp"))/"layerfs-infra-measurement.lock").open("a") as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         start = time.monotonic_ns()
@@ -465,6 +471,8 @@ def main(argv=None):
         labels = image["Config"]["Labels"]
         if host_identity["binary_sha256"] != runtime.file_sha256(args.host_binary) or host_identity["LAYERFS_SOURCE_SEAL"] != current["LAYERFS_SOURCE_SEAL"] or labels["dev.layerfs.product-seal"] != current["LAYERFS_PRODUCT_SEAL"] or labels["dev.layerfs.source-seal"] != current["LAYERFS_SOURCE_SEAL"]:
             raise ValueError("stale host/image/source identity")
+        if args.storage_compact and host_identity.get("integrated_format_probe",{}).get("status") != "PASS":
+            raise ValueError("linked integrated-format build probe missing")
         if shutil.disk_usage(args.output.parent if args.output and args.output.parent.exists() else runner.REPO).free < 50*GIB:
             raise RuntimeError("free disk reserve")
         deadline = runtime.Deadline.after(14400 if args.storage_smoke in ("deepseek-full", "deepseek-stride3", "deepseek-stride10") else 600 if args.storage_smoke in ("deepseek-five", "deepseek-ten") else 120)
@@ -481,19 +489,34 @@ def main(argv=None):
             mode = "verification"
         elif args.storage_verify_run:
             saved = json.loads((output/"identity.json").read_text())
+            if args.storage_compact and not saved.get("storage_compact",False): raise ValueError("compaction verification profile mismatch")
+            args.storage_compact = saved.get("storage_compact",False)
             if saved["host_identity"]["binary_sha256"] != host_identity["binary_sha256"] or saved["image_id"] != image["Id"] or saved["fixtures"] != fixtures:
                 raise ValueError("verification custody mismatch")
             if args.storage_smoke in ("deepseek-full", "deepseek-ten", "deepseek-stride3", "deepseek-stride10", "small-file-delta-10x30-v1"):
                 measured = json.loads((output / "performance-manifest.json").read_text())
                 for case in CASES[args.storage_smoke]:
-                    name = case + "/host-runtime/store.sqlite"
+                    name = case + ("/compacted-store/store.sqlite" if args.storage_compact else "/host-runtime/store.sqlite")
                     if runtime.file_sha256(output / name) != measured.get(name):
                         raise ValueError("measured Store changed before historical reopen")
+                    if args.storage_compact:
+                        from integrated_storage import freeze
+                        compaction = json.loads((output/case/"compaction-result.json").read_text())
+                        frozen = compaction["measured_store"]
+                        current_store = freeze(output/name)
+                        if compaction["status"] != "PASS" or any(current_store[k] != frozen[k] for k in ("sha256","files","allocated_bytes","apparent_bytes")):
+                            raise ValueError("frozen integrated Store identity/allocation changed")
+                        archive = output/case/"frozen-measured-store"; archive.mkdir()
+                        copy = runtime.closed_store_copy(output/name, archive/"store.sqlite", deadline=deadline)
+                        save(output/case/"verification-store-before.json",{"measured_store":current_store,"frozen_copy":copy,"frozen_path":str((archive/"store.sqlite").resolve())})
             mode = "verification"
         else:
             output.mkdir(parents=True,exist_ok=False)
             save(output/"identity.json", {"schema":"deepseek-full-issue100-v1" if args.storage_smoke == "deepseek-full" else "storage-smoke-v1","smoke":args.storage_smoke,"family":"small_file_delta_smoke" if args.storage_smoke == "small-file-delta-10x30-v1" else "storage-smoke-v1","source_arm":args.source_arm,"repetition":args.repetition,
                 "host_identity":host_identity,"image_id":image["Id"],"source":current,"fixtures":fixtures,
+                "storage_compact":args.storage_compact,
+                "integrated_contract_sha256":runtime.file_sha256(runner.REPO/"docs/roadmap/0.1/0.1.5/issue103/stride3-integrated-compaction-v1.md") if args.storage_compact else None,
+                "integrated_scenario":"deepseek-stride3-integrated-compaction-v1" if args.storage_compact else None,
                 "contract_sha256":runtime.file_sha256(runner.REPO/(SELECTED_DEEPSEEK[args.storage_smoke][2] if args.storage_smoke in SELECTED_DEEPSEEK else "docs/roadmap/0.1/0.1.5/delta-encoding-benchmarks.md" if args.storage_smoke == "small-file-delta-10x30-v1" else CONTRACT)),"preparation_ns":preparation_ns,
                 "full_run_contract_sha256":runtime.file_sha256(runner.REPO/"docs/roadmap/0.1/0.1.5/full157-execution-contract.md") if args.storage_smoke == "deepseek-full" else None,
                 "phase_operation_verification_limits_seconds":LIMITS[args.storage_smoke],
@@ -508,6 +531,13 @@ def main(argv=None):
             performance = json.loads((folder/"performance-result.json").read_text()) if mode == "verification" else None
             if performance and performance["status"] != "PASS": raise ValueError("cannot qualify incomplete performance")
             result = run_case(args,folder,case,fixtures[case],image["Id"],mode,remaining_phase_seconds,performance)
+            if args.storage_compact and result["status"] == "PASS" and result["cleanup_status"] == "PASS":
+                from integrated_storage import compact, freeze
+                if mode == "performance":
+                    result["compaction"] = compact(args,folder)
+                    if result["compaction"]["status"] != "PASS": result["status"] = "INCOMPLETE"
+                else:
+                    save(folder/"verification-store-after.json",freeze(folder/"compacted-store/store.sqlite"))
             results.append(result)
             remaining_phase_seconds -= result.get("work_wall_ns",0)/1e9
             if result["status"] != "PASS": break

@@ -683,7 +683,7 @@ fn run() -> AnyResult<()> {
     }
     if args
         .first()
-        .is_some_and(|arg| arg == "storage-smoke-session" || arg == "historical-access-session")
+        .is_some_and(|arg| matches!(arg.to_str(), Some("storage-smoke-session" | "historical-access-session" | "storage-compact" | "storage-format-probe" | "storage-integration-smoke")))
     {
         return storage_smoke::dispatch(&args);
     }

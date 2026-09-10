@@ -3,11 +3,19 @@ use super::workspace_bench::{emit, quote};
 use super::*;
 use std::os::unix::fs::{FileExt, MetadataExt};
 
+#[path = "storage_integrated.rs"]
+mod integrated;
+
 const MOUNT: &str = "/workspace/storage-smoke";
 const WORKLOAD: &str = "/usr/local/bin/fs-benchmark-workload";
 
 fn physical_json(receipt: layerfs_layerstack_store::PhysicalStorageReceipt) -> String {
     let fields = [
+        ("metadata_pool_group_fetches", receipt.metadata_pool_group_fetches),
+        ("metadata_pool_decoded_bytes", receipt.metadata_pool_decoded_bytes),
+        ("metadata_pool_admitted_groups", receipt.metadata_pool_admitted_groups),
+        ("metadata_pool_admitted_values", receipt.metadata_pool_admitted_values),
+        ("metadata_index_sync_ns", receipt.metadata_index_sync_ns),
         ("group_fetches", receipt.group_fetches),
         ("encoded_read_bytes", receipt.encoded_read_bytes),
         ("decoded_read_bytes", receipt.decoded_read_bytes),
@@ -805,10 +813,14 @@ fn commit(
 }
 
 pub fn dispatch(args: &[OsString]) -> AnyResult<()> {
+    if args.first().is_some_and(|a| matches!(a.to_str(), Some("storage-compact" | "storage-format-probe" | "storage-integration-smoke"))) {
+        return integrated::dispatch(args);
+    }
     if args.first().is_some_and(|a| a == "historical-access-session") {
         return historical_access(args);
     }
-    let [_, root, container, mode, case, input] = args else {
+    let (required, store_override) = match args.len() { 6 => (args, None), 7 => (&args[..6], Some(Path::new(&args[6]))), _ => return Err("storage session argument count".into()) };
+    let [_, root, container, mode, case, input] = required else {
         return Err(
             "storage-smoke-session ROOT CONTAINER performance|verification CASE INPUT".into(),
         );
@@ -835,10 +847,12 @@ pub fn dispatch(args: &[OsString]) -> AnyResult<()> {
         return Err("unknown storage smoke case".into());
     }
     let binding = benchmark_container_binding(root, &container)?.ok_or("authenticated binding")?;
+    if performance && store_override.is_some() { return Err("performance requires a fresh default Store".into()); }
+    let default_store = root.join("store.sqlite");
     let store = Arc::new(if performance {
-        LayerStackStore::create(root.join("store.sqlite"))?
+        LayerStackStore::create(&default_store)?
     } else {
-        LayerStackStore::connect(root.join("store.sqlite"))?
+        LayerStackStore::connect(store_override.unwrap_or(&default_store))?
     });
     let client = benchmark_client(store.clone(), Some(&binding))?;
     let mut active = None;

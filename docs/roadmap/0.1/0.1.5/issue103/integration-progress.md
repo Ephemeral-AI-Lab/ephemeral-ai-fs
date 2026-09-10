@@ -576,3 +576,34 @@ Continuation-5 custody: exact dirty sources, compiler, linked library paths, has
 archived at `/Users/yifanxu/Ephemeral-AI-Lab/layerfs-issue103-evidence/whole-compaction-checkpoint-20260910T080549Z`.
 The manifest predates only this final documentation paragraph. HEAD remains
 `c9d6be0df4cb2b2c9131381bf0d44ab6534e577f`; source remains uncommitted and preserved.
+
+
+## Continuation 6 — prospective runner integration
+
+Product implementation and the prospective stride3/compaction contract were
+committed as `948068a48`; frozen Store preimage retention was committed as
+`4b6943623`, before harness edits. The original handoff and all intermediate
+source/test archives remain preserved.
+
+The harness now exposes a correctness-only live Exec/FUSE smoke, a linked
+integrated-format probe, the public compaction phase, dedicated measured Store
+freezing, and explicit verification Store selection. The performance Store's
+closed image is retained before verification forks; historical access binds that
+same byte image. New historical cases map original65 ->67 and original57 ->58
+with unchanged paths/ranges and the original 15-second contracts. Original64's
+pnpm-lock.yaml is too short for the retained 6421-byte range. Expected mapped
+outputs are derived only from original sealed fixture bytes/oracles.
+
+Compaction has operation-local process resource receipts, separate process wall
+/time output, and a 100-ms open-file allocation trace that observes unlinked
+SQLite files through stat on the current process's /dev/fd. It never duplicates
+or closes SQLite descriptors. Named/FD sampling maxima remain labeled sampled;
+trace artifacts live outside the measured Store directory. Builds archive host
+and compactor binaries plus identity, probe the actual schema/namespace/pool/
+content format, and retain Linux daemon/FUSE/workload binaries from the image.
+
+The 51 Python runner tests and Rust1.85.1 harness checks pass in
+`integrated-runner-tests-7.log` and `integrated-harness-check-7.log`. Initial
+harness compile errors are retained in the preceding numbered logs. Docker was
+stopped and was started for the required Linux roles. Qualified builds and the
+live smoke are next; stride3 remains unmeasured.

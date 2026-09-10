@@ -617,9 +617,69 @@ def verify_linked_schema(binary, expected):
     return observed
 
 
+def archive_binary(binary):
+    if not binary.exists():
+        return
+    digest = runtime.file_sha256(binary)
+    folder = HOST_ROOT / "binary-archive" / digest
+    folder.mkdir(parents=True, exist_ok=True)
+    archived = folder / binary.name
+    if not archived.exists():
+        shutil.copy2(binary, archived)
+    identity = Path(str(binary) + ".identity.json")
+    if identity.exists():
+        destination = folder / (binary.name + ".identity.json")
+        if not destination.exists(): shutil.copy2(identity, destination)
+    observation = folder / (binary.name + ".archive-observation.json")
+    if not observation.exists():
+        saved = json.loads(identity.read_text()) if identity.exists() else None
+        observation.write_text(json.dumps({"observed_binary_sha256":digest,"original_path":str(binary),
+            "identity_present":saved is not None,"identity_matches_binary":saved is not None and saved.get("binary_sha256")==digest},sort_keys=True))
+    if runtime.file_sha256(archived) != digest:
+        raise ValueError("binary archive custody mismatch")
+
+
+def archive_image(tag):
+    info = image_info(tag,time.monotonic()+30)
+    folder = HOST_ROOT / "image-archive" / info["Id"].split(":")[-1]
+    if (folder / "identity.json").exists():
+        saved=json.loads((folder/"identity.json").read_text())
+        if any(runtime.file_sha256(folder/name)!=digest for name,digest in saved["binaries"].items()):
+            raise ValueError("archived image binary changed")
+        return
+    folder.mkdir(parents=True,exist_ok=True)
+    name="layerfs-build-archive-"+uuid.uuid4().hex[:12]
+    created=False
+    try:
+        runtime.run(["docker","create","--name",name,"--label",runtime.OWNER_LABEL+"="+runtime.OWNER,tag],deadline=runtime.Deadline.after(30))
+        created=True
+        binaries={}
+        for binary in ("layerfs-daemon","layerfs-fuse","fs-benchmark-workload"):
+            runtime.run(["docker","cp",name+":/usr/local/bin/"+binary,str(folder/binary)],deadline=runtime.Deadline.after(30))
+            binaries[binary]=runtime.file_sha256(folder/binary)
+    finally:
+        if created: runtime.run(["docker","rm",name],deadline=runtime.Deadline.after(30))
+    (folder/"identity.json").write_text(json.dumps({"image":info,"binaries":binaries},sort_keys=True))
+
+
+def verify_integrated_format(binary):
+    with tempfile.TemporaryDirectory(prefix="layerfs-build-format-") as folder:
+        root = Path(folder); (root / "tmp").mkdir()
+        raw = runtime.run([str(binary), "storage-format-probe", str(root)],
+            deadline=runtime.Deadline.after(30), env={"TMPDIR":str(root/"tmp"),"SQLITE_TMPDIR":str(root/"tmp")})
+        records = [json.loads(line) for line in raw.stdout.decode().splitlines()]
+        probes = [r for r in records if r.get("kind") == "storage-format-probe"]
+        if len(probes) != 1 or probes[0].get("status") != "PASS" or probes[0].get("schema_version") != 10 or probes[0].get("content_version") != 107:
+            raise ValueError("linked integrated product format probe failed")
+        return {**probes[0], "records":records, "stdout_sha256":hashlib.sha256(raw.stdout).hexdigest()}
+
+
 def main(argv=None):
     access_started_ns = ENTRY_STARTED_NS
     argv = sys.argv[1:] if argv is None else argv
+    if "--integration-smoke" in argv:
+        import integrated_storage
+        return integrated_storage.main(argv)
     if "--family" in argv and argv[argv.index("--family") + 1:][:1] == ["repository_history"]:
         import repository_history
         return repository_history.main(argv)
@@ -647,7 +707,7 @@ def main(argv=None):
                 binary = REPO / "target/release/fs-benchmark-pro"
                 build_target = HOST_ROOT / "builds" / values["LAYERFS_SOURCE_SEAL"]
                 try:
-                    result = runtime.run(["cargo", "+1.85.1", "build", "--locked", "--release", "-j2", "-p", "fs-benchmark-pro", "--target-dir", str(build_target)],
+                    result = runtime.run(["cargo", "+1.85.1", "build", "--locked", "--release", "-j2", "-p", "fs-benchmark-pro", "-p", "layerfs-layerstack-store", "--bins", "--target-dir", str(build_target)],
                         deadline=runtime.Deadline.after(900), cwd=REPO, output_limit=1024**2)
                 except runtime.CommandFailure as error:
                     print(_text(error.result.stderr), file=sys.stderr)
@@ -659,10 +719,19 @@ def main(argv=None):
                 schema_path = REPO / f"crates/layerfs-layerstack-store/sql/schema/v{version.group(1)}.sql"
                 built = build_target / "release/fs-benchmark-pro"
                 observed_schema = verify_linked_schema(built, int(version.group(1)))
+                integrated_probe = verify_integrated_format(built) if int(version.group(1)) >= 10 else None
+                if source_build_args() != values:
+                    raise ValueError("source changed during qualified build")
                 binary.parent.mkdir(parents=True, exist_ok=True)
+                archive_binary(binary)
                 shutil.copy2(built, binary)
-                identity = {**values, "build_target": str(build_target), "observed_schema_version": observed_schema, "binary_sha256": runtime.file_sha256(binary), "platform": platform.platform(), "rust_toolchain": "1.85.1", "schema_sha256": runtime.file_sha256(schema_path)}
+                identity = {**values, "build_target": str(build_target), "observed_schema_version": observed_schema, "binary_sha256": runtime.file_sha256(binary), "platform": platform.platform(), "rust_toolchain": "1.85.1", "schema_sha256": runtime.file_sha256(schema_path), "integrated_format_probe":integrated_probe}
                 Path(str(binary) + ".identity.json").write_text(json.dumps(identity, sort_keys=True))
+                compactor = binary.with_name("layerfs-store-compact")
+                archive_binary(compactor)
+                shutil.copy2(build_target / "release/layerfs-store-compact", compactor)
+                Path(str(compactor)+".identity.json").write_text(json.dumps({**identity,"binary_sha256":runtime.file_sha256(compactor),"entrypoint":"public LayerStackStore::compact_into"},sort_keys=True))
+                archive_binary(binary); archive_binary(compactor)
                 print(binary)
                 return 0
             tag = "layerfs-bench-infra:" + values["LAYERFS_SOURCE_SEAL"][:16]
@@ -677,6 +746,7 @@ def main(argv=None):
         if result.returncode:
             print(_text(result.stderr)[-16384:], file=sys.stderr)
             return result.returncode
+        archive_image(tag)
         print(tag)
         return 0
     parser = build_parser()

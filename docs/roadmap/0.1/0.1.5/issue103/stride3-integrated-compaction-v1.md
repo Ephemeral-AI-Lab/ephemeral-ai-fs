@@ -64,7 +64,7 @@ tag, deployment, routine cache pruning or unrelated cleanup.
 ## Compaction timing and resources
 
 Operation contract: `public-store-compact-into-v1`; surface is the public Store
-API. The host process command is `storage-compact SOURCE DESTINATION LIMIT`.
+API. The host process command is `storage-compact SOURCE DESTINATION LIMIT TRACE`.
 Its operation timer brackets the one API call; process wall time separately
 includes launch, parsing and receipt output. Intrinsic authentication and the
 product's complete original-object/logical-record verification remain inside
@@ -77,7 +77,7 @@ scratch. Label sampling maxima as sampled, not exact RSS peaks. Record command,
 PID, timestamps, exit status, all publication/cleanup outcomes and known temporary
 allocation, including the private source copy and lookup index. Use the product
 4,294,967,296-byte default temporary budget, host RSS <=8 GiB, no swaps/OOM, host
-free >=50 GiB and inherited run-owned disk limits. The complete phase limit is
+free >=50 GiB and inherited run-owned disk limits. The complete compaction phase limit is
 14,400 seconds; keep save/Commit and compaction costs separate and also sum them.
 
 A reported successful compaction requires published=true, cleanup_complete=true,

@@ -24,8 +24,8 @@ def save(path, value):
         f.write('\n')
 
 
-def definition():
-    value = json.loads(FIXTURE.read_text())
+def definition(path=None):
+    value = json.loads(Path(path or FIXTURE).read_text())
     assert value['schema'] == SCHEMA
     cases = value['cases']
     assert len(cases) == len({c['id'] for c in cases}) == 11
@@ -61,7 +61,8 @@ def worker(config):
     output = Path(args['output']); deadline = runtime.Deadline(args['work_end'])
     result = {'status': 'INCOMPLETE', 'admission_eligible': False}
     try:
-        fixture = definition()
+        fixture_path = Path(args.get("fixture") or FIXTURE)
+        fixture = definition(fixture_path)
         if not Path(args['store']).is_file():
             raise FileNotFoundError('NOT_READY: supply the sealed closed history Store')
         case = next(c for c in fixture['cases'] if c['id'] == args['case'])
@@ -76,7 +77,7 @@ def worker(config):
                 or labels['dev.layerfs.product-seal'] != current['LAYERFS_PRODUCT_SEAL']):
             raise ValueError('NOT_READY: stale build/image; build explicitly')
         custody = {'source': current, 'binary_sha256': identity['binary_sha256'],
-                   'image_id': image['Id'], 'fixture_sha256': runtime.file_sha256(FIXTURE)}
+                   'image_id': image['Id'], 'fixture_sha256': runtime.file_sha256(fixture_path)}
         result.update(schema=SCHEMA, family='historical_access', case=case,
                       custody=custody, mode=args['mode'], contract_commit=fixture['contract_commit'])
         if args['mode'] == 'verification':
@@ -200,14 +201,15 @@ def main(argv=None, started_ns=None):
     parser.add_argument('--self-check', action='store_true')
     parser.add_argument('--case')
     parser.add_argument('--all', action='store_true')
-    parser.add_argument('--store', help='Explicit closed schema9 stride3 Store; never constructed automatically')
+    parser.add_argument('--store', help='Explicit closed sealed Store; never constructed automatically')
+    parser.add_argument('--fixture', help='Explicit prospectively defined fixture; default v2 remains unchanged')
     parser.add_argument('--image', default=os.environ.get('LAYERFS_BENCH_IMAGE'))
     parser.add_argument('--host-binary', default=str(runner.REPO / 'target/release/fs-benchmark-pro'))
     parser.add_argument('--output')
     parser.add_argument('--mode', choices=['performance', 'verification'], default='performance')
     parser.add_argument('--performance', help='Exact selected performance result.json (verification only)')
     args = parser.parse_args(argv)
-    fixture = definition()
+    fixture = definition(args.fixture)
     if args.list or args.self_check:
         print(json.dumps(fixture if args.list else {'status':'PASS', 'cases':11})); return 0
     if not args.store or not args.image or not args.output or bool(args.case) == args.all:
