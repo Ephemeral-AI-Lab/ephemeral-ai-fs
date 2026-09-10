@@ -1315,6 +1315,7 @@ fn direct_initialize_frontier(
             },
             |worker, index, task, objects| {
                 objects.set_small_content_format(db.small_content_format());
+                objects.set_small_chain_format(db.small_chain_format());
                 objects.set_namespace_allocation(namespace.as_ref().map(|range| {
                     let start = range.start + (index as u64 + 1) * INITIALIZATION_INODE_LANE_WIDTH;
                     crate::objects::NamespaceAllocation::new(

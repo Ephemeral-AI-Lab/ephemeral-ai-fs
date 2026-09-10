@@ -23,10 +23,15 @@ impl StoreDb {
         if !(1..=u32::MAX as u64).contains(&ordinal) {
             return Err(StoreError::Integrity("metadata ordinal"));
         }
-        let row = self.reader()?.query_row(
-            "SELECT first_ordinal,count,pack_id,group_number,digest FROM metadata_value_groups WHERE first_ordinal <= ?1 ORDER BY first_ordinal DESC LIMIT 1",
-            [ordinal as i64], |row| Ok((row.get::<_, u32>(0)? as u64, row.get::<_, u32>(1)? as usize, row.get::<_, i64>(2)?, row.get::<_, u32>(3)? as usize, row.get::<_, Vec<u8>>(4)?)),
-        ).optional()?.ok_or(StoreError::Integrity("metadata value missing"))?;
+        let row = self
+            .reader()?
+            .prepare_cached(
+                "SELECT first_ordinal,count,pack_id,group_number,digest FROM metadata_value_groups WHERE first_ordinal <= ?1 ORDER BY first_ordinal DESC LIMIT 1",
+            )?
+            .query_row([ordinal as i64], |row| Ok((row.get::<_, u32>(0)? as u64, row.get::<_, u32>(1)? as usize, row.get::<_, i64>(2)?, row.get::<_, u32>(3)? as usize, row.get::<_, Vec<u8>>(4)?)),
+            )
+            .optional()?
+            .ok_or(StoreError::Integrity("metadata value missing"))?;
         if ordinal == 0 || row.0 + row.1 as u64 <= ordinal || row.1 > VALUES_PER_GROUP {
             return Err(StoreError::Integrity("metadata ordinal range"));
         }
@@ -60,11 +65,12 @@ impl StoreDb {
     }
 
     pub(super) fn next_metadata_ordinal(&self) -> Result<u64> {
-        let next: i64 = self.reader()?.query_row(
-            "SELECT COALESCE(MAX(first_ordinal+count),1) FROM metadata_value_groups",
-            [],
-            |row| row.get(0),
-        )?;
+        let next: i64 = self
+            .reader()?
+            .prepare_cached(
+                "SELECT COALESCE(MAX(first_ordinal+count),1) FROM metadata_value_groups",
+            )?
+            .query_row([], |row| row.get(0))?;
         if !(1..=1 + i64::from(u32::MAX)).contains(&next) {
             return Err(StoreError::Integrity("metadata ordinal maximum"));
         }
@@ -99,29 +105,44 @@ impl ValueIndex {
         if end < self.next {
             return Err(StoreError::Integrity("metadata index chronology"));
         }
-        while self.next < end {
-            let group = db.metadata_group(self.next)?;
-            if group.first != self.next {
-                return Err(StoreError::Integrity("metadata catalogue gap"));
-            }
-            let values = db.read_metadata_values(group)?;
-            // ponytail: retain at most 131072 indexed values (32-MiB scratch file,
-            // 4-MiB SQLite cache); use partitioned lookup only if longer histories
-            // justify its cost. Eviction causes duplicate physical values, not loss.
-            if self.entries + values.len() > 131_072 {
-                self.connection.execute("DELETE FROM values_by_bytes", [])?;
-                self.entries = 0;
-            }
+        if self.next < end {
+            // One scratch transaction per synchronization: every group in this
+            // call commits together or nothing does. Cursor and entry counts
+            // advance inside the transaction; a failed commit leaves the whole
+            // index to the existing publication-rollback invalidation path.
             let transaction = self.connection.transaction()?;
-            for (index, value) in values.iter().enumerate() {
-                transaction.execute(
+            {
+                // One compiled INSERT per existing transaction; dropped before commit.
+                let mut insert = transaction.prepare_cached(
                     "INSERT OR IGNORE INTO values_by_bytes(value,ordinal) VALUES (?1,?2)",
-                    rusqlite::params![value.as_slice(), (group.first + index as u64) as i64],
                 )?;
+                while self.next < end {
+                    let group = db.metadata_group(self.next)?;
+                    if group.first != self.next {
+                        return Err(StoreError::Integrity("metadata catalogue gap"));
+                    }
+                    let values = db.read_metadata_values(group)?;
+                    // ponytail: retain at most 131072 indexed values (32-MiB scratch
+                    // file, 4-MiB SQLite cache); use partitioned lookup only if longer
+                    // histories justify its cost. Eviction causes duplicate physical
+                    // values, not loss.
+                    if self.entries + values.len() > 131_072 {
+                        transaction.execute("DELETE FROM values_by_bytes", [])?;
+                        self.entries = 0;
+                    }
+                    for (index, value) in values.iter().enumerate() {
+                        insert.execute(
+                            rusqlite::params![
+                                value.as_slice(),
+                                (group.first + index as u64) as i64
+                            ],
+                        )?;
+                    }
+                    self.entries += values.len();
+                    self.next += values.len() as u64;
+                }
             }
             transaction.commit()?;
-            self.entries += values.len();
-            self.next += values.len() as u64;
         }
         db.note_physical(crate::PhysicalStorageReceipt {
             metadata_index_sync_ns: super::elapsed_ns(started),
@@ -130,15 +151,49 @@ impl ValueIndex {
         Ok(())
     }
 
-    pub(super) fn find(&self, value: &[u8; 73]) -> Result<Option<u32>> {
-        Ok(self
-            .connection
-            .query_row(
-                "SELECT ordinal FROM values_by_bytes WHERE value=?1",
-                [value.as_slice()],
-                |row| row.get(0),
-            )
-            .optional()?)
+    /// Batched lookup of every value absent from the publication-local pending
+    /// map. One bounded IN-list statement per page; a repeated padding parameter
+    /// keeps a single cached SQL string per page size. Existing ordinals are
+    /// returned as-is; duplicate rows from padding collapse into one entry.
+    pub(super) fn find_batch(&self, values: &[[u8; 73]]) -> Result<BTreeMap<[u8; 73], u32>> {
+        let mut found: BTreeMap<[u8; 73], u32> = BTreeMap::new();
+        if values.is_empty() {
+            return Ok(found);
+        }
+        let parameters = usize::try_from(
+            self.connection
+                .limit(rusqlite::limits::Limit::SQLITE_LIMIT_VARIABLE_NUMBER)?,
+        )
+        .unwrap_or(0);
+        let page = values.len().min(512).min(parameters.max(1));
+        for chunk in values.chunks(page) {
+            let mut sql = String::with_capacity(23 + 5 * page);
+            sql.push_str("SELECT value,ordinal FROM values_by_bytes WHERE value IN (?1");
+            for parameter in 2..=page {
+                sql.push_str(",?");
+                sql.push_str(&parameter.to_string());
+            }
+            sql.push(')');
+            let mut statement = self.connection.prepare_cached(&sql)?;
+            let padding = std::iter::repeat(chunk[chunk.len() - 1].as_slice());
+            let mut rows = statement.query(rusqlite::params_from_iter(
+                chunk
+                    .iter()
+                    .map(|value| value.as_slice())
+                    .chain(padding)
+                    .take(page),
+            ))?;
+            while let Some(row) = rows.next()? {
+                let value: Vec<u8> = row.get(0)?;
+                let ordinal: u32 = row.get(1)?;
+                let value: [u8; 73] = value
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| StoreError::Integrity("metadata index value"))?;
+                found.insert(value, ordinal);
+            }
+        }
+        Ok(found)
     }
 }
 

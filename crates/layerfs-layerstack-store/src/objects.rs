@@ -169,6 +169,8 @@ struct PhysicalHints {
     prior_ids: [Option<ObjectId>; 4],
     first_span: Option<(u64, u32)>,
     has_predecessor: bool,
+    // Candidate-search signature precomputed by parallel output producers.
+    small_signature: Option<[u64; 8]>,
     diagnostic: u8,
     diagnostic_grants: u8,
 }
@@ -179,6 +181,7 @@ struct UndiagnosedHints {
     prior_ids: [Option<ObjectId>; 4],
     first_span: Option<(u64, u32)>,
     has_predecessor: bool,
+    small_signature: Option<[u64; 8]>,
 }
 const _: () = {
     assert!(std::mem::size_of::<PhysicalHints>() == std::mem::size_of::<UndiagnosedHints>());
@@ -540,6 +543,7 @@ pub struct FinalizedOutputWriter {
     namespace: Option<NamespaceAllocation>,
     small_predecessor: Option<ObjectId>,
     small_content_format: bool,
+    small_chain_format: bool,
     file_payload_context: bool,
     sender: std::sync::mpsc::SyncSender<FinalizedObjectSlab>,
     queue: std::sync::Arc<OutputQueueMetrics>,
@@ -681,6 +685,9 @@ impl FinalizedOutputWriter {
     pub fn set_small_content_format(&mut self, enabled: bool) {
         self.small_content_format = enabled;
     }
+    pub fn set_small_chain_format(&mut self, enabled: bool) {
+        self.small_chain_format = enabled;
+    }
     pub fn supports_small_content(&self) -> bool {
         self.small_content_format
     }
@@ -709,6 +716,7 @@ impl FinalizedOutputWriter {
             small_predecessor: None,
             namespace: None,
             small_content_format: false,
+            small_chain_format: false,
             file_payload_context: false,
             sender,
             queue,
@@ -881,6 +889,15 @@ impl ObjectStore for FinalizedOutputWriter {
         if object.is_small_content() {
             object.1.prior_ids[0] = self.small_predecessor;
             object.1.has_predecessor = self.small_predecessor.is_some();
+            // Producer-side candidate-search signature: the admission consumer
+            // would otherwise rescan these immutable bytes on its serial path.
+            // Explicit-predecessor targets keep the lazy consumer fallback,
+            // and Stores without the small-chain format never precompute.
+            if self.small_chain_format && self.small_predecessor.is_none() {
+                let raw = layerfs_content::file::content::small_bytes(&object.bytes)?
+                    .ok_or(CoreError::InvalidRecord("SmallContent role"))?;
+                object.1.small_signature = Some(small_candidates::signature(raw));
+            }
         }
         object.1.first_span = Some((start, len));
         if self.file_payload_context {
@@ -4238,6 +4255,7 @@ impl crate::LayerStackStore {
             initialize,
             |state, ordinal, task, writer| {
                 writer.set_small_content_format(self.db.small_content_format());
+                writer.set_small_chain_format(self.db.small_chain_format());
                 step(state, ordinal, task, writer)
             },
             finish,

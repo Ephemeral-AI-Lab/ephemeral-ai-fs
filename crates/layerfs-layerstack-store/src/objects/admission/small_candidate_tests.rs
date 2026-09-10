@@ -146,6 +146,88 @@ fn selected_small_candidate_compact_references_and_eviction() {
 }
 
 #[test]
+fn selected_small_candidate_predecessor_full_wins_lazy_signature_reuse() {
+    let f = Fixture::new();
+    // Unrelated FULL base published in a non-final batch.
+    let raw_base = random();
+    let base = small(&raw_base);
+    let mut prepared = f.prepare(vec![base.clone()]);
+    let session = prepared.session.clone();
+    prepared.final_batch = false;
+    f.publish(prepared);
+    let prepare = |object: AuthenticatedCanonicalObject| {
+        PreparedAdmission::prepare_missing(
+            &f.db,
+            crate::objects::MissingBatch(vec![object], session.clone(), false, None),
+        )
+        .unwrap()
+    };
+    // The target carries a usable explicit predecessor but is byte-inverted
+    // relative to it: no useful delta exists, so FULL wins without any
+    // preparation-time search signature.
+    let raw_target = raw_base.iter().map(|byte| !byte).collect::<Vec<u8>>();
+    let mut target = small(&raw_target);
+    target.1.prior_ids[0] = Some(base.id);
+    let mut prepared = prepare(target.clone());
+    assert!(!prepared.objects[0].delta);
+    assert!(prepared.objects[0].small_signature.is_none());
+    prepared.final_batch = false;
+    f.publish(prepared);
+    // A later no-predecessor near-match (shifted prefix plus one flipped byte)
+    // must discover the FULL winner through the candidate cache; publication
+    // computed that signature lazily.
+    let mut near = b"shifted new path\n".to_vec();
+    near.extend_from_slice(&raw_target);
+    near[20000] ^= 1;
+    let near = small(&near);
+    let prepared = prepare(near.clone());
+    assert!(prepared.objects[0].small_signature.is_some());
+    assert!(prepared.objects[0].delta);
+    f.publish(prepared);
+    assert_eq!(f.db.small_physical_base(near.id).unwrap(), Some(target.id));
+    assert_eq!(f.db.read_object_row(target.id).unwrap(), target.bytes);
+    assert_eq!(f.db.read_object_row(near.id).unwrap(), near.bytes);
+    session.retain();
+}
+
+#[test]
+fn finalized_writer_precomputes_small_candidate_signatures() {
+    use crate::objects::FinalizedOutputWriter;
+    let raw = random();
+    let expected = crate::objects::small_candidates::signature(&raw);
+    let build = |chain: bool, predecessor: Option<ObjectId>| {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(4);
+        let mut writer = FinalizedOutputWriter::new(
+            sender,
+            std::sync::Arc::new(crate::objects::OutputQueueMetrics::default()),
+        );
+        writer.set_small_content_format(true);
+        writer.set_small_chain_format(chain);
+        let id = writer
+            .build_small_file(std::io::Cursor::new(&raw), raw.len() as u64, predecessor)
+            .unwrap()
+            .0;
+        writer.finish().unwrap();
+        let slab = receiver.recv().unwrap();
+        assert_eq!(slab.objects.len(), 1);
+        (id, slab.objects[0].1.clone())
+    };
+    // Anchor-less small files carry the producer-computed signature.
+    let (id, hints) = build(true, None);
+    assert_eq!(id, ObjectId::for_bytes(&layerfs_content::file::content::encode_small(&raw).unwrap()));
+    assert_eq!(hints.prior_ids[0], None);
+    assert_eq!(hints.small_signature, Some(expected));
+    // Explicit predecessors keep the lazy consumer fallback.
+    let prior = ObjectId::for_bytes(b"prior");
+    let (_, hints) = build(true, Some(prior));
+    assert_eq!(hints.prior_ids[0], Some(prior));
+    assert_eq!(hints.small_signature, None);
+    // Stores without the small-chain format never precompute.
+    let (_, hints) = build(false, None);
+    assert_eq!(hints.small_signature, None);
+}
+
+#[test]
 fn selected_small_candidate_retained_handoff_rollback_and_cold_reopen() {
     let folder = Fixture::new();
     let path = folder.folder.join("retained.sqlite");

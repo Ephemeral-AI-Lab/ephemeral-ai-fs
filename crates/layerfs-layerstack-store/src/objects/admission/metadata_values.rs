@@ -49,7 +49,12 @@ pub(super) fn prepare_values(
     }
     let index = index.as_mut().unwrap();
     index.sync(db)?;
-    let first = next.unwrap_or(db.next_metadata_ordinal()?);
+    // index.sync above already validated catalogue chronology; only query
+    // the boundary when the caller did not supply the next ordinal.
+    let first = match next {
+        Some(next) => next,
+        None => db.next_metadata_ordinal()?,
+    };
     // Pending values are private to this prepared publication. At most one per
     // 81-byte canonical row in the <=512-KiB ordinary admission batch; charge a
     // conservative whole B-tree node per entry within the existing index budget.
@@ -63,6 +68,22 @@ pub(super) fn prepare_values(
     {
         return Err(StoreError::Integrity("metadata pending index bound"));
     }
+    // One batched lookup covers every value absent from the publication-local
+    // pending map; ordinals are still assigned in first-encounter order. The
+    // transient lookup set stays inside the existing per-row bound above.
+    let mut lookups: Vec<[u8; 73]> = Vec::new();
+    {
+        let mut seen = BTreeSet::new();
+        for object in objects {
+            for row in object.bytes[44..].chunks_exact(81) {
+                let value: [u8; 73] = row[8..].try_into().unwrap();
+                if !pending.contains_key(&value) && seen.insert(value) {
+                    lookups.push(value);
+                }
+            }
+        }
+    }
+    let found = index.find_batch(&lookups)?;
     let mut values = Vec::new();
     let mut physical = Vec::with_capacity(objects.len());
     for object in objects {
@@ -73,8 +94,8 @@ pub(super) fn prepare_values(
             let value: [u8; 73] = row[8..].try_into().unwrap();
             let ordinal = if let Some(ordinal) = pending.get(&value) {
                 *ordinal
-            } else if let Some(ordinal) = index.find(&value)? {
-                ordinal
+            } else if let Some(ordinal) = found.get(&value) {
+                *ordinal
             } else {
                 let ordinal = u32::try_from(first + values.len() as u64)
                     .map_err(|_| StoreError::Integrity("metadata ordinal exhausted"))?;

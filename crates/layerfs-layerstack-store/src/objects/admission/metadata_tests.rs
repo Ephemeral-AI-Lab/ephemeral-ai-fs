@@ -179,6 +179,60 @@ fn metadata_values_share_across_prepared_packs_and_reopen() {
 }
 
 #[test]
+fn metadata_batched_value_lookup_pages_and_sharing() {
+    fn unique_rows(tag: u64, count: usize, key_offset: u64) -> Vec<(InodeSerial, InodeRecordV1)> {
+        let dep = |value: u64| dependency(tag * 1_000 + value);
+        (1..=count)
+            .map(|index| {
+                (
+                    InodeSerial::new(
+                        (((index as u64) + key_offset) << 48)
+                            | (u64::from_le_bytes(
+                                dep(index as u64).id.as_bytes()[..8].try_into().unwrap(),
+                            ) & ((1 << 48) - 1)),
+                    )
+                    .unwrap(),
+                    InodeRecordV1 {
+                        kind: InodeKind::RegularFile,
+                        namespace_ref_count: 1,
+                        content_root: dep(index as u64).id,
+                        metadata_root: dep(index as u64).id,
+                    },
+                )
+            })
+            .collect()
+    }
+    fn leaf_of(rows: Vec<(InodeSerial, InodeRecordV1)>) -> AuthenticatedCanonicalObject {
+        AuthenticatedCanonicalObject::new(
+            compact::encode_inode(&InodeNode::Leaf(rows)).unwrap(),
+            None,
+        )
+        .unwrap()
+    }
+    let mut f = Fixture::new();
+    let deps = (0..15_u64)
+        .flat_map(|tag| (1..=100_u64).map(move |index| dependency(tag * 1_000 + index)))
+        .collect::<Vec<_>>();
+    f.publish(f.prepare(deps));
+    let history = (0..15_u64)
+        .map(|tag| leaf_of(unique_rows(tag, 100, 0)))
+        .collect::<Vec<_>>();
+    f.publish(f.prepare(history.clone()));
+    // 1500 distinct absent values crossed the batched-lookup page boundary.
+    assert_eq!(f.db.next_metadata_ordinal().unwrap(), 1501);
+    f.db.validate_metadata_groups().unwrap();
+    for object in &history {
+        assert_eq!(f.db.read_object_row(object.id).unwrap(), object.bytes);
+    }
+    // A different leaf reusing every indexed value resolves all ordinals
+    // through one batched lookup and assigns no new ordinals.
+    let reuse = leaf_of(unique_rows(0, 100, 200));
+    f.publish(f.prepare(vec![reuse.clone()]));
+    assert_eq!(f.db.next_metadata_ordinal().unwrap(), 1501);
+    assert_eq!(f.db.read_object_row(reuse.id).unwrap(), reuse.bytes);
+}
+
+#[test]
 fn metadata_pool_catalogue_corruption_and_publication_rollback() {
     let f = Fixture::new();
     dependencies(&f);

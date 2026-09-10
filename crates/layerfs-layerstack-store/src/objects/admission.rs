@@ -22,6 +22,8 @@ struct PreparedObject {
     canonical: Range<usize>,
     // Compressed records retain the original authenticated comparison operand.
     retained: Option<Vec<u8>>,
+    // Preparation-time SmallContent search signature for FULL publication reuse.
+    small_signature: Option<[u64; 8]>,
     delta: bool,
     diagnostic_terminal: u8,
 }
@@ -35,6 +37,7 @@ struct UndiagnosedPreparedObject {
     record: usize,
     canonical: Range<usize>,
     retained: Option<Vec<u8>>,
+    small_signature: Option<[u64; 8]>,
     delta: bool,
 }
 const _: () = {
@@ -259,12 +262,20 @@ impl PreparedAdmission {
         let mut encoder = None;
         for object in objects {
             // Static codec workspace is charged to data; operands and handoff to physical output.
+            // Prepared slots now also carry the retained SmallContent signature;
+            // charge the actual prepared-vector capacity, like every other lane.
             self.data_reserve(3 * 1024 * 1024)?;
-            if self.physical_backing() + group_bytes * 2 + 1024 * 1024 > 2 * 1024 * 1024 {
+            if self.physical_backing()
+                + group_bytes * 2
+                + self.objects.capacity() * std::mem::size_of::<PreparedObject>()
+                + 1024 * 1024
+                > 2 * 1024 * 1024
+            {
                 return Err(StoreError::Integrity("SmallContent physical output budget"));
             }
             let raw = layerfs_content::file::content::small_bytes(&object.bytes)?
                 .ok_or(StoreError::Integrity("SmallContent role"))?;
+            let mut small_signature = None;
             let mut anchor = if let Some(prior) = object.1.prior_ids[0] {
                 // Decoder and encoder never overlap; carry authenticated closure facts forward.
                 drop(encoder.take());
@@ -280,7 +291,15 @@ impl PreparedAdmission {
             };
             if anchor.is_none() {
                 if let Some(candidates) = &self.session.small_candidates {
-                    let signature = super::small_candidates::signature(raw);
+                    // Output producers precompute this signature on their
+                    // parallel path when no explicit predecessor was annotated;
+                    // every other object still computes it here from the same
+                    // immutable bytes.
+                    let signature = object
+                        .1
+                        .small_signature
+                        .unwrap_or_else(|| super::small_candidates::signature(raw));
+                    small_signature = Some(signature);
                     let candidate = candidates
                         .lock()
                         .map_err(|_| StoreError::Integrity("small candidate cache"))?
@@ -358,6 +377,7 @@ impl PreparedAdmission {
                 record: 0,
                 canonical: 0..0,
                 retained: Some(object.0.bytes),
+                small_signature,
                 delta,
                 diagnostic_terminal: if delta {
                     diagnostic::DELTA
@@ -713,6 +733,7 @@ impl PreparedAdmission {
                 // Native FULL is internally compressed too: final CAS must retain
                 // the authentic canonical operand, never compare frame bytes.
                 retained: Some(entry.canonical.bytes),
+                small_signature: None,
                 delta: entry.delta,
                 diagnostic_terminal: entry.terminal,
             });
@@ -922,6 +943,7 @@ impl PreparedAdmission {
                     record: record_number,
                     canonical: cursor + 1..end,
                     retained,
+                    small_signature: None,
                     delta,
                     diagnostic_terminal,
                 });
@@ -994,6 +1016,7 @@ impl PreparedAdmission {
             record: 0,
             canonical: 41..total,
             retained: None,
+            small_signature: None,
             delta: false,
             diagnostic_terminal: 0,
         });
@@ -1117,7 +1140,12 @@ impl PreparedAdmission {
                         .ok_or(StoreError::Integrity("selected small candidate ownership"))?;
                     let raw = layerfs_content::file::content::small_bytes(canonical)?
                         .ok_or(StoreError::Integrity("selected small candidate role"))?;
-                    let signature = super::small_candidates::signature(raw);
+                    // Preparation already scanned this immutable value for candidate
+                    // lookup. Explicit-predecessor paths that skipped the search
+                    // compute the signature lazily here, before the winner is visible.
+                    let signature = object
+                        .small_signature
+                        .unwrap_or_else(|| super::small_candidates::signature(raw));
                     candidates
                         .lock()
                         .map_err(|_| StoreError::Integrity("small candidate cache"))?
@@ -1187,11 +1215,9 @@ impl PreparedAdmission {
         statement_number: &mut u64,
     ) -> Result<crate::PhysicalStorageReceipt> {
         let mut diagnostic_stats = crate::PhysicalStorageReceipt::default();
-        let mut next: i64 = transaction.query_row(
-            "SELECT COALESCE(MAX(pack_id),0) FROM object_packs",
-            [],
-            |row| row.get(0),
-        )?;
+        let mut next: i64 = transaction
+            .prepare_cached("SELECT COALESCE(MAX(pack_id),0) FROM object_packs")?
+            .query_row([], |row| row.get(0))?;
         // Bases came from selected immutable locations before preparation.
         // All newly assigned IDs exceed this transaction's existing maximum.
         if self.native_base_max_pack > next {
@@ -1269,11 +1295,11 @@ impl PreparedAdmission {
             start = end;
         }
         let mut next_ordinal: i64 = if keep_pools {
-            transaction.query_row(
-                "SELECT COALESCE(MAX(first_ordinal+count),1) FROM metadata_value_groups",
-                [],
-                |row| row.get(0),
-            )?
+            transaction
+                .prepare_cached(
+                    "SELECT COALESCE(MAX(first_ordinal+count),1) FROM metadata_value_groups",
+                )?
+                .query_row([], |row| row.get(0))?
         } else {
             1
         };
@@ -1289,8 +1315,11 @@ impl PreparedAdmission {
             }
             *statement_number += 1;
             crate::schema::fail_transaction_statement(*statement_number)?;
-            transaction.execute("INSERT INTO metadata_value_groups(first_ordinal,count,pack_id,group_number,digest) VALUES (?1,?2,?3,?4,?5)",
-                rusqlite::params![group.first as i64, group.count as i64, pool_packs[&group.pack], group.group as i64, group.digest.as_bytes().as_slice()])?;
+            transaction
+                .prepare_cached("INSERT INTO metadata_value_groups(first_ordinal,count,pack_id,group_number,digest) VALUES (?1,?2,?3,?4,?5)")?
+                .execute(
+                    rusqlite::params![group.first as i64, group.count as i64, pool_packs[&group.pack], group.group as i64, group.digest.as_bytes().as_slice()],
+                )?;
             next_ordinal += group.count as i64;
             diagnostic_stats.metadata_pool_admitted_groups += 1;
             diagnostic_stats.metadata_pool_admitted_values += group.count as u64;
