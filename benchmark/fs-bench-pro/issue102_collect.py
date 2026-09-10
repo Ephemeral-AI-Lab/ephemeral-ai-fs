@@ -149,7 +149,7 @@ def main():
                     if not identities:
                         retain(arm,'verification',case,{'status':'INCOMPLETE','error':'no performance identities'});continue
                 else:
-                    resolve=runner.build_parser().parse_args(['--family',family,'--case',case,'--seed','1',
+                    resolve=runner.build_parser().parse_args(['--family',family,'--case',case,'--repetition' if row.get('route')=='sdk' else '--seed','1',
                         '--setup','fresh' if row['setup_policy']=='fresh-output' else 'clone','--image',config.image,'--host-binary',config.host_binary,
                         '--product-timeout','300','--timeout','310','--setup-timeout','600','--source-arm',config.source_arm])
                     resolve.verification=True
