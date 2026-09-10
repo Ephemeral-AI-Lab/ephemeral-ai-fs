@@ -138,6 +138,21 @@ def initialization_diagnostics(output):
                                 "layerfs-initialization-commits-"))]
 
 
+def compilation_seal():
+    # Native inputs isolate incompatible arms without recompiling for collector/docs edits.
+    paths = sorted(p for root in (REPO / "crates", REPO / "tools", BENCH / "src", BENCH / "workload", BENCH / "families")
+                   for p in root.rglob("*") if p.is_file() and p.suffix in (".rs", ".toml", ".sql")
+                   and "target" not in p.parts)
+    paths += [REPO / "Cargo.toml", REPO / "Cargo.lock", BENCH / "Cargo.toml", BENCH / "Dockerfile.layerfs"]
+    paths += sorted(p for root in (REPO / ".cargo", Path.home() / ".cargo")
+                    for p in (root / "config", root / "config.toml") if p.is_file())
+    value = hashlib.sha256(b"rust-1.85.1;release;host-bins;linux-daemon;fuse-proxy;workload-O3;v1")
+    for path in paths:
+        value.update(str(path).encode() + b"\0" + path.read_bytes())
+    value.update(json.dumps({k:v for k,v in os.environ.items() if k.startswith(("RUST", "CARGO_", "CC", "CXX", "CFLAGS", "LDFLAGS"))}, sort_keys=True).encode())
+    return value.hexdigest()
+
+
 def source_build_args():
     def git(*argv):
         return _text(runtime.run(["git", "-C", str(REPO), *argv], deadline=runtime.Deadline.after(10)).stdout).strip()
@@ -152,7 +167,7 @@ def source_build_args():
         source.update(part)
         if "crates" in path.relative_to(REPO).parts:
             product.update(part)
-    return {"LAYERFS_SOURCE_COMMIT": git("rev-parse", "HEAD"),
+    return {"LAYERFS_COMPILATION_SEAL": compilation_seal(), "LAYERFS_SOURCE_COMMIT": git("rev-parse", "HEAD"),
             "LAYERFS_SOURCE_TREE": git("rev-parse", "HEAD^{tree}"),
             "LAYERFS_SOURCE_DIRTY": "true" if git("status", "--porcelain") else "false", "LAYERFS_SOURCE_SEAL": source.hexdigest(),
             "LAYERFS_PRODUCT_SEAL": product.hexdigest(),
@@ -705,10 +720,10 @@ def main(argv=None):
             values = source_build_args()
             if argv == ["--build-host"]:
                 binary = REPO / "target/release/fs-benchmark-pro"
-                build_target = HOST_ROOT / "builds" / values["LAYERFS_SOURCE_SEAL"]
+                build_target = HOST_ROOT / "builds" / ("native-" + values["LAYERFS_COMPILATION_SEAL"])
                 try:
                     result = runtime.run(["cargo", "+1.85.1", "build", "--locked", "--release", "-j2", "-p", "fs-benchmark-pro", "-p", "layerfs-layerstack-store", "--bins", "--target-dir", str(build_target)],
-                        deadline=runtime.Deadline.after(900), cwd=REPO, output_limit=1024**2)
+                        deadline=runtime.Deadline.after(900), cwd=REPO, output_limit=1024**2, stream_output=True)
                 except runtime.CommandFailure as error:
                     print(_text(error.result.stderr), file=sys.stderr)
                     return error.result.returncode or 1

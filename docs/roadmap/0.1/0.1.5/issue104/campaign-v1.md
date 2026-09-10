@@ -83,3 +83,17 @@ After each family print performance/proof completed/expected, failures, slow cas
 wall, outcome and evidence path. Final matrix and slowdown table go to terminal and
 artifacts. Update #104 and v0.1.5/#102 docs; close only if obligations satisfied.
 No #103 integration restart, release, deployment or post-compaction campaign.
+
+## Preflight implementation impact (before measurements)
+
+Collector change is limited to explicit single-family selection, complete registry
+validation, phase-aware append-only resume/retry and terminal/command logs. No
+public product operation, registry row, seed, fixture recipe, timer or verifier is
+changed. Build targets now use native compilation inputs plus fixed toolchain/
+profile/config/environment identity; full source/harness seals remain separate.
+Python-only edits no longer force native target churn. Linux uses the same
+compilation key for its isolated BuildKit target mount. Native edits still isolate
+qualified targets, with dependency recompilation a possible remaining cost.
+Build subprocess streaming is enabled only for builds; product command output
+capture and operation timers remain unchanged. Focused selection check and all
+52 shared runner tests pass. No measured family evidence exists to invalidate.

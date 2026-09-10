@@ -6,29 +6,88 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import datetime
+import os
+import threading
+import uuid
 
 import issue54_collect as collect
 from issue54_collect import runner
 from shared.repository_history import registry as histories
 
 ROOT = collect.REPO
-DECLARATION = ROOT / 'docs/roadmap/0.1/0.1.5/issue102/mandatory-campaign.json'
+DECLARATION = ROOT / 'docs/roadmap/0.1/0.1.5/issue104/mandatory-campaign.json'
 PREPARATION = ROOT / 'docs/roadmap/0.1/0.1.4/issue91-campaign/verification-preparation-r4.json'
 
 
+def select_rows(inventory, family):
+    if family not in (*runner.HOST_FAMILIES, 'historical_access'):
+        raise ValueError('one registered family is required')
+    return [(i,r) for i,r in enumerate(r for f in runner.HOST_FAMILIES for r in inventory[f]['rows'])
+            if r['family_id'] == family]
+
+
+def completed(values, family, arm, phase, case):
+    return any(v.get('family') == family and v.get('arm') == arm and
+               v.get('phase') == phase and v.get('case') == case for v in values)
+
+
+def streamed_run(argv, cwd=None):
+    if '--list' in argv:
+        return subprocess.run(argv,cwd=cwd or ROOT,text=True,capture_output=True)
+    started=time.monotonic()
+    folder=LOG_ROOT/uuid.uuid4().hex
+    folder.mkdir(parents=True,exist_ok=False)
+    collect._write(folder/'command.json',argv)
+    print('COMMAND_START',datetime.datetime.now(datetime.timezone.utc).isoformat(),json.dumps(argv),'evidence='+str(folder),flush=True)
+    proc=subprocess.Popen(argv,cwd=cwd or ROOT,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,
+                          env={**os.environ,'PYTHONUNBUFFERED':'1'})
+    parts=[[],[]]
+    def drain(pipe,index):
+        with (folder/('stdout.log' if index==0 else 'stderr.log')).open('x') as log:
+            for line in pipe:
+                parts[index].append(line);log.write(line);log.flush()
+                print(line,end='',flush=True)
+    threads=[threading.Thread(target=drain,args=(proc.stdout,0)),threading.Thread(target=drain,args=(proc.stderr,1))]
+    for thread in threads:thread.start()
+    while True:
+        try:proc.wait(timeout=15);break
+        except subprocess.TimeoutExpired:print('COMMAND_PROGRESS',round(time.monotonic()-started,3),'seconds',str(folder),flush=True)
+    for thread in threads:thread.join()
+    receipt={'returncode':proc.returncode,'wall_seconds':time.monotonic()-started,'finished_utc':datetime.datetime.now(datetime.timezone.utc).isoformat()}
+    collect._write(folder/'exit.json',receipt)
+    print('COMMAND_END',json.dumps(receipt),str(folder),flush=True)
+    return subprocess.CompletedProcess(argv,proc.returncode,''.join(parts[0]),''.join(parts[1]))
+
+
 def main():
+    global LOG_ROOT
     p=argparse.ArgumentParser(description=__doc__)
     for arm in ('control','candidate'):
-        p.add_argument('--'+arm+'-image',required=True)
-        p.add_argument('--'+arm+'-binary',required=True)
-    p.add_argument('--access-store',required=True)
+        p.add_argument('--'+arm+'-image',required=arm=='candidate')
+        p.add_argument('--'+arm+'-binary',required=arm=='candidate')
+    p.add_argument('--control-inapplicable',type=Path)
+    p.add_argument('--family',required=True,choices=(*runner.HOST_FAMILIES,'historical_access'))
+    p.add_argument('--campaign',type=Path,default=DECLARATION)
+    p.add_argument('--access-store')
+    p.add_argument('--access-fixture',type=Path)
     p.add_argument('--output',type=Path,required=True)
     p.add_argument('--inventory-only',action='store_true')
+    p.add_argument('--resume',action='store_true')
+    p.add_argument('--retry-case')
     args=p.parse_args()
-    args.output.mkdir(parents=True,exist_ok=False)
-    declaration=json.loads(DECLARATION.read_text())
-    arms={}; inventory={}
+    if not args.control_inapplicable and not (args.control_image and args.control_binary):
+        p.error('qualified control or retained inapplicability evidence required')
+    if args.family=='historical_access' and not (args.access_fixture and args.access_store):
+        p.error('historical_access requires separately bound fixture and Store')
+    if args.output.exists() and not args.resume:p.error('existing evidence requires --resume')
+    args.output.mkdir(parents=True,exist_ok=True)
+    LOG_ROOT=args.output/'commands';LOG_ROOT.mkdir(exist_ok=True)
+    collect._run=streamed_run
+    declaration=json.loads(args.campaign.read_text())
+    arms={};inventory={}
     for arm in ('control','candidate'):
+        if arm=='control' and args.control_inapplicable:continue
         config=argparse.Namespace(image=getattr(args,arm+'_image'),host_binary=getattr(args,arm+'_binary'),
             source_arm='baseline' if arm=='control' else 'candidate',campaign_spec=declaration,
             proof_preparation_spec=json.loads(PREPARATION.read_text()),proof_preparation_declaration=PREPARATION,
@@ -39,61 +98,91 @@ def main():
             config.listed_families[family]=listed;selected[family]=(rows,listed)
         collect.validate_campaign(declaration,selected)
         collect.validate_proof_preparation(config.proof_preparation_spec,selected)
-        arms[arm]=config
-        inventory[arm]={family:listed for family,(_,listed) in selected.items()}
-    collect._write(args.output/'inventory.json',inventory)
-    collect._write(args.output/'optional-history.json',histories())
+        arms[arm]=config;inventory[arm]={family:listed for family,(_,listed) in selected.items()}
+    collect._write(args.output/('inventory-'+uuid.uuid4().hex+'.json'),inventory)
     if args.inventory_only:return 0
     ledger=args.output/'ledger.jsonl'
+    values=[json.loads(l) for l in ledger.read_text().splitlines()] if ledger.exists() else []
+    started=time.monotonic()
+    selected=select_rows(inventory['candidate'],args.family)
+    fixture=json.loads(args.access_fixture.read_text()) if args.family=='historical_access' else None
+    ids=[r['scenario_id'] for _,r in selected] if fixture is None else [r['id'] for r in fixture['cases']]
+    if args.retry_case and args.retry_case not in ids:p.error('retry case is outside selected family')
+    print('FAMILY_START',datetime.datetime.now(datetime.timezone.utc).isoformat(),args.family,
+          'cases='+json.dumps(ids),'arms='+json.dumps(list(arms)),'evidence='+str(args.output),flush=True)
+    if args.control_inapplicable:
+        print('CONTROL_INAPPLICABLE',args.control_inapplicable.read_text(),flush=True)
     def retain(arm,phase,case,result):
-        with ledger.open('a') as f:
-            f.write(json.dumps({'arm':arm,'phase':phase,**result,'case':case},sort_keys=True)+'\n')
-        print(f"{arm} {phase} {case} {result.get('status')}",flush=True)
-    ordered=[r for f in runner.HOST_FAMILIES for r in inventory['candidate'][f]['rows']]
-    for index,row in enumerate(ordered):
-        family=row['family_id'];case=row['scenario_id']
+        value={'arm':arm,'phase':phase,**result,'family':args.family,'case':case,
+               'recorded_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'treatment':'promoted-uncompacted'}
+        with ledger.open('a') as f:f.write(json.dumps(value,sort_keys=True)+'\n');f.flush()
+        values.append(value)
+        print('CASE_END',args.family,arm,phase,case,result.get('status'),'timer='+str(result.get('timer')),
+              'elapsed_ns='+str(result.get('elapsed_ns')),'evidence='+str(result.get('receipt')),flush=True)
+    for index,row in selected:
+        family=args.family;case=row['scenario_id']
+        if args.retry_case and case!=args.retry_case:continue
         for arm in (('control','candidate') if index%2==0 else ('candidate','control')):
-            config=arms[arm];output=args.output/arm
+            if arm not in arms:continue
+            config=arms[arm]
+            prior=[v for v in values if v.get('family')==family and v.get('case')==case and v.get('arm')==arm]
+            if not args.retry_case and any(v['phase']=='verification' for v in prior):
+                print('RETAINED',family,arm,case,'original receipts in ledger',flush=True);continue
+            attempt=sum(v['phase']=='verification' for v in prior)+1
+            output=args.output/arm/('attempt-'+str(attempt))
             try:
                 if case==declaration.get('long_test_exclusion'):
                     retain(arm,'verification',case,collect.verify_row(config,family,row,output,None));continue
                 if not row['proof_only']:
                     result,_=collect.collect_row(config,family,row,output)
-                    retain(arm,'performance',case,result)
+                    if args.retry_case or not completed(values,family,arm,'performance',case):retain(arm,'performance',case,result)
                     identities=result.get('identities')
                     if not identities:
                         retain(arm,'verification',case,{'status':'INCOMPLETE','error':'no performance identities'});continue
                 else:
                     resolve=runner.build_parser().parse_args(['--family',family,'--case',case,'--seed','1',
-                        '--verification','--setup','fresh' if row['setup_policy']=='fresh-output' else 'clone','--image',config.image,'--host-binary',config.host_binary,
+                        '--setup','fresh' if row['setup_policy']=='fresh-output' else 'clone','--image',config.image,'--host-binary',config.host_binary,
                         '--product-timeout','300','--timeout','310','--setup-timeout','600','--source-arm',config.source_arm])
+                    resolve.verification=True
                     identities=runner.resolve_selection(resolve,time.monotonic()+30)
-                result=collect.verify_row(config,family,row,output,identities)
-                retain(arm,'verification',case,result)
+                retain(arm,'verification',case,collect.verify_row(config,family,row,output,identities))
             except Exception as error:
-                retain(arm,'error',case,{'status':'INCOMPLETE','error':type(error).__name__+': '+str(error)})
-    config=arms['candidate']
-    fixture=json.loads((runner.BENCH/'families/historical_access/fixture.json').read_text())
-    for case in fixture['cases']:
-        previous=None
-        for mode in ('performance','verification'):
-            output=args.output/'historical_access'/(case['id']+'-'+mode)
-            command=[sys.executable,str(runner.HERE/'runner.py'),'--family','historical_access','--case',case['id'],
-                     '--mode',mode,'--store',args.access_store,'--image',config.image,'--host-binary',config.host_binary,'--output',str(output)]
-            if previous:command+=['--performance',str(previous/'result.json')]
-            started=time.monotonic_ns();proc=subprocess.run(command,capture_output=True,text=True)
-            result=json.loads((output/'result.json').read_text()) if (output/'result.json').exists() else {'status':'INCOMPLETE'}
-            result.update(external_wall_ns=time.monotonic_ns()-started,returncode=proc.returncode)
-            if proc.returncode or result['external_wall_ns']>=15_000_000_000:result['status']='FAIL'
-            retain('candidate',mode,case['id'],result);previous=output
-    values=[json.loads(l) for l in ledger.read_text().splitlines()]
-    summary={}
-    for row in values:
-        key=row['arm']+'/'+row['phase']+'/'+str(row.get('status'))
-        summary[key]=summary.get(key,0)+1
-    collect._write(args.output/'summary.json',summary)
-    print(json.dumps(summary,sort_keys=True),flush=True)
-    return int(any(r.get('status') not in ('PASS','NOT_RUN_OPTIONAL') for r in values))
+                retain(arm,'verification',case,{'status':'INCOMPLETE','error':type(error).__name__+': '+str(error)})
+    if fixture:
+        config=arms['candidate']
+        for case in fixture['cases']:
+            cid=case['id']
+            if args.retry_case and cid!=args.retry_case:continue
+            if not args.retry_case and completed(values,args.family,'candidate','verification',cid):continue
+            previous=None
+            attempt=sum(v.get('case')==cid and v.get('phase')=='verification' for v in values)+1
+            for mode in ('performance','verification'):
+                output=args.output/'historical_access'/('attempt-'+str(attempt))/(cid+'-'+mode)
+                command=[sys.executable,str(runner.HERE/'runner.py'),'--family','historical_access','--case',cid,
+                    '--fixture',str(args.access_fixture),'--mode',mode,'--store',args.access_store,
+                    '--image',config.image,'--host-binary',config.host_binary,'--output',str(output)]
+                if previous:command+=['--performance',str(previous/'result.json')]
+                proc=streamed_run(command)
+                result=json.loads((output/'result.json').read_text()) if (output/'result.json').exists() else {'status':'INCOMPLETE'}
+                result.update(returncode=proc.returncode,receipt=str(output/'result.json'))
+                if proc.returncode:result['status']='FAIL'
+                retain('candidate',mode,cid,result);previous=output
+    latest={ (v['arm'],v['phase'],v['case']):v for v in values if v.get('family')==args.family }
+    expected_perf=11 if fixture else sum(not r['proof_only'] for _,r in selected)
+    expected_proof=11 if fixture else sum(r['scenario_id']!=declaration.get('long_test_exclusion') for _,r in selected)
+    failed=[v for v in latest.values() if v.get('status') not in ('PASS','NOT_RUN_OPTIONAL')]
+    slow=[v for v in latest.values() if v.get('historical_product_target_status')=='TARGET_MISS']
+    counts={phase:sum(v['phase']==phase and v.get('status')!='NOT_RUN_OPTIONAL' for v in latest.values()) for phase in ('performance','verification')}
+    outcome='FAIL' if failed or slow else 'PASS'
+    if counts!={'performance':expected_perf*len(arms),'verification':expected_proof*len(arms)}:outcome='INCOMPLETE'
+    summary={'family':args.family,'performance_completed':counts['performance'],'performance_expected':expected_perf*len(arms),
+        'verification_completed':counts['verification'],'verification_expected':expected_proof*len(arms),'failures':len(failed),
+        'slow_cases':len(slow),'wall_seconds':time.monotonic()-started,'outcome':outcome,'evidence':str(args.output)}
+    collect._write(args.output/(args.family+'-summary-'+uuid.uuid4().hex+'.json'),summary)
+    print('Family | Performance completed/expected | Verification completed/expected | Failures | Slow cases | Wall time | Outcome | Evidence path',flush=True)
+    print(f"{args.family} | {counts['performance']}/{summary['performance_expected']} | {counts['verification']}/{summary['verification_expected']} | {len(failed)} | {len(slow)} | {summary['wall_seconds']:.3f}s | {outcome} | {args.output}",flush=True)
+    print('FAMILY_END',datetime.datetime.now(datetime.timezone.utc).isoformat(),json.dumps(summary),flush=True)
+    return int(outcome!='PASS')
 
 
 if __name__=='__main__':raise SystemExit(main())

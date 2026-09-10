@@ -17,6 +17,7 @@ from pathlib import Path
 import re
 import signal
 import subprocess
+import sys
 import threading
 import time
 from typing import Mapping, Sequence
@@ -115,6 +116,7 @@ def run(
     env: Mapping[str, str] | None = None,
     cwd: os.PathLike[str] | str | None = None,
     check: bool = True,
+    stream_output: bool = False,
 ) -> CommandResult:
     """Run one command under an absolute deadline while draining bounded output."""
     if not argv:
@@ -143,10 +145,13 @@ def run(
     def drain(stream, target: bytearray) -> None:
         try:
             while True:
-                data = stream.read(64 * 1024)
+                data = stream.read1(64 * 1024)
                 if not data:
                     return
                 capture.append(target, data)
+                if stream_output:
+                    sys.stderr.buffer.write(data)
+                    sys.stderr.buffer.flush()
         finally:
             stream.close()
 
@@ -231,7 +236,7 @@ def build_image(
             raise ValueError(f"invalid build argument: {key}")
         command.extend(("--build-arg", f"{key}={value}"))
     command.append(str(root))
-    return run(command, deadline=deadline, cwd=root, output_limit=4 * DEFAULT_OUTPUT_LIMIT)
+    return run(command, deadline=deadline, cwd=root, output_limit=4 * DEFAULT_OUTPUT_LIMIT, stream_output=True)
 
 
 def _json_result(result: CommandResult, label: str):
