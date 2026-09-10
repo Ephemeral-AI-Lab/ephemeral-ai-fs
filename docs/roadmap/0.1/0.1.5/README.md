@@ -1,5 +1,12 @@
 # LayerFS v0.1.5: bounded delta storage
 
+> **Current promoted product:** schema10 with scoped inline namespaces, authenticated
+> metadata groups/deltas and ordinary physical admission. [#103 integration and
+> compacted storage results](issue103/full157-integrated-results.md) are complete.
+> The [#104 uncompacted mandatory campaign](issue104/results.md) has complete
+> coverage but fails one timing target. Earlier #100/schema9 sections below are
+> retained historical context, not the promoted candidate.
+
 > **Issue #100 measured outcome, 2026-09-10:** The retained implementation allocates
 > **49,319,936 bytes**, with **49,250,304 bytes** growth, ten Created outcomes,
 > exact same-Store verification and clean teardown. It is **4,319,936 bytes above
@@ -45,7 +52,7 @@ verification target. The campaign owns optional `repository_history` strides1/3/
 See the [agreed family plan](benchmark-family-plan.md); long histories require explicit selection.
 [#100](https://github.com/Ephemeral-AI-Lab/layerfs/issues/100) remains open for format integration and the speed/read-cost disposition.
 
-## Current implementation
+## Historical schema9 implementation
 
 New or changed nonempty file content strictly below **131,072 bytes** uses one
 whole-file canonical SmallContent CAS object. Empty files retain their compact

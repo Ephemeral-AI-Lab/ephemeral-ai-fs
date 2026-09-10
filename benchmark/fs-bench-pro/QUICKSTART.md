@@ -132,3 +132,19 @@ profiles never run by default and are reported NOT_RUN_OPTIONAL unless selected.
 Stride10 includes checkpoint157 and is17states; it is not the ten-state spread.
 Git/control comparisons must use the identical selection; no Git17 result is
 implied by registration. See the prospective #102 campaign contract.
+
+### Promoted uncompacted campaign (#104)
+
+Use `issue102_collect.py --family FAMILY` with the frozen
+[issue104 declaration](../../docs/roadmap/0.1/0.1.5/issue104/mandatory-campaign.json).
+The collector validates the complete registry before executing one family and its
+proofs; `--resume` preserves terminal attempts. Retained failed-proof or
+allocation-only recollection requires an explicit applicability document. Do not
+invoke the legacy monolithic checkpoint command for this campaign.
+
+The [terminal report](../../docs/roadmap/0.1/0.1.5/issue104/results.md) records all
+18 families, 209 performance selections and 237 proofs, exact commands and source
+checkpoints. The 500-transition unrelated-history case misses its 15-second target;
+#104 remains open. The promoted schema10 product stays uncompacted, with the
+separately bound uncompacted access fixture and independent copies. No optional
+repository history or 600-second endurance proof was selected.
