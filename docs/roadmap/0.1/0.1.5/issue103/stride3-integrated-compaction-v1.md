@@ -48,7 +48,11 @@ A size miss is retained and explained; no rerun of an unchanged candidate.
    explicitly to the existing public verification session. Compare before/after
    identity and allocation. Verification may create ordinary verification forks;
    retained canonical content is verified against the frozen pre-verification
-   identity, with any verification-only SQL growth reported separately.
+   identity, with any verification-only SQL growth reported separately. Before
+   opening it, retain a byte-identical closed image under `frozen-measured-store/`
+   outside the measured directory. This preserves the measured preimage after
+   verification forks; historical_access uses that identical frozen image as its
+   master and binds the same pre-verification SHA-256.
 7. Run the eleven mapped historical-access cases below, preserving their original
    15-second entry-through-receipts-and-teardown limits and verification rules.
 
