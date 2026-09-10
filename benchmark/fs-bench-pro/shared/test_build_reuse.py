@@ -12,6 +12,17 @@ import runner
 
 
 class BuildReuseTests(unittest.TestCase):
+    def test_host_jobs_are_bounded_and_recorded_in_compatibility(self):
+        with patch.dict(os.environ, {}, clear=True), patch.object(os, 'cpu_count', return_value=14):
+            self.assertEqual(runner.host_build_jobs(), 8)
+            with patch.object(os, 'cpu_count', return_value=4):
+                self.assertEqual(runner.host_build_jobs(), 4)
+            with patch.dict(os.environ, {'CARGO_BUILD_JOBS': '2'}):
+                self.assertEqual(runner.host_build_jobs(), 2)
+            for value in ('0', '9', '-1', 'invalid'):
+                with patch.dict(os.environ, {'CARGO_BUILD_JOBS': value}), self.assertRaises(ValueError):
+                    runner.host_build_jobs()
+
     def test_image_archive_stays_under_runner_lock(self):
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {'TMPDIR': folder}):
             def archive(tag):
@@ -43,7 +54,7 @@ class BuildReuseTests(unittest.TestCase):
             with patch.object(runner, 'REPO', root), patch.object(runner, 'BENCH', bench), patch.object(
                     runner.runtime, 'run', return_value=SimpleNamespace(stdout=b'toolchain-1')) as command:
                 def seals():
-                    return runner.compilation_seal(), runner.compilation_seal(dependencies_only=True)
+                    return runner.compilation_seals()
                 baseline = seals()
                 for name in paths:
                     path = root / name
@@ -59,8 +70,8 @@ class BuildReuseTests(unittest.TestCase):
                     (root / name).write_text('non-native change')
                     self.assertEqual(seals(), baseline)
                 for env in ('RUSTFLAGS', 'CARGO_BUILD_TARGET', 'CARGO_PROFILE_RELEASE_LTO',
-                            'SDKROOT', 'CC', 'CARGO_ENCODED_RUSTFLAGS'):
-                    with patch.dict(os.environ, {env: 'changed'}):
+                            'SDKROOT', 'CC', 'CARGO_ENCODED_RUSTFLAGS', 'CARGO_BUILD_JOBS'):
+                    with patch.dict(os.environ, {env: '2' if env == 'CARGO_BUILD_JOBS' else 'changed'}):
                         self.assertTrue(all(a != b for a, b in zip(seals(), baseline)), env)
                 command.return_value = SimpleNamespace(stdout=b'toolchain-2')
                 self.assertTrue(all(a != b for a, b in zip(seals(), baseline)))

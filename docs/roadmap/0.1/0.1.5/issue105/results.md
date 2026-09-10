@@ -1,5 +1,7 @@
 # Qualified build loop — issue105
 
+**Later implementation:** see [qualified host jobs](qualified-host-jobs.md) for the adopted eight-job default, reduced duplicate work, and full runner measurements. The results below retain their original measurement phase.
+
 Status: implemented and measured; #105 remains open; optimized small Rust recompilation remains **BUILD_SLOW**.
 No benchmark compiler/profile setting or LayerFS operation was changed.
 

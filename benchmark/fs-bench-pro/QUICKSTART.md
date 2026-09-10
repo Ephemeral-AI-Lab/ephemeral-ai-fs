@@ -17,6 +17,10 @@ export LAYERFS_BENCH_IMAGE="$(python3 benchmark/fs-bench-pro/shared/runner.py --
 
 Reuse matching builds and protected prepared inputs. Source/product/image seals
 are checked. Qualified host builds keep a separate target per native-input seal.
+Host builds default to at most eight jobs (also bounded by logical CPU count);
+`CARGO_BUILD_JOBS=1..8` selects a lower or explicit limit. The actual selection is
+recorded and included in native/dependency compatibility seals. Docker keeps its
+separate two-job policy.
 After a benchmark Rust source edit, the runner can seed unchanged dependencies
 from the last qualified host build into an independent target; it never copies
 the benchmark executable, dep-info, or fingerprints. Older identities without a
