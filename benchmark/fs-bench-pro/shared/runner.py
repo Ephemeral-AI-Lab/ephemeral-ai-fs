@@ -138,18 +138,31 @@ def initialization_diagnostics(output):
                                 "layerfs-initialization-commits-"))]
 
 
-def compilation_seal():
+def compilation_seal(*, dependencies_only=False):
     # Native inputs isolate incompatible arms without recompiling for collector/docs edits.
     paths = sorted(p for root in (REPO / "crates", REPO / "tools", BENCH / "src", BENCH / "workload", BENCH / "families")
                    for p in root.rglob("*") if p.is_file() and p.suffix in (".rs", ".toml", ".sql")
                    and "target" not in p.parts)
     paths += [REPO / "Cargo.toml", REPO / "Cargo.lock", BENCH / "Cargo.toml", BENCH / "Dockerfile.layerfs"]
-    paths += sorted(p for root in (REPO / ".cargo", Path.home() / ".cargo")
-                    for p in (root / "config", root / "config.toml") if p.is_file())
+    if (REPO / ".dockerignore").is_file():
+        paths.append(REPO / ".dockerignore")
+    if (BENCH / "build.rs").is_file():
+        paths.append(BENCH / "build.rs")
+    paths += sorted({p for root in ([parent / ".cargo" for parent in (REPO, *REPO.parents)] +
+                                  [Path(os.environ.get("CARGO_HOME", Path.home() / ".cargo"))])
+                     for p in (root / "config", root / "config.toml") if p.is_file()})
     value = hashlib.sha256(b"rust-1.85.1;release;host-bins;linux-daemon;fuse-proxy;workload-O3;v1")
     for path in paths:
+        if dependencies_only and path.suffix == ".rs" and any(
+                path.is_relative_to(root) for root in (BENCH / "src", BENCH / "families")):
+            continue
         value.update(str(path).encode() + b"\0" + path.read_bytes())
-    value.update(json.dumps({k:v for k,v in os.environ.items() if k.startswith(("RUST", "CARGO_", "CC", "CXX", "CFLAGS", "LDFLAGS"))}, sort_keys=True).encode())
+    value.update(json.dumps({k:v for k,v in os.environ.items() if k.startswith(
+        ("RUST", "CARGO_", "CC", "CXX", "CFLAGS", "CPPFLAGS", "LDFLAGS", "AR", "PKG_CONFIG")) or k in
+        ("PATH", "SDKROOT", "MACOSX_DEPLOYMENT_TARGET", "CPATH", "LIBRARY_PATH")}, sort_keys=True).encode())
+    for command in (["rustc", "+1.85.1", "-vV"], ["cargo", "+1.85.1", "-V"], ["cc", "--version"]):
+        value.update(runtime.run(command, cwd=REPO, deadline=runtime.Deadline.after(10)).stdout)
+    value.update(platform.platform().encode())
     return value.hexdigest()
 
 
@@ -167,7 +180,8 @@ def source_build_args():
         source.update(part)
         if "crates" in path.relative_to(REPO).parts:
             product.update(part)
-    return {"LAYERFS_COMPILATION_SEAL": compilation_seal(), "LAYERFS_SOURCE_COMMIT": git("rev-parse", "HEAD"),
+    return {"LAYERFS_COMPILATION_SEAL": compilation_seal(),
+            "LAYERFS_DEPENDENCY_SEAL": compilation_seal(dependencies_only=True), "LAYERFS_SOURCE_COMMIT": git("rev-parse", "HEAD"),
             "LAYERFS_SOURCE_TREE": git("rev-parse", "HEAD^{tree}"),
             "LAYERFS_SOURCE_DIRTY": "true" if git("status", "--porcelain") else "false", "LAYERFS_SOURCE_SEAL": source.hexdigest(),
             "LAYERFS_PRODUCT_SEAL": product.hexdigest(),
@@ -648,6 +662,36 @@ def _timer(row):
     return declared or "unavailable", None
 
 
+def seed_host_dependencies(build_target, values, binary):
+    """Reuse #104's independent-copy recipe only for benchmark-source edits.
+
+    Called under the runner measurement lock. Cargo still validates every copied
+    dependency; benchmark executables, dep-info and fingerprints are never seeded.
+    """
+    identity_path = Path(str(binary) + ".identity.json")
+    if build_target.exists() or not identity_path.exists():
+        return None
+    previous = json.loads(identity_path.read_text())
+    if previous.get("LAYERFS_DEPENDENCY_SEAL") != values["LAYERFS_DEPENDENCY_SEAL"]:
+        return None
+    source = HOST_ROOT / "builds" / ("native-" + previous["LAYERFS_COMPILATION_SEAL"])
+    if previous.get("build_target") != str(source) or not source.is_dir():
+        return None
+    if runtime.file_sha256(binary) != previous["binary_sha256"]:
+        raise ValueError("dependency seed producer binary identity mismatch")
+    started = time.monotonic_ns()
+    staging = build_target.with_name(build_target.name + ".seed-" + uuid.uuid4().hex)
+    shutil.copytree(source, staging, ignore=shutil.ignore_patterns("fs-benchmark-pro*", "fs_benchmark_pro*"))
+    staging.rename(build_target)
+    receipt = {"source_target": str(source), "destination_target": str(build_target),
+               "dependency_seal": values["LAYERFS_DEPENDENCY_SEAL"],
+               "producer_binary_sha256": previous["binary_sha256"],
+               "copy_wall_ns": time.monotonic_ns() - started,
+               "benchmark_outputs_copied": False, "independent_copy": True}
+    print("DEPENDENCY_REUSE " + json.dumps(receipt, sort_keys=True), file=sys.stderr, flush=True)
+    return receipt
+
+
 def verify_linked_schema(binary, expected):
     with tempfile.TemporaryDirectory(prefix="layerfs-build-schema-") as folder:
         observed = int(runtime.run([str(binary), "infra-schema-probe", str(Path(folder) / "store.sqlite")],
@@ -746,6 +790,7 @@ def main(argv=None):
             if argv == ["--build-host"]:
                 binary = REPO / "target/release/fs-benchmark-pro"
                 build_target = HOST_ROOT / "builds" / ("native-" + values["LAYERFS_COMPILATION_SEAL"])
+                dependency_reuse = seed_host_dependencies(build_target, values, binary)
                 try:
                     result = runtime.run(["cargo", "+1.85.1", "build", "--locked", "--release", "-j2", "-p", "fs-benchmark-pro", "-p", "layerfs-layerstack-store", "--bins", "--target-dir", str(build_target)],
                         deadline=runtime.Deadline.after(900), cwd=REPO, output_limit=1024**2, stream_output=True)
@@ -765,7 +810,7 @@ def main(argv=None):
                 binary.parent.mkdir(parents=True, exist_ok=True)
                 archive_binary(binary)
                 shutil.copy2(built, binary)
-                identity = {**values, "build_target": str(build_target), "observed_schema_version": observed_schema, "binary_sha256": runtime.file_sha256(binary), "platform": platform.platform(), "rust_toolchain": "1.85.1", "schema_sha256": runtime.file_sha256(schema_path), "integrated_format_probe":integrated_probe}
+                identity = {**values, "native_build_wall_ns": result.wall_ns, "dependency_reuse": dependency_reuse, "build_target": str(build_target), "observed_schema_version": observed_schema, "binary_sha256": runtime.file_sha256(binary), "platform": platform.platform(), "rust_toolchain": "1.85.1", "schema_sha256": runtime.file_sha256(schema_path), "integrated_format_probe":integrated_probe}
                 Path(str(binary) + ".identity.json").write_text(json.dumps(identity, sort_keys=True))
                 compactor = binary.with_name("layerfs-store-compact")
                 archive_binary(compactor)
@@ -783,12 +828,12 @@ def main(argv=None):
             except runtime.CommandFailure as error:
                 print(_text(error.result.stderr)[-16384:], file=sys.stderr)
                 return error.result.returncode or 1
-        if result.returncode:
-            print(_text(result.stderr)[-16384:], file=sys.stderr)
-            return result.returncode
-        archive_image(tag)
-        print(tag)
-        return 0
+            if result.returncode:
+                print(_text(result.stderr)[-16384:], file=sys.stderr)
+                return result.returncode
+            archive_image(tag)
+            print(tag)
+            return 0
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.output == parser.get_default("output"):

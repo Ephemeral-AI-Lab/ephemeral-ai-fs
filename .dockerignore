@@ -7,3 +7,7 @@ docs
 release-notes
 .agents
 .codex
+
+# Family launchers/collectors are host-only, never Rust compilation inputs.
+benchmark/fs-bench-pro/families/**/*.py
+benchmark/fs-bench-pro/families/**/*.sh

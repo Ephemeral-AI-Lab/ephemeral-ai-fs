@@ -1,6 +1,15 @@
 # syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 
-FROM rust:1.85.1-bookworm@sha256:e51d0265072d2d9d5d320f6a44dde6b9ef13653b035098febd68cce8fa7c0bc4 AS build
+FROM rust:1.85.1-bookworm@sha256:e51d0265072d2d9d5d320f6a44dde6b9ef13653b035098febd68cce8fa7c0bc4 AS workload-build
+
+WORKDIR /src
+COPY benchmark/fs-bench-pro/workload ./benchmark/fs-bench-pro/workload
+COPY benchmark/fs-bench-pro/families ./benchmark/fs-bench-pro/families
+RUN rustc --edition=2021 -C opt-level=3 -C strip=symbols \
+      --remap-path-prefix=/src/benchmark/fs-bench-pro=. \
+      benchmark/fs-bench-pro/workload/main.rs -o /fs-benchmark-workload
+
+FROM workload-build AS build
 
 ARG TARGETARCH
 ARG CARGO_BUILD_JOBS=2
@@ -12,8 +21,6 @@ COPY crates ./crates
 COPY tools ./tools
 COPY benchmark/fs-bench-pro/Cargo.toml ./benchmark/fs-bench-pro/Cargo.toml
 COPY benchmark/fs-bench-pro/src ./benchmark/fs-bench-pro/src
-COPY benchmark/fs-bench-pro/workload ./benchmark/fs-bench-pro/workload
-COPY benchmark/fs-bench-pro/families ./benchmark/fs-bench-pro/families
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,id=layerfs-bench-native-${LAYERFS_COMPILATION_SEAL},target=/src/target,sharing=locked \
@@ -28,9 +35,6 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
       *) exit 1 ;; \
     esac \
  && rustup target add "$target" \
- && rustc --edition=2021 -C opt-level=3 -C strip=symbols \
-      --remap-path-prefix=/src/benchmark/fs-bench-pro=. \
-      benchmark/fs-bench-pro/workload/main.rs -o /fs-benchmark-workload \
  && cargo build --locked --release --target "$target" --jobs "$CARGO_BUILD_JOBS" \
       -p layerfs-daemon \
  && cargo build --locked --release --target "$target" --jobs "$CARGO_BUILD_JOBS" \

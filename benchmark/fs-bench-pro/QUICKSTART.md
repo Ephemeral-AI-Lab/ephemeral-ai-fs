@@ -16,7 +16,21 @@ export LAYERFS_BENCH_IMAGE="$(python3 benchmark/fs-bench-pro/shared/runner.py --
 ```
 
 Reuse matching builds and protected prepared inputs. Source/product/image seals
-are checked. Builds, performance and verification share a measurement lock: do
+are checked. Qualified host builds keep a separate target per native-input seal.
+After a benchmark Rust source edit, the runner can seed unchanged dependencies
+from the last qualified host build into an independent target; it never copies
+the benchmark executable, dep-info, or fingerprints. Older identities without a
+dependency seal and changes to dependency inputs/configuration take the fresh
+build path. Copy cost and native command wall are recorded in the new identity.
+A warm no-op is not evidence of fast recompilation: optimized benchmark codegen
+can still exceed the preferred 10-second development budget (`BUILD_SLOW`).
+
+Linux workload compilation has its own Docker layer containing workload and
+included family Rust sources. Host-only family Python/shell files are excluded
+from the Docker context; source labels still describe the full host harness.
+Reusing this layer does not skip workload self-checks or executable archiving.
+See the [#105 build-loop report](../../docs/roadmap/0.1/0.1.5/issue105/results.md)
+for exact measurement boundaries, cache states, and remaining limits. Builds, performance and verification share a measurement lock: do
 not overlap resource-sensitive work or interrupt another owner's live run.
 The standard container has 2 CPUs, 2 GiB RAM, no swap and 256 PIDs. Host CPU and
 memory remain separate resource scopes.
