@@ -291,31 +291,17 @@ impl AuthenticatedNamespaceIndex {
         let reader = CoreReader(source);
         let namespace = layerfs_content::filesystem::namespace(&reader, root)?;
         let mut records = BTreeMap::new();
-        let index = inode::inode_table_entries(
+        inode::visit_inode_records(
             &reader,
             inode::InodeTableRoot(namespace.inode_table_root),
             &mut Default::default(),
+            |id, record| {
+                if records.insert(id, record).is_some() {
+                    return Err(layerfs_content::CoreError::InvalidRecord("duplicate global inode"));
+                }
+                Ok(())
+            },
         )?;
-        for batch in index.chunks(16) {
-            let ids = batch.iter().map(|(_, id)| *id).collect::<Vec<_>>();
-            // ObjectRead::get_authenticated_batch passes decoded byte-object payloads;
-            // inode codecs require the complete canonical envelope. Keep that envelope.
-            let objects = source.read_authenticated_objects(&ids)?;
-            if objects.len() != batch.len() {
-                return Err("canonical global inode batch cardinality".into());
-            }
-            for ((inode_id, expected_id), object) in batch.iter().zip(objects) {
-                if object.id != *expected_id {
-                    return Err("canonical global inode batch identity".into());
-                }
-                layerfs_content::authenticate_identity(&object.bytes, object.id)?;
-                let record = inode::codec::decode_inode_record(&object.bytes)?;
-                if records.insert(*inode_id, record).is_some() {
-                    return Err("canonical duplicate global inode".into());
-                }
-            }
-        }
-        drop(index);
         Ok(Self {
             root_inode: namespace.root_directory_inode,
             records,
@@ -706,6 +692,16 @@ enum Origin {
     MetadataValue,
 }
 
+fn census_inode(pending: &mut Vec<(ObjectId, Role, Origin)>, record: inode::InodeRecordV1) {
+    pending.push((record.metadata_root, Role::Metadata, Origin::Structure));
+    let (role, origin) = match record.kind {
+        inode::InodeKind::RegularFile => (Role::FileState, Origin::RegularFile),
+        inode::InodeKind::Directory => (Role::DirectoryState, Origin::Structure),
+        inode::InodeKind::Symlink => (Role::Symlink, Origin::Structure),
+    };
+    pending.push((record.content_root, role, origin));
+}
+
 pub(crate) fn typed_census(
     source: &dyn ObjectSource,
     root: ObjectId,
@@ -737,7 +733,10 @@ pub(crate) fn typed_census(
             }
             let bytes = &object.bytes;
             layerfs_content::authenticate_identity(bytes, id)?;
-            let role = if role == Role::FileState && small_bytes(bytes)?.is_some() {
+            let role = if role == Role::DirectoryState
+                && layerfs_content::decode_bytes_object(bytes)?.starts_with(b"LFS6NSP\0") {
+                Role::DirectoryNode
+            } else if role == Role::FileState && small_bytes(bytes)?.is_some() {
                 if origin != Origin::RegularFile { return Err("SmallContent is not a metadata rope".into()); }
                 Role::SmallContent
             } else { role };
@@ -769,6 +768,16 @@ pub(crate) fn typed_census(
                     Role::InodeTable,
                     Origin::Structure,
                 )),
+                Role::InodeTable if layerfs_content::decode_bytes_object(bytes)?.starts_with(b"LFS6INT\0") => {
+                    match layerfs_content::tree::compact::decode_inode(bytes)? {
+                        layerfs_content::tree::compact::InodeNode::Leaf(records) => {
+                            for (_, record) in records { census_inode(&mut pending, record); }
+                        }
+                        layerfs_content::tree::compact::InodeNode::Branch { children, .. } => {
+                            pending.extend(children.into_iter().map(|(_, id)| (id, Role::InodeTable, Origin::Structure)));
+                        }
+                    }
+                }
                 Role::InodeTable => match inode::codec::decode_inode_table_node(bytes)? {
                     inode::codec::InodeTableNodeV1::Leaf(entries) => pending.extend(
                         entries
@@ -782,14 +791,7 @@ pub(crate) fn typed_census(
                     ),
                 },
                 Role::InodeRecord => {
-                    let record = inode::codec::decode_inode_record(bytes)?;
-                    pending.push((record.metadata_root, Role::Metadata, Origin::Structure));
-                    let (content_role, content_origin) = match record.kind {
-                        inode::InodeKind::RegularFile => (Role::FileState, Origin::RegularFile),
-                        inode::InodeKind::Directory => (Role::DirectoryState, Origin::Structure),
-                        inode::InodeKind::Symlink => (Role::Symlink, Origin::Structure),
-                    };
-                    pending.push((record.content_root, content_role, content_origin));
+                    census_inode(&mut pending, inode::codec::decode_inode_record(bytes)?);
                 }
                 Role::DirectoryState => pending.push((
                     directory::codec::decode_directory_state(bytes)?.mapping_root,
