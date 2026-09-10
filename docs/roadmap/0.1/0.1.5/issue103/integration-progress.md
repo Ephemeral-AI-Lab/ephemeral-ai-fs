@@ -1,15 +1,20 @@
-# Issue #103 integration progress — incomplete
+# Issue #103 integration progress — stride3 complete
 
-Stride3 storage optimization: **NOT YET MEASURED**.
+**Current result:** integrated stride3 is **46,202,880 allocated bytes / 53 of 53
+original states verified**, after measured public compaction. All 11 historical
+access performance cases and all 11 verification runs pass their 15-second
+contracts. [Final results, custody, costs and limitations](stride3-integrated-results.md).
+Full157/66 MB qualification remains **NOT QUALIFIED**, outside the revised scope.
 
 Scope amended by the user on 2026-09-10: finish integration of the promoted
 method and optimize/verify **stride3 only**. Full157 is outside this execution
 scope; the earlier 66 MB/full157 requirement remains historical context, not a
 claim this stride3 run can qualify.
 
-This is an implementation checkpoint, not the final integrated candidate or a
-storage measurement. Stride3, full157 and historical_access have not run. No broad
-#102 campaign, release, tag or deployment was performed.
+The dated checkpoints below preserve the implementation chronology and failed
+attempts; their pending statements describe those earlier checkpoints. The final
+continuation supersedes their stride3 status. No full157, broad #102 campaign,
+release, tag or deployment was performed.
 
 ## Handoff custody
 
@@ -627,3 +632,41 @@ fixed, retaining all checks; a shell-parse test covers both standalone checks an
 checks followed by mutation. `integration-script-tests-8.log` passes. Product
 code/seal is unchanged. Rebuild the qualified host/image pair for this harness
 fix before retrying. No stride3 or other storage workload was run.
+
+
+## Continuation 7 — qualified stride3 result
+
+Measured candidate `80bc489281735c889a4d62ed576135586be3365b` passes the linked
+schema10/integrated-format probe and `live-integration-2`. The first stride3
+producer performs 53 direct public transitions at original indices1,4,…,157:
+53 Created, zero UpToDate and zero presentation failures. Public compaction
+reduces complete allocated Store storage from65,056,768 to **46,202,880 bytes**.
+It takes339.132858 seconds, reaches135,069,696-byte peak RSS and observes
+281,907,200-byte temporary allocation; source preservation, publication, sync
+and cleanup all pass. The destination is self-contained.
+
+After freezing its allocation and identity, **all53 states pass** original content
+and metadata oracles through that measured product Store:306,861 path-states and
+1,676,767,835 logical bytes. A retained byte-identical preimage makes verification
+fork growth explicit and supplies historical-access copies. All11 performance
+cases and their11 verification runs pass the original15-second contracts; there
+are no read-limit failures. Cold range access still decodes17,029,550 bytes for
+6,421 requested bytes, a material tradeoff carried into the final report.
+
+The Store is8,179,712 bytes smaller than the historical offline53 reference and
+3,129,344 bytes smaller than recorded Git53. Identical SmallContent/whole-owner
+IDs establish that the dominant content reduction comes from physical encoding,
+with5,582 more Small prefixes and6 more whole prefixes. SQL/index/pool allocation
+is fully charged. These are storage comparisons, not fresh paired speed results.
+
+The original verification launch failed during Docker tag lookup before Store
+opening (`stride3-verification-1.log`); exact producer-image identity retry passed
+without rerunning the storage workload. All failed attempts remain retained.
+The final seal audit passes291 history artifacts,22 historical-access manifests/
+completions,53 original oracle hashes and the frozen Store/build identities.
+See [final report](stride3-integrated-results.md), [result JSON](stride3-integrated-results.json)
+and [seal audit](stride3-seal-audit.json) for exact evidence and commands.
+
+The user-revised integration/stride3 scope is complete. #103 stays open for its
+original full157 final-storage and #102 handoff obligations. No full157 or broad
+#102 campaign was run; the66MB/full157 result remains NOT QUALIFIED.

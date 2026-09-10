@@ -1,5 +1,11 @@
 # Ordered optimization results: metadata, content, then layout
 
+**Later product integration:** [issue103 stride3 results](../issue103/stride3-integrated-results.md)
+report **46,202,880 allocated bytes / 53 original states verified**, after supported
+public compaction. All11 historical-access cases and11 verification runs pass.
+This document preserves the original offline measurements; full157 was not rerun
+under the revised stride3-only integration scope.
+
 2026-09-10. The three requested priorities were investigated in order, using53 states first and applying the same retained storage policies to157 states.
 
 **Selected archive/reference layouts now measure54,382,592 B on 53 states and 65,957,888 B on 157 states.** Relative to the prior improved offline format, this saves5,378,048 B and 13,832,192 B respectively. The storage gains carry significant cold-read amplification and are not a hot-filesystem or release recommendation.

@@ -4,7 +4,14 @@ Updated: **2026-09-10**. Working branch: `codex/issue100-40mb-experiments`.
 
 This is the working index for priorities, completed approaches, results, rejected ideas and remaining qualification. Update this file after each experiment. Keep the linked raw reports and manifests immutable; add a new run when the policy changes.
 
-**Current assessment:** the ordered campaign's selected archive/reference layouts are **54,382,592B on53 states** and **65,957,888B on157 states**, with all original states verified. They exceed matching Git by **10.24% /17.00%**. Metadata pooling and whole-file history encoding reduce storage, but cold metadata reads can decode5.79MB and a native chunk can incur3,700× amplification. These are **archive/reference results, not hot-filesystem recommendations**. [Ordered results and decisions](ordered-optimization-results.md).
+**Integrated stride3 update:** issue #103 now measures **46,202,880 allocated B
+(46.202880 MB), 53/53 original states verified**, after339.132858 seconds of
+supported public compaction. It is8,179,712B below offline53 and3,129,344B below
+recorded Git53. All11 historical-access performance cases and11 verification runs
+pass15-second contracts; cold read amplification remains substantial. Full157
+was not run under the revised stride3-only scope. [Final integrated report](../issue103/stride3-integrated-results.md).
+
+**Historical offline assessment:** the ordered campaign's selected archive/reference layouts are **54,382,592B on53 states** and **65,957,888B on157 states**, with all original states verified. They exceed matching Git by **10.24% /17.00%**. Metadata pooling and whole-file history encoding reduce storage, but cold metadata reads can decode5.79MB and a native chunk can incur3,700× amplification. These are **archive/reference results, not hot-filesystem recommendations**. [Ordered results and decisions](ordered-optimization-results.md).
 
 ## 1. Current scorecard — preserve the measurement boundary
 
@@ -13,7 +20,7 @@ Decimal bytes throughout. The ten-state objective is **40,000,000 B**. Full157 i
 | Result / boundary | Ten selected states | Full157 | Status and evidence |
 | --- | ---: | ---: | --- |
 | Recorded Git allocation | 38,223,872 | 56,373,248 | Existing baselines; [ten-state control](ten-snapshot-baselines.md), [full157 Git audit](experiments40/full157/git-baseline/report.md) |
-| Latest measured supported product | 49,319,936 | 134,246,400 | Public save/Commit + same-Store verification; [ten](retained-candidate-1-results.md), [157](retained-full157-results.md) |
+| Prior measured product, before issue103 | 49,319,936 | 134,246,400 | Public save/Commit + same-Store verification; [ten](retained-candidate-1-results.md), [157](retained-full157-results.md) |
 | Same-policy compact D + framing B + CDC offline copies | 41,648,128 | 107,958,272 | Both measured; [compact10](40mb-experiment-results.md), [compact157](40mb-offline-full157-results.md) |
 | Matched offline controls for that compact experiment | 48,783,360 | 129,937,408 | Equally VACUUMed controls; do not blend with public allocation |
 | Prior offline copy with depth-one metadata deltas | Not run | **98,668,544** | [History-delta report](history-scaling-and-metadata-deltas.md); 157 original-oracle checks PASS |
@@ -411,3 +418,33 @@ and publication recovery. See [issue103 integration progress](../issue103/integr
 for exact policy, limits, commands and retained failed attempts.
 **Stride3 remains unmeasured** pending runner/qualified-build/live-Exec gates.
 No full157 or broad #102 campaign has run under the revised scope.
+
+
+## 2026-09-10 — integrated stride3 qualification complete
+
+The native schema10 candidate `80bc489281735c889a4d62ed576135586be3365b` integrates
+scoped-inline namespaces, authenticated physical metadata-value groups/deltas,
+compact framing, whole-file prefix graphs/native slices and4KiB final SQLite
+layout. Public initialization/writes/Commit/reopen/fork use the product format;
+`LayerStackStore::compact_into` explicitly selects from already published Store
+content without Git/oracle dependencies. Focused342-test proof, qualified live
+Exec/FUSE proof,53 direct saves and all53 original-oracle verifications pass.
+
+| Stride3 boundary | Allocated B | Status |
+| --- | ---: | --- |
+| Integrated before compaction | 65,056,768 | 53 Created,0 UpToDate,0 presentation failures |
+| Integrated after public compaction | **46,202,880** | **53/53 original states PASS** |
+| Historical selected offline53 | 54,382,592 | Unchanged reference |
+| Historical matching Git53 | 49,332,224 | Unchanged reference; no fresh speed control |
+
+Complete physical accounting explains the8,179,712B offline gap: content packs
+save8,091,705B, other payload saves267,042B, and SQLite nonpayload allocation
+increases179,035B. All59,768 Small IDs/lengths and224 whole-owner IDs/lengths
+match the offline reference. No workload/state was omitted for size.
+
+Compaction339.132858s; peak RSS135,069,696B; sampled temporary peak281,907,200B,
+with source charged separately. All publication/cleanup receipts pass. Historical
+access11+11 cases pass; the cold6421-byte range decodes17,029,550B, so low read
+amplification and release readiness are not claimed. Full157/66MB qualification
+and broad #102 remain outside the revised scope. Exact identities, commands,
+frozen Store and retained failures: [issue103 final report](../issue103/stride3-integrated-results.md).

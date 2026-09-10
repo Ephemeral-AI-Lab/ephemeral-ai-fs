@@ -9,17 +9,26 @@ campaign is diagnostic evidence for the previous product, not qualification of
 the intended candidate. Stop further broad schema9 collection. Preserve its
 failures and the applicable receipt/verifier/build-custody repairs.
 
+**Current prerequisite status (2026-09-10):** full promoted-method integration and
+revised-scope stride3 checks are complete at measured commit
+`80bc489281735c889a4d62ed576135586be3365b`: **46,202,880 allocated B, 53/53 original
+states verified**, all11 historical-access performance cases and11 verification
+runs PASS. Explicit compaction and substantial cold amplification are reported in
+[the final issue103 result](../issue103/stride3-integrated-results.md). Full157 and
+the broad #102 campaign were not authorized in the revised scope and remain open.
+Earlier checkpoint paragraphs below are retained chronology.
+
 Implementation order:
 
-- [ ] Public compact namespace: scoped serial inode IDs, inline inode values,
+- [x] Public compact namespace: scoped serial inode IDs, inline inode values,
       compact directory references, durable allocation and legacy compatibility.
-- [ ] Authenticated physical inode-value groups and bounded metadata deltas.
-- [ ] Whole-file content prefix graphs and authenticated native chunk slices,
+- [x] Authenticated physical inode-value groups and bounded metadata deltas.
+- [x] Whole-file content prefix graphs and authenticated native chunk slices,
       with all bases/index/pool bytes charged and bounded decoding.
-- [ ] Public creation, edits, Commit, reconnect, fork and historical reads use
+- [x] Public creation, edits, Commit, reconnect, fork and historical reads use
       the integrated formats; no Python reader or fixture-specific converter
       substituted for the product implementation.
-- [ ] Qualify exact bytes, metadata, hardlinks, branching, failure recovery and
+- [x] Qualify exact bytes, metadata, hardlinks, branching, failure recovery and
       corruption rejection before collecting the full mandatory registry.
 - [ ] Measure integrated stride3 first, then full157 and historical_access;
       run the complete mandatory benchmark campaign on the frozen candidate.
@@ -95,3 +104,31 @@ and publication recovery. See [issue103 integration progress](../issue103/integr
 for exact policy, limits, commands and retained failed attempts.
 **Stride3 remains unmeasured** pending runner/qualified-build/live-Exec gates.
 No full157 or broad #102 campaign has run under the revised scope.
+
+
+### 2026-09-10 — source-sealed integrated stride3 result
+
+[Final report](../issue103/stride3-integrated-results.md) records the qualified
+source/build/fixture identities, public operation policy and all retained commands.
+The53 direct public saves yield53 Created and no presentation failures. Complete
+allocated storage is65,056,768B before supported compaction and **46,202,880B**
+after it; all53 original content/metadata oracles pass on the measured Store.
+The frozen preverification image remains archived; subsequent verification-only
+fork growth is reported separately. Full157 has not run, so66MB/full157 storage
+is **NOT QUALIFIED**.
+
+Compaction costs339.132858s,135,069,696B peak RSS and281,907,200B sampled temporary
+allocation; save Exec/Commit sums are118.863256s/23.732028s. All11 mapped
+historical-access cases and all11 verification runs pass15-second contracts,
+including preparation and cleanup. No read-limit failures occurred; cold range
+amplification remains17,029,550 decoded bytes for6421 requested bytes.
+
+The final result is8,179,712B below historical offline53 and3,129,344B below
+historical Git53. These comparisons are storage-only recorded references, not
+fresh paired speed measurements. Product min-hash candidate selection improves
+content encoding without removing any of the matching Small/whole identities.
+
+This is the candidate and evidence available for later authorized #102 work.
+It does not qualify the full mandatory registry or a release. Preserve old
+schema9 campaign qualifications and initial-1 invalid custody; neither is promoted
+by this result. #103 remains open for its original full157/handoff obligations.
