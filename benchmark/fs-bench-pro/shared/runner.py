@@ -553,8 +553,9 @@ def execute_selected(args, *, deadline, verification=False):
             "memory_current_bytes": after["memory_current"], "swap_current_bytes": after["swap_current"],
             "oom_kill_delta": after.get("oom_kill", 0) - before.get("oom_kill", 0),
             "measurement_scope": "Linux daemon/FUSE container command window; host coordinator/Store process CPU/RSS/IO reported separately in records; host CPU is not container-capped"}
-        if selection.get("route") == "sdk" and not verification:
-            result["store_boundary"] = sdk_store_observation(host_sample_path / "payload/store.sqlite")
+        if selection.get("route") in ("sdk", "namespace", "store-footprint") and not verification:
+            store_folder = "payload" if selection["route"] == "sdk" else "work"
+            result["store_boundary"] = sdk_store_observation(host_sample_path / store_folder / "store.sqlite")
         result["status"] = "PASS" if command.returncode == 0 and result["records"] and not result["resources"]["oom_kill_delta"] else "FAIL"
         result["slow"] = result["command_wall_ns"] >= 5_000_000_000
         result["checks"] = [r for r in result["records"] if "verif" in str(r.get("kind", "")) or "proof" in str(r.get("kind", ""))]
