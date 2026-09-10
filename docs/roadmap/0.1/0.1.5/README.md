@@ -120,6 +120,8 @@ release publication is authorized by these results.
 
 ## Working documents
 
+- [Namespace Init slowness findings (#109)](issue109/findings.md): internal clocks, ASCII call flows, duplicate signature scans and metadata-index SQL costs; optimization and qualification remain pending.
+
 - [Historical access qualification (#101)](issue101/results.md):11 public SDK/FUSE cases and11 independent proofs, all below15seconds including preparation and cleanup; #102 owns the full campaign.
 
 - [Specification](spec.md): canonical/physical grammar, compatibility and ownership.
