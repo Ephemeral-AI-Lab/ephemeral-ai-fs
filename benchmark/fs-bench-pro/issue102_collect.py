@@ -76,9 +76,11 @@ def main():
     p.add_argument('--resume',action='store_true')
     p.add_argument('--retry-case')
     p.add_argument('--verification-only',action='store_true')
+    p.add_argument('--performance-only',action='store_true')
     p.add_argument('--applicability',type=Path)
     args=p.parse_args()
-    if args.verification_only and (not args.applicability or not args.applicability.is_file()):
+    if args.verification_only and args.performance_only:p.error('choose one phase')
+    if (args.verification_only or args.performance_only) and (not args.applicability or not args.applicability.is_file()):
         p.error('verification-only resume requires retained applicability evidence')
     if not args.control_inapplicable and not (args.control_image and args.control_binary):
         p.error('qualified control or retained inapplicability evidence required')
@@ -130,7 +132,7 @@ def main():
             if arm not in arms:continue
             config=arms[arm]
             prior=[v for v in values if v.get('family')==family and v.get('case')==case and v.get('arm')==arm]
-            if not args.retry_case and not args.verification_only and any(v['phase']=='verification' for v in prior):
+            if not args.retry_case and not args.verification_only and not args.performance_only and any(v['phase']=='verification' for v in prior):
                 print('RETAINED',family,arm,case,'original receipts in ledger',flush=True);continue
             if args.verification_only and not args.retry_case:
                 latest_proof=next((v for v in reversed(prior) if v['phase']=='verification'),None)
@@ -148,7 +150,13 @@ def main():
                     print('RETAINED_PERFORMANCE',original_performance['receipt'],flush=True)
                 if not row['proof_only'] and not args.verification_only:
                     result,_=collect.collect_row(config,family,row,output)
-                    if args.retry_case or not completed(values,family,arm,'performance',case):retain(arm,'performance',case,result)
+                    if args.performance_only:
+                        original_proof=next((v for v in reversed(prior) if v['phase']=='verification' and v.get('status')=='PASS'),None)
+                        if original_proof is None:raise ValueError('performance-only recollection requires a retained passing proof')
+                        result.update(retained_verification=original_proof['receipt'],retained_verification_sha256=original_proof['receipt_sha256'],
+                                      applicability=str(args.applicability),applicability_sha256=collect._sha256(args.applicability))
+                    if args.retry_case or args.performance_only or not completed(values,family,arm,'performance',case):retain(arm,'performance',case,result)
+                    if args.performance_only:continue
                     identities=result.get('identities')
                     if not identities:
                         retain(arm,'verification',case,{'status':'INCOMPLETE','error':'no performance identities'});continue

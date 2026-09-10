@@ -438,6 +438,28 @@ def cgroup_snapshot(sample, deadline):
     return result
 
 
+def sdk_store_observation(path):
+    started = time.monotonic_ns()
+    if not path.is_file() or path.is_symlink():
+        raise ValueError("closed SDK Store absent or symlinked")
+    files = []
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        item = Path(str(path) + suffix)
+        if not item.exists():
+            continue
+        if item.is_symlink():
+            raise ValueError("SDK Store sidecar symlink")
+        stat = item.stat()
+        files.append({"path": str(item), "device": stat.st_dev, "inode": stat.st_ino,
+                      "apparent_bytes": stat.st_size, "allocated_bytes": stat.st_blocks * 512,
+                      "mtime_ns": stat.st_mtime_ns})
+    return {"boundary": "native-command-closed-after-resource-window-before-cleanup",
+            "files": files, "allocated_bytes": sum(f["allocated_bytes"] for f in files),
+            "apparent_bytes": sum(f["apparent_bytes"] for f in files),
+            "observation_ns": time.monotonic_ns() - started,
+            "content_hash": None, "identity_kind": "quiescent physical inode/device; no verification digest"}
+
+
 def execute_selected(args, *, deadline, verification=False):
     """No receipt files here: the caller publishes after this function cleans up."""
     started = time.monotonic_ns()
@@ -531,6 +553,8 @@ def execute_selected(args, *, deadline, verification=False):
             "memory_current_bytes": after["memory_current"], "swap_current_bytes": after["swap_current"],
             "oom_kill_delta": after.get("oom_kill", 0) - before.get("oom_kill", 0),
             "measurement_scope": "Linux daemon/FUSE container command window; host coordinator/Store process CPU/RSS/IO reported separately in records; host CPU is not container-capped"}
+        if selection.get("route") == "sdk" and not verification:
+            result["store_boundary"] = sdk_store_observation(host_sample_path / "payload/store.sqlite")
         result["status"] = "PASS" if command.returncode == 0 and result["records"] and not result["resources"]["oom_kill_delta"] else "FAIL"
         result["slow"] = result["command_wall_ns"] >= 5_000_000_000
         result["checks"] = [r for r in result["records"] if "verif" in str(r.get("kind", "")) or "proof" in str(r.get("kind", ""))]
