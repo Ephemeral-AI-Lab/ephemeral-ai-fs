@@ -23,3 +23,10 @@ log, exit, source patch, binary/image identity, fixture validation, raw
 receipt, and analyzer is retained there. Older evidence roots
 (index-attribution, metadata-proof, fingerprint-index, cold-metadata,
 final-tree-rca, restart-index-design) remain read-only.
+
+Campaign outcome (see
+[commit-baseline-results.md](commit-baseline-results.md)): 45/45 plain cells
+(one full cohort retained as an invalid first attempt with a harness
+expectation bug) and 30/30 diagnostic cells passed all gates;
+`evidence-manifest.json` hashes all 21,767 retained files, and
+`final-custody.json` records unchanged source seals after collection.
