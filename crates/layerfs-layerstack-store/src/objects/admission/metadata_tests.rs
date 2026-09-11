@@ -286,6 +286,22 @@ fn metadata_pool_catalogue_corruption_and_publication_rollback() {
         )
         .unwrap();
     assert_eq!(f.db.read_object_row(target.id).unwrap(), target.bytes);
+    // Endpoint acceleration relies on schema count bounds; full authentication
+    // and catalogue validation must still reject corruption bypassing CHECKs.
+    {
+        let connection = f.db.reader().unwrap();
+        connection.execute_batch(
+            "PRAGMA ignore_check_constraints=ON;
+             UPDATE metadata_value_groups SET count=166 WHERE first_ordinal=1;
+             PRAGMA ignore_check_constraints=OFF;",
+        ).unwrap();
+    }
+    assert!(f.db.validate_metadata_groups().is_err());
+    assert!(f.db.read_object_row(target.id).is_err());
+    f.db.reader().unwrap().execute(
+        "UPDATE metadata_value_groups SET count=?1 WHERE first_ordinal=1",
+        [group.count as i64],
+    ).unwrap();
     f.db.reader()
         .unwrap()
         .execute(

@@ -65,18 +65,30 @@ impl StoreDb {
     }
 
     pub(super) fn next_metadata_ordinal(&self) -> Result<u64> {
-        let next: i64 = self
-            .reader()?
-            .prepare_cached(
-                "SELECT COALESCE(MAX(first_ordinal+count),1) FROM metadata_value_groups",
-            )?
-            .query_row([], |row| row.get(0))?;
-        if !(1..=1 + i64::from(u32::MAX)).contains(&next) {
-            return Err(StoreError::Integrity("metadata ordinal maximum"));
-        }
-        Ok(next as u64)
+        next_ordinal(&*self.reader()?)
     }
 }
+
+// If M is the largest start, any start <= M-165 ends <= M, while the last
+// group ends > M. Schema bounds therefore limit the exact MAX to <=165 rows,
+// even with gaps/overlaps; no full scan or unverified last-row assumption.
+const NEXT_ORDINAL_SQL: &str = "SELECT COALESCE(MAX(first_ordinal+count),1)
+    FROM metadata_value_groups
+    WHERE first_ordinal > (SELECT MAX(first_ordinal) FROM metadata_value_groups)-?1";
+
+pub(super) fn next_ordinal(connection: &Connection) -> Result<u64> {
+    let next: i64 = connection
+        .prepare_cached(NEXT_ORDINAL_SQL)?
+        .query_row([VALUES_PER_GROUP as i64], |row| row.get(0))?;
+    if !(1..=1 + i64::from(u32::MAX)).contains(&next) {
+        return Err(StoreError::Integrity("metadata ordinal maximum"));
+    }
+    Ok(next as u64)
+}
+
+#[cfg(test)]
+#[path = "metadata_endpoint_tests.rs"]
+mod endpoint_tests;
 
 pub(crate) struct ValueIndex {
     // Reuse the existing bounded macOS scratch database and cleanup owner. This

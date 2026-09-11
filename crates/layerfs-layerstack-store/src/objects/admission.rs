@@ -1295,11 +1295,7 @@ impl PreparedAdmission {
             start = end;
         }
         let mut next_ordinal: i64 = if keep_pools {
-            transaction
-                .prepare_cached(
-                    "SELECT COALESCE(MAX(first_ordinal+count),1) FROM metadata_value_groups",
-                )?
-                .query_row([], |row| row.get(0))?
+            super::metadata::next_ordinal(transaction)? as i64
         } else {
             1
         };
