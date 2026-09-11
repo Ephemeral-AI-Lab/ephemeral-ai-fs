@@ -15,9 +15,19 @@ and containers in the declared order `k100#1, k100#2, k10#1, k10#2`
 The contract requires the store trace to split physical reads into
 metadata-record groups, pooled-value groups and other groups. The first screen run
 split them only by pack version; that is not the declared split, so the screen was
-re-run with the declared call-site split before the decision was taken. Both runs
-are retained. The first run's frozen rule outcome was already PASS, and the second
-run reproduces it with the correct split:
+re-run with the declared call-site split before the decision was taken. The
+corrected run's raw cells are the retained evidence below.
+
+**Custody disclosure.** The first run's raw cells were deleted by the corrected
+run's `rm -rf` of the same arm directory before their custody value was
+recognised. The first run's extracted values and frozen-rule verdict are retained
+as a reported observation in `phasea-run1-extracted.json` (binary
+`ef656245e125eac1184bc3ca627b94be127f15bbb075410f3cd8afcce775ecc5`, image
+`layerfs-bench-infra:89d47a96ba65f752`), but they are not raw evidence and are not
+used for any gate. The decision and every number below come solely from the
+retained raw cells. The first run's verdict was PASS for the same frozen rule
+(F1 0.845/0.845, F2 0.868/0.871, F3 0.829/0.829); the corrected retained run
+reproduces it:
 
 | Quantity (tree apply only) | k100 #1 | k100 #2 | k10 #1 | k10 #2 |
 |---|---:|---:|---:|---:|
