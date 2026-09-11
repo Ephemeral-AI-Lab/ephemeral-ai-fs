@@ -107,13 +107,22 @@ Feasibility is **supported** only if, in **both** `k100` cells:
 
 - **F1** `R − D ≥ 0.40 · R` — at least 40 % of tree-phase group selections are
   repeats of a group already selected in the same phase;
-- **F2** tree-phase `R` is at least 25 % of all group selections observed in the
-  same Commit's namespace phase (the mechanism addresses a material share);
+- **F2** tree-phase `R` is at least 25 % of the same Commit's total group
+  selections (`physical_delta.group_fetches`, an unchanged product receipt), so
+  the mechanism addresses a material share of the Commit even if it removes
+  every tree-phase repeat;
 - **F3** the repeated-selection share of the tree's read clock,
   `A · (R − D) / R`, is at least 25 % of `N` (the ceiling can plausibly reach the
   worthwhile screen).
 
 `k10` is reported for shape only; it is not a gate.
+
+`F1` uses the tree-phase distinct-group count, which is an **upper bound** on what
+any per-node batching wave can remove (wave-local distinct counts cannot be
+smaller in total than the phase-wide distinct count only if sibling runs are
+disjoint in the pack; the Phase B arms measure the achieved reduction directly
+and are the only source of a performance claim). `F1` is therefore a screen, not
+a forecast.
 
 If F1–F3 do not all hold in both K100 cells, Phase A **fails** and the campaign
 stops with the measured blocker plus a concrete bounded alternative. No cache is
