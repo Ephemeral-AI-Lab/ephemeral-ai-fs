@@ -228,7 +228,42 @@ for the hardened build under the frozen protocol**. The first run is retained
 unmodified under `attempts/run1-paired-plain-superseded-treatment` with its own
 `collect`/`summary`/`analysis` artefacts.
 
-### 3.4 Mechanism counters
+### 3.4 Three-point calibration: no measurable improvement, and a 2.3× baseline drift
+
+**Post-hoc diagnostic, not qualification evidence.** The five-pair result above
+raised the question of how much of the original win survives at all, so the
+pre-Stage 2 control was measured directly against the promoted product and the
+hardened build in one interleaved session, three repetitions each, same image
+topology and workload. The pre-Stage 2 arm is the archived `stage2-control` tree,
+whose worktree contains no `get_authenticated_canonical_batch` and is therefore
+the pre-Stage 2 source.
+
+| Arm | public wall median (all samples) | `namespace_ns` median (all samples) | CPU median |
+|---|---:|---:|---:|
+| pre-Stage 2 control | 177.25 (174.82, 192.82, 177.25) | 108.32 (103.71, 116.40, 108.32) | 168.90 |
+| promoted Stage 2 product | 177.31 (170.18, 179.24, 177.31) | 104.70 (102.39, 105.18, 104.70) | 164.87 |
+| hardened product | 174.72 (166.97, 180.90, 174.72) | 104.26 (102.46, 108.98, 104.26) | 163.53 |
+
+Raw data: `calibration-three-point.json`.
+
+**All three code points measure the same at K100 in this session** — within
+±3 % of each other on every metric. The Stage 2 campaign measured its control
+arm at 240.68 ms `namespace_ns`; that same code measures 108.32 ms here, a
+**2.2× drift for identical source, fixture, workload and topology**.
+
+Consequences for what can be claimed:
+
+- No end-to-end improvement can be quantified. The Stage 2 campaign's paired win
+  (43.9 % public wall, 56.2 % namespace at K100) stands within its own session,
+  but the baseline arm is not reproducible in this environment, so the two
+  campaigns' absolute numbers must not be stacked.
+- Under this session's conditions the optimized batch route shows **no**
+  measurable advantage over the route it replaced, and the hardening neither
+  gains nor loses against the promoted product.
+- The 2.2× drift is unexplained by any change under this contract. It is recorded
+  as an open calibration blocker, not attributed to the treatment.
+
+### 3.5 Mechanism counters
 
 The promoted plain build carries no `commit-stage2-ns-v1` instrumentation, so no
 new mechanism counters are available for the plain cohort, and the retained
@@ -339,6 +374,7 @@ retracted.
 | Per-pair non-inferiority, K10 / retained / nochange | **FAIL** on the breaches listed in §3.2 |
 | Worthwhile screen (Stage 2 win preserved) | **FAIL** — five-pair K100 shows parity |
 | Cold Init ≤ 2.7 s | **OPEN, untouched** (last valid median ≈ 3.420 s) |
+| End-to-end improvement over the pre-Stage 2 route | **NOT QUANTIFIABLE** — all three code points measure the same today (§3.4) |
 
 **Qualification verdict.** The hardening is **qualified for correctness**: every
 gate above that concerns behaviour passes, all three review findings are fixed
@@ -350,11 +386,14 @@ qualification is claimed from the five performance cells.
 
 ## 8. Remaining blockers and queued work
 
-1. **The K100 win is unreproduced for the hardened build.** Resolving whether the
-   treatment lost the win, or whether the win depends on a load state this
-   environment cannot reach, needs a quieter measurement environment or an
-   instrumentation-carrying diagnostic build; neither was available under this
-   contract without weakening the frozen protocol.
+1. **The K100 win is unreproduced for the hardened build, and the baseline is not
+   reproducible either.** Resolving whether the treatment lost the win, or whether
+   the win depends on a load state this environment cannot reach, needs a quieter
+   measurement environment or an instrumentation-carrying diagnostic build;
+   neither was available under this contract without weakening the frozen
+   protocol. The 2.2× drift of the pre-Stage 2 control (§3.4) is a separate open
+   calibration blocker: until the same code reproduces its recorded absolute
+   timing, no cross-campaign improvement can be quantified.
 2. **K10 medians regressed by 2.8–3.1 ms** against the same campaign's control.
    Attribution is unresolved; the two-pair diagnostic cohort that produced the
    Stage 2 K10 attribution was deliberately not re-run.
