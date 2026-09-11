@@ -4,6 +4,10 @@
 > the campaign ran end to end. See
 > [commit-stage2-hardening-results.md](commit-stage2-hardening-results.md) for
 > the outcome. Read-only registration; no measurement claim is made here.
+>
+> **Outcome in one line:** correctness qualified, K100 absolute targets met, the
+> performance-preservation gate **not** met — a five-pair K100 measurement shows
+> the hardened build at parity with the promoted product.
 
 ## Roots
 
@@ -87,4 +91,13 @@ hidden:
 | `custody-sealcheck.py`, `custody/before-seals.txt` | seal re-derivation |
 | `summary.json`, `analysis.log` | derived summaries from retained raw evidence |
 | `test-control.log`, `test-candidate.log` | focused suite outcomes per arm |
-| `evidence-manifest.json` | sha256 of every retained file |
+| `affected-cells/`, `affected-cases.sh` | affected-caller cross-check on the hardened candidate |
+| `attempts/run1-paired-plain-superseded-treatment` | retained first plain run and its `collect`/`summary`/`analysis` artefacts |
+| `varA`–`varE`, `probe-noP2` | retained treatment-attribution trees (source retained; `target/` removed) |
+| `evidence-manifest.json` | sha256 of every retained evidence file |
+
+`evidence-manifest.json` hashes every retained evidence file except the isolated
+arm trees (`hardening-control`, `hardening-candidate`, `varA`–`varE`,
+`probe-noP2`), their compilation output, and the per-cell SQLite Store payloads
+under `cells/` and `attempts/`. Those Stores are retained unmodified; they are
+the raw per-cell payload and are 33 GB, so they are listed rather than hashed.
