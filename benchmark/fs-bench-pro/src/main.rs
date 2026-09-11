@@ -2947,6 +2947,8 @@ fn namespace_init_diagnostic(
         return Err("stale LayerStack initialization receipt".into());
     }
 
+    let physical_before = std::env::var_os("LAYERFS_INITIALIZATION_DIAGNOSTIC_NONCE")
+        .map(|_| store.physical_storage_receipt());
     let sqlite_resources_before = sqlite_resource_snapshot(&store, true)?;
     let initialization_resources_before = process_resource_snapshot()?;
     let t0 = Instant::now();
@@ -2957,6 +2959,12 @@ fn namespace_init_diagnostic(
     let t1 = Instant::now();
     let initialization_resources_after = process_resource_snapshot()?;
     let sqlite_resources_after = sqlite_resource_snapshot(&store, false)?;
+    if let Some(before) = physical_before {
+        eprintln!(
+            "layerfs-initialization-diagnostic-physical-v1 receipt={:?}",
+            store.physical_storage_receipt().since(before)
+        );
+    }
     let receipts = store.take_layerstack_initialization_receipts();
     let [scan] = receipts.as_slice() else {
         return Err("LayerStack initialization receipt cardinality".into());

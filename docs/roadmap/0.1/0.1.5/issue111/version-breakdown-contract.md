@@ -30,6 +30,10 @@ producer policies differ. Historical runs cannot retroactively satisfy the new
 cold qualification contract. No feature ablation or product setting change is
 authorized by this protocol. No worker-count or prefetch experiment.
 
+Owner clarification during collection: retain 4 KiB pages for storage efficiency.
+Historical 64 KiB pages are comparison context only, not an optimization proposal.
+Any follow-up must preserve the current 4 KiB storage format.
+
 Report exclusive pipeline/final-tree/import-remainder/outer-remainder sums and
 nested consumer idle, SQL commit, encoding and metadata-index clocks. Do not add
 overlapping clocks or equate idle with pure I/O. CPU/profile history and code
