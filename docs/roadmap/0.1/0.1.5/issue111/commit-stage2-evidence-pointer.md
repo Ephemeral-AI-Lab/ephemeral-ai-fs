@@ -92,6 +92,34 @@ outcome, the paired statistics, the mechanism counters, the resource and
 correctness evidence and the limitations are in
 [commit-stage2-read-results.md](commit-stage2-read-results.md).
 
+## Promotion
+
+The measured treatment was applied to `main` unchanged and committed as
+`bd9dc1600` (`perf: bounded authenticated batch reading for the sorted
+inode-tree engine (#111)`), five files, product and tests only. After promotion
+the main worktree's `crates/` is byte-identical to `stage2-candidate/crates` and
+the main worktree product seal is exactly
+`a608cd4edd25161584986b0f2885d2497a0c231a63a0b3dc7be73685bd0c0b38`, the product
+seal of the measured candidate arm.
+
+Promotion custody:
+
+- `candidate.patch` (sha256
+  `ffbe1fd1a793ab4c47901cd46cebb3a766b706e67c15e2534937f0974df2ea53`) is the
+  reviewed diff that was applied.
+- `crates/layerfs-layerstack-store/src/objects.rs` is also modified by the
+  preserved uncommitted compaction-removal treatment. Only the Stage 2 hunks were
+  staged, so the commit contains no part of that treatment. The recorded
+  preexisting hunk (`custody/preexisting-objects-rs-hunks.patch`) is
+  byte-identical before and after promotion, and the whole preexisting tracked
+  diff over `crates`/`benchmark`/`tools`/`Cargo.toml`/`Cargo.lock`, ignoring git's
+  `index` blob-hash lines, is byte-identical across all 22 files
+  (`custody/before-tracked-binary.patch`). The untracked
+  `compaction-removal.md` / `issue112/` / `issue113/` hashes are unchanged.
+- No stash, reset, revert, clean, checkout or attribution of another owner's work
+  occurred; nothing outside the five Stage 2 files and the Stage 2 docs was
+  committed.
+
 ## Fixture
 
 The immutable original pseudorandom `namespace-100000` fixture

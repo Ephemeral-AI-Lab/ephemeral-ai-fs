@@ -239,11 +239,19 @@ collection.
 
 ## 7. Limitations and non-claims
 
-- The candidate is **not** promoted to `main` in this campaign. `objects.rs` is
-  also modified by the preserved uncommitted compaction-removal treatment, so
-  staging that file would have committed another owner's in-progress work. The
-  exact treatment is preserved as `candidate.patch` for the owner's promotion
-  step; committing it is a follow-up decision, not part of this bounded work.
+- **Promoted to `main` after the measurement.** The exact measured treatment was
+  applied unchanged and committed as `bd9dc1600` (`perf: bounded authenticated
+  batch reading for the sorted inode-tree engine`), a focused product/tests
+  commit over exactly the five touched files. After promotion the main
+  worktree's `crates/` is byte-identical to the measured candidate arm and its
+  product seal is exactly
+  `a608cd4edd25161584986b0f2885d2497a0c231a63a0b3dc7be73685bd0c0b38` — the seal of
+  the measured candidate — so the promoted source is the measured source. Main
+  does not carry the campaign harness, so its SOURCE_SEAL necessarily differs
+  from the arm's while the product seal matches. `objects.rs` is also modified by
+  the preserved uncommitted compaction-removal treatment: only the Stage 2 hunks
+  were staged, and that treatment remains uncommitted, byte-identical, and
+  untouched.
 - K10 namespace (30.98 ms) and K10 public Commit (48.04 ms) pass their preferred
   targets by 0.02 ms and 1.96 ms. The per-pair namespace ratios are
   `0.4837 / 0.5089 / 0.4901`, so the reduction is robust, but the absolute target
@@ -264,12 +272,13 @@ collection.
 
 ## 8. Next step
 
-Promotion review of `candidate.patch` by the owner, then a rerun of every family
-member that shares the changed call graph (`layerfs-content` tree engine,
-`layerfs-layerstack-store` packed reader, `layerfs-workspace` Commit namespace
-phase, `layerfs-fuse` callers) plus the reopened/retained and smaller-tier
-sibling checks, before any release evidence is claimed. The scaling ledger's
-deeper-tree chunk charge is the first follow-up proof.
+Promotion is complete (`bd9dc1600`); `candidate.patch` remains in the evidence
+root as the reviewed diff. Next: rerun every family member that shares the
+changed call graph (`layerfs-content` tree engine, `layerfs-layerstack-store`
+packed reader, `layerfs-workspace` Commit namespace phase, `layerfs-fuse`
+callers) plus the reopened/retained and smaller-tier sibling checks, before any
+release evidence is claimed. The scaling ledger's deeper-tree chunk charge is the
+first follow-up proof.
 
 Issue update:
 https://github.com/Ephemeral-AI-Lab/layerfs/issues/111#issuecomment-5638943024
