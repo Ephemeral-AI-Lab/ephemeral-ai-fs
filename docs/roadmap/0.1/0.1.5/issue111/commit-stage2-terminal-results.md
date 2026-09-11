@@ -384,7 +384,15 @@ is superseded by §2.1 and §3 here, which identify the actual cause.
 ## 12. Closure record
 
 **Stage 2 closes on an accepted minor failure, by explicit owner decision.** The
-closing claim and its limits, in one place:
+contract records the same decision in its §10 addendum, added after this campaign
+ran; no gate, measured value or verdict was changed by it. The closing claim and
+its limits, in one place:
+
+**Note on issue state.** **Issue #111 is not closed by this stage.** #111 is the
+cold-cache `namespace-100000` **Init** gap (≤ 2.7 s), which remains open, paused
+and untouched by anything here. Stage 2 closure is a project-state disposition for
+the Commit read-batching objective, recorded in this report and on the issue
+timeline.
 
 **Claimed.** Inside the original pseudorandom 100 000-file namespace, the promoted
 Stage 2 read-batching benefit is confirmed and reproducible at K100 — public
@@ -419,3 +427,7 @@ exhaustion path is claimed, and neither is treated as a blocker for closure.
 Quadratic spill-merge removal, edit-stage attribution, triangular publication and
 reopened-history scaling stay queued and unstarted; Stage 2 does not close the
 overall no-quadratic objective. No release, tag or deployment was produced.
+
+**Correction recorded.** An earlier action in this session mistakenly closed issue
+#111 itself and was reverted: #111 is the cold-Init issue and stays open. Only the
+Stage 2 Commit objective is closed here.
