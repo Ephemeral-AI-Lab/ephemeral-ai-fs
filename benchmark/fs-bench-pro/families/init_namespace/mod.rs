@@ -6,6 +6,7 @@ pub(crate) const NAMESPACE_FIXTURE_SCHEMA: &str = "fs-bench-pro-namespace-fixtur
 pub(crate) const NAMESPACE_FAILURE_SCHEMA: &str = "fs-bench-pro-namespace-failure-v3";
 pub(crate) const NAMESPACE_FIXTURE_PROFILE: &str = "synthetic-small-heavy-v2";
 pub(crate) const NAMESPACE_COMPACT_FIXTURE_PROFILE: &str = "synthetic-small-heavy-compact-v3";
+pub(crate) const NAMESPACE_TEXT_FIXTURE_PROFILE: &str = "synthetic-structured-text-v1";
 pub(crate) const NAMESPACE_DIGEST_PROFILE: &str = "namespace-file-digest-tree-v2";
 pub(crate) const NAMESPACE_EDIT_CONTRACT: &str = "content-only-normalized-mtime-v1";
 pub(crate) const NAMESPACE_LIFECYCLE_PROFILE: &str = "commit-head-exact-reopen-v2";
@@ -99,9 +100,42 @@ pub(crate) const NAMESPACE_SCENARIOS: [NamespaceScenario; 4] = [
     },
 ];
 
+// Explicit opt-in variants: the default mandatory registry remains unchanged.
+pub(crate) const NAMESPACE_TEXT_SCENARIOS: [NamespaceScenario; 4] = [
+    NamespaceScenario {
+        id: "namespace-100-compact-v3-text-v1",
+        alias: "namespace-100-files-5mb-v3-text-v1",
+        display_name: "Initialize 100 files / 5 MB / structured text",
+        fixture_profile: NAMESPACE_TEXT_FIXTURE_PROFILE,
+        ..NAMESPACE_SCENARIOS[0]
+    },
+    NamespaceScenario {
+        id: "namespace-1000-compact-v3-text-v1",
+        alias: "namespace-1000-files-20mb-v3-text-v1",
+        display_name: "Initialize 1,000 files / 20 MB / structured text",
+        fixture_profile: NAMESPACE_TEXT_FIXTURE_PROFILE,
+        ..NAMESPACE_SCENARIOS[1]
+    },
+    NamespaceScenario {
+        id: "namespace-10000-text-v1",
+        alias: "namespace-10000-files-300mb-text-v1",
+        display_name: "Initialize 10,000 files / 300 MB / structured text",
+        fixture_profile: NAMESPACE_TEXT_FIXTURE_PROFILE,
+        ..NAMESPACE_SCENARIOS[2]
+    },
+    NamespaceScenario {
+        id: "namespace-100000-text-v1",
+        alias: "namespace-100000-files-500mb-text-v1",
+        display_name: "Initialize 100,000 files / 500 MB / structured text",
+        fixture_profile: NAMESPACE_TEXT_FIXTURE_PROFILE,
+        ..NAMESPACE_SCENARIOS[3]
+    },
+];
+
 pub(crate) fn namespace_scenario(id_or_alias: &str) -> Result<NamespaceScenario, String> {
     NAMESPACE_SCENARIOS
         .into_iter()
+        .chain(NAMESPACE_TEXT_SCENARIOS)
         .find(|scenario| scenario.id == id_or_alias || scenario.alias == id_or_alias)
         .ok_or_else(|| format!("unknown namespace scenario: {id_or_alias}"))
 }

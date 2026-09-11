@@ -411,7 +411,8 @@ fn namespace_relative_weight(class: NamespaceClass, role: u64, count: u64) -> Re
 fn namespace_role_sort_key(scenario: NamespaceScenario, role: PlannedRole) -> [u8; 32] {
     let mut hash = Sha256::new();
     hash.update(b"layerfs/fs-bench-pro/namespace-role-permutation/v1\0");
-    hash_field(&mut hash, scenario.id.as_bytes());
+    // Content choice must not change the per-path class/size assignment.
+    hash_field(&mut hash, scenario.id.strip_suffix("-text-v1").unwrap_or(scenario.id).as_bytes());
     hash.update(&[role.class as u8]);
     hash.update(&role.role.to_be_bytes());
     hash.finish()
@@ -540,10 +541,29 @@ pub(crate) struct NamespaceContentStream {
     state: [u64; 4],
     word: [u8; 8],
     used: usize,
+    text: Option<NamespaceTextStream>,
+}
+
+struct NamespaceTextStream {
+    prefix: String,
+    line: Vec<u8>,
+    used: usize,
+    record: u64,
 }
 
 impl NamespaceContentStream {
     pub(crate) fn new(scenario: NamespaceScenario, file: &NamespaceFilePlan) -> Self {
+        if scenario.fixture_profile == NAMESPACE_TEXT_FIXTURE_PROFILE {
+            return Self {
+                state: [0; 4], word: [0; 8], used: 8,
+                text: Some(NamespaceTextStream {
+                    prefix: format!("{} | source={} | size={} | ",
+                        file.relative_path.rsplit('/').next().unwrap_or(&file.relative_path),
+                        file.relative_path, file.size),
+                    line: Vec::new(), used: 0, record: 0,
+                }),
+            };
+        }
         let mut hash = Sha256::new();
         hash.update(b"layerfs/fs-bench-pro/namespace-content-stream/v1\0");
         hash_field(&mut hash, scenario.id.as_bytes());
@@ -562,10 +582,26 @@ impl NamespaceContentStream {
             state,
             word: [0; 8],
             used: 8,
+            text: None,
         }
     }
 
     pub(crate) fn fill(&mut self, mut output: &mut [u8]) {
+        if let Some(text) = self.text.as_mut() {
+            while !output.is_empty() {
+                if text.used == text.line.len() {
+                    text.line = format!("{}record={:012} | operation=initialize | status=ready | content=structured-text-v1\n",
+                        text.prefix, text.record).into_bytes();
+                    text.record += 1;
+                    text.used = 0;
+                }
+                let count = output.len().min(text.line.len() - text.used);
+                output[..count].copy_from_slice(&text.line[text.used..text.used + count]);
+                text.used += count;
+                output = &mut output[count..];
+            }
+            return;
+        }
         while !output.is_empty() {
             if self.used == self.word.len() {
                 self.word = self.next().to_le_bytes();
@@ -1617,8 +1653,40 @@ fn digest(path: &Path) -> Result<(u64, String)> {
     Ok((size, hex(&hash.finish())))
 }
 
+fn namespace_content_self_check() -> Result<()> {
+    for (base, text) in NAMESPACE_SCENARIOS.into_iter().zip(NAMESPACE_TEXT_SCENARIOS) {
+        let original = namespace_plan(base.id)?;
+        let structured = namespace_plan(text.id)?;
+        if original.files != structured.files || original.edit_path != structured.edit_path
+            || original.edit_size != structured.edit_size
+            || namespace_scenario(text.alias)? != text
+        {
+            return Err("namespace content option changed file layout".into());
+        }
+    }
+    let plan = namespace_plan(NAMESPACE_TEXT_SCENARIOS[0].id)?;
+    let files = plan.files.iter().filter(|file| file.size > 0).take(2).collect::<Vec<_>>();
+    let mut whole = vec![0; 8193];
+    let mut split = whole.clone();
+    NamespaceContentStream::new(plan.scenario, files[0]).fill(&mut whole);
+    let mut stream = NamespaceContentStream::new(plan.scenario, files[0]);
+    for chunk in split.chunks_mut(37) { stream.fill(chunk); }
+    let mut other = whole.clone();
+    NamespaceContentStream::new(plan.scenario, files[1]).fill(&mut other);
+    let mut random = whole.clone();
+    NamespaceContentStream::new(NAMESPACE_SCENARIOS[0], files[0]).fill(&mut random);
+    if whole != split || whole == other || whole == random
+        || !whole.iter().all(|byte| byte.is_ascii_graphic() || *byte == b' ' || *byte == b'\n')
+        || !whole.windows(15).any(|bytes| bytes == b"operation=initi")
+    {
+        return Err("namespace structured-text stream invariant".into());
+    }
+    Ok(())
+}
+
 fn self_check() -> Result<()> {
     init_namespace::self_check()?;
+    namespace_content_self_check()?;
     store_footprint::self_check()?;
     let root = std::env::temp_dir().join(format!(
         "fs-benchmark-pro-{}-{}",

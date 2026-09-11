@@ -57,7 +57,9 @@ fn row(
     let inherited = SDK.contains(&family) || family == "edit_length_changing_capped";
     let low_tier = matches!(family, "init_namespace" | "store_footprint") || tier <= 10;
     let smoke_supported = low_tier && bytes <= 50_000_000 && files <= 1_000 && !proof;
-    let profile = if family == "tiny_file_churn" && id.ends_with("-mixed-v3") {
+    let profile = if family == "init_namespace" && id.ends_with("-text-v1") {
+        workload_source::NAMESPACE_TEXT_FIXTURE_PROFILE
+    } else if family == "tiny_file_churn" && id.ends_with("-mixed-v3") {
         workload_source::ordinary_workloads::MIXED_BULK_PROFILE
     } else if family == "git_tool_workflow" && id.ends_with("-mixed-v4") {
         workload_source::ordinary_workloads::MIXED_V4_GIT_PROFILE
@@ -79,7 +81,10 @@ fn list(family_filter: Option<&str>, case_filter: Option<&str>) -> AnyResult<()>
         family_filter.is_none_or(|value| value == family)
             && case_filter.is_none_or(|value| value == id)
     };
-    for case in workload_source::NAMESPACE_SCENARIOS {
+    for case in workload_source::NAMESPACE_SCENARIOS.into_iter().chain(
+        workload_source::NAMESPACE_TEXT_SCENARIOS.into_iter()
+            .filter(|case| case_filter == Some(case.id)),
+    ) {
         if !selected("init_namespace", case.id) {
             continue;
         }

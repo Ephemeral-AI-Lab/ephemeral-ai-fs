@@ -74,6 +74,8 @@ def build_parser(include_modes=True):
     p.add_argument("--source-arm", choices=("baseline", "candidate"), default="candidate")
     p.add_argument("--performance-rows", default="-")
     p.add_argument("--case")
+    p.add_argument("--pseudorandom", action=argparse.BooleanOptionalAction, default=None,
+                   help="Namespace content: default/on keeps existing random bytes; --no-pseudorandom selects a distinct structured-text case with identical file sizes (explicit --case required)")
     p.add_argument("--seed", type=int)
     p.add_argument("--repetition", type=int)
     p.add_argument("--setup", choices=("fresh", "clone"))
@@ -237,7 +239,21 @@ def mixed_fixture_info(args, host_identity, seed, deadline):
     return fixture
 
 
+def normalize_namespace_content(args):
+    choice = getattr(args, "pseudorandom", None)
+    if choice is None:
+        return
+    if args.family != "init_namespace" or not args.case:
+        raise ValueError("--[no-]pseudorandom requires init_namespace and an explicit --case")
+    text = args.case.endswith("-text-v1")
+    if choice and text:
+        raise ValueError("--pseudorandom conflicts with a structured-text case")
+    if not choice and not text:
+        args.case += "-text-v1"
+
+
 def resolve_selection(args, deadline):
+    normalize_namespace_content(args)
     if args.topology != "host-store":
         raise ValueError("Docker-owned SQLite is prohibited; use host-store")
     if getattr(args, "_selection", None):
@@ -325,6 +341,10 @@ def resolve_selection(args, deadline):
     if fixture_info is not None:
         selection["fixture_info"] = fixture_info
     selection["source_arm"] = args.source_arm
+    if args.family == "init_namespace":
+        selection["pseudorandom"] = not args.case.endswith("-text-v1")
+        selection["namespace_content_profile"] = (
+            "pseudorandom-v1" if selection["pseudorandom"] else "structured-text-v1")
     selection["timer"] = TIMERS.get(row.get("route"))
     selection["product_execution_allowance_seconds"] = args.product_timeout
     selection["topology"] = args.topology

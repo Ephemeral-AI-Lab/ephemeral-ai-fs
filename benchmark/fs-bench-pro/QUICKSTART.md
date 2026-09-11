@@ -65,6 +65,32 @@ master hashes/isolation, fixture versions and cleanup checks. Never reuse mutate
 samples, clear protected caches routinely, or move cold product work into setup.
 Use `--output` with a fresh path; raw receipts must not be overwritten.
 
+## Namespace content: pseudorandom on/off
+
+Namespace Init defaults to the original pseudorandom content. Use an explicit
+case with `--pseudorandom` or `--no-pseudorandom`:
+
+```bash
+bash benchmark/fs-bench-pro/families/init_namespace/perf.sh \
+  --case namespace-100-compact-v3 --seed 1 --image "$LAYERFS_BENCH_IMAGE" \
+  --perf-fast --pseudorandom
+bash benchmark/fs-bench-pro/families/init_namespace/perf.sh \
+  --case namespace-100-compact-v3 --seed 1 --image "$LAYERFS_BENCH_IMAGE" \
+  --perf-fast --no-pseudorandom
+```
+
+Off produces deterministic structured text with the same paths, per-file sizes,
+counts, metadata and total bytes. It is synthetic compressible text, not a real
+repository. It resolves to a separate `<base-case>-text-v1` case with its own
+fixture digest/cache/proof identity. The same option works for all four namespace
+tiers. Text cases are opt-in and do not expand the default mandatory registry.
+For verification, use that resolved case ID (or the base ID with
+`--no-pseudorandom`) and the exact source/input/image identities from its performance
+receipt. Do not mix modes or use text timings to satisfy the original random-data
+cold gate. No product compression or size-based storage dispatch policy changes.
+
+See [the content-toggle contract](../../docs/roadmap/0.1/0.1.5/issue111/content-toggle-contract.md).
+
 ## Verify separately
 
 Use the family's `verify.sh` with the exact case, seed/repetition, source, input,
