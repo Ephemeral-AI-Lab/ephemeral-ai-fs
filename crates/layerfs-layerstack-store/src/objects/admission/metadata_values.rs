@@ -83,7 +83,7 @@ pub(super) fn prepare_values(
             }
         }
     }
-    let found = index.find_batch(&lookups)?;
+    let found = index.find_batch(db, &lookups)?;
     let mut values = Vec::new();
     let mut physical = Vec::with_capacity(objects.len());
     for object in objects {

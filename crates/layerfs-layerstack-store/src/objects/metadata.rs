@@ -4,7 +4,7 @@ use super::{pack, spill};
 use crate::{schema::StoreDb, Result, StoreError};
 use layerfs_content::{tree::compact, ObjectId};
 use rusqlite::{Connection, OptionalExtension};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) const VALUES_PER_GROUP: usize = 165;
 const VALUE_MAGIC: &[u8; 8] = b"LFSIVL1\0";
@@ -90,6 +90,21 @@ pub(super) fn next_ordinal(connection: &Connection) -> Result<u64> {
 #[path = "metadata_endpoint_tests.rs"]
 mod endpoint_tests;
 
+const INDEX_VALUES: usize = 131_072;
+
+// Only a candidate filter. Full authenticated bytes decide equality below.
+fn fingerprint(value: &[u8; 73]) -> i64 {
+    i64::from_le_bytes(
+        ObjectId::for_bytes(value).as_bytes()[..8]
+            .try_into()
+            .unwrap(),
+    )
+}
+
+#[cfg(test)]
+#[path = "metadata_fingerprint_tests.rs"]
+mod fingerprint_tests;
+
 pub(crate) struct ValueIndex {
     // Reuse the existing bounded macOS scratch database and cleanup owner. This
     // is disposable derivation, never a required Store index or recovery source.
@@ -102,7 +117,7 @@ pub(crate) struct ValueIndex {
 impl ValueIndex {
     pub(super) fn new() -> Result<Self> {
         let (connection, path) = spill::scratch_index("metadata-value-index",
-            "PRAGMA page_size=4096; PRAGMA max_page_count=8192; CREATE TABLE values_by_bytes(value BLOB PRIMARY KEY CHECK(length(value)=73), ordinal INTEGER NOT NULL) WITHOUT ROWID;")?;
+            "PRAGMA page_size=4096; PRAGMA max_page_count=8192; CREATE TABLE values_by_fingerprint(fingerprint INTEGER NOT NULL, ordinal INTEGER NOT NULL, PRIMARY KEY(fingerprint,ordinal)) WITHOUT ROWID;")?;
         Ok(Self {
             connection,
             _path: path,
@@ -126,7 +141,7 @@ impl ValueIndex {
             {
                 // One compiled INSERT per existing transaction; dropped before commit.
                 let mut insert = transaction.prepare_cached(
-                    "INSERT OR IGNORE INTO values_by_bytes(value,ordinal) VALUES (?1,?2)",
+                    "INSERT OR IGNORE INTO values_by_fingerprint(fingerprint,ordinal) VALUES (?1,?2)",
                 )?;
                 while self.next < end {
                     let group = db.metadata_group(self.next)?;
@@ -138,17 +153,16 @@ impl ValueIndex {
                     // file, 4-MiB SQLite cache); use partitioned lookup only if longer
                     // histories justify its cost. Eviction causes duplicate physical
                     // values, not loss.
-                    if self.entries + values.len() > 131_072 {
-                        transaction.execute("DELETE FROM values_by_bytes", [])?;
+                    if self.entries + values.len() > INDEX_VALUES {
+                        transaction.execute("DELETE FROM values_by_fingerprint", [])?;
                         self.entries = 0;
                     }
-                    for (index, value) in values.iter().enumerate() {
-                        insert.execute(
-                            rusqlite::params![
-                                value.as_slice(),
-                                (group.first + index as u64) as i64
-                            ],
-                        )?;
+                    let fingerprints = values.iter().map(fingerprint).collect::<Vec<_>>();
+                    for (index, value) in fingerprints.iter().enumerate() {
+                        insert.execute(rusqlite::params![
+                            *value,
+                            (group.first + index as u64) as i64
+                        ])?;
                     }
                     self.entries += values.len();
                     self.next += values.len() as u64;
@@ -163,46 +177,97 @@ impl ValueIndex {
         Ok(())
     }
 
-    /// Batched lookup of every value absent from the publication-local pending
-    /// map. One bounded IN-list statement per page; a repeated padding parameter
-    /// keeps a single cached SQL string per page size. Existing ordinals are
-    /// returned as-is; duplicate rows from padding collapse into one entry.
-    pub(super) fn find_batch(&self, values: &[[u8; 73]]) -> Result<BTreeMap<[u8; 73], u32>> {
-        let mut found: BTreeMap<[u8; 73], u32> = BTreeMap::new();
+    /// Fingerprints filter candidates; authenticated complete values choose the
+    /// same minimum ordinal as the old exact-key index, including collisions.
+    pub(super) fn find_batch(
+        &self,
+        db: &StoreDb,
+        values: &[[u8; 73]],
+    ) -> Result<BTreeMap<[u8; 73], u32>> {
+        let mut found = BTreeMap::new();
         if values.is_empty() {
             return Ok(found);
         }
+        // Charge both exact sets/maps, fingerprint vector, the maximum candidate
+        // vector and one decoded group to the existing bounded index allowance.
+        if values
+            .len()
+            .saturating_mul(520)
+            .saturating_add(INDEX_VALUES * 4 + 16 * 1024 + super::read::VALIDATION_RESERVE)
+            > super::CANDIDATE_INDEX_BYTES
+        {
+            return Err(StoreError::Integrity("metadata fingerprint query bound"));
+        }
+        let wanted = values.iter().copied().collect::<BTreeSet<_>>();
+        // Global deduplication prevents hash collisions crossing SQL pages from
+        // multiplying candidate visits by the number of requested values.
+        let hashes = wanted
+            .iter()
+            .map(fingerprint)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let mut candidates = Vec::<u32>::new();
         let parameters = usize::try_from(
             self.connection
                 .limit(rusqlite::limits::Limit::SQLITE_LIMIT_VARIABLE_NUMBER)?,
         )
         .unwrap_or(0);
-        let page = values.len().min(512).min(parameters.max(1));
-        for chunk in values.chunks(page) {
-            let mut sql = String::with_capacity(23 + 5 * page);
-            sql.push_str("SELECT value,ordinal FROM values_by_bytes WHERE value IN (?1");
+        let page = hashes.len().min(512).min(parameters.max(1));
+        for chunk in hashes.chunks(page) {
+            let mut sql =
+                String::from("SELECT ordinal FROM values_by_fingerprint WHERE fingerprint IN (?1");
             for parameter in 2..=page {
-                sql.push_str(",?");
+                sql.push(',');
+                sql.push('?');
                 sql.push_str(&parameter.to_string());
             }
             sql.push(')');
             let mut statement = self.connection.prepare_cached(&sql)?;
-            let padding = std::iter::repeat(chunk[chunk.len() - 1].as_slice());
-            let mut rows = statement.query(rusqlite::params_from_iter(
-                chunk
-                    .iter()
-                    .map(|value| value.as_slice())
-                    .chain(padding)
-                    .take(page),
-            ))?;
-            while let Some(row) = rows.next()? {
-                let value: Vec<u8> = row.get(0)?;
-                let ordinal: u32 = row.get(1)?;
-                let value: [u8; 73] = value
-                    .as_slice()
-                    .try_into()
-                    .map_err(|_| StoreError::Integrity("metadata index value"))?;
-                found.insert(value, ordinal);
+            for (index, value) in chunk
+                .iter()
+                .chain(std::iter::repeat(&chunk[chunk.len() - 1]))
+                .take(page)
+                .enumerate()
+            {
+                statement.raw_bind_parameter(index + 1, *value)?;
+            }
+            let mut rows = statement.raw_query();
+            loop {
+                let next = rows.next()?;
+                let Some(row) = next else {
+                    break;
+                };
+                let ordinal: u32 = row.get(0)?;
+                if candidates.len() == INDEX_VALUES
+                    || u64::from(ordinal) >= self.next
+                    || u64::from(ordinal) < self.next - self.entries as u64
+                {
+                    return Err(StoreError::Integrity("metadata fingerprint ordinal bound"));
+                }
+                candidates.push(ordinal);
+            }
+            drop(rows);
+        }
+        candidates.sort_unstable();
+        candidates.dedup();
+        let mut group_values: Option<(u64, Vec<[u8; 73]>)> = None;
+        for ordinal in candidates {
+            let ordinal64 = u64::from(ordinal);
+            if group_values
+                .as_ref()
+                .is_none_or(|(first, values)| ordinal64 >= first + values.len() as u64)
+            {
+                let group = db.metadata_group(ordinal64)?;
+                group_values = Some((group.first, db.read_metadata_values(group)?));
+            }
+            let (first, values) = group_values.as_ref().unwrap();
+            let value = values[(ordinal64 - first) as usize];
+            if wanted.contains(&value) {
+                found.entry(value).or_insert(ordinal);
+            }
+            if found.len() == wanted.len() {
+                break;
             }
         }
         Ok(found)
