@@ -1,11 +1,15 @@
 # Commit Stage 2 terminal results (#111)
 
-> **Status:** Terminal campaign executed end to end. The execution-identity audit
-> found and proved a real contamination, and with clean arms the campaign reaches
-> **terminal pass on every performance and correctness gate except one**: the
-> frozen K10 absolute targets are missed on their medians. Cold Init ≤ 2.7 s and
-> the queued quadratic spill/edit/history work remain open and are not part of
-> this claim. No release, tag or deployment.
+> **Status:** **Closed.** The terminal campaign was executed end to end and the
+> execution-identity audit found and proved a real contamination. With clean arms
+> the campaign reaches pass on every performance, correctness and custody gate
+> except the K10 absolute medians, which are **accepted as a known, documented
+> minor failure** by explicit owner decision (§12). Stage 2's performance claim
+> is the K100 result: **186.05 ms public Commit and 111.54 ms namespace against
+> the pre-Stage 2 route's 330.23 ms and 251.34 ms**, with every K100 sample inside
+> both absolute targets. Cold Init ≤ 2.7 s and the queued quadratic
+> spill/edit/history work remain open and are not part of this claim. No release,
+> tag or deployment.
 
 Contract:
 [commit-stage2-terminal-contract.md](commit-stage2-terminal-contract.md).
@@ -20,10 +24,10 @@ root `/Users/yifanxu/Ephemeral-AI-Lab/layerfs-commit-stage2-terminal-evidence/20
 | 1 | Execution identity proved for A/B/C; drift attributed or corrected | **PASS** — contamination proved; the previous calibration is corrected as invalid identity evidence |
 | 2 | Q1 original optimization benefit, fresh A/C paired | **PASS** — K100 namespace ratios `0.4265 / 0.4649 / 0.4428`, all ≤ 0.75; wall and CPU lower in every pair |
 | 3 | Q2 hardening preservation, fresh B/C per-pair non-inferiority | **PASS on K100**, breaches on `k10`/`retained`/`nochange` reported in §5.2 |
-| 4 | Absolute C targets | K100 **PASS every sample**; K10 medians **FAIL** (§5.3) |
+| 4 | Absolute C targets | K100 **PASS every sample**; K10 medians **FAIL — accepted** (§5.3, §12) |
 | 5 | Correctness, resources, verification, affected callers | **PASS** (§6, §7) |
 | 6 | Custody, append-only evidence, exact final seals | **PASS** (§8) |
-| — | Cold Init ≤ 2.7 s | **OPEN**, untouched |
+| — | Cold Init ≤ 2.7 s | **OPEN**, untouched, outside this claim |
 
 ## 2. Execution-identity audit
 
@@ -327,23 +331,27 @@ payload root). No text variant, reduced count or byte-only copy was used.
 
 ## 9. Remaining blockers and queued work
 
-1. **K10 absolute medians (the one failed gate).** C misses ≤ 50 ms by 4.90 ms and
-   ≤ 31 ms by 2.75 ms on the frozen sample set. Resolution requires a material
-   repair or a measurement protocol with a declared, pre-registered higher n —
-   not a rerun, not a dropped outlier and not a widened target. Candidate root
-   causes to test next, in order: (a) K10's Commit is dominated by fixed
-   per-Commit costs that the batch route does not touch, so the target is close to
-   the platform floor; (b) the K10 targets were frozen at 3.9 % and 0.06 % margin
-   and need a margin policy rather than a point target. Neither has been
-   demonstrated, and this report does not claim either.
-2. **`k10` Q2 rep 2 breach (+9.6 ms wall, +7.7 ms CPU).** Same cell as blocker 1;
-   investigated together, not separately.
-3. **Priority 1's sparse pooling exhaustion path remains unexercised.** The
-   bounded corpus was not built. The per-chain bound is proved analytically and by
-   focused unit tests only; no end-to-end proof is claimed.
+1. **K10 absolute medians — accepted residual failure, not resolved.** See §12.
+   Carried forward for a future campaign, not for this closure: resolution needs a
+   material repair or a pre-registered higher n, not a rerun, a dropped outlier or
+   a widened target. Candidate root causes to test next, in order: (a) K10's
+   Commit is dominated by fixed per-Commit costs the batch route does not touch,
+   so the target is close to the platform floor; (b) the K10 targets were frozen
+   at 3.9 % and 0.06 % margin and need a margin policy rather than a point target.
+   Neither has been demonstrated, and this report claims neither.
+2. **`k10` Q2 rep 2 breach (+9.6 ms wall, +7.7 ms CPU).** Same cell as item 1.
+3. **Priority 1's sparse pooling exhaustion path remains unexercised and is now
+   carried as accepted residual risk** (§12). The bounded corpus was not built.
+   The *per-chain* allowance is proved: `pool_work_allowance_is_per_chain_not_per_wave`
+   exercises the real `PoolRead` state machine, and the single-chain ceiling is
+   proved as 17 × 100 = 1 700 lookups < 2 048 from `METADATA_EDGES`,
+   `physical_length` and `VALUES_PER_GROUP`. What is **not** proved end to end is
+   the exhaustion path itself.
 4. **Priority 3's batch-specific retained pressure and the real workspace
-   fallback** were not driven to exhaustion. The chunk-narrowing invariant is
-   tested differentially; no end-to-end fallback proof is claimed.
+   fallback were not driven to exhaustion and are now carried as accepted residual
+   risk** (§12). The chunk-narrowing invariant is proved differentially across 13
+   budgets × 3 table sizes, and the measured over-charge is disproved; the
+   *exhaustion* path and the Workspace fallback re-entry are not end-to-end proved.
 5. **Allocation accounting** in the hardening report used assumed element sizes
    for ids and locator pairs. It has not been re-derived from actual
    `size_of`/capacity values, and no operation-peak claim is made from post-call
@@ -372,3 +380,42 @@ is superseded by §2.1 and §3 here, which identify the actual cause.
 ## 11. Related issues
 
 #115, #108, #109, #110, #106, #102, #104, #100, #107.
+
+## 12. Closure record
+
+**Stage 2 closes on an accepted minor failure, by explicit owner decision.** The
+closing claim and its limits, in one place:
+
+**Claimed.** Inside the original pseudorandom 100 000-file namespace, the promoted
+Stage 2 read-batching benefit is confirmed and reproducible at K100 — public
+Commit **330.23 → 186.05 ms** and namespace **251.34 → 111.54 ms** (paired medians
+against the pre-Stage 2 route), namespace ratios `0.4265 / 0.4649 / 0.4428` with
+wall and CPU lower in every declared pair — and both K100 absolute targets are met
+with **every** sample inside (≤ 200 ms and ≤ 120 ms). The correctness hardening is
+preserved against the promoted product: K100 passes the per-pair non-inferiority
+rule on public wall and CPU with no breach. All 60 campaign cells pass every
+correctness, resource and custody gate; five independent proof-only verifications
+and six affected-family performance cases pass through the real entrypoints.
+
+**Accepted failure, carried visibly and not relabelled.** The K10 absolute medians
+miss their frozen targets: public Commit **54.90 ms vs ≤ 50 ms** (+4.90 ms) and
+namespace **33.75 ms vs ≤ 31 ms** (+2.75 ms). No target was widened, no valid slow
+row was discarded, and no rerun was used to move a median. The predeclared
+balanced diagnostic bounds the miss at 4–5 ms of wall driven by sample
+distribution (C namespace median 31.52 ms under balanced order) rather than by a
+step change. The `k10` rep 2 preservation breach (+9.6 ms wall / +7.7 ms CPU) is
+the same cell and is accepted with it.
+
+**Accepted residual risk, stated precisely so it is not read as proven.** The
+fixes themselves are covered: Priority 2 by three regressions that fail on the
+promoted build, Priority 1 by the per-chain allowance test plus the 1 700-lookup
+single-chain ceiling, Priority 3 by the differential scratch sweep. What remains
+**unexercised** is the worst-case *severity* of the two hazards the fixes defend —
+Priority 1's sparse pooled DELTA-chain exhaustion and Priority 3's batch-specific
+retained pressure with the real Workspace fallback. No end-to-end proof of either
+exhaustion path is claimed, and neither is treated as a blocker for closure.
+
+**Explicitly outside this closure.** Cold Init ≤ 2.7 s stays open and paused.
+Quadratic spill-merge removal, edit-stage attribution, triangular publication and
+reopened-history scaling stay queued and unstarted; Stage 2 does not close the
+overall no-quadratic objective. No release, tag or deployment was produced.

@@ -4,6 +4,11 @@
 > before the measurements it registers. Read-only registration; no measurement
 > claim is made here. Outcome: see
 > [commit-stage2-terminal-results.md](commit-stage2-terminal-results.md).
+>
+> **Outcome in one line:** Stage 2 is **closed** on pass at K100 with the K10
+> absolute medians accepted as a documented minor failure (§12 of the results);
+> the previous three-point calibration was withdrawn after the identity audit
+> proved it measured the wrong binaries.
 
 ## Roots
 
