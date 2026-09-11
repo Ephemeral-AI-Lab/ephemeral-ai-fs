@@ -26,6 +26,7 @@ BENCH = HERE.parent
 REPO = BENCH.parent.parent
 sys.path.insert(0, str(HERE))
 import runtime
+import cold
 
 HOST_FAMILIES = ("payload_create_read", "dedup_workspace_reuse", "dedup_cross_file", "dedup_cdc_locality",
                  "edit_length_preserving", "edit_length_changing", "edit_canonical_chunk_count",
@@ -62,7 +63,7 @@ def digest(value):
 
 
 def harness_identity():
-    paths = [HERE / "runner.py", HERE / "runtime.py", BENCH / "verify-selected.py"]
+    paths = [HERE / "runner.py", HERE / "runtime.py", HERE / "cold.py", BENCH / "verify-selected.py"]
     return digest({str(path.relative_to(BENCH)): hashlib.sha256(path.read_bytes()).hexdigest() for path in paths})
 
 
@@ -556,10 +557,7 @@ def execute_selected(args, *, deadline, verification=False):
                 "host_data_sharing_mount": False,
             }
         result["preparation_wall_ns"] = time.monotonic_ns() - setup_started
-        before = cgroup_snapshot(sample, work_end)
-        run_started = time.monotonic_ns()
         result["phase"] = "product-command"
-        command_end = min(work_end, time.monotonic() + (45 if verification else args.timeout))
         command_env = {"LAYERFS_V013_IMAGE": selection["image"],
                        "LAYERFS_BENCH_SOURCE_ARM": selection["source_arm"]}
         if not verification:
@@ -580,6 +578,16 @@ def execute_selected(args, *, deadline, verification=False):
             TMPDIR=str(host_sample_path))
         operation = ["infra-run", selection["family"], selection["case"], str(selection["seed"]),
                      "verify" if verification else "performance", str(host_sample_path), sample.id]
+        if not verification and cold.applies(selection):
+            result["cold_diagnostic_environment"] = any(os.environ.get(key) for key in (
+                "LAYERFS_INITIALIZATION_DIAGNOSTIC_NONCE", "LAYERFS_BENCH_INITIALIZATION_SEED_HEX"))
+            result["cold_acquisition"] = cold.acquire(prepared, host_sample_path,
+                min(work_end - args.timeout, time.monotonic() + args.setup_timeout))
+            result["preparation_wall_ns"] += result["cold_acquisition"]["wall_ns"]
+        before = cgroup_snapshot(sample, work_end)
+        run_started = time.monotonic_ns()
+        result["product_command_started_ns"] = run_started
+        command_end = min(work_end, time.monotonic() + (45 if verification else args.timeout))
         command = _command([args.host_binary, *operation], command_end, env=command_env, output_limit=16 * 1024**2)
         result["command_wall_ns"] = time.monotonic_ns() - run_started
         result["records"] = records(command.stdout)
@@ -674,7 +682,29 @@ def execute_selected(args, *, deadline, verification=False):
             result["cleanup"] = {"status": "FAIL", "error": str(error)[-2048:]}
             result["status"] = "INCOMPLETE"
         result["wall_ns"] = time.monotonic_ns() - started
-    return result
+    return cold.enforce(result) if not verification and not args.prepare_only else result
+
+
+def performance_summary(samples, count, collection_mode):
+    # Reclassify raw evidence even when a caller supplies saved PASS summaries.
+    samples = [cold.enforce(row) for row in samples]
+    gated = any(cold.applies(row.get("identities", {})) for row in samples)
+    valid = [row for row in samples if row["status"] == "PASS"]
+    completed = [row for row in samples if row["status"] in ("PASS", "TARGET_MISS")]
+    times = [value for row in completed if (value := _timer(row)[1]) is not None]
+    if collection_mode and not gated:
+        status = "PASS" if len(valid) == count else "INCOMPLETE"
+    else:
+        status = "PASS" if len(valid) == count else ("TARGET_MISS" if len(completed) == count else "INCOMPLETE")
+    return {"kind": "summary", "requested": count, "attempted": len(samples), "valid": len(valid),
+            "completed": len(completed), "product_target_ns": cold.TARGET_NS if gated else PRODUCT_TARGET_NS,
+            "collection_mode": bool(collection_mode),
+            "historical_product_target_scope": "not applicable; fixed cold contract" if gated else HISTORICAL_PRODUCT_TARGET_SCOPE,
+            "status": status, "verification_status": "NOT_RUN", "admission_eligible": False,
+            "timer": _timer(completed[0])[0] if completed else None,
+            "median_ns": statistics.median(times) if times else None,
+            "min_ns": min(times) if times else None, "max_ns": max(times) if times else None,
+            "diagnostic_samples": sum(row.get("status") == "INELIGIBLE" for row in samples)}
 
 
 def _timer(row):
@@ -905,7 +935,9 @@ def main(argv=None):
                 stream.flush()
             emit({"kind": "header", "schema": "layerfs-perf-v1", "identities": selection,
                   "requested_samples": count, "full_workload": True, "cpus": args.cpus,
-                  "product_target_ns": PRODUCT_TARGET_NS, "command_allowance_seconds": args.timeout,
+                  "product_target_ns": cold.TARGET_NS if cold.applies(selection) else PRODUCT_TARGET_NS,
+                  "cache_contract": cold.CONTRACT if cold.applies(selection) else None,
+                  "command_allowance_seconds": args.timeout,
                   "product_execution_allowance_seconds": args.product_timeout,
                   "collection_mode": bool(args.collection_mode),
                   "historical_product_target_scope": HISTORICAL_PRODUCT_TARGET_SCOPE,
@@ -917,27 +949,13 @@ def main(argv=None):
                 samples.append(row)
                 key, value = _timer(row)
                 print(f"{args.family} {args.case} sample={index} {row['status']} {key}={value} historical_target={row.get('historical_product_target_status')} slow={row.get('slow', False)}", flush=True)
-                if row["status"] not in ("PASS", "TARGET_MISS"):
+                if row["status"] not in ("PASS", "TARGET_MISS", "INELIGIBLE"):
                     (output / "failure.log").write_text(str(row.get("error", row.get("cleanup")))[:1024**2])
                     break
                 if row["status"] == "TARGET_MISS" and not args.collection_mode:
                     (output / "failure.log").write_text(str(row.get("error", row.get("cleanup")))[:1024**2])
                     break
-            valid = [row for row in samples if row["status"] == "PASS"]
-            completed = [row for row in samples if row["status"] in ("PASS", "TARGET_MISS")]
-            times = [value for row in completed if (value := _timer(row)[1]) is not None]
-            if args.collection_mode:
-                summary_status = "PASS" if len(valid) == count else "INCOMPLETE"
-            else:
-                summary_status = "PASS" if len(valid) == count else ("TARGET_MISS" if len(completed) == count else "INCOMPLETE")
-            summary = {"kind": "summary", "requested": count, "attempted": len(samples), "valid": len(valid),
-                       "completed": len(completed), "product_target_ns": PRODUCT_TARGET_NS,
-                       "collection_mode": bool(args.collection_mode),
-                       "historical_product_target_scope": HISTORICAL_PRODUCT_TARGET_SCOPE,
-                       "status": summary_status, "verification_status": "NOT_RUN",
-                       "timer": _timer(completed[0])[0] if completed else None,
-                       "median_ns": statistics.median(times) if times else None,
-                       "min_ns": min(times) if times else None, "max_ns": max(times) if times else None}
+            summary = performance_summary(samples, count, args.collection_mode)
             emit(summary)
         return 0 if summary["status"] == "PASS" else 1
 

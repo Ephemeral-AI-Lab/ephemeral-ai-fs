@@ -198,14 +198,35 @@ def main():
                 if proc.returncode:result['status']='FAIL'
                 retain('candidate',mode,cid,result);previous=output
     latest={ (v['arm'],v['phase'],v['case']):v for v in values if v.get('family')==args.family }
+    cold_samples = {}
+    # Resume cannot trust an older ledger's PASS or cached improvement summary.
+    for key, value in latest.items():
+        if key[1:] != ('performance', 'namespace-100000') or args.family != 'init_namespace':
+            continue
+        raw = [json.loads(line) for line in Path(value['receipt']).read_text().splitlines()]
+        samples = [item for item in raw if item.get('kind') == 'sample']
+        if len(samples) != 1:
+            raise ValueError('cold qualification requires one original sample receipt')
+        sample = samples[0]
+        assessment = runner.cold.assess(sample)
+        latest[key] = {**value, 'status': assessment['status'], 'cold_qualification': assessment,
+                       'elapsed_ns': assessment['eligible_elapsed_ns']}
+        cold_samples[key[0]] = sample
+    cold_pair = None
+    if 'control' in cold_samples and 'candidate' in cold_samples:
+        index = next(i for i, row in selected if row['scenario_id'] == 'namespace-100000')
+        declared_order = ['baseline', 'candidate'] if index % 2 == 0 else ['candidate', 'baseline']
+        cold_pair = runner.cold.compare(cold_samples['control'], cold_samples['candidate'], order=declared_order)
     expected_perf=11 if fixture else sum(not r['proof_only'] for _,r in selected)
     expected_proof=11 if fixture else sum(r['scenario_id']!=declaration.get('long_test_exclusion') for _,r in selected)
     failed=[v for v in latest.values() if v.get('status') not in ('PASS','NOT_RUN_OPTIONAL')]
     slow=[v for v in latest.values() if v.get('historical_product_target_status')=='TARGET_MISS']
     counts={phase:sum(v['phase']==phase and v.get('status')!='NOT_RUN_OPTIONAL' for v in latest.values()) for phase in ('performance','verification')}
     outcome='FAIL' if failed or slow else 'PASS'
+    if cold_pair and cold_pair['status'] != 'ELIGIBLE_COLD_PAIR':outcome='FAIL'
     if counts!={'performance':expected_perf*len(arms),'verification':expected_proof*len(arms)}:outcome='INCOMPLETE'
     summary={'family':args.family,'performance_completed':counts['performance'],'performance_expected':expected_perf*len(arms),
+        'cold_pair':cold_pair,
         'verification_completed':counts['verification'],'verification_expected':expected_proof*len(arms),'failures':len(failed),
         'slow_cases':len(slow),'wall_seconds':time.monotonic()-started,'outcome':outcome,'evidence':str(args.output)}
     collect._write(args.output/(args.family+'-summary-'+uuid.uuid4().hex+'.json'),summary)

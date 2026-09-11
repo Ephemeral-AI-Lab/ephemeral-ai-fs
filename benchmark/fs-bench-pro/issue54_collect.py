@@ -175,16 +175,21 @@ def load_performance(path, family, row, source, image):
     if row.get("route") == "sdk" and len(ids) != 1:
         raise ValueError("SDK sample must supply one performance row identity")
     identity = {**identity, "performance_rows": ",".join(ids) or "-"}
+    cold_result = runner.cold.assess(sample) if runner.cold.applies(identity) else None
     return {"family": family, "case": row["scenario_id"], "proof_only": False,
             "fixture_profile": row.get("fixture_profile"), "tier": row.get("tier"),
             "seed": SEED, "sample_count": 1, "route": row.get("route"),
-            "status": records[-1].get("status"), "execution_status": sample.get("status"),
+            "status": cold_result["status"] if cold_result else records[-1].get("status"),
+            "execution_status": sample.get("completion_status", sample.get("status")),
+            "cold_qualification": cold_result,
+            "diagnostic_elapsed_ns": elapsed if cold_result and not cold_result["qualification_eligible"] else None,
             "completion_status": sample.get("completion_status"),
             "historical_product_target_status": sample.get("historical_product_target_status"),
             "cleanup": sample.get("cleanup"), "resources": sample.get("resources"),
             "preparation_wall_ns": sample.get("preparation_wall_ns"),
             "command_wall_ns": sample.get("command_wall_ns"), "error": sample.get("error"),
-            "timer": timer, "elapsed_ns": elapsed, "identities": identity,
+            "timer": timer, "elapsed_ns": cold_result["eligible_elapsed_ns"] if cold_result else elapsed,
+            "identities": identity,
             "receipt": str(path), "receipt_sha256": _sha256(path)}
 
 

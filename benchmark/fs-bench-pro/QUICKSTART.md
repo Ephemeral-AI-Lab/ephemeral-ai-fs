@@ -91,6 +91,28 @@ cold gate. No product compression or size-based storage dispatch policy changes.
 
 See [the content-toggle contract](../../docs/roadmap/0.1/0.1.5/issue111/content-toggle-contract.md).
 
+### Cold-only namespace-100000 qualification
+
+`init_namespace / namespace-100000` has a fixed **2.7-second cold-source**
+qualification gate, including in `--collection-mode`. There is no warm-policy
+option. Prepared fixture reuse still avoids regeneration; before each timed
+sample the runner validates the immutable input, invalidates source data pages
+on macOS and checks whole-input residency. Acquisition time is separate from
+Init. This concerns OS source-data pages, not device caches or cold metadata.
+
+If acquisition is unsupported, incomplete, stale or leaves resident pages, the
+operation's raw timing remains in `perf.jsonl` with `status=INELIGIBLE` and a
+`cold_acquisition` explanation. It is excluded from qualification medians and
+pass counts, and the command returns nonzero. A cache label or high read count
+alone cannot qualify. Declared repetitions continue without timing-based retries.
+Nonce diagnostics and old receipts without the new evidence are ineligible.
+
+The campaign loader rechecks raw evidence instead of trusting saved PASS
+summaries. Its paired cold report refuses mismatched fixture, seed, harness,
+workload, environment, acquisition method or arm order. Independent verification
+remains separate; a performance gate pass is not release admission. See the
+[cold qualification contract](../../docs/roadmap/0.1/0.1.5/issue111/cold-qualification-contract.md).
+
 ## Verify separately
 
 Use the family's `verify.sh` with the exact case, seed/repetition, source, input,
