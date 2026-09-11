@@ -270,3 +270,6 @@ member that shares the changed call graph (`layerfs-content` tree engine,
 phase, `layerfs-fuse` callers) plus the reopened/retained and smaller-tier
 sibling checks, before any release evidence is claimed. The scaling ledger's
 deeper-tree chunk charge is the first follow-up proof.
+
+Issue update:
+https://github.com/Ephemeral-AI-Lab/layerfs/issues/111#issuecomment-5638943024
