@@ -999,6 +999,38 @@ impl ObjectRead for CoreReader<'_> {
         }
         callback(&object.bytes)
     }
+
+    /// The existing bounded packed batch path: one demand wave over the whole
+    /// batch, grouped and sorted by physical location, so each physical group is
+    /// selected and decompressed once for all of its demands. Every object is
+    /// authenticated and canonical-format checked exactly as the point route
+    /// checks it, and the original demand order is preserved.
+    fn get_authenticated_canonical_batch<F>(
+        &self,
+        ids: &[ObjectId],
+        mut callback: F,
+    ) -> CoreResult<()>
+    where
+        F: FnMut(ObjectId, &[u8]) -> CoreResult<()>,
+    {
+        if ids.len() > OBJECT_PAGE_COUNT {
+            return Err(CoreError::InvalidRecord("object read page"));
+        }
+        let objects = self
+            .0
+            .read_authenticated_objects(ids)
+            .map_err(core_read_error)?;
+        if objects.len() != ids.len() {
+            return Err(CoreError::MissingObject);
+        }
+        for (expected, object) in ids.iter().zip(objects) {
+            if object.id != *expected {
+                return Err(CoreError::IdentityMismatch);
+            }
+            callback(object.id, &object.bytes)?;
+        }
+        Ok(())
+    }
 }
 
 fn core_read_error(error: StoreError) -> CoreError {
@@ -3468,6 +3500,46 @@ impl ObjectStore for ObjectBuffer<'_> {
         }
         CoreReader(self.source.ok_or(CoreError::MissingObject)?)
             .with_authenticated_canonical(id, callback)
+    }
+
+    /// Bounded authenticated canonical batch read. Objects this buffer already
+    /// owns are served exactly as the point route serves them; every other demand
+    /// goes to the source through one bounded packed batch read, which resolves
+    /// all locations once and selects and decompresses each physical group once
+    /// for all of its demands. Identity and canonical-format checks are the same
+    /// checks the point route performs, on every demanded object.
+    fn get_authenticated_canonical_batch<F>(
+        &self,
+        ids: &[ObjectId],
+        mut callback: F,
+    ) -> CoreResult<()>
+    where
+        F: FnMut(ObjectId, &[u8]) -> CoreResult<()>,
+    {
+        let mut missing = Vec::new();
+        for id in ids {
+            match &self.objects.storage {
+                DeferredObjects::Memory { rows, .. } => {
+                    if let Some(object) = rows.get(id) {
+                        callback(*id, &object.bytes)?;
+                        continue;
+                    }
+                }
+                DeferredObjects::Spill(_) => {
+                    if let Some(bytes) = self.objects.get(*id).map_err(core_read_error)? {
+                        layerfs_content::authenticate_identity(&bytes, *id)?;
+                        callback(*id, &bytes)?;
+                        continue;
+                    }
+                }
+            }
+            missing.push(*id);
+        }
+        if missing.is_empty() {
+            return Ok(());
+        }
+        CoreReader(self.source.ok_or(CoreError::MissingObject)?)
+            .get_authenticated_canonical_batch(&missing, callback)
     }
 
     fn put_file_payload(

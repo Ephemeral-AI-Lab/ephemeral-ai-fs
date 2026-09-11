@@ -42,6 +42,23 @@ pub trait ObjectRead {
             )
         })
     }
+
+    /// Bounded authenticated canonical batch read: the canonical bytes of every
+    /// demanded object, in demand order, each identity-checked exactly as the
+    /// point route checks it. The default keeps the existing per-object route.
+    fn get_authenticated_canonical_batch<F>(
+        &self,
+        ids: &[ObjectId],
+        mut callback: F,
+    ) -> CoreResult<()>
+    where
+        F: FnMut(ObjectId, &[u8]) -> CoreResult<()>,
+    {
+        for id in ids {
+            self.with_authenticated_canonical(*id, |canonical| callback(*id, canonical))?;
+        }
+        Ok(())
+    }
 }
 
 pub trait ObjectStore {
@@ -107,6 +124,26 @@ pub trait ObjectStore {
         }
         callback(&bytes)
     }
+
+    /// Bounded authenticated canonical batch read. Yields the canonical bytes of
+    /// every demanded object, in demand order, with the same identity check the
+    /// point route performs. The default preserves the existing per-object route;
+    /// adapters with a packed batch path override it. Callers must keep every
+    /// batch within the existing page bound.
+    #[doc(hidden)]
+    fn get_authenticated_canonical_batch<F>(
+        &self,
+        ids: &[ObjectId],
+        mut callback: F,
+    ) -> CoreResult<()>
+    where
+        F: FnMut(ObjectId, &[u8]) -> CoreResult<()>,
+    {
+        for id in ids {
+            self.with_authenticated_canonical(*id, |canonical| callback(*id, canonical))?;
+        }
+        Ok(())
+    }
 }
 
 impl<T: ObjectStore> ObjectRead for T {
@@ -119,5 +156,12 @@ impl<T: ObjectStore> ObjectRead for T {
         F: FnOnce(&[u8]) -> CoreResult<U>,
     {
         ObjectStore::with_authenticated_canonical(self, id, callback)
+    }
+
+    fn get_authenticated_canonical_batch<F>(&self, ids: &[ObjectId], callback: F) -> CoreResult<()>
+    where
+        F: FnMut(ObjectId, &[u8]) -> CoreResult<()>,
+    {
+        ObjectStore::get_authenticated_canonical_batch(self, ids, callback)
     }
 }

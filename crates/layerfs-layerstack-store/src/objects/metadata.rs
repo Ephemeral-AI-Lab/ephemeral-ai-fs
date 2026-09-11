@@ -321,7 +321,6 @@ pub(super) fn decode_values(body: &[u8], group: Group) -> Result<Vec<[u8; 73]>> 
 pub(super) struct PoolRead {
     groups: BTreeMap<u64, Vec<[u8; 73]>>,
     retained: usize,
-    logical_work: usize,
     decoded_work: usize,
 }
 
@@ -340,9 +339,12 @@ impl PoolRead {
         }
         let mut canonical = Vec::with_capacity(canonical_length);
         canonical.extend_from_slice(&physical[..44]);
+        // The logical-work guard stays per call: sharing the decoded value cache
+        // across a bounded demand wave must not relax the per-object ceiling.
+        let mut logical_work = 0usize;
         for row in physical[44..].chunks_exact(12) {
-            self.logical_work += 94;
-            if self.logical_work > 192 * 1024 {
+            logical_work += 94;
+            if logical_work > 192 * 1024 {
                 return Err(StoreError::Integrity("metadata pool logical work"));
             }
             let ordinal = u32::from_be_bytes(row[8..12].try_into().unwrap()) as u64;

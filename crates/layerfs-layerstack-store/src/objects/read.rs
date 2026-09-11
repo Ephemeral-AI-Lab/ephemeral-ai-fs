@@ -240,7 +240,8 @@ impl StoreDb {
         let decoded = self.decode_metadata_group(entry, encoded)?;
         let record = metadata_record(&decoded, location.record)?;
         drop(decoded);
-        self.metadata_chain(id, location, pooled, record, Some(budget))
+        let mut pool = super::metadata::PoolRead::default();
+        self.metadata_chain(id, location, pooled, record, Some(budget), &mut pool)
     }
 
     // Every intermediate canonical object is authenticated, including bytes that
@@ -253,9 +254,11 @@ impl StoreDb {
         pooled: bool,
         mut record: Vec<u8>,
         mut budget: Option<&mut HintReadBudget>,
+        // One bounded pool reader per demand wave. A point read creates its own,
+        // which is exactly the previous per-object behaviour.
+        pool: &mut super::metadata::PoolRead,
     ) -> Result<Option<MetadataPredecessor>> {
         let target_id = id;
-        let mut pool = super::metadata::PoolRead::default();
         let mut nodes = Vec::with_capacity(METADATA_EDGES);
         let mut canonical_closure = 0;
         let mut encoded_closure = 0;
@@ -1764,12 +1767,24 @@ impl StoreDb {
                 }
                 Extraction::Metadata(pooled, entry, encoded) => {
                     let decoded = self.decode_metadata_group(entry, encoded)?;
+                    // One bounded pool reader serves every demand of this record
+                    // group. Its value cache, retention bound, eviction and
+                    // decoded-work ceiling are unchanged; only the scope of the
+                    // reuse changes, from one object to this bounded wave.
+                    let mut wave_pool = super::metadata::PoolRead::default();
                     for (id, location) in ordered {
                         let record = metadata_record(&decoded, location.record)?;
                         emit(
-                            self.metadata_chain(id, location, pooled, record, None)?
-                                .ok_or(StoreError::Integrity("required metadata chain"))?
-                                .canonical,
+                            self.metadata_chain(
+                                id,
+                                location,
+                                pooled,
+                                record,
+                                None,
+                                &mut wave_pool,
+                            )?
+                            .ok_or(StoreError::Integrity("required metadata chain"))?
+                            .canonical,
                         )?;
                     }
                     continue;

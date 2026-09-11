@@ -11,6 +11,14 @@ use std::{cell::Cell, marker::PhantomData, rc::Rc};
 /// Every internal page/decode allocation is charged before allocation.
 pub const SORTED_TREE_UPDATE_SCRATCH_BYTES: usize = 4 * 1024 * 1024;
 const PAGE_ITEMS: usize = 234; // 8-KiB directory page, minimum 35-byte entry, plus overflow.
+/// Every tree page the engine reads is bounded by the same 8-KiB ceiling the
+/// point route enforces, so a bounded batch can be charged before it allocates.
+const MAX_TREE_PAGE_BYTES: usize = 8192;
+/// Sibling children read in one bounded authenticated batch. Small enough that
+/// a whole chunk's worst-case retained bytes stay far inside the existing 4-MiB
+/// tree ledger, large enough that consecutive siblings share their physical
+/// groups and their pooled metadata values.
+const TREE_BATCH_CHILDREN: usize = 32;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TreeBatchCounters {
@@ -186,7 +194,7 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
         self.counters.nodes_read += 1;
         let budget = self.budget.clone();
         let (wire, lease) = self.store.with_authenticated_canonical(id, |bytes| {
-            if bytes.len() > 8192 {
+            if bytes.len() > MAX_TREE_PAGE_BYTES {
                 return Err(CoreError::ObjectLimitExceeded);
             }
             let lease = budget.reserve(
@@ -194,16 +202,74 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
             )?;
             Ok((F::decode(bytes)?, lease))
         })?;
+        Self::check_page(root, &wire)?;
+        Ok(ReadPage {
+            wire,
+            _lease: lease,
+        })
+    }
+    /// Decode one already authenticated canonical page of a bounded batch. The
+    /// caller has already paid for and holds the batch's retained bytes, so this
+    /// charges exactly the same decode lease the point route charges.
+    fn decode_batched(
+        &mut self,
+        root: bool,
+        canonical: &[u8],
+    ) -> CoreResult<ReadPage<F::Key, F::Value>> {
+        self.counters.nodes_read += 1;
+        if canonical.len() > MAX_TREE_PAGE_BYTES {
+            return Err(CoreError::ObjectLimitExceeded);
+        }
+        let lease = self.budget.reserve(
+            F::decode_scratch(canonical.len()) + std::mem::size_of::<Wire<F::Key, F::Value>>(),
+        )?;
+        let wire = F::decode(canonical)?;
+        Self::check_page(root, &wire)?;
+        Ok(ReadPage {
+            wire,
+            _lease: lease,
+        })
+    }
+    /// One bounded authenticated batch for a chunk of sibling children.
+    ///
+    /// Every demanded page is still read, identity-checked and decoded exactly as
+    /// the point route does; only the physical demand wave changes. The chunk's
+    /// worst-case retained canonical bytes are charged before the batch
+    /// allocates, and the unused part is released as soon as the batch returns,
+    /// so the recorded peak is the pre-charge and the resident charge is the
+    /// bytes actually retained until the chunk is consumed.
+    fn batch_children(
+        &mut self,
+        entries: &[(F::Key, ObjectId, F::Value)],
+    ) -> CoreResult<(Lease, Vec<(ObjectId, Vec<u8>)>)> {
+        let mut ids = Vec::with_capacity(entries.len());
+        for (_, id, _) in entries {
+            ids.push(*id);
+        }
+        let reserved = entries.len() * MAX_TREE_PAGE_BYTES;
+        let mut lease = self.budget.reserve(reserved)?;
+        let mut fetched = Vec::with_capacity(entries.len());
+        self.store
+            .get_authenticated_canonical_batch(&ids, |id, canonical| {
+                if canonical.len() > MAX_TREE_PAGE_BYTES {
+                    return Err(CoreError::ObjectLimitExceeded);
+                }
+                fetched.push((id, canonical.to_vec()));
+                Ok(())
+            })?;
+        let actual = fetched.iter().map(|(_, bytes)| bytes.len()).sum::<usize>();
+        lease.shrink(reserved - actual);
+        Ok((lease, fetched))
+    }
+    /// The canonical-form checks every read page must pass, on both routes.
+    fn check_page(root: bool, wire: &Wire<F::Key, F::Value>) -> CoreResult<()> {
         if (!root && !F::filled(wire.size, wire.entries.len(), wire.level))
             || (wire.level > 0 && wire.entries.len() < 2)
             || (!F::empty_allowed() && wire.entries.is_empty())
         {
             return Err(CoreError::NonCanonicalPagePartition);
         }
-        Ok(ReadPage {
-            wire,
-            _lease: lease,
-        })
+        Ok(())
     }
     fn node(&self, mut page: Page<F::Key, F::Value>) -> CoreResult<Node<F::Key, F::Value>> {
         page._lease
@@ -572,39 +638,57 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
             }
         } else {
             let level = page.level;
-            let count = read.wire.entries.len();
+            let entries = read.wire.entries;
+            let count = entries.len();
             let mut old_count = 0u64;
             let mut old_bytes = 0u64;
             let mut pending = None;
-            for (index, (key, child_id, _)) in read.wire.entries.into_iter().enumerate() {
-                let child = self.read(child_id, false)?;
-                self.check_child(level, &key, &child.wire)?;
-                old_count = old_count
-                    .checked_add(child.wire.count)
-                    .ok_or(CoreError::LengthOverflow)?;
-                old_bytes = old_bytes
-                    .checked_add(child.wire.bytes)
-                    .ok_or(CoreError::LengthOverflow)?;
-                let child_bound = if index + 1 == count {
-                    bound
-                } else {
-                    Some(&key)
-                };
-                self.edit(
-                    Some(child_id),
-                    child,
-                    child_bound,
-                    deltas,
-                    &mut |engine, node| {
-                        engine.sibling(&mut pending, node, &mut |engine, node| {
-                            let entry = engine.entry(node)?;
-                            if let Some(node) = engine.push(&mut page, entry)? {
-                                output(engine, node)?;
-                            }
-                            Ok(())
-                        })
-                    },
-                )?;
+            let mut start = 0;
+            while start < count {
+                let end = (start + TREE_BATCH_CHILDREN).min(count);
+                // One bounded authenticated batch serves this chunk: the store
+                // resolves every location in one demand wave and selects and
+                // decompresses each physical group once for all of its demands.
+                // Every page is still read, authenticated and decoded, and every
+                // check below still runs per child in ascending key order.
+                let (_lease, mut fetched) = self.batch_children(&entries[start..end])?;
+                for (index, (key, child_id, _)) in entries[start..end].iter().enumerate() {
+                    let position = fetched
+                        .iter()
+                        .position(|(id, _)| id == child_id)
+                        .ok_or(CoreError::MissingObject)?;
+                    let (_, canonical) = fetched.remove(position);
+                    let child = self.decode_batched(false, &canonical)?;
+                    drop(canonical);
+                    self.check_child(level, key, &child.wire)?;
+                    old_count = old_count
+                        .checked_add(child.wire.count)
+                        .ok_or(CoreError::LengthOverflow)?;
+                    old_bytes = old_bytes
+                        .checked_add(child.wire.bytes)
+                        .ok_or(CoreError::LengthOverflow)?;
+                    let child_bound = if start + index + 1 == count {
+                        bound
+                    } else {
+                        Some(key)
+                    };
+                    self.edit(
+                        Some(*child_id),
+                        child,
+                        child_bound,
+                        deltas,
+                        &mut |engine, node| {
+                            engine.sibling(&mut pending, node, &mut |engine, node| {
+                                let entry = engine.entry(node)?;
+                                if let Some(node) = engine.push(&mut page, entry)? {
+                                    output(engine, node)?;
+                                }
+                                Ok(())
+                            })
+                        },
+                    )?;
+                }
+                start = end;
             }
             if old_count != read.wire.count || old_bytes != read.wire.bytes {
                 return Err(CoreError::InvalidRecord("batched tree subtree summary"));
@@ -2093,5 +2177,521 @@ mod tests {
         )
         .unwrap();
         assert_eq!(cleared, empty);
+    }
+
+    /// Stage 2 (#111): a counting store that keeps the point route's semantics
+    /// but records every bounded batch the engine asks for.
+    #[derive(Default)]
+    struct BatchProbe {
+        batches: std::cell::RefCell<Vec<Vec<ObjectId>>>,
+    }
+    impl BatchProbe {
+        fn calls(&self) -> usize {
+            self.batches.borrow().len()
+        }
+        fn requested(&self) -> usize {
+            self.batches.borrow().iter().map(Vec::len).sum()
+        }
+        fn widest(&self) -> usize {
+            self.batches
+                .borrow()
+                .iter()
+                .map(Vec::len)
+                .max()
+                .unwrap_or(0)
+        }
+        fn distinct(&self) -> std::collections::BTreeSet<ObjectId> {
+            self.batches.borrow().iter().flatten().copied().collect()
+        }
+    }
+    struct CountingStore {
+        inner: MemoryStore,
+        probe: std::rc::Rc<BatchProbe>,
+    }
+    impl ObjectStore for CountingStore {
+        fn get(&self, id: ObjectId) -> CoreResult<Vec<u8>> {
+            self.inner.get(id)
+        }
+        fn put(&mut self, bytes: &[u8]) -> CoreResult<ObjectId> {
+            self.inner.put(bytes)
+        }
+        fn get_authenticated_canonical_batch<F>(
+            &self,
+            ids: &[ObjectId],
+            mut callback: F,
+        ) -> CoreResult<()>
+        where
+            F: FnMut(ObjectId, &[u8]) -> CoreResult<()>,
+        {
+            assert!(
+                ids.len() <= TREE_BATCH_CHILDREN,
+                "batch wider than the declared chunk"
+            );
+            self.probe.batches.borrow_mut().push(ids.to_vec());
+            for id in ids {
+                self.inner
+                    .with_authenticated_canonical(*id, |canonical| callback(*id, canonical))?;
+            }
+            Ok(())
+        }
+    }
+
+    fn stage2_compact_table(
+        store: &mut MemoryStore,
+        count: u64,
+    ) -> (
+        crate::tree::inode::InodeTableRoot,
+        crate::tree::inode::InodeRecordV1,
+    ) {
+        use crate::tree::compact::{self, InodeNode, InodeSerial};
+        use crate::tree::inode::{InodeKind, InodeRecordV1, InodeTableRoot};
+        let record = InodeRecordV1 {
+            kind: InodeKind::RegularFile,
+            namespace_ref_count: 1,
+            content_root: value(1),
+            metadata_root: value(2),
+        };
+        let serial = |n| InodeSerial::new(n).unwrap();
+        let first = store
+            .put(&compact::encode_inode(&InodeNode::Leaf(vec![(serial(1), record)])).unwrap())
+            .unwrap();
+        let (root, _) = compact_inode_table_apply_sorted(
+            store,
+            InodeTableRoot(first),
+            (2..=count).map(|n| Ok((serial(n), Some(record)))),
+            SORTED_TREE_UPDATE_SCRATCH_BYTES,
+        )
+        .unwrap();
+        (root, record)
+    }
+
+    fn stage2_mutate<S: ObjectStore>(
+        store: &mut S,
+        root: crate::tree::inode::InodeTableRoot,
+        record: crate::tree::inode::InodeRecordV1,
+        keys: impl Iterator<Item = u64>,
+        scratch: usize,
+    ) -> CoreResult<(crate::tree::inode::InodeTableRoot, TreeBatchCounters)> {
+        use crate::tree::compact::InodeSerial;
+        compact_inode_table_apply_sorted(
+            store,
+            root,
+            keys.map(|n| Ok((InodeSerial::new(n).unwrap(), Some(record)))),
+            scratch,
+        )
+    }
+
+    #[test]
+    fn stage2_batched_children_read_every_child_and_match_the_point_route() {
+        use crate::tree::compact::InodeSerial;
+        use crate::tree::inode::InodeRecordV1;
+        let mut plain = MemoryStore::default();
+        let (root, record) = stage2_compact_table(&mut plain, 13_000);
+        let changed = InodeRecordV1 {
+            namespace_ref_count: 9,
+            ..record
+        };
+        let keys = [1_u64, 4_321, 12_999];
+        let point = stage2_mutate(
+            &mut plain,
+            root,
+            changed,
+            keys.into_iter(),
+            SORTED_TREE_UPDATE_SCRATCH_BYTES,
+        )
+        .unwrap();
+
+        let probe = std::rc::Rc::new(BatchProbe::default());
+        let mut counted = CountingStore {
+            inner: MemoryStore::default(),
+            probe: probe.clone(),
+        };
+        let (counted_root, _) = stage2_compact_table(&mut counted.inner, 13_000);
+        assert_eq!(counted_root, root);
+        let probe = std::rc::Rc::new(BatchProbe::default());
+        counted.probe = probe.clone();
+        let batched = stage2_mutate(
+            &mut counted,
+            root,
+            changed,
+            keys.into_iter(),
+            SORTED_TREE_UPDATE_SCRATCH_BYTES,
+        )
+        .unwrap();
+        // Identical output and identical page-read count on both routes.
+        assert_eq!(batched.0, point.0);
+        assert_eq!(batched.1.nodes_read, point.1.nodes_read);
+        assert_eq!(batched.1.nodes_created, point.1.nodes_created);
+        assert_eq!(batched.1.delta_keys, point.1.delta_keys);
+        assert_eq!(batched.1.peak_scratch_bytes, point.1.peak_scratch_bytes);
+        assert!(probe.calls() > 0, "no bounded batch was issued");
+        assert!(probe.widest() <= TREE_BATCH_CHILDREN);
+        // Every branch page that the point route opened is demanded through a
+        // batch, and the demanded pages are distinct per node: the batch route
+        // cannot skip a child or read one twice inside a node.
+        assert!(probe.requested() as u64 <= batched.1.nodes_read);
+        assert!(probe.distinct().len() <= probe.requested());
+        for (key, expected) in keys
+            .iter()
+            .map(|n| (InodeSerial::new(*n).unwrap(), changed))
+        {
+            assert_eq!(
+                crate::tree::compact::inode_lookup(
+                    &counted.inner,
+                    batched.0 .0,
+                    key,
+                    &mut crate::tree::inode::InodeTableCounters::default()
+                )
+                .unwrap(),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn stage2_batch_work_counts_follow_changed_keys_not_chunk_size() {
+        let mut store = MemoryStore::default();
+        let (root, record) = stage2_compact_table(&mut store, 13_000);
+        let changed = crate::tree::inode::InodeRecordV1 {
+            namespace_ref_count: 5,
+            ..record
+        };
+        let mut previous = 0;
+        for count in [1_u64, 10, 100] {
+            let probe = std::rc::Rc::new(BatchProbe::default());
+            let mut counted = CountingStore {
+                inner: MemoryStore::default(),
+                probe: probe.clone(),
+            };
+            let (counted_root, _) = stage2_compact_table(&mut counted.inner, 13_000);
+            assert_eq!(counted_root, root);
+            let keys = (0..count)
+                .map(|index| 1 + index * (13_000 / count).max(1))
+                .collect::<Vec<_>>();
+            let (_, counters) = stage2_mutate(
+                &mut counted,
+                root,
+                changed,
+                keys.iter().copied(),
+                SORTED_TREE_UPDATE_SCRATCH_BYTES,
+            )
+            .unwrap();
+            // The batch route reads exactly the pages the point route reads; it
+            // never re-reads a child to fill a chunk.
+            assert_eq!(
+                probe.requested() as u64,
+                counters.nodes_read.saturating_sub(1)
+            );
+            assert!(counters.nodes_read >= previous);
+            previous = counters.nodes_read;
+        }
+    }
+
+    #[test]
+    fn stage2_batch_work_counts_follow_namespace_size_at_fixed_k() {
+        let mut store = MemoryStore::default();
+        let record = crate::tree::inode::InodeRecordV1 {
+            kind: crate::tree::inode::InodeKind::RegularFile,
+            namespace_ref_count: 1,
+            content_root: value(1),
+            metadata_root: value(2),
+        };
+        let changed = crate::tree::inode::InodeRecordV1 {
+            namespace_ref_count: 2,
+            ..record
+        };
+        let mut previous = 0;
+        for size in [1_000_u64, 13_000] {
+            let probe = std::rc::Rc::new(BatchProbe::default());
+            let mut counted = CountingStore {
+                inner: MemoryStore::default(),
+                probe: probe.clone(),
+            };
+            let (root, _) = stage2_compact_table(&mut counted.inner, size);
+            let (_, counters) = stage2_mutate(
+                &mut counted,
+                root,
+                changed,
+                std::iter::once(1_u64),
+                SORTED_TREE_UPDATE_SCRATCH_BYTES,
+            )
+            .unwrap();
+            assert_eq!(
+                probe.requested() as u64,
+                counters.nodes_read.saturating_sub(1)
+            );
+            assert!(counters.nodes_read > previous, "size {size}");
+            previous = counters.nodes_read;
+            let _ = &mut store;
+        }
+    }
+
+    #[test]
+    fn stage2_insufficient_batch_scratch_is_the_declared_fallback_error() {
+        let mut store = MemoryStore::default();
+        let (root, record) = stage2_compact_table(&mut store, 13_000);
+        let changed = crate::tree::inode::InodeRecordV1 {
+            namespace_ref_count: 3,
+            ..record
+        };
+        // One byte cannot cover even one chunk's worst-case retained bytes, so
+        // the bounded batch charge fails with exactly the error the workspace
+        // fallback matches.
+        let forced = stage2_mutate(&mut store, root, changed, std::iter::once(1_u64), 1);
+        assert_eq!(forced.unwrap_err(), CoreError::ObjectLimitExceeded);
+    }
+
+    /// The entered spine for key 1 in a 13 000-inode compact table: the root's
+    /// first level-1 branch and that branch's first leaf.
+    fn stage2_spine(
+        store: &MemoryStore,
+        root: crate::tree::inode::InodeTableRoot,
+    ) -> (ObjectId, ObjectId, u8) {
+        use crate::tree::compact::{self, InodeNode};
+        let InodeNode::Branch { children, .. } =
+            compact::decode_inode(&store.get(root.0).unwrap()).unwrap()
+        else {
+            panic!("expected a compact inode branch root");
+        };
+        let branch_id = children[0].1;
+        let InodeNode::Branch {
+            level,
+            children: grandchildren,
+            ..
+        } = compact::decode_inode(&store.get(branch_id).unwrap()).unwrap()
+        else {
+            panic!("expected a compact inode branch at level 1");
+        };
+        (branch_id, grandchildren[0].1, level)
+    }
+
+    /// Runs the same delta on the point route and on the bounded batch route
+    /// after the same tampering, and returns both outcomes. The two stores are
+    /// built from the same seed, so equal outcomes mean equivalent behaviour.
+    fn stage2_case(
+        tamper: &dyn Fn(
+            &mut MemoryStore,
+            crate::tree::inode::InodeTableRoot,
+        ) -> Option<crate::tree::inode::InodeTableRoot>,
+        keys: &[u64],
+    ) -> (Result<ObjectId, CoreError>, Result<ObjectId, CoreError>) {
+        use crate::tree::inode::InodeRecordV1;
+        let mut plain = MemoryStore::default();
+        let (root, record) = stage2_compact_table(&mut plain, 13_000);
+        let base_root = root;
+        let root = tamper(&mut plain, root).unwrap_or(root);
+        let changed = InodeRecordV1 {
+            namespace_ref_count: 7,
+            ..record
+        };
+        let point = stage2_mutate(
+            &mut plain,
+            root,
+            changed,
+            keys.iter().copied(),
+            SORTED_TREE_UPDATE_SCRATCH_BYTES,
+        )
+        .map(|(root, _)| root.0);
+
+        let mut counted = CountingStore {
+            inner: MemoryStore::default(),
+            probe: std::rc::Rc::new(BatchProbe::default()),
+        };
+        let (counted_root, counted_record) = stage2_compact_table(&mut counted.inner, 13_000);
+        assert_eq!(counted_root, base_root);
+        let counted_root = tamper(&mut counted.inner, counted_root).unwrap_or(counted_root);
+        let counted_changed = InodeRecordV1 {
+            namespace_ref_count: 7,
+            ..counted_record
+        };
+        let batched = stage2_mutate(
+            &mut counted,
+            counted_root,
+            counted_changed,
+            keys.iter().copied(),
+            SORTED_TREE_UPDATE_SCRATCH_BYTES,
+        )
+        .map(|(root, _)| root.0);
+        (point, batched)
+    }
+
+    #[test]
+    fn stage2_malformed_siblings_are_rejected_identically_on_both_routes() {
+        use crate::tree::compact::{self, InodeNode, InodeSerial};
+
+        let healthy = stage2_case(&|_, _| None, &[1]);
+        assert!(healthy.0.is_ok() && healthy.1.is_ok(), "{healthy:?}");
+
+        let mut probe = MemoryStore::default();
+        let (root, _) = stage2_compact_table(&mut probe, 13_000);
+        let (branch_id, leaf_id, level) = stage2_spine(&probe, root);
+        let leaf = probe.objects[&leaf_id].clone();
+        let branch = probe.objects[&branch_id].clone();
+        let ids = (branch_id, leaf_id, level);
+
+        // 1. Wrong child level.
+        let case = stage2_case(
+            &|store, _| {
+                let mut tampered = leaf.clone();
+                tampered[11] = ids.2;
+                store.objects.insert(ids.1, tampered);
+                None
+            },
+            &[1],
+        );
+        assert_eq!(case.0, case.1, "wrong child level differs");
+        assert!(case.0.is_err(), "wrong child level accepted: {case:?}");
+
+        // 2. Wrong maximum key for the leaf's binding in its parent.
+        let case = stage2_case(
+            &|store, _| {
+                let InodeNode::Branch {
+                    level, children, ..
+                } = compact::decode_inode(&branch).unwrap()
+                else {
+                    panic!("expected a branch");
+                };
+                let mut rows = children.clone();
+                let index = rows.iter().position(|(_, id)| *id == ids.1).unwrap();
+                let wrong = InodeSerial::new(rows[index].0.get() + 1).unwrap();
+                rows[index] = (wrong, ids.1);
+                let total = rows.len() as u64;
+                let node = InodeNode::Branch {
+                    level,
+                    subtree_count: total,
+                    children: rows,
+                };
+                store
+                    .objects
+                    .insert(ids.0, compact::encode_inode(&node).unwrap());
+                None
+            },
+            &[1],
+        );
+        assert_eq!(case.0, case.1, "wrong child maximum differs");
+        assert!(case.0.is_err(), "wrong child maximum accepted: {case:?}");
+
+        // 3. Inflated parent subtree count.
+        let case = stage2_case(
+            &|store, _| {
+                let InodeNode::Branch {
+                    level, children, ..
+                } = compact::decode_inode(&branch).unwrap()
+                else {
+                    panic!("expected a branch");
+                };
+                let node = InodeNode::Branch {
+                    level,
+                    subtree_count: 13_000,
+                    children,
+                };
+                store
+                    .objects
+                    .insert(ids.0, compact::encode_inode(&node).unwrap());
+                None
+            },
+            &[1],
+        );
+        assert_eq!(case.0, case.1, "parent count differs");
+        assert!(case.0.is_err(), "parent count accepted: {case:?}");
+
+        // 4. Underfilled child.
+        let case = stage2_case(
+            &|store, _| {
+                let mut short = leaf.clone();
+                short.truncate(31 + 49 * 81);
+                store.objects.insert(ids.1, short);
+                None
+            },
+            &[1],
+        );
+        assert_eq!(case.0, case.1, "underfilled child differs");
+        assert!(case.0.is_err(), "underfilled child accepted: {case:?}");
+
+        // 5. Corrupted demanded child.
+        let case = stage2_case(
+            &|store, _| {
+                let mut corrupted = leaf.clone();
+                corrupted[31] ^= 0xff;
+                store.objects.insert(ids.1, corrupted);
+                None
+            },
+            &[1],
+        );
+        assert_eq!(case.0, case.1, "corrupted child differs");
+        assert_eq!(case.0, Err(CoreError::IdentityMismatch));
+
+        // 6. Missing dependency.
+        let case = stage2_case(
+            &|store, _| {
+                store.objects.remove(&ids.1);
+                None
+            },
+            &[1],
+        );
+        assert_eq!(case.0, case.1, "missing dependency differs");
+        assert!(case.0.is_err(), "missing dependency accepted: {case:?}");
+
+        // 7. Wrong child level through a correctly addressed page: the entered
+        //    leaf slot is rebound to a copy of its own parent branch, whose
+        //    bytes and identity are consistent, and the spine is re-rooted.
+        let case = stage2_case(
+            &|store, root| {
+                let InodeNode::Branch {
+                    level, children, ..
+                } = compact::decode_inode(&branch).unwrap()
+                else {
+                    panic!("expected a branch");
+                };
+                let replacement = ObjectId::for_bytes(&branch);
+                store.objects.insert(replacement, branch.clone());
+                let mut rows = children.clone();
+                let index = rows.iter().position(|(_, id)| *id == ids.1).unwrap();
+                rows[index] = (rows[index].0, replacement);
+                let total = rows.len() as u64;
+                let new_branch = compact::encode_inode(&InodeNode::Branch {
+                    level,
+                    subtree_count: total,
+                    children: rows,
+                })
+                .unwrap();
+                let new_branch_id = ObjectId::for_bytes(&new_branch);
+                store.objects.insert(new_branch_id, new_branch);
+                let InodeNode::Branch {
+                    level: root_level,
+                    subtree_count,
+                    children: root_children,
+                } = compact::decode_inode(&store.get(root.0).unwrap()).unwrap()
+                else {
+                    panic!("expected a branch root");
+                };
+                let mut root_rows = root_children.clone();
+                let position = root_rows.iter().position(|(_, id)| *id == ids.0).unwrap();
+                root_rows[position] = (root_rows[position].0, new_branch_id);
+                let new_root = compact::encode_inode(&InodeNode::Branch {
+                    level: root_level,
+                    subtree_count,
+                    children: root_rows,
+                })
+                .unwrap();
+                let new_root_id = ObjectId::for_bytes(&new_root);
+                store.objects.insert(new_root_id, new_root);
+                Some(crate::tree::inode::InodeTableRoot(new_root_id))
+            },
+            &[1],
+        );
+        assert_eq!(case.0, case.1, "wrong child level differs");
+        assert!(case.0.is_err(), "wrong child level accepted: {case:?}");
+
+        // Clustered and spread changed keys exercise the same bounded chunks.
+        for keys in [
+            vec![1_u64, 2, 3, 4, 5],
+            vec![1, 4_000, 8_000, 12_999],
+            (1..=13_000).step_by(97).collect::<Vec<u64>>(),
+        ] {
+            let case = stage2_case(&|_, _| None, &keys);
+            assert!(case.0.is_ok() && case.1.is_ok(), "keys {keys:?}: {case:?}");
+            assert_eq!(case.0, case.1, "keys {keys:?}");
+        }
     }
 }
