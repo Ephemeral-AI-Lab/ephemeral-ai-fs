@@ -91,6 +91,7 @@ hidden:
 | `custody-sealcheck.py`, `custody/before-seals.txt` | seal re-derivation |
 | `summary.json`, `analysis.log` | derived summaries from retained raw evidence |
 | `test-control.log`, `test-candidate.log` | focused suite outcomes per arm |
+| `commit-stage2-hardening-results.md` (in the repository) | findings, fixes, timings, gates, qualification verdict |
 | `affected-cells/`, `affected-cases.sh` | affected-caller cross-check on the hardened candidate |
 | `attempts/run1-paired-plain-superseded-treatment` | retained first plain run and its `collect`/`summary`/`analysis` artefacts |
 | `varA`–`varE`, `probe-noP2` | retained treatment-attribution trees (source retained; `target/` removed) |
