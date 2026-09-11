@@ -14,6 +14,7 @@ use std::time::Instant;
 
 mod dedup_verify;
 mod infra;
+mod repository_init;
 mod sdk_edit_verify;
 mod sdk_file_edit;
 mod storage_smoke;
@@ -669,6 +670,9 @@ fn run() -> AnyResult<()> {
     }
     let _commit_diagnostics = layerfs_sdk::capture_workspace_commit_diagnostics()?;
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
+    if args.first().is_some_and(|arg| arg == "repository-init") {
+        return repository_init::run(&args);
+    }
     if args
         .first()
         .is_some_and(|arg| arg.to_string_lossy().starts_with("infra-"))
