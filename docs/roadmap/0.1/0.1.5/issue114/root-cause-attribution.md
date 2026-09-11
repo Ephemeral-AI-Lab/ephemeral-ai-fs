@@ -18,6 +18,7 @@ Nothing was promoted. No fixture, timer, threshold or verifier was modified.
 | (c) | non-monotone tier curve | **RESOLVED — two effects, crossover at tier ≈ 150–250.** |
 | (d) | screen's ~10% over-prediction | **RESOLVED — it is *under*-prediction, and it is the read-side term #113 §11.6 already named.** Not model error, not a hidden cost. |
 | (e) | reachable end-to-end headroom | **≈ 0.1% of `wall_ns`. No speedup is reachable from this case.** |
+| (f) | how to steer optimization | **RESOLVED — re-scope to the timer. On this case `wall_ns` is 65.9–69.1% harness lifecycle; on `overwrite-middle-4k-on-500mib-ops-1` the timer is 0.3% of wall. See §7–§8.** |
 
 The single most important result: **`wall_ns` is ~2.1 s and the product timer is
 ~0.31 s (C) / ~0.18 s (X). 85–91% of measured wall time is harness container
@@ -356,7 +357,108 @@ this case at all.**
 
 ---
 
-## 7. What was NOT resolved
+## 7. Optimization directions — recommended ordering
+
+Split by kind: **Direction 1 is harness cost, not product work**; Directions 2–3 are
+product work with bounded ceilings. Conflating them is the main trap.
+
+Cross-case context (medians over the 387 retained A/B samples, all families):
+per-sample `preparation_wall_ns` **816.9 ms** + `cleanup.wall_ns` **435.8 ms**
+= **1,236.7 ms**, near-constant across every ordinary case regardless of whether the
+timer is 11 ms or 4,762 ms. Two directory-heavy cases reach 2.8–3.0 s (scales with
+fixture file count).
+
+1. **Re-scope the metric** (Direction 4 below) — free; stops effort chasing docker.
+2. **Cheapen observation overhead** (`cgroup_snapshot` first) — safe, ~284 ms/sample,
+   no product semantics.
+3. **Profile the consumer's commit on `dedup-cdc-scattered-500`** (not -100) — SQL term
+   574 ms of a 1,309 ms pipeline; the one case with real headroom.
+
+### Direction 1 — per-sample container lifecycle (~1.2 s/sample, the only large general target)
+Mechanism measured: `start_sample` (docker create/start/readiness poll) = 90.1% of
+preparation; `docker rm --force` = 96.2% of cleanup.
+- **Cheapest, safest: the two `cgroup_snapshot` `docker exec` calls = 283.6 ms = 13.4%
+  of wall.** Pure observers; touches no product semantics.
+- Cut readiness-poll latency in `start_sample`.
+- Container pooling/warm reuse — **breaks the "fresh no-mount container" isolation the
+  protocol depends on; requires an explicit protocol amendment, not a quiet edit.**
+- Honest caveat: improves measurement throughput and headroom visibility, **not the product**.
+
+### Direction 2 — saturated single consumer (real, bounded)
+Consumer 99.4% busy, `queue_peak = 4` pinned → the ~85% blocked fraction is *correct
+steady state*, not a target on scattered-100 (ceiling 1.7 ms of a 297 ms pipeline). The
+serial consumer **is** a target where SQL commit is a large share: scattered-100 C
+155.00/306.22 ms (50.6%); scattered-500 C 573.67/1,319 ms. **Falsifiable test:** if the
+consumer is the bound, speeding it up must reduce pipeline wall ~1:1 while leaving
+`slab_send_blocked_ns` largely unchanged.
+
+### Direction 3 — page-size class policy (already scoped by #113; do not re-litigate)
+`dedup-cdc-scattered-100` is the **declared negative control** (`conflict_read_calls = 0`).
+Better targets by wall ratio: `store-footprint-large-object-500m` (timer 1,261→865 ms,
+wall 3,406→3,037 ms), `namespace-10000` (950→630 ms, wall 2,848→2,599 ms).
+
+### Do not
+- Don't attack `slab_send_blocked_ns` on scattered-100 (ceiling 1.7 ms).
+- Don't tune the scattered-100 timer (14.5% of wall; no dedup to exploit).
+- Don't adopt 64 KiB globally (#113 settled).
+
+---
+
+## 8. Direction 4 — re-scoping the metric (implemented)
+
+A **derived, read-only view**. It changes no receipt, no timer, no threshold, no verifier
+and no product code. Every field is already present in the retained `perf.jsonl`; the
+module only labels which part of `wall_ns` is harness lifecycle and which can respond to a
+product change.
+
+```text
+wall_ns = harness_lifecycle_ns + product_window_ns
+  harness_lifecycle_ns = preparation_wall_ns + cleanup_wall_ns + residue_ns
+    residue_ns         = wall_ns - preparation - command - cleanup   (2x cgroup_snapshot)
+  product_window_ns    = command_wall_ns            (the only movable bracket)
+  steer signal         = declared timer / wall_ns
+```
+
+**Identity verified exactly on all 387 retained samples: zero negative residues.**
+
+Artifact: `issue114/lifecycle-floor.py` (`--all` for the cross-case ranking).
+
+### Cross-case ranking by steer signal
+
+| case / arm | timer ms | wall ms | lifecycle % of wall | **timer / wall** |
+|---|---:|---:|---:|---:|
+| `overwrite-middle-4k-on-500mib-ops-1` / X | 10.9 | 3,765.8 | 81.2% | **0.3%** |
+| `overwrite-middle-4k-on-500mib-ops-1` / C | 10.9 | 3,438.7 | 87.5% | **0.3%** |
+| `dedup-cdc-scattered-100` / X | 178.9 | 2,085.1 | 69.1% | **8.6%** |
+| `dedup-cdc-scattered-100` / C | 306.2 | 2,111.6 | 65.9% | **14.4%** |
+| `namespace-10000` / X | 629.7 | 2,599.4 | 57.6% | 24.4% |
+| `store-footprint-large-object-500m` / X | 865.1 | 3,036.9 | 49.7% | 28.5% |
+| `namespace-10000` / C | 950.1 | 2,848.4 | 50.9% | 33.1% |
+| `store-footprint-large-object-500m` / C | 1,260.6 | 3,405.5 | 44.0% | 36.7% |
+| `directory-content-scan-500-mixed-v4` / X | 4,418.1 | 8,343.8 | 38.4% | 53.2% |
+| `directory-content-scan-500-mixed-v4` / C | 4,761.9 | 8,472.4 | 37.9% | 56.9% |
+| `payload-create-500m` / X | 2,972.4 | 5,166.6 | 31.9% | 57.9% |
+| `payload-create-500m` / C | 3,123.2 | 5,236.5 | 29.5% | 59.9% |
+| `dedup-history-distributed-500` / X | 4,414.0 | 7,021.2 | 17.2% | 62.6% |
+| `dedup-history-distributed-500` / C | 4,328.7 | 6,963.3 | 16.9% | 62.7% |
+
+**Consequence:** on `overwrite-middle-4k-on-500mib-ops-1` the timer is **0.3%** of wall —
+a 2× product improvement is invisible in `wall_ns`. On `dedup-cdc-scattered-100` it is
+8.6–14.4%. Only the bottom rows (`≥ 50%`) can be meaningfully steered by wall time.
+**Steer by the timer; use `wall_ns` only for cost-of-measurement accounting.**
+
+### What this does not do
+It re-labels an existing quantity; it recovers no time and promotes nothing. The
+lifecycle floor remains the harness's real cost, and Direction 1 is what would remove it.
+
+### Caveats
+Tier-500 rests on n=5/arm. The "fixed lifecycle" claim is a median-across-cases
+observation from existing receipts, not a controlled experiment; a dedicated test would
+run the same case with a no-op body and check whether `prep + cleanup` stays ~1.2 s.
+
+---
+
+## 9. What was NOT resolved
 
 - The task brief stated the screen "over-predicted" (117.8 predicted vs 131.1
   measured). The retained #113 source
@@ -374,7 +476,7 @@ this case at all.**
 
 ---
 
-## 8. Seals and receipt paths
+## 10. Seals and receipt paths
 
 **Seals reproduced identically before and after all work** (`bash run-page-size-ab.sh seals`):
 
@@ -396,6 +498,8 @@ Shared checkout `NEW_STORE_PAGE_SIZE_BYTES` remains **4096**.
 - `issue114/step1/probe.jsonl` — STEP 1 instrumentation, 11 rows
 - `issue114/step1/summary.txt` — analyzer output
 - `issue114/analyze-scattered-100.py` — reproducible analyzer (reads retained receipts only)
+- `issue114/lifecycle-floor.py` — Direction 4 metric re-scoping; identity checked on all
+  387 retained samples, zero negative residues
 - `issue114-probe.py` — the STEP 1 probe
 
 **Retained receipts re-read (unmodified):**
