@@ -1,6 +1,8 @@
 """Cold eligibility is mandatory even when timings and saved PASS look good."""
 import copy
 import json
+import hashlib
+import os
 from pathlib import Path
 import platform
 import sys
@@ -31,6 +33,9 @@ def sample(arm="candidate", elapsed=2_600_000_000):
             "files_checked": 100_000, "logical_bytes": 500_000_000,
             "allocated_bytes": 865_730_560, "pages_checked": 110_000, "expected_pages": 110_000,
             "resident_pages": 0, "errors": [],
+            "metadata_validation": {"contract": "namespace-fixture-metadata-v1",
+                "status": "VERIFIED", "files_checked": 100_000, "directories_checked": 1001,
+                "file_mode": 0o640, "directory_mode": 0o750, "mtime_ns": 1_700_000_000_000_000_000},
             "backend_self_check": {"warm_pages_detected": 1, "cold_pages_remaining": 0}},
         "records": [{"layerstack_init_ns": elapsed, "fixture_digest": cold.FIXTURE_DIGEST,
             "fixture_cache_profile": "reused-first-sample-uncontrolled", "regular_files": 100_000,
@@ -120,6 +125,89 @@ class ColdTests(unittest.TestCase):
             self.assertEqual(result["status"], "INELIGIBLE")
             self.assertIsNone(result["elapsed_ns"])
             self.assertEqual(result["diagnostic_elapsed_ns"], 2_600_000_000)
+
+    def test_missing_partial_or_wrong_metadata_evidence_never_qualifies(self):
+        mutations = [lambda r: r["cold_acquisition"].pop("metadata_validation"),
+            lambda r: r["cold_acquisition"].update(contract="namespace-100000-cold-v1"),
+            lambda r: r["cold_acquisition"]["metadata_validation"].update(status="UNVERIFIED"),
+            lambda r: r["cold_acquisition"]["metadata_validation"].update(files_checked=99_999),
+            lambda r: r["cold_acquisition"]["metadata_validation"].update(directories_checked=1000),
+            lambda r: r["cold_acquisition"]["metadata_validation"].update(directory_mode=0o755),
+            lambda r: r["cold_acquisition"]["metadata_validation"].update(file_mode=0o644),
+            lambda r: r["cold_acquisition"]["metadata_validation"].update(mtime_ns=0)]
+        for mutate in mutations:
+            row = sample()
+            mutate(row)
+            original = copy.deepcopy(row["records"])
+            with self.subTest(mutate=mutate):
+                result = runner.performance_summary([row], 1, True)
+                self.assertEqual(result["valid"], 0)
+                self.assertIsNone(result["median_ns"])
+                self.assertEqual(row["records"], original)
+                self.assertIsNone(cold.compare(sample("baseline"), row,
+                    order=["baseline", "candidate"])["reduction_percent"])
+
+    def fixture(self, root):
+        directory = root / "payload" / "d0000"
+        directory.mkdir(parents=True)
+        file = directory / "file"
+        file.write_bytes(b"abc")
+        for path in (file, directory, root / "payload"):
+            path.chmod(0o640 if path == file else 0o750)
+            os.utime(path, ns=(1_700_000_000_000_000_000,) * 2)
+        files = {"payload/d0000/file": {"bytes": 3, "sha256": hashlib.sha256(b"abc").hexdigest()}}
+        (root / "host-cache.json").write_text(json.dumps({"files": files}))
+        return files
+
+    def test_unchanged_bytes_and_file_metadata_do_not_hide_directory_mtime(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            files = self.fixture(root)
+            self.assertEqual(set(cold._metadata_inventory(root, files, lambda: None)),
+                {root / "payload", root / "payload/d0000"})
+            file = root / "payload/d0000/file"
+            before = file.stat()
+            # The cp -cR failure: file bytes/mode/mtime agree, directory mtime does not.
+            os.utime(root / "payload/d0000", ns=(1_800_000_000_000_000_000,) * 2)
+            self.assertEqual(hashlib.sha256(file.read_bytes()).hexdigest(), files["payload/d0000/file"]["sha256"])
+            self.assertEqual((file.stat().st_mode, file.stat().st_mtime_ns),
+                             (before.st_mode, before.st_mtime_ns))
+            with self.assertRaisesRegex(ValueError, "metadata"):
+                cold._metadata_inventory(root, files, lambda: None)
+            with patch.object(cold, "Residency") as backend:
+                backend.return_value.page_size = 4096
+                result = cold.acquire({"host_root": str(root), "fixture": {}}, "sample", float("inf"))
+            self.assertEqual(result["status"], "UNVERIFIED")
+            self.assertIn("metadata mismatch", result["errors"][0])
+
+    def test_root_directory_and_file_metadata_drift_are_rejected(self):
+        for relative, mode, stamp in [("payload", None, 0),
+                ("payload/d0000", 0o755, None), ("payload/d0000/file", 0o644, None),
+                ("payload/d0000/file", None, 0)]:
+            with self.subTest(relative=relative, mode=mode, stamp=stamp), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                files = self.fixture(root)
+                if mode is not None:
+                    (root / relative).chmod(mode)
+                if stamp is not None:
+                    os.utime(root / relative, ns=(stamp, stamp))
+                with self.assertRaisesRegex(ValueError, "metadata"):
+                    cold._metadata_inventory(root, files, lambda: None)
+
+    def test_extra_empty_directory_and_symlink_root_are_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            files = self.fixture(root)
+            extra = root / "payload/extra"
+            extra.mkdir(mode=0o750)
+            for path in (extra, root / "payload"):
+                os.utime(path, ns=(1_700_000_000_000_000_000,) * 2)
+            with self.assertRaisesRegex(ValueError, "inventory"):
+                cold._metadata_inventory(root, files, lambda: None)
+            (root / "payload").rename(root / "original")
+            (root / "payload").symlink_to(root / "original", target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "metadata"):
+                cold._metadata_inventory(root, files, lambda: None)
 
     def test_unsupported_backend_is_retained_as_unverified(self):
         with patch.object(cold, "Residency", side_effect=OSError("unsupported")):

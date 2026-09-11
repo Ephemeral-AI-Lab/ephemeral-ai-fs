@@ -10,11 +10,13 @@ import stat
 import tempfile
 import time
 
-CONTRACT = "namespace-100000-cold-v1"
+CONTRACT = "namespace-100000-cold-v2"
 METHOD = "darwin-shared-mmap-invalidate-mincore-v1"
 TARGET_NS = 2_700_000_000
 FIXTURE_DIGEST = "6fc793a9703bd0a21066f9fb12622c3451b16bd6ad7ef8b7382351351ac80a7e"
 MAX_LAUNCH_GAP_NS = 1_000_000_000
+METADATA_POLICY = {"contract": "namespace-fixture-metadata-v1", "file_mode": 0o640,
+                   "directory_mode": 0o750, "mtime_ns": 1_700_000_000_000_000_000}
 
 
 def applies(selection):
@@ -77,12 +79,44 @@ class Residency:
             return {"warm_pages_detected": warm, "cold_pages_remaining": remaining}
 
 
+def _require_metadata(path, metadata, directory):
+    expected_mode = METADATA_POLICY["directory_mode" if directory else "file_mode"]
+    kind_matches = stat.S_ISDIR(metadata.st_mode) if directory else stat.S_ISREG(metadata.st_mode)
+    if (not kind_matches or stat.S_IMODE(metadata.st_mode) != expected_mode
+            or metadata.st_mtime_ns != METADATA_POLICY["mtime_ns"]):
+        raise ValueError(f"cold source metadata mismatch: {path}")
+
+
+def _metadata_inventory(root, files, budget):
+    payload = root / "payload"
+    # Check the root itself before traversing, including a symlinked payload root.
+    _require_metadata(payload, payload.lstat(), True)
+    actual = set()
+    directories = [payload]
+    for path in sorted(payload.rglob("*")):
+        budget()
+        metadata = path.lstat()
+        directory = stat.S_ISDIR(metadata.st_mode)
+        _require_metadata(path, metadata, directory)
+        if directory:
+            directories.append(path)
+        else:
+            actual.add(str(path.relative_to(root)))
+    expected_directories = {root / parent for name in files for parent in Path(name).parents
+                            if parent != Path(".")}
+    if actual != set(files) or set(directories) != expected_directories:
+        raise ValueError("cold source inventory differs from prepared fixture")
+    return directories
+
+
 def acquire(prepared, sample_root, deadline):
     receipt = dict(contract=CONTRACT, method=METHOD, status="UNVERIFIED",
                    sample_root=str(sample_root), started_ns=time.monotonic_ns(),
                    fixture_digest=prepared.get("fixture", {}).get("fixture_digest"),
                    files_checked=0, logical_bytes=0, allocated_bytes=0,
-                   pages_checked=0, resident_pages=0, errors=[])
+                   pages_checked=0, resident_pages=0, errors=[],
+                   metadata_validation={**METADATA_POLICY, "status": "UNVERIFIED",
+                                        "files_checked": 0, "directories_checked": 0})
     def budget():
         if time.monotonic() >= deadline:
             raise TimeoutError("cold acquisition allowance exhausted")
@@ -95,20 +129,14 @@ def acquire(prepared, sample_root, deadline):
         files = {name: value for name, value in json.loads(manifest_bytes)["files"].items()
                  if name.startswith("payload/")}
         receipt["expected_pages"] = sum(math.ceil(value["bytes"] / backend.page_size) for value in files.values())
-        paths = sorted((root / "payload").rglob("*"))
-        actual = set()
-        for path in paths:
-            mode = path.lstat().st_mode
-            if stat.S_ISREG(mode):
-                actual.add(str(path.relative_to(root)))
-            elif not stat.S_ISDIR(mode):
-                raise ValueError("cold source contains a symlink or non-regular entry")
-        if actual != set(files) or len(files) != 100_000:
-            raise ValueError("cold source inventory differs from prepared fixture")
+        directories = _metadata_inventory(root, files, budget)
+        if len(files) != 100_000 or len(directories) != 1001:
+            raise ValueError("cold source inventory differs from registered fixture")
         for name, expected in sorted(files.items()):
             budget()
             with (root / name).open("rb") as source:
                 before = os.fstat(source.fileno())
+                _require_metadata(root / name, before, False)
                 digest = hashlib.sha256()
                 while block := source.read(1024 * 1024):
                     budget()
@@ -119,6 +147,7 @@ def acquire(prepared, sample_root, deadline):
                 os.fsync(source.fileno())
                 backend.check(source.fileno(), before.st_size, evict=True)
                 after = os.fstat(source.fileno())
+                _require_metadata(root / name, after, False)
                 if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
                     raise ValueError("cold source changed during acquisition")
         # Whole-input second pass: no payload reads or faults during observation.
@@ -126,12 +155,21 @@ def acquire(prepared, sample_root, deadline):
             budget()
             with (root / name).open("rb") as source:
                 metadata = os.fstat(source.fileno())
+                _require_metadata(root / name, metadata, False)
+                receipt["metadata_validation"]["files_checked"] += 1
                 pages, resident = backend.check(source.fileno(), metadata.st_size)
                 receipt["files_checked"] += 1
                 receipt["logical_bytes"] += metadata.st_size
                 receipt["allocated_bytes"] += metadata.st_blocks * 512
                 receipt["pages_checked"] += pages
                 receipt["resident_pages"] += resident
+        # Recheck directories after content validation/invalidation. Entry changes
+        # also change parent mtimes; none of these checks fault payload pages.
+        for directory in directories:
+            budget()
+            _require_metadata(directory, directory.lstat(), True)
+            receipt["metadata_validation"]["directories_checked"] += 1
+        receipt["metadata_validation"]["status"] = "VERIFIED"
         if (receipt["fixture_digest"] != FIXTURE_DIGEST
                 or receipt["logical_bytes"] != 500_000_000
                 or receipt["resident_pages"] != 0):
@@ -169,6 +207,13 @@ def assess(row):
             or acquisition.get("fixture_digest") != FIXTURE_DIGEST
             or len(acquisition.get("fixture_manifest_sha256", "")) != 64):
         reasons.append("cold source acquisition is unverified")
+    metadata = acquisition.get("metadata_validation")
+    if (not isinstance(metadata, dict)
+            or any(metadata.get(key) != value for key, value in METADATA_POLICY.items())
+            or metadata.get("status") != "VERIFIED"
+            or metadata.get("files_checked") != 100_000
+            or metadata.get("directories_checked") != 1001):
+        reasons.append("cold source metadata validation is unverified")
     finish = acquisition.get("finished_ns")
     launch = row.get("product_command_started_ns")
     if (type(finish) is not int or type(launch) is not int

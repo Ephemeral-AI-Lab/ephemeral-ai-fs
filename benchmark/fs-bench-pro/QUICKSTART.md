@@ -107,6 +107,19 @@ pass counts, and the command returns nonzero. A cache label or high read count
 alone cannot qualify. Declared repetitions continue without timing-based retries.
 Nonce diagnostics and old receipts without the new evidence are ineligible.
 
+Cold qualification v2 also requires verified fixture metadata: file mode `0640`,
+directory mode `0750`, and mtime `1700000000000000000` ns for every entry,
+including the payload root. The guard checks the complete directory inventory,
+rejects extra empty directories and symlinks, and rechecks metadata during
+acquisition. It never repairs the fixture. A byte-identical copy with changed
+directory timestamps remains ineligible.
+
+Receipts now include `cold_acquisition.metadata_validation`. Missing, partial or
+incorrect metadata evidence cannot qualify, even with zero resident pages or a
+fast timing. Historical v1 receipts remain unchanged under their original
+protocol; they cannot be reused as v2 qualification evidence. See the
+[metadata guard contract](../../docs/roadmap/0.1/0.1.5/issue111/cold-metadata-contract.md).
+
 The campaign loader rechecks raw evidence instead of trusting saved PASS
 summaries. Its paired cold report refuses mismatched fixture, seed, harness,
 workload, environment, acquisition method or arm order. Independent verification
