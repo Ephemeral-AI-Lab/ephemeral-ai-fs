@@ -5,10 +5,11 @@
 > claim is made here. Outcome: see
 > [commit-stage2-terminal-results.md](commit-stage2-terminal-results.md).
 >
-> **Outcome in one line:** Stage 2 is **closed** on pass at K100 with the K10
-> absolute medians accepted as a documented minor failure (§12 of the results);
-> the previous three-point calibration was withdrawn after the identity audit
-> proved it measured the wrong binaries.
+> **Outcome in one line:** Stage 2 is **closed**; the K100 result is the measured
+> claim, and the K10 absolute medians are **waived by owner decision** (contract
+> §10, results §12) — recorded as a waiver, not as a pass. The previous three-point
+> calibration was withdrawn after the identity audit proved it measured the wrong
+> binaries.
 
 ## Roots
 

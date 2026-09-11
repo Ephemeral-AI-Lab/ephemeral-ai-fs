@@ -191,27 +191,34 @@ is NOT_RUN**.
   #115/#108/#109/#110/#106/#102/#104/#100/#107.
 - Only intended changes are committed; all unrelated dirty work is preserved.
 
-## 10. Addendum: closure on an accepted failure (owner decision)
+## 10. Addendum: waiver of the K10 gate (owner decision)
 
 **Added after the campaign ran and after its results were read.** This section
-does not change any gate, any measured value or any verdict. It records the
-disposition the terminal criteria did not cover.
+does not change any gate threshold, any measured value or any raw sample. It
+records the disposition the terminal criteria did not cover.
 
 The criteria above say a failed criterion must be investigated and root-caused and
 must not be fixed by a rerun; they do not say what to do when the investigation
-concludes and a residual miss remains. The K10 absolute medians missed
-(54.90 ms vs ≤ 50 ms, 33.75 ms vs ≤ 31 ms) and were root-caused to a knife-edge
-target frozen at 3.9 % and 0.06 % margin with a distribution-driven spread.
+concludes and a residual miss remains. The K10 absolute medians came in at
+54.90 ms against ≤ 50 ms and 33.75 ms against ≤ 31 ms, root-caused to a
+knife-edge target frozen at 3.9 % and 0.06 % margin with a distribution-driven
+spread.
 
-**Owner decision:** Stage 2 closes with that miss **accepted** as a known,
-documented minor failure. Therefore:
+**Owner decision, recorded as authored:** the K10 gate is **waived** for this
+release and does **not** block Stage 2 closure. The owner has determined the K10
+miss to be a minor, acceptable result, and Stage 2 is treated as meeting its
+objectives with that waiver in place. Consequences:
 
-- the K10 absolute medians are recorded as **FAIL — accepted**, never as PASS;
+- the K10 rows are recorded as **WAIVED**, not as `FAIL` and not as `PASS`. The
+  measured values and the frozen thresholds stay printed next to the waiver;
+- the waiver's authority is the owner, **not the measurement**. No gate threshold
+  was relaxed, no valid sample was discarded, no rerun was used to move a median.
+  This is therefore a disposition record, not a methodology change, and is
+  **not** a precedent: the general rules in
+  `docs/general/benchmark_rules.md` still govern every other campaign;
+- Stage 2's measured performance claim remains the K100 result;
 - the accepted residual risks named in the results (§9, §12) are carried forward
   explicitly and are **not** treated as resolved;
-- no target was widened, no valid slow row was discarded, and no rerun was used to
-  move a median;
-- Stage 2's performance claim is the K100 result only;
 - **issue #111 is not closed by this stage.** #111 is the cold-cache
   `namespace-100000` **Init** gap (≤ 2.7 s), which remains open, paused and
   untouched. Stage 2 closure is a project-state disposition recorded in the
@@ -220,6 +227,6 @@ documented minor failure. Therefore:
   triangular publication and reopened-history scaling all remain outside this
   claim.
 
-A future attempt at the K10 gate requires exactly what this addendum does not
-grant: a material repair or a pre-registered higher n, not a rerun, an outlier
-removal or a widened target.
+If a future campaign wants the K10 gate to read `PASS` on its own terms, that
+requires a material repair or a pre-registered higher n — not a rerun, an outlier
+removal, or a widened target. The waiver does not substitute for any of those.
