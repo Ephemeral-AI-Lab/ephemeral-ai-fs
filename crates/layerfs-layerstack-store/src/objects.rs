@@ -1033,6 +1033,39 @@ impl ObjectRead for CoreReader<'_> {
     }
 }
 
+/// Whether one demanded object is already owned by this buffer.
+fn owns_batch_demand(objects: &DeferredObjectStore, id: ObjectId) -> CoreResult<bool> {
+    match &objects.storage {
+        DeferredObjects::Memory { rows, .. } => Ok(rows.contains_key(&id)),
+        DeferredObjects::Spill(_) => Ok(objects.get(id).map_err(core_read_error)?.is_some()),
+    }
+}
+
+/// Answer one batch demand this buffer owns, with the same check the point route
+/// performs on an owned object.
+fn emit_owned_batch_demand<F>(
+    objects: &DeferredObjectStore,
+    id: ObjectId,
+    callback: &mut F,
+) -> CoreResult<()>
+where
+    F: FnMut(ObjectId, &[u8]) -> CoreResult<()>,
+{
+    match &objects.storage {
+        DeferredObjects::Memory { rows, .. } => {
+            let object = rows.get(&id).ok_or(CoreError::MissingObject)?;
+            callback(id, &object.bytes)
+        }
+        DeferredObjects::Spill(_) => {
+            let bytes = objects
+                .get(id)
+                .map_err(core_read_error)?
+                .ok_or(CoreError::MissingObject)?;
+            callback(id, &bytes)
+        }
+    }
+}
+
 fn core_read_error(error: StoreError) -> CoreError {
     match error {
         StoreError::MissingObject(_) => CoreError::MissingObject,
@@ -3508,38 +3541,75 @@ impl ObjectStore for ObjectBuffer<'_> {
     /// all locations once and selects and decompresses each physical group once
     /// for all of its demands. Identity and canonical-format checks are the same
     /// checks the point route performs, on every demanded object.
-    fn get_authenticated_canonical_batch<F>(
-        &self,
-        ids: &[ObjectId],
-        mut callback: F,
-    ) -> CoreResult<()>
+    ///
+    /// The batch-count ceiling is enforced here, on the whole request, before the
+    /// source is asked and before any callback runs: a batch this buffer wholly
+    /// owns never reaches the source and must not bypass the reader's page bound.
+    /// Callbacks run in the declared demand order, as `ObjectRead` promises, so an
+    /// owned object never overtakes an earlier unowned demand.
+    fn get_authenticated_canonical_batch<F>(&self, ids: &[ObjectId], mut callback: F) -> CoreResult<()>
     where
         F: FnMut(ObjectId, &[u8]) -> CoreResult<()>,
     {
-        let mut missing = Vec::new();
-        for id in ids {
-            match &self.objects.storage {
-                DeferredObjects::Memory { rows, .. } => {
-                    if let Some(object) = rows.get(id) {
-                        callback(*id, &object.bytes)?;
-                        continue;
-                    }
-                }
-                DeferredObjects::Spill(_) => {
-                    if let Some(bytes) = self.objects.get(*id).map_err(core_read_error)? {
-                        layerfs_content::authenticate_identity(&bytes, *id)?;
-                        callback(*id, &bytes)?;
-                        continue;
-                    }
-                }
-            }
-            missing.push(*id);
-        }
-        if missing.is_empty() {
+        if ids.is_empty() {
             return Ok(());
         }
-        CoreReader(self.source.ok_or(CoreError::MissingObject)?)
-            .get_authenticated_canonical_batch(&missing, callback)
+        if ids.len() > OBJECT_PAGE_COUNT {
+            return Err(CoreError::InvalidRecord("object read page"));
+        }
+        // One pass records which demands this buffer owns and which must be
+        // fetched. Only the positions of owned demands are retained, so the
+        // retained state is bounded by this one request.
+        let mut owned: Vec<(usize, ObjectId)> = Vec::new();
+        let mut missing = Vec::new();
+        for (position, id) in ids.iter().enumerate() {
+            if owns_batch_demand(&self.objects, *id)? {
+                owned.push((position, *id));
+            } else {
+                missing.push(*id);
+            }
+        }
+        if owned.is_empty() {
+            // Every demand is unowned: stream the single bounded source call
+            // straight to the callback, exactly as the promoted route did, so the
+            // common case retains no per-demand copy.
+            return match self.source {
+                Some(source) => {
+                    CoreReader(source).get_authenticated_canonical_batch(&missing, callback)
+                }
+                None => Err(CoreError::MissingObject),
+            };
+        }
+        // Interleaved owned and unowned demands: the source call must still run
+        // exactly once, and its results are held only until each demand has been
+        // answered in order. One copy per unowned demand is the transient price
+        // of preserving the documented callback order.
+        let source = self.source.ok_or(CoreError::MissingObject)?;
+        let mut fetched = BTreeMap::new();
+        CoreReader(source).get_authenticated_canonical_batch(&missing, |id, canonical| {
+            fetched.entry(id).or_insert_with(|| canonical.to_vec());
+            Ok(())
+        })?;
+        for id in &missing {
+            if !fetched.contains_key(id) {
+                return Err(CoreError::MissingObject);
+            }
+        }
+        let mut next_owned = 0;
+        for (position, id) in ids.iter().enumerate() {
+            if owned
+                .get(next_owned)
+                .is_some_and(|(index, _)| *index == position)
+            {
+                next_owned += 1;
+                emit_owned_batch_demand(&self.objects, *id, &mut callback)?;
+                continue;
+            }
+            let bytes = fetched.get(id).ok_or(CoreError::MissingObject)?;
+            layerfs_content::authenticate_identity(bytes, *id)?;
+            callback(*id, bytes)?;
+        }
+        Ok(())
     }
 
     fn put_file_payload(
@@ -5435,6 +5505,167 @@ mod tests {
             assert!(AuthenticatedCanonicalObject::new(invalid.clone(), None).is_err());
             assert!(AuthenticatedCanonicalObject::new(invalid, Some(expected)).is_err());
         }
+    }
+
+    /// A source that serves exactly the listed canonical objects through the one
+    /// bounded batch entry, and refuses every other source call.
+    struct BatchOnlySource(Vec<CanonicalObject>);
+    impl ObjectSource for BatchOnlySource {
+        fn read_object(&self, _: ObjectId) -> Result<Vec<u8>> {
+            Err(StoreError::Integrity("unexpected single read"))
+        }
+        fn read_authenticated_objects(&self, ids: &[ObjectId]) -> Result<Vec<CanonicalObject>> {
+            Ok(ids
+                .iter()
+                .map(|id| {
+                    self.0
+                        .iter()
+                        .find(|object| object.id == *id)
+                        .cloned()
+                        .ok_or(StoreError::MissingObject(*id))
+                })
+                .collect::<Result<Vec<_>>>()?)
+        }
+    }
+
+    fn batch_object(tag: &[u8]) -> CanonicalObject {
+        let bytes = layerfs_content::encode_bytes_object(tag).unwrap();
+        CanonicalObject {
+            id: ObjectId::for_bytes(&bytes),
+            bytes,
+        }
+    }
+
+    /// The `ObjectRead` contract promises callbacks in demand order. A buffer that
+    /// owns part of the batch must not emit its owned objects ahead of earlier
+    /// unowned demands.
+    #[test]
+    fn owned_objects_do_not_overtake_earlier_source_demands_in_a_batch() {
+        let source_only = batch_object(b"batch-source-only");
+        let owned = batch_object(b"batch-owned");
+        for spill in [false, true] {
+            let source = BatchOnlySource(vec![source_only.clone()]);
+            let mut buffer = ObjectBuffer::new(&source).unwrap();
+            let owned_id = buffer.put_owned(owned.bytes.clone()).unwrap();
+            assert_eq!(owned_id, owned.id);
+            if spill {
+                buffer.objects.spill().unwrap();
+            }
+            for ids in [
+                vec![source_only.id, owned.id],
+                vec![owned.id, source_only.id],
+                vec![source_only.id, owned.id, source_only.id],
+                vec![owned.id, owned.id, source_only.id],
+            ] {
+                let mut seen = Vec::new();
+                ObjectStore::get_authenticated_canonical_batch(&buffer, &ids, |id, bytes| {
+                    seen.push((id, ObjectId::for_bytes(bytes)));
+                    Ok(())
+                })
+                .unwrap();
+                assert_eq!(
+                    seen,
+                    ids.iter().map(|id| (*id, *id)).collect::<Vec<_>>(),
+                    "spill={spill} ids={ids:?}"
+                );
+            }
+            let mut calls = 0;
+            ObjectStore::get_authenticated_canonical_batch(&buffer, &[], |_, _| {
+                calls += 1;
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(calls, 0);
+        }
+    }
+
+    /// The batch-count ceiling is a property of the entrypoint, so an all-owned
+    /// batch that never reaches the source must be rejected the same way.
+    #[test]
+    fn oversized_all_owned_batch_is_rejected_before_any_callback() {
+        for spill in [false, true] {
+            let mut buffer = ObjectBuffer::empty().unwrap();
+            let mut ids = Vec::new();
+            for index in 0..=OBJECT_PAGE_COUNT {
+                let object = batch_object(format!("oversized-owned-{index}").as_bytes());
+                ids.push(buffer.put_owned(object.bytes).unwrap());
+            }
+            assert_eq!(ids.len(), OBJECT_PAGE_COUNT + 1);
+            if spill {
+                buffer.objects.spill().unwrap();
+            }
+            let mut calls = 0;
+            let error = ObjectStore::get_authenticated_canonical_batch(&buffer, &ids, |_, _| {
+                calls += 1;
+                Ok(())
+            })
+            .unwrap_err();
+            assert_eq!(calls, 0, "spill={spill}");
+            assert!(
+                matches!(error, CoreError::InvalidRecord(_)),
+                "spill={spill} error={error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mixed_batch_reports_callback_and_identity_failures_after_the_source_call() {
+        let source_only = batch_object(b"batch-source-failure");
+        let owned = batch_object(b"batch-owned-failure");
+        let source = BatchOnlySource(vec![source_only.clone()]);
+        let mut buffer = ObjectBuffer::new(&source).unwrap();
+        let owned_id = buffer.put_owned(owned.bytes.clone()).unwrap();
+        let ids = [source_only.id, owned_id];
+        let mut seen = Vec::new();
+        let error = ObjectStore::get_authenticated_canonical_batch(&buffer, &ids, |id, _| {
+            seen.push(id);
+            Err(CoreError::Io)
+        })
+        .unwrap_err();
+        assert_eq!(error, CoreError::Io);
+        assert_eq!(seen, vec![source_only.id]);
+        // A source that answers with the wrong identity is rejected before the
+        // owned object is emitted.
+        let wrong = batch_object(b"batch-wrong-identity");
+        let source = BatchOnlySource(vec![CanonicalObject {
+            id: source_only.id,
+            bytes: wrong.bytes.clone(),
+        }]);
+        let mut buffer = ObjectBuffer::new(&source).unwrap();
+        let owned_id = buffer.put_owned(owned.bytes.clone()).unwrap();
+        let mut seen = Vec::new();
+        let error = ObjectStore::get_authenticated_canonical_batch(
+            &buffer,
+            &[source_only.id, owned_id],
+            |id, _| {
+                seen.push(id);
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, CoreError::IdentityMismatch | CoreError::Io),
+            "error={error:?}"
+        );
+        assert!(seen.is_empty(), "seen={seen:?}");
+        // A demanded object that the source does not have is missing, not a
+        // silently skipped demand.
+        let absent = batch_object(b"batch-absent");
+        let source = BatchOnlySource(vec![source_only.clone()]);
+        let mut buffer = ObjectBuffer::new(&source).unwrap();
+        let owned_id = buffer.put_owned(owned.bytes.clone()).unwrap();
+        let mut seen = Vec::new();
+        let error = ObjectStore::get_authenticated_canonical_batch(
+            &buffer,
+            &[absent.id, owned_id],
+            |id, _| {
+                seen.push(id);
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(error, CoreError::MissingObject), "error={error:?}");
+        assert!(seen.is_empty(), "seen={seen:?}");
     }
 
     #[test]

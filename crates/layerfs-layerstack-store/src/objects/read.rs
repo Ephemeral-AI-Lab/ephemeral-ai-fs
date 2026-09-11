@@ -259,6 +259,11 @@ impl StoreDb {
         pool: &mut super::metadata::PoolRead,
     ) -> Result<Option<MetadataPredecessor>> {
         let target_id = id;
+        // The decoded-value cache is shared across the wave, but this chain's
+        // physical work allowance is its own: an unrelated target that happens to
+        // share the wave must not consume it. Total wave work stays bounded by
+        // the fixed request count times this single-chain ceiling.
+        pool.begin_chain();
         let mut nodes = Vec::with_capacity(METADATA_EDGES);
         let mut canonical_closure = 0;
         let mut encoded_closure = 0;

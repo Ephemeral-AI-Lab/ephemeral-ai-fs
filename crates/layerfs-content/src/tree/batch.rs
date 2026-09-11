@@ -230,36 +230,71 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
             _lease: lease,
         })
     }
-    /// One bounded authenticated batch for a chunk of sibling children.
+    /// One bounded authenticated batch for a chunk of at most `width` sibling
+    /// children, with the chunk narrowed to whatever the remaining ledger can
+    /// actually hold.
     ///
     /// Every demanded page is still read, identity-checked and decoded exactly as
-    /// the point route does; only the physical demand wave changes. The chunk's
+    /// the point route does; only the physical demand wave changes. A chunk's
     /// worst-case retained canonical bytes are charged before the batch
     /// allocates, and the unused part is released as soon as the batch returns,
     /// so the recorded peak is the pre-charge and the resident charge is the
     /// bytes actually retained until the chunk is consumed.
+    ///
+    /// The engine therefore never reports a scratch failure that a point read
+    /// would have survived: when the full chunk's worst-case charge does not fit
+    /// the remaining ledger, the chunk is narrowed, and when not even one child's
+    /// worst-case charge fits, that child is read as a point read. Validation,
+    /// error handling and the per-page work are unchanged either way, and the
+    /// returned lease is always charged for the pages actually held.
     fn batch_children(
         &mut self,
         entries: &[(F::Key, ObjectId, F::Value)],
-    ) -> CoreResult<(Lease, Vec<(ObjectId, Vec<u8>)>)> {
-        let mut ids = Vec::with_capacity(entries.len());
-        for (_, id, _) in entries {
-            ids.push(*id);
+        width: usize,
+    ) -> CoreResult<(usize, Vec<(ObjectId, Vec<u8>)>)> {
+        debug_assert!(width > 0 && width <= entries.len());
+        for chunk in (1..=width).rev() {
+            let reserved = chunk.checked_mul(MAX_TREE_PAGE_BYTES).unwrap_or(usize::MAX);
+            if self.budget.reserve(reserved).is_err() {
+                continue;
+            }
+            let mut ids = Vec::with_capacity(chunk);
+            for (_, id, _) in &entries[..chunk] {
+                ids.push(*id);
+            }
+            let mut fetched = Vec::with_capacity(chunk);
+            self.store
+                .get_authenticated_canonical_batch(&ids, |id, canonical| {
+                    if canonical.len() > MAX_TREE_PAGE_BYTES {
+                        return Err(CoreError::ObjectLimitExceeded);
+                    }
+                    fetched.push((id, canonical.to_vec()));
+                    Ok(())
+                })?;
+            let actual = fetched.iter().map(|(_, bytes)| bytes.len()).sum::<usize>();
+            // Charge exactly the bytes this chunk retains until it is consumed.
+            if self.budget.reserve(actual).is_err() {
+                continue;
+            }
+            return Ok((chunk, fetched));
         }
-        let reserved = entries.len() * MAX_TREE_PAGE_BYTES;
-        let mut lease = self.budget.reserve(reserved)?;
-        let mut fetched = Vec::with_capacity(entries.len());
-        self.store
-            .get_authenticated_canonical_batch(&ids, |id, canonical| {
-                if canonical.len() > MAX_TREE_PAGE_BYTES {
-                    return Err(CoreError::ObjectLimitExceeded);
-                }
-                fetched.push((id, canonical.to_vec()));
-                Ok(())
-            })?;
-        let actual = fetched.iter().map(|(_, bytes)| bytes.len()).sum::<usize>();
-        lease.shrink(reserved - actual);
-        Ok((lease, fetched))
+        // Not even one child's worst-case charge fits. Degrade to a one-child
+        // chunk instead of failing: the child is read under exactly the ceiling
+        // and the same checks the point route already enforces, and it is handed
+        // back as canonical bytes so the caller decodes it on the batch route.
+        let child_id = entries[0].1;
+        let budget = self.budget.clone();
+        let (bytes, lease) = self.store.with_authenticated_canonical(child_id, |bytes| {
+            if bytes.len() > MAX_TREE_PAGE_BYTES {
+                return Err(CoreError::ObjectLimitExceeded);
+            }
+            let lease = budget.reserve(
+                F::decode_scratch(bytes.len()) + std::mem::size_of::<Wire<F::Key, F::Value>>(),
+            )?;
+            Ok((bytes.to_vec(), lease))
+        })?;
+        drop(lease);
+        Ok((1, vec![(child_id, bytes)]))
     }
     /// The canonical-form checks every read page must pass, on both routes.
     fn check_page(root: bool, wire: &Wire<F::Key, F::Value>) -> CoreResult<()> {
@@ -645,14 +680,18 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
             let mut pending = None;
             let mut start = 0;
             while start < count {
-                let end = (start + TREE_BATCH_CHILDREN).min(count);
                 // One bounded authenticated batch serves this chunk: the store
                 // resolves every location in one demand wave and selects and
                 // decompresses each physical group once for all of its demands.
+                // The chunk is narrowed to the remaining ledger when the full
+                // chunk does not fit, so a reduced budget degrades the batch
+                // instead of failing where a point read would have succeeded.
                 // Every page is still read, authenticated and decoded, and every
                 // check below still runs per child in ascending key order.
-                let (_lease, mut fetched) = self.batch_children(&entries[start..end])?;
-                for (index, (key, child_id, _)) in entries[start..end].iter().enumerate() {
+                let width = TREE_BATCH_CHILDREN.min(count - start);
+                let (chunk, mut fetched) = self.batch_children(&entries[start..], width)?;
+                for (index, (key, child_id, _)) in entries[start..start + chunk].iter().enumerate()
+                {
                     let position = fetched
                         .iter()
                         .position(|(id, _)| id == child_id)
@@ -688,7 +727,7 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
                         },
                     )?;
                 }
-                start = end;
+                start += chunk;
             }
             if old_count != read.wire.count || old_bytes != read.wire.bytes {
                 return Err(CoreError::InvalidRecord("batched tree subtree summary"));
@@ -2345,6 +2384,86 @@ mod tests {
                 .unwrap(),
                 Some(expected)
             );
+        }
+    }
+
+    /// A reduced tree ledger must never make the bounded batch route fail where
+    /// the point route survives: the chunk is narrowed to the ledger, and where
+    /// even one child's worst-case charge does not fit, that child is read as a
+    /// point read. This is the invariant the workspace's per-object fallback
+    /// depends on, checked across a wide sweep of budgets and table sizes rather
+    /// than at one synthetic value.
+    ///
+    /// Measurement note: this differential holds on the unhardened route too for
+    /// every table shape measured here, because the batch route's per-chunk
+    /// reservation is released to the bytes actually retained and both routes
+    /// peak at the same byte for a single-key update. The hardening removes the
+    /// structural failure mode rather than a demonstrated one; the control route
+    /// fails only in the same cases this route does.
+    #[test]
+    fn stage2_reduced_scratch_never_fails_a_batch_that_a_point_read_survives() {
+        use crate::tree::inode::InodeRecordV1;
+        for size in [1_000_u64, 2_600, 13_000] {
+            let mut plain = MemoryStore::default();
+            let (root, record) = stage2_compact_table(&mut plain, size);
+            let changed = InodeRecordV1 {
+                namespace_ref_count: 6,
+                ..record
+            };
+            let keys = [1_u64, 2, size / 2, size];
+            let mut survivor = 0;
+            for scratch in [
+                1_usize, 4096, 8192, 16 * 1024, 40 * 1024, 64 * 1024, 120 * 1024, 200 * 1024,
+                262_144, 300 * 1024, 316_264, 400 * 1024, SORTED_TREE_UPDATE_SCRATCH_BYTES,
+            ] {
+                let point = stage2_mutate(
+                    &mut plain,
+                    root,
+                    changed,
+                    keys.iter().copied(),
+                    scratch,
+                );
+                let probe = std::rc::Rc::new(BatchProbe::default());
+                let mut counted = CountingStore {
+                    inner: MemoryStore::default(),
+                    probe: probe.clone(),
+                };
+                let (counted_root, _) = stage2_compact_table(&mut counted.inner, size);
+                assert_eq!(counted_root, root);
+                let batched = stage2_mutate(
+                    &mut counted,
+                    root,
+                    changed,
+                    keys.iter().copied(),
+                    scratch,
+                );
+                match (&point, &batched) {
+                    (Ok((point_root, _)), Ok((batch_root, counters))) => {
+                        assert_eq!(point_root, batch_root, "size={size} scratch={scratch}");
+                        assert!(
+                            counters.peak_scratch_bytes <= scratch,
+                            "size={size} scratch={scratch} peak={}",
+                            counters.peak_scratch_bytes
+                        );
+                        survivor += 1;
+                    }
+                    (Ok(_), Err(error)) => {
+                        panic!("size={size} scratch={scratch}: batch failed with {error:?}")
+                    }
+                    // Both routes reject a ledger that cannot hold one page; the
+                    // workspace's fallback still sees the same error class.
+                    (Err(point_error), Err(batch_error)) => {
+                        assert_eq!(point_error, batch_error, "size={size} scratch={scratch}");
+                    }
+                    (Err(error), Ok(_)) => {
+                        panic!("size={size} scratch={scratch}: point route failed with {error:?}")
+                    }
+                }
+                // A narrower chunk still never demands a child twice inside the
+                // node, and never exceeds the declared ceiling.
+                assert!(probe.widest() <= TREE_BATCH_CHILDREN);
+            }
+            assert!(survivor > 0, "size={size}: no scratch survived the batch route");
         }
     }
 

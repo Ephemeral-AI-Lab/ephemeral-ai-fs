@@ -87,6 +87,106 @@ pub(super) fn next_ordinal(connection: &Connection) -> Result<u64> {
 }
 
 #[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cached(first: u64, count: usize) -> Vec<[u8; 73]> {
+        let mut values = Vec::with_capacity(count);
+        for index in 0..count {
+            let mut value = [0u8; 73];
+            value[0] = first as u8;
+            value[1] = index as u8;
+            values.push(value);
+        }
+        values
+    }
+
+    /// The pooled value cache is deliberately shared by every target of one
+    /// record-group wave, but the physical work allowance belongs to one
+    /// `metadata_chain`. Starting another chain must reset the allowance without
+    /// discarding values a sibling target already decoded, or the shared cache
+    /// would stop paying for itself and the wave would re-read every group.
+    #[test]
+    fn pool_work_allowance_is_per_chain_not_per_wave() {
+        let mut pool = PoolRead::default();
+        pool.groups.insert(1, cached(1, VALUES_PER_GROUP));
+        pool.groups.insert(1 + VALUES_PER_GROUP as u64, cached(2, 3));
+        let retained = pool.retained;
+        pool.retained += 73 * 8 + 256;
+        pool.decoded_work = 31 * 1024 * 1024;
+        assert_eq!(pool.groups.len(), 2);
+
+        pool.begin_chain();
+        // The allowance restarts for the new chain...
+        assert_eq!(pool.decoded_work, 0);
+        // ...and the decoded value cache survives, so the sibling target still
+        // finds its groups cached instead of re-reading them.
+        assert_eq!(pool.groups.len(), 2);
+        assert_eq!(pool.groups[&1].len(), VALUES_PER_GROUP);
+        assert_eq!(pool.groups[&(1 + VALUES_PER_GROUP as u64)].len(), 3);
+        assert!(pool.retained >= retained);
+        // The retention bound is untouched: starting a chain never widens it.
+        assert!(pool.retained < 512 * 1024);
+
+        // Re-starting is idempotent and never resurrects a spent allowance.
+        pool.decoded_work = 32 * 1024 * 1024;
+        pool.begin_chain();
+        assert_eq!(pool.decoded_work, 0);
+        assert_eq!(pool.groups.len(), 2);
+    }
+
+    /// One `metadata_chain` can name at most `METADATA_EDGES + 1` pooled nodes,
+    /// each at most 100 rows (`physical_length`), so the per-chain lookup ceiling
+    /// is exactly the 1 700 the decoded-work comment claims -- two orders of
+    /// magnitude below the 2 048-unit ceiling a single chain may spend. That is
+    /// why the allowance can be owned per chain without weakening any bound.
+    #[test]
+    fn one_chain_cannot_exceed_the_decoded_work_ceiling() {
+        let rows_per_node = (8192 - 44) / 81;
+        assert_eq!(rows_per_node, 100);
+        assert!(physical_length(44 + rows_per_node * 81).is_ok());
+        assert!(physical_length(44 + (rows_per_node + 1) * 81).is_err());
+        let maximum_lookups = (super::super::read::METADATA_EDGES + 1) * rows_per_node;
+        assert_eq!(maximum_lookups, 1_700);
+        assert!(maximum_lookups * 16 * 1024 < 32 * 1024 * 1024);
+        // The logical-work guard in `expand` is charged per call, so a single
+        // call can never exceed 192 KiB / 94 B either.
+        assert!(rows_per_node * 94 < 192 * 1024);
+        let mut leaf = [0u8; 44];
+        leaf[13..21].copy_from_slice(b"LFS6INT\0");
+        leaf[23] = 7;
+        assert!(super::super::read::metadata_leaf(&leaf));
+    }
+
+    /// A pooled leaf row addresses a value group, and a miss costs one 16-KiB
+    /// unit however many rows share that group. Rows spaced one full group apart
+    /// therefore cost one unit each -- the recipe a scattered-ordinal corpus
+    /// needs, and the reason such a corpus needs `VALUES_PER_GROUP` distinct
+    /// admitted values per charged unit.
+    #[test]
+    fn group_lookup_spacing_controls_the_miss_count() {
+        assert_eq!(VALUES_PER_GROUP, 165);
+        let same = [1u64, 2];
+        let spaced = [1u64, 1 + VALUES_PER_GROUP as u64];
+        assert_eq!(
+            same.iter()
+                .map(|ordinal| ordinal / VALUES_PER_GROUP as u64)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            1
+        );
+        assert_eq!(
+            spaced
+                .iter()
+                .map(|ordinal| ordinal / VALUES_PER_GROUP as u64)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            2
+        );
+    }
+}
+
+#[cfg(test)]
 #[path = "metadata_endpoint_tests.rs"]
 mod endpoint_tests;
 
@@ -321,10 +421,23 @@ pub(super) fn decode_values(body: &[u8], group: Group) -> Result<Vec<[u8; 73]>> 
 pub(super) struct PoolRead {
     groups: BTreeMap<u64, Vec<[u8; 73]>>,
     retained: usize,
+    /// Physical value lookups already charged to the single metadata chain that
+    /// is currently being served. The decoded value cache above is bounded and
+    /// reused across every target of one record-group wave, but this work
+    /// allowance belongs to one chain: unrelated targets that merely share a
+    /// wave must not spend each other's allowance. `begin_chain` resets it, so
+    /// the existing ceiling still bounds exactly one chain's lookups.
     decoded_work: usize,
 }
 
 impl PoolRead {
+    /// Start the work allowance for one metadata chain. Cache contents and the
+    /// retention bound are untouched, so a sibling target still reuses values an
+    /// earlier target in the same wave already decoded.
+    pub(super) fn begin_chain(&mut self) {
+        self.decoded_work = 0;
+    }
+
     pub(super) fn expand(
         &mut self,
         db: &StoreDb,
@@ -358,7 +471,9 @@ impl PoolRead {
             } else {
                 let group = db.metadata_group(ordinal)?;
                 // At most 1700 value lookups per bounded metadata chain. This
-                // separate physical-work ceiling includes cache misses/reloads.
+                // separate physical-work ceiling includes cache misses and
+                // reloads, and is charged to the chain whose `begin_chain` ran
+                // most recently -- never to a sibling target of the same wave.
                 self.decoded_work += 16 * 1024;
                 if self.decoded_work > 32 * 1024 * 1024 {
                     return Err(StoreError::Integrity("metadata pool decoded work"));
