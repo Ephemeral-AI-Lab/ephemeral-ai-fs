@@ -7,13 +7,60 @@ import tempfile
 import sqlite3
 from pathlib import Path
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from types import SimpleNamespace
 
 import runner
 
 
 class RunnerTests(unittest.TestCase):
+    def test_only_explicit_large_sequences_use_scaled_verification(self):
+        normal = runner.verification_policy({"family": "init_namespace", "case": "namespace-100000"})
+        self.assertEqual((normal["work_limit_seconds"], normal["hard_limit_seconds"]), (45, 59))
+        for count, commits, expected in ((100, 1, 45), (100, 3, 45), (1000, 1, 45),
+                                          (1001, 1, 600), (1000, 33, 600), (32000, 1, 600)):
+            selection = {"family": "init_namespace", "sequence": {
+                "schema": "workspace-sequence-v1", "edit_count": count, "commits": commits}}
+            self.assertEqual(runner.verification_policy(selection)["work_limit_seconds"], expected)
+            self.assertEqual(runner.verification_policy({**selection, "family": "dedup_branch_history"}), normal)
+        self.assertEqual(runner.verification_policy({"family": "init_namespace",
+            "sequence": {"schema": "unrecognized", "edit_count": 32000, "commits": 1}}), normal)
+
+    def test_verification_command_cap_cleanup_and_sequence_truncation(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(runner, "HOST_ROOT", Path(directory)):
+            for count, truncated, deadline, expected_end, expected_status in (
+                    (None, False, 700, 145, "PASS"),
+                    (1000, False, 700, 145, "PASS"),
+                    (32000, False, 700, 696, "PASS"),
+                    (32000, True, 700, 696, "FAIL")):
+                with self.subTest(count=count, truncated=truncated):
+                    selection = {"family": "init_namespace", "case": "namespace-100000", "seed": 1,
+                        "verification_supported": True, "route": "namespace", "timer": "edit_commit_ns",
+                        "setup_identity": "fresh-output", "source_arm": "candidate", "image": "image"}
+                    if count is not None:
+                        selection["sequence"] = {"schema": "workspace-sequence-v1", "edit_count": count,
+                            "commits": 1, "reopen": False, "active_cache": False}
+                    args = SimpleNamespace(prepare_only=False, cpus=2, memory_mib=2048,
+                        performance_rows="-", host_binary="fake", timeout=999, product_timeout=998)
+                    sample = SimpleNamespace(id="fake", observation={}, remove=Mock())
+                    command_result = SimpleNamespace(returncode=0, truncated=truncated, stderr=b"",
+                        stdout=b'{"kind":"workspace-sequence","status":"PASS","edit_commit_ns":1}\n')
+                    snapshot = {"usage_usec": 0, "memory_peak": 0, "memory_current": 0,
+                                "swap_current": 0, "oom_kill": 0}
+                    with patch.object(runner, "resolve_selection", return_value=selection), \
+                         patch.object(runner, "_host_acquire", return_value={"host_root": directory, "image": "image"}), \
+                         patch.object(runner.runtime, "start_sample", return_value=sample), \
+                         patch.object(runner, "_host_sample", return_value={"prepared_input_root": directory}), \
+                         patch.object(runner, "cgroup_snapshot", return_value=snapshot), \
+                         patch.object(runner.time, "monotonic", return_value=100), \
+                         patch.object(runner, "_command", return_value=command_result) as command:
+                        result = runner.execute_selected(args, deadline=deadline, verification=True)
+                    self.assertEqual(command.call_args.args[1], expected_end)
+                    self.assertEqual(command.call_args.kwargs["output_limit"], 16 * 1024**2)
+                    self.assertEqual(sample.remove.call_args.kwargs["deadline"].end, deadline)
+                    self.assertEqual(result["status"], expected_status)
+                    self.assertEqual(result["cleanup"]["status"], "PASS")
+
     def test_sequence_is_explicit_bounded_and_not_an_init_gate(self):
         for options in (["--sequence", "-1"], ["--sequence", "100001"],
                         ["--sequence", "1", "--sequence-commits", "0"],

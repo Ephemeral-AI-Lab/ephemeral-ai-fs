@@ -50,6 +50,17 @@ def performance_target_status(elapsed_ns):
     return "PASS" if elapsed_ns <= PRODUCT_TARGET_NS else "TARGET_MISS"
 
 
+def verification_policy(selection):
+    sequence = selection.get("sequence") or {}
+    scaled = (selection.get("family") == "init_namespace"
+              and sequence.get("schema") == "workspace-sequence-v1"
+              and sequence.get("edit_count", 0) * sequence.get("commits", 0) > 1000)
+    return {"id": "workspace-sequence-scaling-v1" if scaled else "selected-verification-v1",
+            "work_limit_seconds": 600.0 if scaled else 45.0,
+            "hard_limit_seconds": 614.0 if scaled else 59.0,
+            "cleanup_reserve_seconds": 4.0, "publication_guard_seconds": 0.25}
+
+
 def issue47_assessment(selection, elapsed_ns):
     if selection.get("family") != "tiny_file_churn" or selection.get("case") not in (
             "tiny-bulk-create-100-mixed-v3", "tiny-bulk-delete-100-mixed-v3"):
@@ -544,6 +555,9 @@ def execute_selected(args, *, deadline, verification=False):
     """No receipt files here: the caller publishes after this function cleans up."""
     started = time.monotonic_ns()
     selection = resolve_selection(args, deadline)
+    policy = verification_policy(selection) if verification else None
+    if policy is not None:
+        selection["verification_policy"] = policy
     if selection.get("proof_only") and not verification and not args.prepare_only:
         raise ValueError("proof-only case does not support performance")
     if verification and not selection["verification_supported"]:
@@ -556,7 +570,7 @@ def execute_selected(args, *, deadline, verification=False):
               "phase": "preparation",
               "sampled_paths_or_ranges": [], "reused_proof_identities": [],
               "resource_precision": "separate host process CPU/RSS/IO and container lifetime peak/command CPU"}
-    work_end = deadline - 4
+    work_end = deadline - (policy["cleanup_reserve_seconds"] if policy else 4)
     try:
         setup_started = time.monotonic_ns()
         prepared = _host_acquire(args, selection, work_end)
@@ -622,7 +636,7 @@ def execute_selected(args, *, deadline, verification=False):
         before = cgroup_snapshot(sample, work_end)
         run_started = time.monotonic_ns()
         result["product_command_started_ns"] = run_started
-        command_end = min(work_end, time.monotonic() + (45 if verification else args.timeout))
+        command_end = min(work_end, time.monotonic() + (policy["work_limit_seconds"] if policy else args.timeout))
         command = _command([args.host_binary, *operation], command_end, env=command_env, output_limit=16 * 1024**2)
         result["command_wall_ns"] = time.monotonic_ns() - run_started
         result["records"] = records(command.stdout)
@@ -638,7 +652,7 @@ def execute_selected(args, *, deadline, verification=False):
         timer, elapsed = _timer(result)
         if command.truncated:
             result["omissions"].append("selected command output exceeded the 16 MiB compact receipt limit")
-            if not verification:
+            if not verification or selection.get("sequence"):
                 raise RuntimeError("selected command output exceeded compact receipt limit")
         if not verification and elapsed is None and command.returncode == 0:
             raise RuntimeError(f"missing declared product timer: {timer}")

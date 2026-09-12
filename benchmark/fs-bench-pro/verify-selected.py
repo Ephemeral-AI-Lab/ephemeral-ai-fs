@@ -54,6 +54,7 @@ def publish_receipt(output, receipt, clock=time.monotonic, stage_writer=_write, 
     final = output / "verification.json"
     staged = output.parent / f".{output.name}.verification-{uuid.uuid4().hex}.pending"
     hard_deadline = receipt.pop("_hard_deadline")
+    hard_limit = receipt.get("hard_limit_seconds", HARD_LIMIT_SECONDS)
     started = receipt["monotonic_start_seconds"]
     try:
         receipt["monotonic_end_seconds"] = clock()
@@ -65,7 +66,7 @@ def publish_receipt(output, receipt, clock=time.monotonic, stage_writer=_write, 
         receipt["wall_seconds"] = published_at - started
         if receipt["status"] == "PASS" and published_at >= hard_deadline - PUBLICATION_GUARD_SECONDS:
             receipt["status"] = "TIMEOUT"
-            receipt["error"] = "receipt publication reached the hard 59-second limit"
+            receipt["error"] = f"receipt publication reached the hard {hard_limit:g}-second limit"
         # The first exclusive link is provisional until its own duration is
         # represented. Only this invocation's inode is removed and finalized.
         final.unlink()
@@ -77,7 +78,7 @@ def publish_receipt(output, receipt, clock=time.monotonic, stage_writer=_write, 
             final.unlink()
             staged.unlink()
             receipt["status"] = "TIMEOUT"
-            receipt["error"] = "final receipt publication exceeded the hard 59-second limit"
+            receipt["error"] = f"final receipt publication exceeded the hard {hard_limit:g}-second limit"
             receipt["monotonic_end_seconds"] = final_at
             receipt["wall_seconds"] = final_at - started
             _write(staged, _encoded(receipt))
@@ -123,7 +124,7 @@ def _same_identity(old, selected):
     for key in (
         "seed", "repetition", "source_identity", "input_identity", "setup_identity",
         "product_identity", "harness_identity", "image_identity", "topology", "host_executor",
-        "source_arm", "sequence",
+        "source_arm", "sequence", "verification_policy",
     ):
         if key in ("seed", "repetition") and selected.get("route") == "sdk":
             continue
@@ -145,11 +146,13 @@ def reuse_pass(path, selected):
     if not path.is_file() or path.stat().st_size > FAILURE_LOG_LIMIT:
         raise ValueError("reused verification receipt is missing or unbounded")
     old = json.loads(path.read_text())
+    hard_limit = (selected.get("verification_policy") or {}).get("hard_limit_seconds", HARD_LIMIT_SECONDS)
     if (
         old.get("schema") != "layerfs-selected-verification-v2"
         or old.get("status") != "PASS"
         or str(old.get("cleanup", {}).get("status", "")).upper() != "PASS"
-        or old.get("wall_seconds", HARD_LIMIT_SECONDS) >= HARD_LIMIT_SECONDS
+        or old.get("hard_limit_seconds", hard_limit) != hard_limit
+        or old.get("wall_seconds", hard_limit) >= hard_limit
         or not _same_identity(old, selected)
     ):
         raise ValueError("reused PASS does not exactly match the selected identity")
@@ -261,6 +264,7 @@ def run(runner, argv=None, clock=time.monotonic, publisher=publish_receipt):
     status = "INCOMPLETE"
     error = None
     selected = None
+    policy = None
     result = {"cleanup": {"status": "INCOMPLETE", "required": True}}
     lock_path = Path(os.environ.get("TMPDIR", "/tmp")) / "layerfs-infra-measurement.lock"
     lock = lock_path.open("a")
@@ -270,6 +274,14 @@ def run(runner, argv=None, clock=time.monotonic, publisher=publish_receipt):
         except BlockingIOError as cause:
             raise RuntimeError("another benchmark owns the measurement lock") from cause
         selected = validate_selection(args, runner.resolve_selection(args, deadline=work_deadline))
+        if clock() >= work_deadline:
+            raise TimeoutError("selection authentication consumed the 45-second work allowance")
+        policy = runner.verification_policy(selected)
+        selected["verification_policy"] = policy
+        # Selection stays bounded to 45 seconds; scaled work is charged from
+        # the original invocation start, never from the end of preparation.
+        work_deadline = started + policy["work_limit_seconds"]
+        hard_deadline = started + policy["hard_limit_seconds"]
         if selected.get("verification_supported") is False:
             result = {
                 "status": "INCOMPLETE",
@@ -280,8 +292,6 @@ def run(runner, argv=None, clock=time.monotonic, publisher=publish_receipt):
                 "resource_precision": {},
                 "cleanup": {"status": "PASS", "required": False},
             }
-        elif clock() >= work_deadline:
-            raise TimeoutError("selection authentication consumed the 45-second work allowance")
         else:
             reused = getattr(args, "reuse_pass", None)
             result = reuse_pass(reused, selected) if reused else runner.execute_selected(
@@ -297,8 +307,10 @@ def run(runner, argv=None, clock=time.monotonic, publisher=publish_receipt):
         result = normalize_result({"status": status, "cleanup": result.get("cleanup", {})})
 
     now = clock()
+    if policy and policy["id"] == "workspace-sequence-scaling-v1" and now >= work_deadline:
+        status, error = "TIMEOUT", error or "scaled verification exceeded the 600-second work allowance including cleanup"
     if now >= hard_deadline:
-        status, error = "TIMEOUT", error or "hard 59-second end-to-end limit reached"
+        status, error = "TIMEOUT", error or f"hard {hard_deadline-started:g}-second end-to-end limit reached"
     if status != "PASS":
         try:
             failure = _failure_log(output, error or result.get("error") or status)
@@ -334,6 +346,7 @@ def run(runner, argv=None, clock=time.monotonic, publisher=publish_receipt):
         "environment_identity": selected.get("environment_identity") or (_json_digest(environment) if environment else None),
         "recipe_route": selected.get("recipe_route", selected.get("route", selected.get("operation"))),
         "sequence": selected.get("sequence"),
+        "verification_policy": policy,
         "checks": result.get("records", result.get("checks", [])),
         "sampled_paths_or_ranges": result.get("sampled_paths_or_ranges", []),
         "reused_proof_identities": result.get("reused_proof_identities", []),
@@ -343,7 +356,7 @@ def run(runner, argv=None, clock=time.monotonic, publisher=publish_receipt):
         "cleanup": result.get("cleanup", {"status": "INCOMPLETE"}),
         "monotonic_start_seconds": started,
         "work_deadline_seconds": work_deadline,
-        "hard_limit_seconds": HARD_LIMIT_SECONDS,
+        "hard_limit_seconds": hard_deadline - started,
         "evidence_path": str(output / "verification.json"),
         "failure_log": failure,
         "error": error,

@@ -113,6 +113,18 @@ and exact source/input/image identities. It checks all changed bytes/lengths,
 a declared unchanged-file sample, and initial/selected historical roots after
 reopen; it does not claim exhaustive unchanged-namespace verification.
 
+Verification keeps the ordinary 45-second work / 59-second complete limit for
+sequences with at most 1000 total SDK edit calls. An explicitly selected sequence
+with `--sequence COUNT` times `--sequence-commits COMMITS` greater than 1000 uses
+the fixed `workspace-sequence-scaling-v1` policy: 600 seconds of work and a
+614-second complete limit, including receipt publication. Selection authentication
+still has 45 seconds, all deadlines start at invocation, and work reserves four
+seconds for cleanup. The receipt binds the exact policy and sequence parameters.
+These limits do not change ordinary families, historical access's 15-second
+contract, or performance targets; performance `--timeout` / `--product-timeout`
+flags do not set verification deadlines. Large proofs remain explicit selections,
+and an over-budget or truncated sequence proof cannot pass.
+
 For attribution only, a valid `LAYERFS_EDIT_DIAGNOSTIC_NONCE` produces bounded
 per-edit diagnostic records and excludes the run from performance distributions.
 Clear it for plain qualification and large-count cases. Default-budget spill
