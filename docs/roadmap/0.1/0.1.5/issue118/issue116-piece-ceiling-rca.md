@@ -154,7 +154,35 @@ atomic Commit boundary, checked arithmetic instead of a moved ceiling, and
 unchanged SDK/FUSE/mmap/truncation/sparse/hardlink/cancellation/rollback
 semantics.
 
-## 8. What the ceiling becomes after the compact representation
+## 8. 5,461 is a per-shape number, not a workspace limit
+
+The ceiling depends entirely on how each changed file's pending state is shaped.
+Measured boundaries (`issue116-audit/rca-compact.log`, `probe-charge.log`,
+`probe-splice.log`):
+
+| Pending shape of each changed file | Charge/file | Measured acceptance | Budget that stopped it |
+|---|---:|---:|---|
+| newly created, one contiguous write (compact single-range form) | 8 B | **262,144** | spool quota (1 GiB / 4 KiB files) — piece budget was exactly full at 2,097,152 B |
+| whole-file replacement | 8 B (stays 1 piece) | same as above | spool quota |
+| small splice into an existing base file | 384 B | **5,461** | piece allocation 2 MiB |
+| one splice + one more at a new offset | 640 B | ~3,276 | piece allocation 2 MiB |
+
+So a workspace can hold **262,144** newly created small files but only **5,461**
+pre-existing files each carrying one small splice — a 48× difference produced by
+the representation, not by a file-count policy.
+
+The distinction that matters in practice: `namespace-100000` **Init** imports
+100,000 files and passes, because imported files take the compact form; a
+32,000-edit **sequence** that splices into 32,000 distinct pre-existing files
+does not, because every spliced file costs 3 nodes. There is no `5461` constant
+anywhere in the source; it is `2 MiB / (3 × 128 B)`.
+
+A second per-shape budget worth naming: the changed-fact memory charge is
+**per published set**, not cumulative across the whole workspace, so it bounds
+one publish (≈29,960 spliced files at 3,360 B each) rather than the workspace
+lifetime.
+
+## 9. What the ceiling becomes after the compact representation
 
 Removing the piece ceiling does not by itself make the workload unbounded: the
 **changed-fact memory charge** (`live_wire::MAX_FACT_MEMORY = 96 MiB`, charged
@@ -199,7 +227,7 @@ the post-representation ceiling near **49,000 files**, above K32000. It changes
 the shared live-state reservation accounting, so it needs its own resource
 proof and must not be bundled silently into the representation change.
 
-## 9. Why the compact representation is not trivial
+## 10. Why the compact representation is not trivial
 
 It is a **bounded but real** data-structure change, not a counter deletion:
 
@@ -223,7 +251,7 @@ It is a **bounded but real** data-structure change, not a counter deletion:
 Realistic effort: roughly 250–400 lines of product change plus 400–700 lines of
 tests, with a correctness risk concentrated in `PieceTree::replace`.
 
-## 10. Reproduction
+## 11. Reproduction
 
 ```bash
 # exact boundary through the public workload
@@ -240,6 +268,10 @@ python3 benchmark/fs-bench-pro/shared/runner.py --family init_namespace \
 
 # exact structure and charge decomposition
 cargo +1.85.1 test -p layerfs-workspace --lib issue116_piece_charge_rca \
+  -- --ignored --nocapture --test-threads=1
+
+# per-shape boundary (compact form)
+cargo +1.85.1 test -p layerfs-workspace --lib issue116_compact_form_scaling_probe \
   -- --ignored --nocapture --test-threads=1
 
 # next-budget (fact charge) and real resident cost

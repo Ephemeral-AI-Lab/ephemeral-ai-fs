@@ -1472,6 +1472,49 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// #116 RCA: how far the compact single-range form scales, to contrast the
+    /// 5,461 splice ceiling with the other per-file shapes.
+    #[test]
+    #[ignore = "issue116 root-cause probe"]
+    fn issue116_compact_form_scaling_probe() {
+        let (root, mut workspace) = workspace("compact-scaling");
+        let payload = vec![7u8; 4096];
+        let mut accepted = 0u32;
+        for index in 0..400_000u32 {
+            let name = format!("f{index}");
+            let node = match workspace.create_file(ROOT, name.as_bytes(), 0o600) {
+                Ok(attr) => attr.node,
+                Err(error) => {
+                    println!("RCA COMPACT create_rejected_at={index} error={error:?}");
+                    break;
+                }
+            };
+            // One contiguous write: the whole file stays a single spool range.
+            match workspace.write(node, 0, &payload) {
+                Ok(_) => {
+                    accepted += 1;
+                    if accepted % 50_000 == 0 {
+                        let (charge, _, spool, dirty, nodes) =
+                            workspace.pending_charge_snapshot();
+                        println!(
+                            "RCA COMPACT accepted={accepted} piece_charge={charge} spool={spool} dirty={dirty} nodes={nodes}"
+                        );
+                    }
+                }
+                Err(error) => {
+                    let (charge, _, _, _, _) = workspace.pending_charge_snapshot();
+                    println!(
+                        "RCA COMPACT rejected_at={index} accepted={accepted} error={error:?} piece_charge={charge}"
+                    );
+                    break;
+                }
+            }
+        }
+        println!("RCA COMPACT end accepted={accepted}");
+        drop(workspace);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn short_spool_append_restores_high_water_and_piece_root() {
         let (root, mut workspace) = workspace("short-append");
