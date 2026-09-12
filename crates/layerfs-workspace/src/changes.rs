@@ -685,6 +685,13 @@ impl CandidateInputs<'_> {
             tree_scratch,
             self.spool,
         );
+        #[cfg(test)]
+        LAST_FRONTIER_STATS.with(|stats| {
+            stats.set(Some(SpillStatCounters {
+                batch_size: inodes.batch_size as u64,
+                ..SpillStatCounters::default()
+            }))
+        });
         let mut metadata_cache = PortableMetadataCache::default();
         let mut references = ReferenceJournal::new(self.spool, io_bytes / 2);
         note_commit_phase(WorkspaceCommitPhase::CandidatePlan, started);
@@ -820,6 +827,10 @@ impl CandidateInputs<'_> {
                 (attr.kind == Kind::File).then_some(attr.size),
             )
         })?;
+        #[cfg(test)]
+        LAST_FRONTIER_STATS.with(|stats| {
+            stats.set(Some(inodes.stats.snapshot(inodes.batch_size)));
+        });
         note_commit_phase(WorkspaceCommitPhase::Namespace, started);
         let started = Instant::now();
         let mut built = objects.finish(inodes.root, 0)?;
@@ -2009,6 +2020,20 @@ pub(crate) fn inject_candidate_failure_once() {
 #[cfg(test)]
 thread_local! {
     static INJECT_INODE_MERGE_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    // Stage 3 proof hook: the counters of the most recent real candidate build.
+    static LAST_FRONTIER_STATS: std::cell::Cell<Option<SpillStatCounters>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+impl Workspace {
+    /// Deterministic spill counters of the most recent candidate build on this
+    /// thread. Test-only; the release product carries no spill telemetry.
+    pub(crate) fn frontier_stats(&self) -> SpillStatCounters {
+        LAST_FRONTIER_STATS
+            .with(|stats| stats.get())
+            .expect("no candidate build recorded spill counters on this thread")
+    }
 }
 
 #[cfg(test)]
@@ -5081,6 +5106,128 @@ mod tests {
             rows.windows(2).all(|pair| pair[0].0 < pair[1].0),
             "spill rows must stay sorted and key-unique"
         );
+    }
+
+    // Reduced-budget integration proof: the real Workspace Commit path on a real
+    // Store, with a frontier small enough that a reachable changed set crosses many
+    // flushes. This is a separately declared case, not default-policy performance:
+    // `max_final_delta_memory_bytes` is a supported policy parameter of this entry
+    // point and the default policy is untouched.
+    //
+    // Select explicitly: cargo test -p layerfs-workspace --lib --ignored \
+    //   changes::tests::reduced_budget_workspace_commit_spills_exactly
+    #[test]
+    #[ignore = "reduced-budget integration proof; run explicitly when collecting Stage 3 evidence"]
+    fn reduced_budget_workspace_commit_spills_exactly() {
+        const FILES: usize = 600;
+        let root = std::env::temp_dir().join(format!(
+            "layerfs-stage3-reduced-budget-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let source = root.join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        let store = LayerStackStore::create(root.join("store.sqlite")).unwrap();
+        let layer = store
+            .initialize_layerstack(
+                EntityName::new("stage3-reduced-budget").unwrap(),
+                LayerStackInitialization::Directory(source),
+            )
+            .unwrap()
+            .genesis_layer_id;
+        let branch = store
+            .fork_branch(
+                EntityName::new("main").unwrap(),
+                LocalForkSource::Layer { layer_id: layer },
+            )
+            .unwrap();
+        // The same policy derivation `CandidateInputs::build` uses, at a declared
+        // reduced budget: this must yield a small pending capacity.
+        let policy = policy_for_batch(16);
+        let mut workspace =
+            Workspace::open_with_policy(store.clone(), branch, root.join("spool"), policy)
+                .unwrap();
+        let io_bytes = journal_io_bytes(policy.max_final_delta_memory_bytes);
+        let frontier_budget = policy
+            .max_final_delta_memory_bytes
+            .saturating_sub(4 * io_bytes.saturating_sub(256) as u64);
+        let batch = 1 + (frontier_budget.saturating_sub(1024) / 512);
+        assert_eq!(batch, 16, "declared reduced-budget pending capacity");
+        let mut expected = Vec::with_capacity(FILES);
+        for index in 0..FILES {
+            let name = format!("f{index:04}");
+            let payload = format!("payload-{index:04}");
+            let file = workspace
+                .create_file(ROOT, name.as_bytes(), 0o640)
+                .unwrap()
+                .node;
+            workspace.write(file, 0, payload.as_bytes()).unwrap();
+            expected.push((name, payload));
+        }
+        let built = workspace
+            .build_candidate(CandidatePurpose::Preview)
+            .unwrap();
+        let candidate_root = built.built.root_id;
+        let outcome = store
+            .commit_candidate(
+                &store.branch(branch).unwrap().unwrap(),
+                workspace.base_root,
+                workspace.expected_base,
+                built.built,
+            )
+            .unwrap();
+        let CommitOutcome::Committed { root_id, .. } = outcome else {
+            panic!("reduced-budget Commit was not created")
+        };
+        assert_eq!(root_id, candidate_root);
+        let reader = store.snapshot_reader(root_id);
+        let core = CoreReader(&reader);
+        for (name, payload) in &expected {
+            let mut bytes = Vec::new();
+            filesystem::stream(&core, root_id, &CanonicalPath::new(name).unwrap(), &mut bytes)
+                .unwrap();
+            assert_eq!(&bytes, payload.as_bytes(), "{name}");
+        }
+        // The declared case must actually spill, and the whole run must stay inside
+        // the derived bound for this capacity.
+        let stats = workspace.frontier_stats();
+        let flushes = stats.batch_flushes;
+        assert!(flushes >= 8, "expected many flushes, saw {flushes}");
+        // Every created file plus the root directory it was created in.
+        assert_eq!(stats.spill_keys, FILES as u64 + 1);
+        let f = flushes.max(1);
+        let levels = (usize::BITS - f.leading_zeros()) as u64;
+        let bound = batch as u64 * f * (1 + levels + 2) + 2 * stats.spill_keys;
+        assert!(
+            stats.record_writes <= bound,
+            "writes={} bound={bound}",
+            stats.record_writes
+        );
+        assert!(stats.peak_live_runs <= levels + 1);
+        println!(
+            "reduced-budget batch={batch} files={FILES} flushes={flushes} \
+             writes={} reads={} bytes_written={} bytes_read={} merges={} deepest_level={} \
+             peak_runs={} peak_open_files={} scratch={} peak_live_bytes={} \
+             control_writes={} control_reads={}",
+            stats.record_writes,
+            stats.record_reads,
+            stats.bytes_written,
+            stats.bytes_read,
+            stats.merges,
+            stats.merge_levels,
+            stats.peak_live_runs,
+            stats.peak_open_files,
+            stats.peak_scratch_bytes,
+            stats.peak_live_bytes,
+            batch as u64 * f * (f + 1) / 2 + batch as u64,
+            batch as u64 * f * (f - 1) / 2,
+        );
+        drop(workspace);
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     // Exact current resolution of one staged key, independent of which structure
