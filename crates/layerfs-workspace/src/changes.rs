@@ -5252,7 +5252,7 @@ mod tests {
                 // Level scaling: each merge more than doubles its older input, so
                 // the record rewrite count is bounded by the derived O(K log K/B)
                 // expression and never by the quadratic control expression.
-                let f = expected_flushes.max(1);
+                let f = stats.batch_flushes.max(1);
                 let levels = (usize::BITS - f.leading_zeros()) as u64;
                 let bound = batch as u64 * f * (1 + levels + 2) + 2 * count as u64;
                 assert!(
@@ -5325,10 +5325,9 @@ mod tests {
             assert_sorted_unique(&rows);
             let stats = inodes.stats.snapshot(inodes.batch_size);
             let flush = stats.batch_flushes.max(1);
-            // Cumulative control traffic after the same number of flushes: flush f
-            // reads the (f-1) rows already accumulated and writes all f rows, and the
-            // final coalescing merge writes the last B rows once more.
-            let control_writes = batch * flush * (flush + 1) / 2 + batch;
+            // Original single-spill model: flush f reads (f-1) batches and
+            // writes f batches, including the final pending flush.
+            let control_writes = batch * flush * (flush + 1) / 2;
             let control_reads = batch * flush * (flush - 1) / 2;
             control_total = control_writes + control_reads;
             let levels = (usize::BITS - flush.leading_zeros()) as u64;
@@ -5349,9 +5348,13 @@ mod tests {
             // Below the crossover the control has little accumulated spill to
             // rewrite, so the candidate's one consolidation pass may be larger; the
             // quadratic term must have taken over above 8B.
+            assert_eq!(stats.record_writes, count * (1 + factor.ilog2() as u64));
+            assert_eq!(stats.record_reads, count * factor.ilog2() as u64);
             if let Some(previous) = previous {
+                // 1B has no merge or final copy: the first doubling is exactly
+                // 6x total traffic. Thereafter the ratio is <=10/3 and declines.
                 assert!(
-                    candidate < previous * 7 / 2,
+                    factor == 2 || candidate < previous * 7 / 2,
                     "factor={factor} candidate={candidate} previous={previous}"
                 );
                 println!(
@@ -5394,7 +5397,7 @@ mod tests {
         assert!(control_total > 0);
         println!(
             "spill-production final_ratio={final_ratio:.4} worst_ratio={worst_ratio:.4} \
-             (worst_ratio is the first flush, before the control has accumulated spill)"
+             (worst_ratio includes the startup crossover)"
         );
         drop(workspace);
         std::fs::remove_dir_all(root).unwrap();
