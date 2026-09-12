@@ -2,6 +2,7 @@
 use crate::live_runtime::{LiveRuntime, OperationGate, Scheduler};
 use crate::live_transport::BackingConnection;
 use crate::live_wire::{self as wire, Input};
+use crate::live_wire::EditMetric;
 use crate::port::{DirectoryPage, KernelEntry, KernelReferences};
 use crate::{Attr, FilesystemPort, Kind, NodeId, PortError, PortResult, ROOT};
 use layerfs_workspace_core::backing::{BackingId, BackingRef};
@@ -388,8 +389,21 @@ struct PendingSplices {
     received: usize,
     prepared: Option<layerfs_workspace_core::file_edit::PreparedFileEdit>,
     cache_ranges: Vec<std::ops::Range<u64>>,
+    diagnostic: Option<EditDiagnostic>,
     cut: crate::live_runtime::OperationCut,
     _charge: crate::live_runtime::LiveReservation,
+}
+
+struct EditDiagnostic {
+    nonce: Vec<u8>,
+    values: [u64; wire::EDIT_DIAGNOSTIC_FIELDS.len()],
+    backing_start: (u64, u64),
+}
+
+fn note_edit(diagnostic: &mut Option<EditDiagnostic>, field: EditMetric, started: Option<Instant>) {
+    if let (Some(diagnostic), Some(started)) = (diagnostic, started) {
+        diagnostic.values[field as usize] += ns(started);
+    }
 }
 
 struct KernelEdit {
@@ -2151,7 +2165,7 @@ impl FilesystemPort for LiveOwner {
                 wire::u64_out(&mut check, id.0);
             }
             self.0.backing.call(&check).await?;
-            self.publish_facts().await?;
+            self.publish_facts(None).await?;
             self.retire_ranges().await
         })
     }
@@ -2341,11 +2355,14 @@ impl LiveOwner {
         Ok(())
     }
 
-    async fn flush_kernel_cache(&self) -> PortResult<()> {
+    async fn flush_kernel_cache(&self, mut diagnostic: Option<&mut EditDiagnostic>) -> PortResult<()> {
         #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
         {
             use std::os::fd::AsRawFd;
             let cached = self.0.cached.lock().map_err(|_| PortError::Io)?.clone();
+            if let Some(diagnostic) = diagnostic.as_deref_mut() {
+                diagnostic.values[EditMetric::CachedNodes as usize] += cached.len() as u64;
+            }
             let nodes: Vec<_> = {
                 let state = self.state()?;
                 cached
@@ -2355,6 +2372,9 @@ impl LiveOwner {
             };
             if nodes.is_empty() {
                 return Ok(());
+            }
+            if let Some(diagnostic) = diagnostic.as_deref_mut() {
+                diagnostic.values[EditMetric::KernelFlushes as usize] += 1;
             }
             let notifier = self.0.notifier.get().ok_or(PortError::Io)?.clone();
             let root = self
@@ -2378,6 +2398,7 @@ impl LiveOwner {
                 .await
                 .map_err(io)?;
         }
+        let _ = &mut diagnostic;
         if self.0.failed.load(Ordering::Acquire) {
             return Err(PortError::Io);
         }
@@ -2402,21 +2423,38 @@ impl LiveOwner {
     }
 
     pub async fn freeze(&self) -> PortResult<()> {
+        self.freeze_diagnostic(&mut None).await
+    }
+
+    async fn freeze_diagnostic(&self, diagnostic: &mut Option<EditDiagnostic>) -> PortResult<()> {
         if self.0.failed.load(Ordering::Acquire) {
             return Err(PortError::Io);
         }
         if self.0.cut.lock().map_err(|_| PortError::Io)?.is_none() {
+            let started = diagnostic.as_ref().map(|_| Instant::now());
             let flush = self.0.gate.cache_flush().await;
-            self.flush_kernel_cache().await?;
+            note_edit(diagnostic, EditMetric::Gate, started);
+            let started = diagnostic.as_ref().map(|_| Instant::now());
+            self.flush_kernel_cache(diagnostic.as_mut()).await?;
+            note_edit(diagnostic, EditMetric::Kernel, started);
+            let started = diagnostic.as_ref().map(|_| Instant::now());
             let cut = flush.finish().await;
             *self.0.cut.lock().map_err(|_| PortError::Io)? = Some(cut);
+            note_edit(diagnostic, EditMetric::Gate, started);
         }
+        let started = diagnostic.as_ref().map(|_| Instant::now());
         self.flush_append(&mut *self.0.append.lock().await).await?;
-        self.publish_facts().await?;
-        self.retire_ranges().await
+        note_edit(diagnostic, EditMetric::Append, started);
+        let started = diagnostic.as_ref().map(|_| Instant::now());
+        self.publish_facts(diagnostic.as_mut()).await?;
+        note_edit(diagnostic, EditMetric::Facts, started);
+        let started = diagnostic.as_ref().map(|_| Instant::now());
+        self.retire_ranges().await?;
+        note_edit(diagnostic, EditMetric::Retire, started);
+        Ok(())
     }
 
-    async fn publish_facts(&self) -> PortResult<()> {
+    async fn publish_facts(&self, mut diagnostic: Option<&mut EditDiagnostic>) -> PortResult<()> {
         let mut acknowledged = self.0.facts_sync.lock().await;
         if let Some(sink) = &self.0.local_facts {
             let facts = {
@@ -2472,6 +2510,9 @@ impl LiveOwner {
                 }
             };
             let identity = (facts.root, facts.generation);
+            if let Some(diagnostic) = diagnostic.as_deref_mut() {
+                diagnostic.values[EditMetric::FactNodes as usize] += facts.nodes.len() as u64;
+            }
             let sink = sink.clone();
             self.0
                 .scheduler
@@ -2558,6 +2599,12 @@ impl LiveOwner {
                 reservation,
             )
         };
+        if let Some(diagnostic) = diagnostic.as_deref_mut() {
+            diagnostic.values[EditMetric::FactNodes as usize] += count as u64;
+            // Request frame headers are included; acknowledgement replies are not.
+            diagnostic.values[EditMetric::FactBytes as usize] +=
+                13 + 21 + pages.iter().map(|page| page.len() as u64 + 4).sum::<u64>();
+        }
         let mut begin = vec![wire::FACTS_BEGIN];
         wire::u64_out(&mut begin, generation);
         self.0.backing.call(&begin).await?;
@@ -2593,6 +2640,18 @@ impl LiveOwner {
         let mut input = Input(bytes);
         let mut out = Vec::new();
         let opcode = input.byte().map_err(io)?;
+        let diagnostic_started = match opcode {
+            wire::EDIT_BEGIN => {
+                let mut preview = Input(input.0);
+                preview.bytes().map_err(io)?;
+                preview.u64().map_err(io)?;
+                (!preview.0.is_empty()).then(Instant::now)
+            }
+            wire::EDIT_PART | wire::EDIT_END => self.0.edit.lock().map_err(|_| PortError::Io)?
+                .as_ref().and_then(|pending| pending.diagnostic.as_ref()).map(|_| Instant::now()),
+            _ => None,
+        };
+        let mut completed_diagnostic = None;
         match opcode {
             wire::EDIT_BEGIN => {
                 let path = std::str::from_utf8(input.bytes().map_err(io)?)
@@ -2600,6 +2659,22 @@ impl LiveOwner {
                     .to_owned();
                 layerfs_content::CanonicalPath::new(&path).map_err(|_| PortError::Invalid)?;
                 let count = input.u64().map_err(io)? as usize;
+                let mut diagnostic = if input.0.is_empty() {
+                    None
+                } else {
+                    let nonce = input.bytes().map_err(io)?;
+                    if !wire::valid_edit_diagnostic_nonce(nonce) {
+                        return Err(PortError::Invalid);
+                    }
+                    Some(EditDiagnostic {
+                        nonce: nonce.to_vec(),
+                        values: [0; wire::EDIT_DIAGNOSTIC_FIELDS.len()],
+                        backing_start: (
+                            self.0.backing.metrics.live_backing_wait_ns.load(Ordering::Relaxed),
+                            self.0.backing.metrics.live_backing_calls.load(Ordering::Relaxed),
+                        ),
+                    })
+                };
                 input.done().map_err(io)?;
                 if count == 0
                     || count > layerfs_workspace_core::file_edit::MAX_EDITS_PER_FILE as usize
@@ -2616,7 +2691,7 @@ impl LiveOwner {
                     .scheduler
                     .reserve_live(9 * 1024 * 1024)
                     .map_err(|_| PortError::NoSpace)?;
-                self.freeze().await?;
+                self.freeze_diagnostic(&mut diagnostic).await?;
                 let cut = self
                     .0
                     .cut
@@ -2625,15 +2700,18 @@ impl LiveOwner {
                     .take()
                     .ok_or(PortError::Io)?;
                 let mut node = ROOT;
+                let started = diagnostic.as_ref().map(|_| Instant::now());
                 for name in path.split('/').filter(|name| !name.is_empty()) {
                     node = self.lookup_async(node, name.as_bytes()).await?.node;
                 }
+                note_edit(&mut diagnostic, EditMetric::Lookup, started);
                 *self.0.edit.lock().map_err(|_| PortError::Io)? = Some(PendingSplices {
                     node,
                     count,
                     received: 0,
                     prepared: None,
                     cache_ranges: Vec::new(),
+                    diagnostic,
                     cut,
                     _charge: charge,
                 });
@@ -2643,6 +2721,7 @@ impl LiveOwner {
                 let delete = input.u64().map_err(io)?;
                 let mut held = self.0.edit.lock().map_err(|_| PortError::Io)?;
                 let pending = held.as_mut().ok_or(PortError::Invalid)?;
+                let preparing = pending.diagnostic.as_ref().map(|_| Instant::now());
                 if pending.received == pending.count {
                     return Err(PortError::Invalid);
                 }
@@ -2688,16 +2767,18 @@ impl LiveOwner {
                     );
                 }
                 pending.received += 1;
+                note_edit(&mut pending.diagnostic, EditMetric::Prepare, preparing);
             }
             wire::EDIT_END => {
                 input.done().map_err(io)?;
-                let pending = self
+                let mut pending = self
                     .0
                     .edit
                     .lock()
                     .map_err(|_| PortError::Io)?
                     .take()
                     .ok_or(PortError::Invalid)?;
+                let applying = pending.diagnostic.as_ref().map(|_| Instant::now());
                 if pending.received != pending.count {
                     return Err(PortError::Invalid);
                 }
@@ -2745,10 +2826,16 @@ impl LiveOwner {
                         ranges: pending.cache_ranges.clone(),
                         _charge: pending._charge,
                     }));
+                note_edit(&mut pending.diagnostic, EditMetric::Apply, applying);
+                let reconciling = pending.diagnostic.as_ref().map(|_| Instant::now());
                 let flush = pending.cut.reopen_writeback();
                 let kernel_edit = KernelEditGuard(&self.0.kernel_edit);
                 #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
                 if let Some(notifier) = self.0.notifier.get().cloned() {
+                    if let Some(diagnostic) = pending.diagnostic.as_mut() {
+                        diagnostic.values[EditMetric::ReconcileNotifier as usize] += 1;
+                        diagnostic.values[EditMetric::ReconcileCached as usize] += u64::from(cache_data);
+                    }
                     let updated = async {
                         let mut ranges = if cache_data {
                             pending.cache_ranges
@@ -2796,6 +2883,16 @@ impl LiveOwner {
                 #[cfg(not(all(target_os = "linux", any(feature = "host", feature = "proxy"))))]
                 let _ = (node, file);
                 kernel_edit.finish(flush).await;
+                note_edit(&mut pending.diagnostic, EditMetric::Reconcile, reconciling);
+                if let Some(diagnostic) = pending.diagnostic.as_mut() {
+                    diagnostic.values[EditMetric::BackingWait as usize] = self.0.backing.metrics
+                        .live_backing_wait_ns.load(Ordering::Relaxed).checked_sub(diagnostic.backing_start.0)
+                        .ok_or(PortError::Io)?;
+                    diagnostic.values[EditMetric::BackingCalls as usize] = self.0.backing.metrics
+                        .live_backing_calls.load(Ordering::Relaxed).checked_sub(diagnostic.backing_start.1)
+                        .ok_or(PortError::Io)?;
+                }
+                completed_diagnostic = pending.diagnostic;
             }
             wire::WRITE_METRICS => {
                 input.done().map_err(io)?;
@@ -2942,6 +3039,18 @@ impl LiveOwner {
         }
         if opcode == wire::INSTALL_END {
             self.retire_ranges().await?;
+        }
+        if let Some(started) = diagnostic_started {
+            if let Some(diagnostic) = completed_diagnostic.as_mut() {
+                diagnostic.values[EditMetric::Control as usize] += ns(started);
+                wire::u64_out(&mut out, wire::EDIT_DIAGNOSTIC_VERSION);
+                wire::bytes_out(&mut out, &diagnostic.nonce).map_err(io)?;
+                for value in diagnostic.values {
+                    wire::u64_out(&mut out, value);
+                }
+            } else if let Some(pending) = self.0.edit.lock().map_err(|_| PortError::Io)?.as_mut() {
+                note_edit(&mut pending.diagnostic, EditMetric::Control, Some(started));
+            }
         }
         Ok(out)
     }
@@ -3667,6 +3776,48 @@ mod immutable_acquisition_tests {
             directory.base = None;
         }
         owner
+    }
+
+    #[test]
+    fn edit_diagnostic_preserves_plain_mutation_and_failed_batch_retry() {
+        let runtime = LiveRuntime::new().unwrap();
+        let owner = kernel_owner(&runtime);
+        let node = owner.create_file(ROOT, b"edited", 0o600).unwrap().node;
+        let nonce = b"0123456789abcdef";
+        let begin = |diagnostic: bool| {
+            let mut bytes = vec![wire::EDIT_BEGIN];
+            wire::bytes_out(&mut bytes, b"edited").unwrap();
+            wire::u64_out(&mut bytes, 1);
+            if diagnostic { wire::bytes_out(&mut bytes, nonce).unwrap(); }
+            bytes
+        };
+        let part = |start, delete, replacement: &[u8]| {
+            let mut bytes = vec![wire::EDIT_PART];
+            wire::u64_out(&mut bytes, start);
+            wire::u64_out(&mut bytes, delete);
+            bytes.push(0);
+            wire::bytes_out(&mut bytes, replacement).unwrap();
+            bytes
+        };
+        runtime.block_on(async {
+            owner.local_control(&begin(true)).await.unwrap();
+            owner.local_control(&part(0, 0, b"abc")).await.unwrap();
+            let reply = owner.local_control(&[wire::EDIT_END]).await.unwrap();
+            let values = wire::read_edit_diagnostic(&reply, nonce).unwrap();
+            assert!(values[EditMetric::Control as usize] > 0);
+            assert!(values[EditMetric::Prepare as usize] > 0);
+            assert_eq!(values[EditMetric::FactNodes as usize], 2);
+            assert_eq!(values[EditMetric::FactBytes as usize], 0);
+            assert_eq!(owner.read_owned(node, 0, 10).await.unwrap(), b"abc");
+            owner.local_control(&begin(true)).await.unwrap();
+            assert!(owner.local_control(&part(99, 1, b"bad")).await.is_err());
+            assert!(owner.0.edit.lock().unwrap().is_none());
+            assert_eq!(owner.read_owned(node, 0, 10).await.unwrap(), b"abc");
+            assert!(owner.local_control(&begin(false)).await.unwrap().is_empty());
+            assert!(owner.local_control(&part(0, 3, b"xyz")).await.unwrap().is_empty());
+            assert!(owner.local_control(&[wire::EDIT_END]).await.unwrap().is_empty());
+            assert_eq!(owner.read_owned(node, 0, 10).await.unwrap(), b"xyz");
+        });
     }
 
     #[test]

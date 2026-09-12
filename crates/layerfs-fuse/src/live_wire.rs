@@ -398,3 +398,68 @@ pub const INVALIDATE: u8 = 41;
 pub const EDIT_BEGIN: u8 = 42;
 pub const EDIT_PART: u8 = 43;
 pub const EDIT_END: u8 = 44;
+
+// Optional diagnostics ride the existing edit transaction; ordinary payloads
+// are unchanged. Durations are nested unless the named phase says otherwise.
+pub const EDIT_DIAGNOSTIC_VERSION: u64 = 1;
+pub const EDIT_DIAGNOSTIC_FIELDS: [&str; 18] = [
+    "daemon_control_ns", "freeze_gate_ns", "kernel_flush_ns", "append_ns",
+    "facts_ns", "retire_ns", "lookup_ns", "prepare_ns", "apply_ns", "reconcile_ns",
+    "backing_wait_ns", "backing_calls", "facts_nodes", "facts_wire_bytes",
+    "cached_nodes_scanned", "kernel_flushes", "reconcile_notifier", "reconcile_cached",
+];
+
+#[derive(Clone, Copy)]
+#[allow(dead_code)] // Linux-only fields keep identical wire positions on every host.
+pub(crate) enum EditMetric {
+    Control, Gate, Kernel, Append, Facts, Retire, Lookup, Prepare, Apply, Reconcile,
+    BackingWait, BackingCalls, FactNodes, FactBytes, CachedNodes, KernelFlushes,
+    ReconcileNotifier, ReconcileCached,
+}
+
+pub fn valid_edit_diagnostic_nonce(nonce: &[u8]) -> bool {
+    (16..=64).contains(&nonce.len())
+        && nonce.iter().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+}
+
+pub fn read_edit_diagnostic(bytes: &[u8], nonce: &[u8]) -> io::Result<[u64; EDIT_DIAGNOSTIC_FIELDS.len()]> {
+    let mut input = Input(bytes);
+    if !valid_edit_diagnostic_nonce(nonce)
+        || input.u64()? != EDIT_DIAGNOSTIC_VERSION || input.bytes()? != nonce {
+        return Err(invalid());
+    }
+    let mut values = [0; EDIT_DIAGNOSTIC_FIELDS.len()];
+    for value in &mut values {
+        *value = input.u64()?;
+    }
+    input.done()?;
+    Ok(values)
+}
+
+#[cfg(test)]
+mod edit_diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn edit_diagnostic_rejects_wrong_nonce_version_and_length() {
+        let nonce = b"0123456789abcdef";
+        let mut bytes = Vec::new();
+        u64_out(&mut bytes, EDIT_DIAGNOSTIC_VERSION);
+        bytes_out(&mut bytes, nonce).unwrap();
+        for index in 0..EDIT_DIAGNOSTIC_FIELDS.len() {
+            u64_out(&mut bytes, index as u64);
+        }
+        let values = read_edit_diagnostic(&bytes, nonce).unwrap();
+        assert_eq!(values[EditMetric::ReconcileCached as usize], 17);
+        assert!(read_edit_diagnostic(&bytes, b"abcdef0123456789").is_err());
+        assert!(read_edit_diagnostic(&bytes[..bytes.len() - 1], nonce).is_err());
+        bytes.push(0);
+        assert!(read_edit_diagnostic(&bytes, nonce).is_err());
+        bytes.pop();
+        bytes[7] = 2;
+        assert!(read_edit_diagnostic(&bytes, nonce).is_err());
+        for invalid in [&b"short"[..], &b"0123456789abcde\""[..], &b"0123456789ABCDEF"[..]] {
+            assert!(!valid_edit_diagnostic_nonce(invalid));
+        }
+    }
+}

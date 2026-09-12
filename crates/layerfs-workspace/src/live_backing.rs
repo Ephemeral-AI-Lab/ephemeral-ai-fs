@@ -1285,6 +1285,14 @@ impl RemoteWorkspace {
         path: &str,
         edits: Vec<crate::WorkspaceFileRangeEdit>,
     ) -> crate::WorkspaceResult<()> {
+        let nonce = match std::env::var("LAYERFS_EDIT_DIAGNOSTIC_NONCE") {
+            Ok(nonce) => Some(nonce),
+            Err(std::env::VarError::NotPresent) => None,
+            Err(_) => return Err(crate::WorkspaceError::InvalidExecution),
+        };
+        if nonce.as_ref().is_some_and(|nonce| !wire::valid_edit_diagnostic_nonce(nonce.as_bytes())) {
+            return Err(crate::WorkspaceError::InvalidExecution);
+        }
         if edits.is_empty()
             || edits.len() > layerfs_workspace_core::file_edit::MAX_EDITS_PER_FILE as usize
         {
@@ -1299,6 +1307,10 @@ impl RemoteWorkspace {
         let mut begin = vec![wire::EDIT_BEGIN];
         wire::bytes_out(&mut begin, path.as_bytes())?;
         wire::u64_out(&mut begin, edits.len() as u64);
+        if let Some(nonce) = &nonce {
+            wire::bytes_out(&mut begin, nonce.as_bytes())?;
+        }
+        let members = edits.len();
         let parts = edits.into_iter().map(|edit| {
             let mut frame = vec![wire::EDIT_PART];
             wire::u64_out(&mut frame, edit.start);
@@ -1315,14 +1327,29 @@ impl RemoteWorkspace {
             }
             frame
         });
-        self.server
+        let before = nonce.as_ref().map(|_| self.server.backing_diagnostic_snapshot());
+        let started = nonce.as_ref().map(|_| std::time::Instant::now());
+        let response = self.server
             .request_group(
                 std::iter::once(begin)
                     .chain(parts)
                     .chain(std::iter::once(vec![wire::EDIT_END])),
             )
-            .map(drop)
-            .map_err(|_| crate::WorkspaceError::InvalidExecution)
+            .map_err(|_| crate::WorkspaceError::InvalidExecution)?;
+        if let (Some(nonce), Some(before), Some(started)) = (nonce, before, started) {
+            let group_wall_ns = started.elapsed().as_nanos();
+            let after = self.server.backing_diagnostic_snapshot();
+            let values = wire::read_edit_diagnostic(&response, nonce.as_bytes())?;
+            let host_dispatch_ns = after.0.checked_sub(before.0).ok_or(crate::WorkspaceError::InvalidExecution)?;
+            let host_queue_ns = after.1.checked_sub(before.1).ok_or(crate::WorkspaceError::InvalidExecution)?;
+            let fields = wire::EDIT_DIAGNOSTIC_FIELDS.iter().zip(values)
+                .map(|(name, value)| format!(",\"{name}\":{value}"))
+                .collect::<String>();
+            eprintln!("{{\"kind\":\"edit-diagnostic\",\"version\":1,\"nonce\":\"{nonce}\",\"members\":{members},\"group_wall_ns\":{group_wall_ns},\"host_backing_dispatch_ns\":{host_dispatch_ns},\"host_backing_queue_ns\":{host_queue_ns}{fields}}}");
+        } else if !response.is_empty() {
+            return Err(crate::WorkspaceError::InvalidExecution);
+        }
+        Ok(())
     }
 
     pub(crate) fn observe(

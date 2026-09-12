@@ -123,6 +123,11 @@ impl BackingServer {
         !self.failed.load(Ordering::Acquire)
     }
 
+    /// Read-only per-owner counters, sampled around an opt-in diagnostic edit.
+    pub fn backing_diagnostic_snapshot(&self) -> (u64, u64) {
+        self.metrics.backing_snapshot()
+    }
+
     pub fn request(&self, bytes: &[u8]) -> PortResult<Vec<u8>> {
         self.request_group(std::iter::once(bytes))
     }

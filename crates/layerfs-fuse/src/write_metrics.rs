@@ -239,6 +239,11 @@ impl AtomicFuseWriteMetrics {
             .fetch_add(elapsed_ns, Ordering::Relaxed);
     }
 
+    pub(crate) fn backing_snapshot(&self) -> (u64, u64) {
+        (self.host_dispatch_ns.load(Ordering::Relaxed),
+         self.live_backing_queue_ns.load(Ordering::Relaxed))
+    }
+
     pub(crate) fn take(&self) -> FuseWriteMetrics {
         FuseWriteMetrics {
             max_write_bytes: self.max_write_bytes.load(Ordering::Relaxed),
