@@ -77,10 +77,23 @@ simulation; the *declaration* was prospective and is honoured as written.
 
 ## Disposition
 
-- PASS: bounded ordinary-Commit mechanism, page-slack reduction, pack-row
-  reduction, exact bytes/oracles preserved (see the same-Store verification).
-- **FAIL (explicit, unwaived): prospective allocated-byte target ≥1.5%.** Achieved
-  0.039% allocated / 0.94% apparent.
+**Accepted as a successful result by explicit owner decision**
+(`owner-107-acceptance.json`; owner message: *"FAIL — 0.02 % allocated (−1.13 %
+apparent) is nothing, please report as success"*).
+
+The record keeps the distinction between the measurement and the decision:
+
+- **The self-declared ≥1.5 % allocated-byte target was NOT met numerically.** The
+  figure is superseded by the owner's acceptance; it is not re-based, and the
+  declaration in `issue107-declaration.md` stands as written.
+- PASS: bounded ordinary-Commit mechanism, pack overflow-slack reduction
+  (−920,514 B), pack-row reduction (3,457 → 1,058), apparent-Store reduction
+  (−942,080 B / −1.13 %), exact CAS/authentication/format/legacy reads and all 157
+  original oracles preserved, no material latency regression.
+- Because the target was missed, the achieved allocated figure (+16,384 B / +0.02 %)
+  and its cause (live-file allocation residue 409,600 → 1,368,064 B; zero-residue
+  counterfactual −1.42 %) remain published verbatim in this document and in
+  `terminal-outcome.md` row 25.
 - Retained: every attempt and the failed prediction (this document), the simulation
   in `issue107-declaration.md`, and the first full157 run
   (`issue107-coalesce-full157`, superseded for custody reasons: its image manifest

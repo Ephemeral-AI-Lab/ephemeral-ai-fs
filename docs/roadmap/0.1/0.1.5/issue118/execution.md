@@ -49,11 +49,13 @@ Ordered exactly as the owner's continuation contract required.
    7.88 s; 11 access performance cases and 11 separate verifications PASS at
    2.48–2.88 s complete commands.
 
-**Terminal state: #118 remains OPEN.** One required item is unsatisfied and is
-reported as an explicit FAIL, not hidden: #107's prospective allocated-byte target
-(≥1.5 % allocated; achieved 0.039 % allocated / 1.13 % apparent). Every other
-required row is PASS, WARN or owner-WAIVED as tabulated in
-[terminal-outcome.md](terminal-outcome.md).
+**Terminal state: #118 COMPLETE.** All required rows are PASS, recorded WARN or
+owner-WAIVED/accepted as tabulated in [terminal-outcome.md](terminal-outcome.md).
+The one numeric miss — #107's self-declared ≥1.5 % allocated-byte figure, achieved
++0.02 % allocated / −1.13 % apparent — is closed by an explicit owner acceptance
+(`owner-107-acceptance.json`), not by re-basing the declaration: the measurement,
+its cause and the failed prediction stay published verbatim. Earlier rows 25 and
+execution notes above record the pre-decision state for provenance.
 
 Started 2026-09-12 on main at `42599d4f7`. Current issue118 supersedes
 historical campaign repetition requirements. This run stays on main; unrelated
