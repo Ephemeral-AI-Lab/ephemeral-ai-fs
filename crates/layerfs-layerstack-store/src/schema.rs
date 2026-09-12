@@ -488,7 +488,10 @@ fn preflight_connect(path: &Path) -> Result<i64> {
     if !matches!(version, LEGACY_SCHEMA_VERSION | 7 | 8 | 9 | SCHEMA_VERSION) {
         return Err(StoreError::WrongStoreSchema);
     }
-    verify_schema(&connection, version)?;
+    // Reject unsupported layouts before writer configuration. Both callers
+    // validate all foreign keys again under their exclusive lock, before any
+    // publication or migration; scanning them here duplicates whole-Store work.
+    verify_schema_layout(&connection, version)?;
     // Research binaries wrote native packs under6 without a writer fence. They
     // are isolated evidence, not supported legacy Stores. Inspect headers only;
     // do not decompress, migrate or rewrite them during connect.
@@ -537,6 +540,15 @@ fn acquire_exclusive_lock(connection: &mut Connection) -> Result<()> {
 }
 
 fn verify_schema(connection: &Connection, version: i64) -> Result<()> {
+    verify_schema_layout(connection, version)?;
+    let mut foreign_keys = connection.prepare(statements::schema::FOREIGN_KEY_CHECK)?;
+    if foreign_keys.exists([])? {
+        return Err(StoreError::Integrity("foreign key check"));
+    }
+    Ok(())
+}
+
+fn verify_schema_layout(connection: &Connection, version: i64) -> Result<()> {
     let application_id: i64 =
         connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
     let user_version: i64 =
@@ -550,10 +562,6 @@ fn verify_schema(connection: &Connection, version: i64) -> Result<()> {
     }
     if schema_objects(connection)? != expected_schema_objects(version)? {
         return Err(StoreError::WrongStoreSchema);
-    }
-    let mut foreign_keys = connection.prepare(statements::schema::FOREIGN_KEY_CHECK)?;
-    if foreign_keys.exists([])? {
-        return Err(StoreError::Integrity("foreign key check"));
     }
     Ok(())
 }
@@ -748,6 +756,59 @@ mod tests {
             .unwrap();
         assert_eq!(journal, "wal");
         drop(connection);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn preflight_defers_foreign_key_scan_but_connect_and_upgrade_reject_without_mutation() {
+        let root = std::env::temp_dir().join(format!(
+            "layerfs-fk-preflight-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        for (version, sql) in [
+            (6, statements::schema::V6),
+            (7, statements::schema::V7),
+            (8, statements::schema::V8),
+            (9, statements::schema::V9),
+            (10, statements::schema::V10),
+        ] {
+            let path = root.join(format!("store-{version}.sqlite"));
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .pragma_update(None, "page_size", NEW_STORE_PAGE_SIZE_BYTES)
+                .unwrap();
+            connection.execute_batch(sql).unwrap();
+            connection
+                .pragma_update(None, "foreign_keys", false)
+                .unwrap();
+            connection.execute(
+                "INSERT INTO objects(object_id,canonical_length,pack_id,group_number,record_number) VALUES(zeroblob(32),1,1,0,0)",
+                [],
+            ).unwrap();
+            drop(connection);
+            let before = std::fs::read(&path).unwrap();
+            let files = store_files(&root);
+            assert_eq!(preflight_connect(&path).unwrap(), version);
+            assert!(matches!(
+                StoreDb::connect(&path),
+                Err(StoreError::Integrity("foreign key check"))
+            ));
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+            assert_eq!(store_files(&root), files);
+            if (7..=9).contains(&version) {
+                assert!(matches!(
+                    upgrade_format(&path),
+                    Err(StoreError::Integrity("foreign key check"))
+                ));
+                assert_eq!(std::fs::read(&path).unwrap(), before);
+                assert_eq!(store_files(&root), files);
+            }
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 
