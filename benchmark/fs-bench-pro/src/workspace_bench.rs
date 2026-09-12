@@ -1308,7 +1308,8 @@ fn run_case(
         && (case.kind == "git-tool"
             || case.kind == "boundaries"
             || case.family == "workspace_reliability"
-            || case.family == "edit_length_changing_capped")
+            || case.family == "edit_length_changing_capped"
+            || case.family == "file_size_transition")
     {
         return Err("fast-verify-v2 is for active ordinary/dedup routine cases; targeted and already-qualified capped cases keep their own route".into());
     }
@@ -1613,7 +1614,81 @@ fn run_case(
                 return Ok(());
             }
             for step in 0..registry::steps(case) {
-                if case.kind == "workspace-distributed-sdk-edit"
+                if case.family == "file_size_transition" {
+                    // v0.1.6 boundary transitions: one declared public SDK edit
+                    // per Commit, driven from the host. The alias plan uses the
+                    // same public surface; its POSIX alias stages run in verify
+                    // mode only, outside the performance distribution.
+                    let operations = workload_source::file_size_transition::operations(case)?;
+                    let operation = operations
+                        .get(step)
+                        .ok_or("boundary operation outside the declared schedule")?;
+                    use workload_source::file_size_transition::BoundaryOp;
+                    let (edit_start, delete_len, len, visit) = match operation {
+                        BoundaryOp::Overwrite { offset, len, visit } => (*offset, *len, *len, *visit),
+                        BoundaryOp::Append { len, visit } => {
+                            let current =
+                                workload_source::file_size_transition::declared_length(case, step)?;
+                            (current, 0, *len, *visit)
+                        }
+                        BoundaryOp::Remove { len, visit } => {
+                            let current =
+                                workload_source::file_size_transition::declared_length(case, step)?;
+                            (current - *len, 0, *len, *visit)
+                        }
+                        BoundaryOp::AliasAppend { len } => {
+                            let current =
+                                workload_source::file_size_transition::declared_length(case, step)?;
+                            (current, 0, *len, step)
+                        }
+                        BoundaryOp::AliasTruncate { len } => {
+                            let current =
+                                workload_source::file_size_transition::declared_length(case, step)?;
+                            (current - *len, 0, *len, step)
+                        }
+                        BoundaryOp::AtomicReplace { len } => {
+                            let current =
+                                workload_source::file_size_transition::declared_length(case, step)?;
+                            (0, current, *len, step)
+                        }
+                    };
+                    let replacement = workload_source::file_size_transition::replacement(
+                        case, seed, visit, len,
+                    )?;
+                    let request = WorkspaceFileRangeEdit {
+                        workspace_id: session.id,
+                        path: workload_source::file_size_transition::TARGET.to_string(),
+                        start: edit_start,
+                        delete_len,
+                        replacement: WorkspaceFileReplacement::Inline(replacement),
+                    };
+                    product_budget.begin("sdk-edit")?;
+                    let start = product_budget.start_clock("sdk-edit")?;
+                    let result = client.edit_workspace_file_range(request);
+                    let edit_ns = product_budget.finish_clock(start)?;
+                    product_budget.end(
+                        "sdk-edit",
+                        edit_ns,
+                        result.as_ref().err().map(ToString::to_string),
+                    )?;
+                    result?;
+                    pure_call_sum_ns = pure_call_sum_ns
+                        .checked_add(edit_ns)
+                        .ok_or("phase sum overflow")?;
+                    emit(
+                        "phase",
+                        &[
+                            ("phase", quote("sdk-edit")),
+                            ("step", step.to_string()),
+                            ("elapsed_ns", edit_ns.to_string()),
+                            (
+                                "operation",
+                                quote(&format!("{operation:?}")),
+                            ),
+                        ],
+                    );
+                    observed(&client, &mut last_operation)?;
+                } else if case.kind == "workspace-distributed-sdk-edit"
                     || workload_source::dedup_workloads::is_sdk(case)
                 {
                     let edits = if case.kind == "workspace-distributed-sdk-edit" {
@@ -2532,6 +2607,8 @@ pub(crate) fn dispatch(args: &[OsString]) -> AnyResult<()> {
         [command] if command == "workspace-static-additions-check" => {
             workload_source::edit_length_changing_capped::self_check()?;
             workload_source::workspace_reliability::self_check()?;
+            workload_source::file_size_transition::self_check()?;
+            workload_source::v016_common::self_check()?;
             emit(
                 "static-additions-check",
                 &[
@@ -2549,8 +2626,8 @@ pub(crate) fn dispatch(args: &[OsString]) -> AnyResult<()> {
                 "self-check",
                 &[
                     ("status", quote("pass")),
-                    ("timed_case_count", "132".into()),
-                    ("sample_slot_count", "396".into()),
+                    ("timed_case_count", "139".into()),
+                    ("sample_slot_count", "417".into()),
                 ],
             );
             Ok(())

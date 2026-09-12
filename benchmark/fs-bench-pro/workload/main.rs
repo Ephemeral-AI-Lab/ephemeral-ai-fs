@@ -54,6 +54,12 @@ pub(crate) mod init_namespace {
 }
 pub(crate) use init_namespace::*;
 #[allow(dead_code)]
+pub(crate) mod file_size_transition { include!("../families/file_size_transition/mod.rs"); }
+#[allow(dead_code)]
+pub(crate) mod v016_common {
+    include!("v016_common.rs");
+}
+#[allow(dead_code)]
 pub(crate) mod sdk_edit_common {
     include!("sdk_edit_common.rs");
 }
