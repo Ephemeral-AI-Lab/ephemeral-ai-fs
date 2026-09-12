@@ -2423,10 +2423,10 @@ impl LiveOwner {
     }
 
     pub async fn freeze(&self) -> PortResult<()> {
-        self.freeze_diagnostic(&mut None).await
+        self.freeze_diagnostic(true, &mut None).await
     }
 
-    async fn freeze_diagnostic(&self, diagnostic: &mut Option<EditDiagnostic>) -> PortResult<()> {
+    async fn freeze_diagnostic(&self, publish: bool, diagnostic: &mut Option<EditDiagnostic>) -> PortResult<()> {
         if self.0.failed.load(Ordering::Acquire) {
             return Err(PortError::Io);
         }
@@ -2445,9 +2445,11 @@ impl LiveOwner {
         let started = diagnostic.as_ref().map(|_| Instant::now());
         self.flush_append(&mut *self.0.append.lock().await).await?;
         note_edit(diagnostic, EditMetric::Append, started);
-        let started = diagnostic.as_ref().map(|_| Instant::now());
-        self.publish_facts(diagnostic.as_mut()).await?;
-        note_edit(diagnostic, EditMetric::Facts, started);
+        if publish {
+            let started = diagnostic.as_ref().map(|_| Instant::now());
+            self.publish_facts(diagnostic.as_mut()).await?;
+            note_edit(diagnostic, EditMetric::Facts, started);
+        }
         let started = diagnostic.as_ref().map(|_| Instant::now());
         self.retire_ranges().await?;
         note_edit(diagnostic, EditMetric::Retire, started);
@@ -2691,7 +2693,9 @@ impl LiveOwner {
                     .scheduler
                     .reserve_live(9 * 1024 * 1024)
                     .map_err(|_| PortError::NoSpace)?;
-                self.freeze_diagnostic(&mut diagnostic).await?;
+                // The edit reads live owner state. Only explicit FREEZE/fsync
+                // consumers need a host snapshot of the complete dirty prefix.
+                self.freeze_diagnostic(false, &mut diagnostic).await?;
                 let cut = self
                     .0
                     .cut
@@ -3806,9 +3810,15 @@ mod immutable_acquisition_tests {
             let values = wire::read_edit_diagnostic(&reply, nonce).unwrap();
             assert!(values[EditMetric::Control as usize] > 0);
             assert!(values[EditMetric::Prepare as usize] > 0);
-            assert_eq!(values[EditMetric::FactNodes as usize], 2);
+            assert_eq!(values[EditMetric::FactNodes as usize], 0);
             assert_eq!(values[EditMetric::FactBytes as usize], 0);
             assert_eq!(owner.read_owned(node, 0, 10).await.unwrap(), b"abc");
+            assert!(owner.0.facts_sync.lock().await.is_none());
+            owner.local_control(&[wire::FREEZE]).await.unwrap();
+            let snapshot = *owner.0.facts_sync.lock().await;
+            let generation = { let state = owner.state().unwrap(); (state.base_root, state.mutation_generation) };
+            assert_eq!(snapshot, Some(generation));
+            owner.local_control(&[wire::RESUME]).await.unwrap();
             owner.local_control(&begin(true)).await.unwrap();
             assert!(owner.local_control(&part(99, 1, b"bad")).await.is_err());
             assert!(owner.0.edit.lock().unwrap().is_none());
@@ -3817,6 +3827,10 @@ mod immutable_acquisition_tests {
             assert!(owner.local_control(&part(0, 3, b"xyz")).await.unwrap().is_empty());
             assert!(owner.local_control(&[wire::EDIT_END]).await.unwrap().is_empty());
             assert_eq!(owner.read_owned(node, 0, 10).await.unwrap(), b"xyz");
+            assert_eq!(*owner.0.facts_sync.lock().await, snapshot);
+            owner.local_control(&[wire::FREEZE]).await.unwrap();
+            assert_ne!(*owner.0.facts_sync.lock().await, snapshot);
+            owner.local_control(&[wire::RESUME]).await.unwrap();
         });
     }
 

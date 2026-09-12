@@ -919,12 +919,19 @@ mod tests {
             .unwrap();
         assert_eq!(owner.read(file, 0, 20).unwrap(), b"fXYst");
         let sdk_metrics = remote.server.take_write_metrics().unwrap();
-        if !local {
-            assert!(sdk_metrics.live_backing_request_bytes > 0);
-        }
+        assert_eq!(sdk_metrics.live_backing_request_bytes, 0,
+            "cached SDK edits do not republish the growing dirty prefix");
         assert_eq!(sdk_metrics.client_frame_bytes, 0);
         assert_eq!(sdk_metrics.host_frame_bytes, 0);
         assert_eq!(sdk_metrics.frame_payload_copy_bytes, 0);
+        remote.server.control("pause").unwrap();
+        assert!(matches!(remote.backing.lock().unwrap().facts[&file].data,
+            layerfs_workspace_core::Data::File(layerfs_workspace_core::FileData::Edited { .. })));
+        if !local {
+            assert!(remote.server.take_write_metrics().unwrap().live_backing_request_bytes > 0,
+                "explicit snapshot consumers still publish complete facts");
+        }
+        remote.server.control("resume").unwrap();
         let streamed = owner
             .create_file_open(crate::ROOT, b"streamed", 0o600)
             .unwrap()
