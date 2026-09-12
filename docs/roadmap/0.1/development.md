@@ -20,8 +20,20 @@ git diff --check
 ```
 
 `tools/test-fast.sh` is the complete native gate and fails if the warm suite
-exceeds 120 seconds. Use the smallest focused check while iterating, for
-example:
+exceeds 120 seconds. It still runs every test and benchmark exactly once in
+disjoint single-threaded process batches; `tools/test_fast.py` sizes those
+batches from the committed execution-order hint `tools/test-fast-timings.json`
+and submits them longest-first, so the bounded worker slots stay busy instead of
+finishing unevenly. The hint never selects, merges, or skips a test, and a
+missing or damaged hint only costs ordering. Regenerate it after large suite
+changes (it measures each test with libtest's unstable `--report-time`):
+
+```bash
+cargo test --workspace --all-features --locked --no-run --message-format=json >/tmp/artifacts.jsonl
+python3 tools/harvest-test-timings.py --manifest /tmp/artifacts.jsonl
+```
+
+Use the smallest focused check while iterating, for example:
 
 ```bash
 cargo test -p layerfs-content --test extent_model
