@@ -227,6 +227,11 @@ No hidden PASS is claimed: the previously blocked public spill coverage remains
 unsatisfied, with its exact blocking quantity and the boundary at which it
 blocks.
 
+Full structural root cause of the 5,461-file ceiling — the exact 128-byte
+`PieceNode` charge, the three-node minimum per splice, and the resulting
+arithmetic — is in
+[issue116-piece-ceiling-rca.md](issue116-piece-ceiling-rca.md).
+
 ## 8. Dispositions and the bounded repair
 
 | Restriction | Disposition | Rationale |

@@ -1216,6 +1216,111 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// #116 RCA: exact per-file pending structure and charge decomposition.
+    #[test]
+    #[ignore = "issue116 root-cause probe"]
+    fn issue116_piece_charge_rca() {
+        use layerfs_workspace_core::file_edit::{Piece, PieceTree};
+        println!(
+            "RCA size_of Piece={} ObjectId={} ArcSlice={} OptionArcSpoolSlice={} BTreeSet<String>={} Data={} FileData={} Node={}",
+            std::mem::size_of::<Piece>(),
+            std::mem::size_of::<layerfs_content::ObjectId>(),
+            std::mem::size_of::<std::sync::Arc<[u8]>>(),
+            std::mem::size_of::<Option<std::sync::Arc<SpoolSlice>>>(),
+            std::mem::size_of::<std::collections::BTreeSet<String>>(),
+            std::mem::size_of::<Data>(),
+            std::mem::size_of::<FileData>(),
+            std::mem::size_of::<layerfs_workspace_core::Node>(),
+        );
+
+        let (root, mut workspace) = workspace("piece-rca");
+        let base = vec![5u8; 49_152];
+        let node = workspace.create_file(ROOT, b"f0", 0o600).unwrap().node;
+        workspace.write(node, 0, &base).unwrap();
+        let (charge, _, _, _, _) = workspace.pending_charge_snapshot();
+        println!("RCA after base write: charge={charge}");
+        let _ = workspace.write(node, 1000, b"C6000000001").unwrap();
+        let (charge, inline, spool, _, _) = workspace.pending_charge_snapshot();
+        println!("RCA after 12-byte splice: charge={charge} inline={inline} spool={spool}");
+        {
+            let Data::File(FileData::Edited { pieces, edits, .. }) =
+                &workspace.live.nodes[&node].data
+            else {
+                unreachable!()
+            };
+            println!(
+                "RCA tree count={} len={} inline_len={} spool_len={} height={} edits={edits} charge={}",
+                pieces.count(),
+                pieces.len(),
+                pieces.inline_len(),
+                pieces.spool_len(),
+                pieces.height(),
+                pieces.logical_allocation_charge().unwrap()
+            );
+            for (index, piece) in pieces.pieces().iter().enumerate() {
+                println!("RCA piece[{index}] = {piece:?}");
+            }
+        }
+
+        // Second splice at a different offset in the same file.
+        let _ = workspace.write(node, 20_000, b"C6000000002").unwrap();
+        let (charge2, _, _, _, _) = workspace.pending_charge_snapshot();
+        {
+            let Data::File(FileData::Edited { pieces, edits, .. }) =
+                &workspace.live.nodes[&node].data
+            else {
+                unreachable!()
+            };
+            println!(
+                "RCA after second splice: charge={charge2} count={} edits={edits}",
+                pieces.count()
+            );
+            for (index, piece) in pieces.pieces().iter().enumerate() {
+                println!("RCA piece2[{index}] = {piece:?}");
+            }
+        }
+
+        // Re-splicing the exact same range repeatedly must not grow the tree.
+        for index in 0..5u32 {
+            let _ = workspace
+                .write(node, 1000, format!("C600000{index:04}").as_bytes())
+                .unwrap();
+        }
+        let (charge3, _, _, _, _) = workspace.pending_charge_snapshot();
+        {
+            let Data::File(FileData::Edited { pieces, edits, .. }) =
+                &workspace.live.nodes[&node].data
+            else {
+                unreachable!()
+            };
+            println!(
+                "RCA after 5 same-range resplices: charge={charge3} count={} edits={edits}",
+                pieces.count()
+            );
+        }
+
+        // A whole-file inline replacement cannot stay compact: confirm the shape.
+        let node2 = workspace.create_file(ROOT, b"f1", 0o600).unwrap().node;
+        workspace.write(node2, 0, &base).unwrap();
+        let before = workspace.pending_charge_snapshot().0;
+        let _ = workspace.write(node2, 0, &vec![9u8; 49_152]).unwrap();
+        let after = workspace.pending_charge_snapshot().0;
+        {
+            let Data::File(FileData::Edited { pieces, .. }) = &workspace.live.nodes[&node2].data
+            else {
+                unreachable!()
+            };
+            println!(
+                "RCA whole-file inline replace: delta={} count={} pieces={:?}",
+                after - before,
+                pieces.count(),
+                pieces.pieces().len()
+            );
+        }
+        drop(workspace);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn short_spool_append_restores_high_water_and_piece_root() {
         let (root, mut workspace) = workspace("short-append");
