@@ -18,12 +18,12 @@ is enforced by the shared runner. Initial host free space: 345 GiB.
 | Sequence | Work / required acceptance | Status |
 |---|---|---|
 | 1 | Review/consolidate intended dirty compaction removal; preserve unrelated source | Product/harness committed; unrelated web/cloud preserved |
-| 1 | Shared build cache, immutable executable custody, bounded retention, focused infra checks, smoke and small pair | 47 infra checks + public smoke + n3 A/A + independent proof PASS; retention follow-up in progress |
+| 1 | Shared build cache, immutable executable custody, bounded retention, focused infra checks, smoke and small pair | PASS: focused infra checks, smoke, n3 A/A, independent proof, stale-cache repair and guarded retention |
 | 2 | Highest-tier carry, merge failure atomicity, actual RAM/FD/disk accounting; focused and production-budget proofs | Component/default-budget/reduced-Workspace proofs PASS; see below |
-| 2 | Complete namespace fixture validation; reduced-budget Workspace/public non-spilling qualification | Fixture + reduced Workspace PASS; public sequence qualification next |
-| 3 | Fresh disjoint edit attribution >=90%, dominant fix, edit + matching Commit + chain qualification | Attribution + facts/lookup fixes + n3 both-cache pairs + independent proofs PASS; mounted checks in progress |
-| 4 | Reopen/history fix and deduplicated #108/#112/#114/#100/#107/#102/#110 scope | IN_PROGRESS |
-| 5 | Authentic namespace-100000 cold Init <=2.7s and affected final checks | Current control FAIL 4.162195375s; optimization pending |
+| 2 | Complete namespace fixture validation; reduced-budget Workspace/public non-spilling qualification | PASS: fixtures, reduced Workspace and ordinary K100/K1000 public proofs; K32000 deferred to stage6 |
+| 3 | Fresh disjoint edit attribution >=90%, dominant fix, edit + matching Commit + chain qualification | PASS on qualified-v1/v2: attribution, fixes, n3 both-cache pairs, independent and mounted proofs |
+| 4 | Reopen/history fix and deduplicated #108/#112/#114/#100/#107/#102/#110 scope | Reopen 33000-edit proof PASS; 2 history vehicles PASS on prior treatment; fsync optimization now qualified, full unrelated500 screen PASS13.791s; 18 other selections/full157/access pending |
+| 5 | Authentic cold Init and four namespace tiers under updated owner disposition | Qualified with owner2.7s WAIVER and explicit wall WARN; CPU−2.86%; 5 independent proofs PASS |
 | 6 | After optimization: #116 capability audit published before capacity changes | PENDING |
 | 6 | Bounded capacity fixes, boundaries/package workflow, default-budget public spill and affected rechecks | PENDING |
 | Final | Exact identities/commits, independent proofs, command costs and issue outcome table | PENDING |
@@ -32,16 +32,34 @@ Performance disposition frozen before new collection: ordinary regression
 screens use three fresh alternating pairs, median paired wall slowdown greater
 than max(15% of control median, 3ms) and at least two of three pairs slower;
 CPU uses max(15%, 1ms). Every attempt remains. Stronger applicable explicit
-requirements remain. Stage2 K10 50ms/31ms absolute targets remain owner-WAIVED;
-K100 near200ms is an engineering goal. Cold Init <=2.7s, correctness,
-authentication, resources and evidence validity are hard gates. A selected
+requirements remain. Stage2 K10 50ms/31ms and cold Init2.7s absolute targets
+are owner-WAIVED. K100 near200ms is an engineering goal. Correctness,
+authentication, resources and evidence validity remain hard gates, as do the
+unwaived unrelated50015s, tiny-create1001s and historical-access15s contracts. A selected
 development row alone is not terminal admission.
 
 Subagents own infrastructure, spill correctness, and history scope. Root owns
 source consolidation, edit attribution and serialized public measurements.
 No overlapping resource-sensitive work or nested runner lock acquisition.
 
-## Current results (not terminal acceptance)
+## Owner-requested handoff after latest optimization
+
+The owner requested finishing the current optimization promptly and handing
+remaining #118 work to the next agent because quota was running low. Product
+`f8fa59fab` is complete: 15 focused checks, n3 unrelated100 pairs, full500 screen,
+two selected independent proofs, four renewed mounted reliability proofs and two
+freshly linked real Docker SDK tests PASS. 100-round median4.492→2.677s;
+full50013.791443406s meets its unchanged15s gate. Full500 is one screen, not a
+new n3 full500 paired claim. No fsync/workload/library/quota changes.
+
+See [fsync-results.md](fsync-results.md) for exact identities, costs, sampled
+proof scope and retained failures. [handoff.md](handoff.md) is the ready-to-use
+continuation prompt; [history-handoff.md](history-handoff.md) supplies precise
+full157/access commands. Required broader shared qualification, full157/access,
+#116 and terminal reconciliation remain unfinished; no umbrella completion is
+claimed. The current handoff supersedes earlier pending states below.
+
+## Earlier execution checkpoints (later qualification supersedes pending statuses)
 
 - `b232d3fad`: compaction removal, authenticated legacy reads retained; five
   compatibility checks and two ordinary probe/script checks PASS (7.73s/14.03s
@@ -161,3 +179,30 @@ new harness-only ordinal observer queried before releasing the exclusive Store
 owner. Cleanup PASS. Move that observation after owner release and count its
 cost inside reopen/full-chain time; this is not a product capacity failure.
 Its failed raw receipt stays in `reopen-k1000-screen/`.
+
+## Current remaining hard miss and in-flight work
+
+Three branch-history vehicles completed n3 alternating pairs and independent
+proofs. Distributed median4.785443→4.007943s and recurring3.527853→2.875021s
+PASS. Unrelated500 median23.848022s fails its unwaived15s contract (control
+23.228210s also fails); all six complete attempts and successful correctness
+proof remain. Its dominant measured cost is repeated serial backing exchanges
+inside fsync, not a new material relative regression. See
+`stage4-history-summary.json` and its raw rows. A summary-only CPU key typo was
+corrected against raw `host-resources.phase` fields without rerunning samples.
+
+The working-tree fsync batch/reservation-tail changes in Fuse transport/owner/wire
+and Workspace live_backing are IN_PROGRESS, not yet qualified or counted as
+complete. Keep first-error/completed-prefix/unknown-completion handling, ordered
+checks/fact publication, bounded buffers/admission and cleanup. No external
+library or dependency changes. Other shared qualification and full157/access
+remain pending; stage6 has not begun under the required ordering.
+
+Public retained-history performance/proof PASS115.305s/166.364s with33000SDK
+edits and33Commits, crossing175383physicalvalues before the finalreopen.
+See `reopen-retention-explanation.md` for the bounded16-edge cost cycle and
+physicalvalue re-interning; no unbounded-work or pairedtailwall claim is made.
+Mounted proofs and both actual mmap/lifecycle SDK checks passed, with clean
+containers and no swap/OOM. Guarded build retention removed28oldtargets;
+see `mounted-qualification/summary.json`. Cold qualification and the damaged10k
+input quarantine/normal repair are in `cold-namespace-results.md`.

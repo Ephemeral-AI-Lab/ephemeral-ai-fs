@@ -6,6 +6,12 @@ scope map, not qualification evidence. Historical raw roots were retired by
 the owner; old reports supply hypotheses and dispositions only. Runtime
 execution and the current checklist belong to `execution.md`.
 
+Current handoff update: reopened-history, physical reservation, edit and cold
+qualification below have since completed as described in execution.md. Cold2.7s
+is owner-WAIVED (see the final section). The fsync fix now passes a full500
+13.791s screen; full157/access and18 other shared selections remain pending.
+Use handoff.md for continuation; old diagnosis text below is retained provenance.
+
 | Track | Current disposition and one owner/proof |
 | --- | --- |
 | #108 shared publication/read work; #112 G1/G6; #106 history deadline | One Commit/edit/history track. Stage 2 bounded tree reads and Stage 3 spill changes already exist; do not implement the old directory-rebuild hypothesis. Measure current tier-500 distributed/recurring/unrelated vehicles, then use the same results as G6 transfer. Preserve the unresolved unrelated-500 15 s target. |
