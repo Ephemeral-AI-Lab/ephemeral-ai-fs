@@ -2057,6 +2057,9 @@ struct SpillStatCounters {
     peak_merge_read_bytes: u64,
     spill_keys: u64,
     batch_size: u64,
+    tree_attempts: u64,
+    tree_fallbacks: u64,
+    fallback_inodes: u64,
 }
 
 // Records are instrumented on `&self` paths, so the counters use interior
@@ -2078,6 +2081,9 @@ struct SpillStats {
     peak_allocated_bytes: std::cell::Cell<u64>,
     peak_merge_read_bytes: std::cell::Cell<u64>,
     spill_keys: std::cell::Cell<u64>,
+    tree_attempts: std::cell::Cell<u64>,
+    tree_fallbacks: std::cell::Cell<u64>,
+    fallback_inodes: std::cell::Cell<u64>,
 }
 
 #[cfg(test)]
@@ -2099,6 +2105,9 @@ impl SpillStats {
             peak_merge_read_bytes: self.peak_merge_read_bytes.get(),
             spill_keys: self.spill_keys.get(),
             batch_size: batch_size as u64,
+            tree_attempts: self.tree_attempts.get(),
+            tree_fallbacks: self.tree_fallbacks.get(),
+            fallback_inodes: self.fallback_inodes.get(),
         }
     }
 }
@@ -2959,6 +2968,7 @@ impl FrontierInodes {
                 layerfs_content::CoreError::InvalidRecord("Workspace inode delta")
             })
         });
+        spill_note!(self, tree_attempts, 1);
         let sorted = inode_table_apply_sorted_with_budget(
             objects,
             InodeTableRoot(namespace.inode_table_root),
@@ -2978,6 +2988,8 @@ impl FrontierInodes {
                 layerfs_content::CoreError::ObjectLimitExceeded
                 | layerfs_content::CoreError::Unsupported,
             ) => {
+                spill_note!(self, tree_fallbacks, 1);
+                spill_note!(self, fallback_inodes, count);
                 if let Some(reader) = &mut reader {
                     reader.seek(SeekFrom::Start(0))?;
                 }
@@ -4100,6 +4112,65 @@ mod tests {
         workspace.commit().unwrap();
         assert!(workspace.lookup(ROOT, b"other").is_err());
         drop(workspace);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reduced_budget_real_workspace_uses_one_tree_fallback_and_reopens_exactly() {
+        let (root, mut workspace) = empty_workspace("tree-pressure");
+        let mut nodes = Vec::new();
+        for index in 0..16 {
+            let node = workspace
+                .create_file(ROOT, format!("f{index}").as_bytes(), 0o600)
+                .unwrap()
+                .node;
+            workspace.write(node, 0, b"original").unwrap();
+            nodes.push(node);
+        }
+        workspace.commit().unwrap();
+        let original = workspace.base_root;
+        workspace.live.policy.max_final_delta_memory_bytes = 1024;
+        workspace.write(nodes[7], 0, b"modified").unwrap();
+        workspace.commit().unwrap();
+        let updated = workspace.base_root;
+        let stats = workspace.frontier_stats();
+        assert_eq!(
+            (
+                stats.tree_attempts,
+                stats.tree_fallbacks,
+                stats.fallback_inodes
+            ),
+            (1, 1, 1)
+        );
+        assert_ne!(original, updated);
+        drop(workspace);
+        let store = LayerStackStore::connect(root.join("store.sqlite")).unwrap();
+        for (snapshot, changed) in [(original, false), (updated, true)] {
+            let reader = store.snapshot_reader(snapshot);
+            for index in 0..16 {
+                let mut bytes = Vec::new();
+                filesystem::stream(
+                    &CoreReader(&reader),
+                    snapshot,
+                    &CanonicalPath::new(&format!("f{index}")).unwrap(),
+                    &mut bytes,
+                )
+                .unwrap();
+                assert_eq!(
+                    bytes,
+                    if changed && index == 7 {
+                        b"modified"
+                    } else {
+                        b"original"
+                    }
+                );
+            }
+        }
+        println!(
+            "workspace-tree-fallback attempts={} fallbacks={} inodes={} history_files_checked=32",
+            stats.tree_attempts, stats.tree_fallbacks, stats.fallback_inodes
+        );
+        drop(store);
         std::fs::remove_dir_all(root).unwrap();
     }
 

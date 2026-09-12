@@ -230,71 +230,56 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
             _lease: lease,
         })
     }
-    /// One bounded authenticated batch for a chunk of at most `width` sibling
-    /// children, with the chunk narrowed to whatever the remaining ledger can
-    /// actually hold.
-    ///
-    /// Every demanded page is still read, identity-checked and decoded exactly as
-    /// the point route does; only the physical demand wave changes. A chunk's
-    /// worst-case retained canonical bytes are charged before the batch
-    /// allocates, and the unused part is released as soon as the batch returns,
-    /// so the recorded peak is the pre-charge and the resident charge is the
-    /// bytes actually retained until the chunk is consumed.
-    ///
-    /// The engine therefore never reports a scratch failure that a point read
-    /// would have survived: when the full chunk's worst-case charge does not fit
-    /// the remaining ledger, the chunk is narrowed, and when not even one child's
-    /// worst-case charge fits, that child is read as a point read. Validation,
-    /// error handling and the per-page work are unchanged either way, and the
-    /// returned lease is always charged for the pages actually held.
+    /// Retain the allocation lease with the fetched children through recursive
+    /// edits. Narrow before reading when canonical buffers plus one decode do
+    /// not fit; None asks the caller to use the ordinary point decoder directly.
     fn batch_children(
         &mut self,
         entries: &[(F::Key, ObjectId, F::Value)],
         width: usize,
-    ) -> CoreResult<(usize, Vec<(ObjectId, Vec<u8>)>)> {
+    ) -> CoreResult<(usize, Vec<(ObjectId, Vec<u8>)>, Option<Lease>)> {
         debug_assert!(width > 0 && width <= entries.len());
+        let associations =
+            std::mem::size_of::<ObjectId>() + std::mem::size_of::<(ObjectId, Vec<u8>)>();
+        let decode =
+            F::decode_scratch(MAX_TREE_PAGE_BYTES) + std::mem::size_of::<Wire<F::Key, F::Value>>();
         for chunk in (1..=width).rev() {
-            let reserved = chunk.checked_mul(MAX_TREE_PAGE_BYTES).unwrap_or(usize::MAX);
-            if self.budget.reserve(reserved).is_err() {
+            let reserved = chunk
+                .checked_mul(MAX_TREE_PAGE_BYTES + associations)
+                .and_then(|bytes| bytes.checked_add(decode))
+                .ok_or(CoreError::LengthOverflow)?;
+            let Ok(mut lease) = self.budget.reserve(reserved) else {
                 continue;
-            }
-            let mut ids = Vec::with_capacity(chunk);
-            for (_, id, _) in &entries[..chunk] {
-                ids.push(*id);
-            }
+            };
+            let ids = entries[..chunk]
+                .iter()
+                .map(|(_, id, _)| *id)
+                .collect::<Vec<_>>();
             let mut fetched = Vec::with_capacity(chunk);
             self.store
                 .get_authenticated_canonical_batch(&ids, |id, canonical| {
-                    if canonical.len() > MAX_TREE_PAGE_BYTES {
+                    if canonical.len() > MAX_TREE_PAGE_BYTES || fetched.len() == chunk {
                         return Err(CoreError::ObjectLimitExceeded);
                     }
                     fetched.push((id, canonical.to_vec()));
                     Ok(())
                 })?;
-            let actual = fetched.iter().map(|(_, bytes)| bytes.len()).sum::<usize>();
-            // Charge exactly the bytes this chunk retains until it is consumed.
-            if self.budget.reserve(actual).is_err() {
-                continue;
+            drop(ids);
+            let actual = fetched.capacity() * std::mem::size_of::<(ObjectId, Vec<u8>)>()
+                + fetched
+                    .iter()
+                    .map(|(_, bytes)| bytes.capacity())
+                    .sum::<usize>();
+            if actual > reserved {
+                lease.grow(actual - reserved)?;
+            } else {
+                lease.shrink(reserved - actual);
             }
-            return Ok((chunk, fetched));
+            return Ok((chunk, fetched, Some(lease)));
         }
-        // Not even one child's worst-case charge fits. Degrade to a one-child
-        // chunk instead of failing: the child is read under exactly the ceiling
-        // and the same checks the point route already enforces, and it is handed
-        // back as canonical bytes so the caller decodes it on the batch route.
-        let child_id = entries[0].1;
-        let budget = self.budget.clone();
-        let (bytes, lease) = self.store.with_authenticated_canonical(child_id, |bytes| {
-            if bytes.len() > MAX_TREE_PAGE_BYTES {
-                return Err(CoreError::ObjectLimitExceeded);
-            }
-            let lease = budget.reserve(
-                F::decode_scratch(bytes.len()) + std::mem::size_of::<Wire<F::Key, F::Value>>(),
-            )?;
-            Ok((bytes.to_vec(), lease))
-        })?;
-        drop(lease);
-        Ok((1, vec![(child_id, bytes)]))
+        // Do not clone a point read into an uncharged canonical buffer. The
+        // caller invokes read(), whose decode lease already covers that path.
+        Ok((1, Vec::new(), None))
     }
     /// The canonical-form checks every read page must pass, on both routes.
     fn check_page(root: bool, wire: &Wire<F::Key, F::Value>) -> CoreResult<()> {
@@ -689,16 +674,23 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
                 // Every page is still read, authenticated and decoded, and every
                 // check below still runs per child in ascending key order.
                 let width = TREE_BATCH_CHILDREN.min(count - start);
-                let (chunk, mut fetched) = self.batch_children(&entries[start..], width)?;
+                let (chunk, mut fetched, mut retained) =
+                    self.batch_children(&entries[start..], width)?;
                 for (index, (key, child_id, _)) in entries[start..start + chunk].iter().enumerate()
                 {
-                    let position = fetched
-                        .iter()
-                        .position(|(id, _)| id == child_id)
-                        .ok_or(CoreError::MissingObject)?;
-                    let (_, canonical) = fetched.remove(position);
-                    let child = self.decode_batched(false, &canonical)?;
-                    drop(canonical);
+                    let child = if let Some(retained) = &mut retained {
+                        let position = fetched
+                            .iter()
+                            .position(|(id, _)| id == child_id)
+                            .ok_or(CoreError::MissingObject)?;
+                        let (_, canonical) = fetched.remove(position);
+                        let child = self.decode_batched(false, &canonical)?;
+                        retained.shrink(canonical.capacity());
+                        drop(canonical);
+                        child
+                    } else {
+                        self.read(*child_id, false)?
+                    };
                     self.check_child(level, key, &child.wire)?;
                     old_count = old_count
                         .checked_add(child.wire.count)
@@ -2275,6 +2267,54 @@ mod tests {
         }
     }
 
+    #[test]
+    fn stage2_fetched_children_keep_their_allocation_lease_until_drop() {
+        let mut store = MemoryStore::default();
+        let mut entries = Vec::new();
+        for block in 0..2 {
+            let rows = (block * 64..(block + 1) * 64)
+                .map(|index| (inode(index), value(index)))
+                .collect();
+            let canonical = encode_inode_table_node(&InodeTableNodeV1::Leaf(rows)).unwrap();
+            let id = store.put(&canonical).unwrap();
+            entries.push((inode((block + 1) * 64 - 1), id, ()));
+        }
+        let budget = Rc::new(Budget {
+            limit: 4 * MAX_TREE_PAGE_BYTES,
+            ..Budget::default()
+        });
+        let mut changes = |_, _| Ok(());
+        let mut engine = Engine::<_, Inodes> {
+            store: &mut store,
+            changes: &mut changes,
+            budget: budget.clone(),
+            counters: TreeBatchCounters::default(),
+            format: PhantomData,
+        };
+        let fetched = engine.batch_children(&entries, entries.len()).unwrap();
+        let actual = fetched.1.capacity() * std::mem::size_of::<(ObjectId, Vec<u8>)>()
+            + fetched
+                .1
+                .iter()
+                .map(|(_, bytes)| bytes.capacity())
+                .sum::<usize>();
+        println!(
+            "retained children={} actual={actual} charged={} id_size={} tuple_size={}",
+            fetched.1.len(),
+            budget.used.get(),
+            std::mem::size_of::<ObjectId>(),
+            std::mem::size_of::<(ObjectId, Vec<u8>)>()
+        );
+        assert_eq!(
+            budget.used.get(),
+            actual,
+            "live fetched children lost their allocation lease"
+        );
+        assert!(budget.reserve(budget.limit - actual + 1).is_err());
+        drop(fetched);
+        assert_eq!(budget.used.get(), 0);
+    }
+
     fn stage2_compact_table(
         store: &mut MemoryStore,
         count: u64,
@@ -2413,16 +2453,21 @@ mod tests {
             let keys = [1_u64, 2, size / 2, size];
             let mut survivor = 0;
             for scratch in [
-                1_usize, 4096, 8192, 16 * 1024, 40 * 1024, 64 * 1024, 120 * 1024, 200 * 1024,
-                262_144, 300 * 1024, 316_264, 400 * 1024, SORTED_TREE_UPDATE_SCRATCH_BYTES,
+                1_usize,
+                4096,
+                8192,
+                16 * 1024,
+                40 * 1024,
+                64 * 1024,
+                120 * 1024,
+                200 * 1024,
+                262_144,
+                300 * 1024,
+                316_264,
+                400 * 1024,
+                SORTED_TREE_UPDATE_SCRATCH_BYTES,
             ] {
-                let point = stage2_mutate(
-                    &mut plain,
-                    root,
-                    changed,
-                    keys.iter().copied(),
-                    scratch,
-                );
+                let point = stage2_mutate(&mut plain, root, changed, keys.iter().copied(), scratch);
                 let probe = std::rc::Rc::new(BatchProbe::default());
                 let mut counted = CountingStore {
                     inner: MemoryStore::default(),
@@ -2430,13 +2475,8 @@ mod tests {
                 };
                 let (counted_root, _) = stage2_compact_table(&mut counted.inner, size);
                 assert_eq!(counted_root, root);
-                let batched = stage2_mutate(
-                    &mut counted,
-                    root,
-                    changed,
-                    keys.iter().copied(),
-                    scratch,
-                );
+                let batched =
+                    stage2_mutate(&mut counted, root, changed, keys.iter().copied(), scratch);
                 match (&point, &batched) {
                     (Ok((point_root, _)), Ok((batch_root, counters))) => {
                         assert_eq!(point_root, batch_root, "size={size} scratch={scratch}");
@@ -2463,7 +2503,10 @@ mod tests {
                 // node, and never exceeds the declared ceiling.
                 assert!(probe.widest() <= TREE_BATCH_CHILDREN);
             }
-            assert!(survivor > 0, "size={size}: no scratch survived the batch route");
+            assert!(
+                survivor > 0,
+                "size={size}: no scratch survived the batch route"
+            );
         }
     }
 
