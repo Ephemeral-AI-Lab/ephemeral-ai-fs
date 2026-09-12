@@ -73,10 +73,6 @@ pub(crate) fn expected(case: &Case, seed: u8, step: usize) -> Result<Vec<Entry>>
     // algebra rather than from `fixture`.
     if case.family=="file_size_transition" {
         let rows = super::file_size_transition::expected(case,seed,step)?;
-        if std::env::var_os("LAYERFS_V016_ORACLE_DEBUG").is_some() {
-            let target = rows.iter().find(|e| e.path=="data/target.bin").map(|e| match &e.kind { super::workspace_common::EntryKind::File(c) => c.len(), _ => u64::MAX });
-            eprintln!("v016-oracle-debug case={} seed={} step={} target={:?}", case.id, seed, step, target);
-        }
         return Ok(rows);
     }
     valid_seed(seed)?;

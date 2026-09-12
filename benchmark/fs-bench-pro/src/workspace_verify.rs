@@ -218,6 +218,27 @@ pub(crate) fn verify(
     Ok(result)
 }
 
+/// Verify a snapshot whose declared classes are not derived from hard-link
+/// edges alone.
+///
+/// `inode_classes` maps each declared path to its declared inode-class key and
+/// `class_ref_counts` gives the declared reference count for every class. This
+/// is the v0.1.6 alias route: an alias may legitimately separate from its
+/// target inside one declared schedule, so the two names end in different
+/// classes even though the initial fixture linked them.
+pub(crate) fn verify_split_classes(
+    store: &LayerStackStore,
+    branch: BranchId,
+    entries: &[Entry],
+    evidence: &Path,
+    split_class: &str,
+) -> AnyResult<SnapshotEvidence> {
+    let pinned = store.pin_branch(branch)?;
+    let mut result = verify_root_split(&pinned.reader, pinned.root, entries, split_class)?;
+    persist_snapshot(entries, &mut result, evidence)?;
+    Ok(result)
+}
+
 pub(crate) fn persist_snapshot(
     entries: &[Entry],
     result: &mut SnapshotEvidence,
@@ -332,6 +353,20 @@ pub(crate) fn verify_root(
     root: ObjectId,
     entries: &[Entry],
 ) -> AnyResult<SnapshotEvidence> {
+    verify_root_split(source, root, entries, "")
+}
+
+/// Verify one snapshot. `split_class` names a declared path whose inode class
+/// is declared to be its own rather than its hard-link target's: the v0.1.6
+/// alias plan replaces the target name while the alias keeps the previous
+/// inode, so the two names hold one class each even though the fixture linked
+/// them. Every other class keeps the hard-link-derived reference count.
+pub(crate) fn verify_root_split(
+    source: &dyn ObjectSource,
+    root: ObjectId,
+    entries: &[Entry],
+    split_class: &str,
+) -> AnyResult<SnapshotEvidence> {
     let logical = common::validate_entries(entries)?;
     let reader = CoreReader(source);
     let namespace = AuthenticatedNamespaceIndex::load(source, root)?;
@@ -341,10 +376,14 @@ pub(crate) fn verify_root(
         .collect::<BTreeMap<_, _>>();
     let mut reference_counts = BTreeMap::<&str, u64>::new();
     for entry in entries {
-        let class = match &entry.kind {
-            EntryKind::File(_) => entry.path.as_str(),
-            EntryKind::Hardlink(target) => target.as_str(),
-            _ => continue,
+        let class = if !split_class.is_empty() && entry.path == split_class {
+            entry.path.as_str()
+        } else {
+            match &entry.kind {
+                EntryKind::File(_) => entry.path.as_str(),
+                EntryKind::Hardlink(target) => target.as_str(),
+                _ => continue,
+            }
         };
         *reference_counts.entry(class).or_default() += 1;
     }

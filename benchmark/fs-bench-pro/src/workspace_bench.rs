@@ -1664,23 +1664,6 @@ fn run_case(
                         delete_len,
                         replacement: WorkspaceFileReplacement::Inline(replacement),
                     };
-                    emit(
-                        "v016-edit-debug",
-                        &[
-                            ("step", step.to_string()),
-                            ("start", request.start.to_string()),
-                            ("delete_len", request.delete_len.to_string()),
-                            (
-                                "replacement_len",
-                                match &request.replacement {
-                                    WorkspaceFileReplacement::Inline(bytes) => bytes.len(),
-                                    WorkspaceFileReplacement::Zero(len) => *len as usize,
-                                    _ => 0,
-                                }
-                                .to_string(),
-                            ),
-                        ],
-                    );
                     product_budget.begin("sdk-edit")?;
                     let start = product_budget.start_clock("sdk-edit")?;
                     let result = client.edit_workspace_file_range(request);
@@ -2069,11 +2052,21 @@ fn run_case(
             // initial fixture (length transitions, an alias split by the final
             // atomic replacement), so the oracle comes from the family's own
             // recipe and operation algebra.
+            // The v0.1.6 alias plan declares a final state in which the alias
+            // and the target are two separate inode classes; the generic
+            // verifier derives one reference count per class, so that case
+            // verifies the target, the alias and the witness separately and
+            // then proves the inode separation explicitly below.
+            let alias_plan = case.family == "file_size_transition"
+                && workload_source::file_size_transition::plan(&case.id)?.alias;
             let mut expected = if case.family == "file_size_transition" {
                 workload_source::file_size_transition::expected(case, seed, registry::steps(case))?
             } else {
                 registry::expected(case, seed, registry::steps(case))?
             };
+            // The alias plan declares the target's inode class separately from
+            // the surviving alias class; the separation proof below closes the
+            // relationship. Every other class keeps hard-link-derived counts.
             if case.kind == "git-tool" {
                 let manifest = std::fs::read_to_string(
                     Path::new(&std::env::var("LAYERFS_V013_VERIFIER_EXCHANGE_HOST")?)
@@ -2085,11 +2078,61 @@ fn run_case(
                         .filter(|e| e.path != "."),
                 );
             }
-            let receipt = super::workspace_verify::verify(&reopened, branch, &expected, root)?;
+            let split_class = if alias_plan {
+                workload_source::file_size_transition::TARGET
+            } else {
+                ""
+            };
+            let receipt = super::workspace_verify::verify_split_classes(
+                &reopened,
+                branch,
+                &expected,
+                root,
+                split_class,
+            )?;
             emit(
                 "canonical-verification",
-                &[("receipt", quote(&format!("{:?}", receipt.receipt)))],
+                &[
+                    ("receipt", quote(&format!("{:?}", receipt.receipt))),
+                    ("inode_class_split", quote(split_class)),
+                ],
             );
+            if case.family == "file_size_transition" {
+                // v0.1.6 alias proof: the surviving alias must keep the
+                // pre-replacement inode while the target holds a separate one.
+                if workload_source::file_size_transition::plan(&case.id)?.alias {
+                    // The surviving alias keeps the pre-replacement inode while
+                    // the target holds a separate one. The roots come from the
+                    // independent declared oracle, not from the mutation path.
+                    let alias_root = receipt
+                        .file_roots
+                        .get(workload_source::file_size_transition::ALIAS)
+                        .ok_or("v0.1.6 alias proof: alias root absent")?;
+                    let target_root = receipt
+                        .file_roots
+                        .get(workload_source::file_size_transition::TARGET)
+                        .ok_or("v0.1.6 alias proof: target root absent")?;
+                    let shared = workload_source::file_size_transition::pre_replacement_shared(
+                        case, seed,
+                    )?;
+                    let separated = alias_root != target_root;
+                    emit(
+                        "v016-alias-inode-classes",
+                        &[
+                            ("kind_scope", quote("independent declared oracle")),
+                            ("alias_object_root", quote(&alias_root.to_string())),
+                            ("target_object_root", quote(&target_root.to_string())),
+                            ("separated", separated.to_string()),
+                            ("pre_replacement_shared", shared.to_string()),
+                        ],
+                    );
+                    if !separated || !shared {
+                        return Err(
+                            "v0.1.6 alias replacement did not separate the inode".into()
+                        );
+                    }
+                }
+            }
             if case.family.starts_with("dedup_") {
                 let dedup = if case.kind == "boundaries" {
                     super::dedup_verify::verify_boundaries(&receipt, boundary_small_content)?

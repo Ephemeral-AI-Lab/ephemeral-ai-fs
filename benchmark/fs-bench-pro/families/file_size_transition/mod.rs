@@ -133,6 +133,21 @@ pub(crate) fn replacement(case: &Case, seed: u8, visit: usize, len: u64) -> Resu
     Ok(out)
 }
 
+/// True when the declared pre-replacement state still holds the alias and the
+/// target as the same inode class, which the host alias proof re-checks against
+/// the independently derived recipe.
+pub(crate) fn pre_replacement_shared(case: &Case, seed: u8) -> Result<bool> {
+    let plan = plan(&case.id)?;
+    if !plan.alias {
+        return Ok(true);
+    }
+    let operations = operations(case)?;
+    let before = expected(case, seed, operations.len() - 1)?;
+    Ok([TARGET, ALIAS]
+        .iter()
+        .all(|path| before.iter().any(|entry| entry.path == *path)))
+}
+
 /// The independent oracle: the declared length sequence and the resulting
 /// content for every retained state, derived from the fixture recipe.
 pub(crate) fn expected(case: &Case, seed: u8, step: usize) -> Result<Vec<Entry>> {
@@ -241,6 +256,20 @@ pub(crate) fn declared_length(case: &Case, step: usize) -> Result<u64> {
         }
     }
     Ok(length)
+}
+
+/// Verifier shape for one case. The alias plan ends with the target and the
+/// alias in two different inode classes, so the generic oracle verifies the
+/// declared classes (target as a replacement-class file, alias as the surviving
+/// pre-replacement class) and the host adds the explicit separation proof.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct VerifierShape {
+    /// Declared paths whose inode class splits from their declared pair.
+    pub(crate) split_classes: bool,
+}
+
+pub(crate) fn verifier_shape(case: &Case) -> Result<VerifierShape> {
+    Ok(VerifierShape { split_classes: plan(&case.id)?.alias })
 }
 
 /// Boundary cases run entirely in the host SDK orchestrator: the workload
