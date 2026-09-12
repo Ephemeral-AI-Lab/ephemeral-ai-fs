@@ -16,28 +16,53 @@ export LAYERFS_BENCH_IMAGE="$(python3 benchmark/fs-bench-pro/shared/runner.py --
 ```
 
 Reuse matching builds and protected prepared inputs. Source/product/image seals
-are checked. Qualified host builds keep a separate target per native-input seal.
+are checked. Host builds default to one writable Cargo target at
+`benchmark-results/host-store/builds/incremental-1.85.1-release`; Cargo decides
+which dependencies need recompilation. Independent, read-only executable copies
+and their producing identities live in `binary-archive/<sha256>/`. Publishing a
+new executable replaces its inode, so an old hard link cannot alter a control.
 Host builds default to at most eight jobs (also bounded by logical CPU count);
 `CARGO_BUILD_JOBS=1..8` selects a lower or explicit limit. The actual selection is
 recorded and included in native/dependency compatibility seals. Docker keeps its
 separate two-job policy.
-After a benchmark Rust source edit, the runner can seed unchanged dependencies
-from the last qualified host build into an independent target; it never copies
-the benchmark executable, dep-info, or fingerprints. Older identities without a
-dependency seal and changes to dependency inputs/configuration take the fresh
-build path. Copy cost and native command wall are recorded in the new identity.
+Each identity records build mode, Cargo command wall, compilation seal and the
+packages actually recompiled. `LAYERFS_BUILD_ISOLATION=sealed` explicitly selects
+the older isolated-target diagnostic path; it is not the development default.
 A warm no-op is not evidence of fast recompilation: optimized benchmark codegen
 can still exceed the preferred 10-second development budget (`BUILD_SLOW`).
 
-Linux workload compilation has its own Docker layer containing workload and
+Linux Cargo builds reuse one locked cache per pinned toolchain/architecture,
+with Cargo's profile subdirectories. Source seals name executables, not another
+dependency tree. Linux workload compilation has its own Docker layer containing workload and
 included family Rust sources. Host-only family Python/shell files are excluded
 from the Docker context; source labels still describe the full host harness.
 Reusing this layer does not skip workload self-checks or executable archiving.
+Host-only Python/shell changes need a new host identity, but can reuse an image
+whose compilation seal still matches. The runner resolves mutable image tags
+freshly, reuses inspection only by immutable image ID, creates each container
+from that ID, and validates its actual image, mounts and resource limits.
+Readiness and capability capture share one exec; both command-window cgroup
+snapshots retain their original boundaries.
 See the [#105 build-loop report](../../docs/roadmap/0.1/0.1.5/issue105/results.md)
 for exact measurement boundaries, cache states, and remaining limits. Builds, performance and verification share a measurement lock: do
 not overlap resource-sensitive work or interrupt another owner's live run.
 The standard container has 2 CPUs, 2 GiB RAM, no swap and 256 PIDs. Host CPU and
 memory remain separate resource scopes.
+
+Keep the shared cache and the newest two legacy sealed targets. Preview and
+apply only the runner-owned build selection under its measurement lock:
+
+```bash
+python3 benchmark/fs-bench-pro/shared/runner.py --prune-builds 2
+python3 benchmark/fs-bench-pro/shared/runner.py --prune-builds 2 --apply
+```
+
+The receipt lists candidates, actual removals and bytes. Unknown or symlinked
+Cargo targets fail closed. This never selects fixtures, prepared inputs,
+sample Stores, binary/image archives or source. Keep only the executable
+snapshots referenced by the active comparison in its declared retention record;
+archive retirement is a separate explicit selection. Do not repeat #117's
+completed evidence/worktree cleanup or run `cargo clean` between iterations.
 
 ## Select one case
 
@@ -127,6 +152,22 @@ remains separate; a performance gate pass is not release admission. See the
 [cold qualification contract](../../docs/roadmap/0.1/0.1.5/issue111/cold-qualification-contract.md).
 
 ## Verify separately
+
+The default loop is one focused code check and one complete selected public case
+when needed. Once a relevant change stabilizes, freeze one concise case/arm
+configuration: exact comparator binaries/images, input, cache policy,
+repetitions, timer and gates. Use the existing family runner and analyzer for
+alternating pairs, then run the affected independent proofs once. A/A pairs
+qualify infra repeatability; they are not a product speedup claim. Record whole
+command/build/setup/proof/cleanup wall alongside the declared product timer.
+Expensive boundaries and endurance runs remain explicit selections.
+
+For ordinary regression screens, #118 permits a prospectively frozen n3 rule:
+median paired wall slowdown greater than `max(15% of control median, 3 ms)`
+and at least two of three pairs slower; CPU uses `max(15%, 1 ms)`. Keep stronger
+unwaived contracts, the Stage2 K10 owner waiver, every failed sample and valid
+outlier. Isolated minor misses may be WARN; the authentic cold Init <=2.7 s,
+correctness, authentication and resource bounds remain hard gates.
 
 Use the family's `verify.sh` with the exact case, seed/repetition, source, input,
 image and setup identity from the performance receipt. SDK proofs also bind the

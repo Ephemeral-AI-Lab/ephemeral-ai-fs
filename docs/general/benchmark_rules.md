@@ -669,9 +669,30 @@ self-check
 ```
 
 Do not run the complete performance family or verifier suite on every edit.
-Run full admission once the selected cases, size slope, operation parity, and
-resource counters are green. A small optimization on a shared path still
-requires one final run of every affected family member.
+After a relevant change stabilizes, freeze the affected scope, comparator,
+case/input/cache, repetitions and gates in one concise configuration, then use
+the existing runner/analyzer for matched pairs and independent qualification.
+Run every member required for the claimed scope; do not repeat unrelated
+passing qualification without a relevant change. A release still requires its
+complete declared admission set. No separate collector, worktree or long
+protocol document is required for each development iteration.
+
+Use one persistent main checkout and reuse Cargo's writable dependency cache
+per pinned toolchain/architecture/profile. Independently copy immutable control
+executables and verify their identities; never hard-link writable source,
+executables or targets to a control. Source changes during a qualified build
+MUST fail publication. A Python/shell-only harness change MAY reuse native
+executables only when matching compilation inputs and actual binary/image
+identities prove compatibility. Mutable image tags MUST resolve afresh;
+process-local reuse of an immutable image ID's inspection is allowed when the
+fresh container is still validated against that exact ID, topology and limits.
+
+Build retention MUST select only owned Cargo targets under the declared cache
+root, with explicit preview/apply and a bounded keep count (normally two old
+sealed targets plus the shared cache). It MUST NOT delete inputs, evidence,
+archives or source as a side effect. Sample Stores remain subject to their
+existing proof/cleanup policy. Active comparator copies and failed diagnostic
+Stores MUST have an explicit bounded retention disposition at campaign closure.
 
 The selected loop SHOULD pair its performance case with the smallest relevant
 correctness regression, not a full-tree verifier on every edit. Measure actual
@@ -693,6 +714,17 @@ budgets with their applicability and source. Numerical limits that need an
 untouched baseline must be fixed before candidate optimization or collection.
 Do not shorten a workload, hide preparation, raise a timeout after a valid miss,
 or omit a correctness check merely to label a family fast.
+
+For ordinary regression screens, a campaign MAY prospectively use the #118
+material-regression rule: n3 fresh alternating pairs; median paired wall
+slowdown greater than `max(15% of control median, 3 ms)` AND at least two of
+three pairs slower; CPU analogously uses `max(15%, 1 ms)`. Stronger unwaived
+requirements still govern. Retain every attempt; no unchanged reruns to obtain
+a passing median, arm-only retries or outlier deletion. Report PASS,
+owner-WAIVED, permitted minor WARN, FAIL and BLOCKED separately. The Stage2 K10
+owner waiver remains explicit. Authentic cold Init <=2.7 s and all correctness,
+authentication, resource and custody gates remain hard requirements; required
+NOT_RUN evidence cannot satisfy terminal acceptance.
 
 Self-checks MUST be fast and product-free. They MUST validate unique IDs,
 family cardinality, fixture/schedule/seed algebra, operation surface, timing

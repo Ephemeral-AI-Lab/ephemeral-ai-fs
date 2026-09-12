@@ -1,11 +1,9 @@
-"""Issue103 adapters for the public compactor and correctness-only live smoke."""
+"""Ordinary schema10 live smoke and retained issue103 evidence readers."""
 import argparse
 import fcntl
 import json
 import os
 from pathlib import Path
-import subprocess
-import shutil
 import time
 import uuid
 
@@ -23,7 +21,6 @@ PROFILES = {
         'indices': tuple(range(1,158)), 'checkpoint_map': {},
         'access_profile': 'historical-access-full157-integrated-v1', 'case_suffix': '-f157-v1'},
 }
-LIMIT = 4 * 1024**3
 
 
 def save(path, value):
@@ -54,57 +51,14 @@ def freeze(path):
             'frozen_at_ns': time.time_ns()}
 
 
-def compact(args, case_folder):
-    source = case_folder/'host-runtime/store.sqlite'
-    destination = case_folder/'compacted-store/store.sqlite'
-    destination.parent.mkdir()
-    tmp = case_folder/'compaction-tmp'; tmp.mkdir()
-    if shutil.disk_usage(case_folder).free < 50*1024**3: raise RuntimeError('compaction free disk reserve')
-    before = {'sha256': runtime.file_sha256(source), 'allocated_bytes': source.stat().st_blocks*512,
-              'apparent_bytes': source.stat().st_size}
-    command = [args.host_binary, 'storage-compact', str(source.resolve()), str(destination.resolve()),
-               str(LIMIT), str((case_folder/'compaction-open-files.jsonl').resolve())]
-    start = time.monotonic_ns()
-    result = {'schema': PROFILES[args.storage_smoke]['scenario'], 'status':'INCOMPLETE', 'command':command, 'source_before':before,
-              'temporary_byte_limit':LIMIT, 'source_preserved':False}
-    save(case_folder/'compaction-invocation.json', result)
-    try:
-        raw = runtime.run(['/usr/bin/time','-l',*command], deadline=runtime.Deadline.after(14400),
-            env={**os.environ,'TMPDIR':str(tmp.resolve()),'SQLITE_TMPDIR':str(tmp.resolve())}, check=False, output_limit=8*1024**2)
-        (case_folder/'compaction.stdout.jsonl').write_bytes(raw.stdout)
-        (case_folder/'compaction.stderr.time').write_bytes(raw.stderr)
-        result.update(process_wall_ns=time.monotonic_ns()-start, exit_code=raw.returncode,
-                      timed_out=raw.timed_out, records=records(raw.stdout))
-        receipts=[r['receipt'] for r in result['records'] if r.get('kind')=='storage-compaction']
-        if len(receipts)!=1: raise ValueError('compaction receipt cardinality')
-        receipt=receipts[0];result['receipt']=receipt
-        if raw.returncode or raw.timed_out or not all(receipt[k] for k in ('published','cleanup_complete','directory_synced')) or receipt['publication_notes']:
-            raise ValueError('compaction operation/publication failed')
-        observed=[r for r in result['records'] if r.get('kind')=='storage-compaction-open-files']
-        if len(observed)!=1 or observed[0]['samples']<1: raise ValueError('compaction resource observations missing')
-        if receipt['named_temporary_peak_bytes']>LIMIT or observed[0]['sampled_peak_allocated_bytes']>LIMIT: raise ValueError('compaction temporary allocation budget')
-        phases=[r for r in result['records'] if r.get('phase')=='compaction']
-        if len(phases)!=1 or not phases[0]['success']: raise ValueError('compaction phase receipt')
-        result['measured_store']=freeze(destination)
-        if result['measured_store']['allocated_bytes']!=receipt['final_allocated_bytes']:
-            raise ValueError('complete Store allocation differs from product receipt')
-        result['source_preserved']=runtime.file_sha256(source)==before['sha256']
-        if not result['source_preserved']: raise ValueError('compaction source changed')
-        if any(tmp.iterdir()): raise ValueError('compaction scratch cleanup incomplete')
-        result['status']='PASS'
-    except Exception as error:
-        result.update(error_type=type(error).__name__,error=str(error),process_wall_ns=time.monotonic_ns()-start)
-    save(case_folder/'compaction-result.json',result)
-    return result
-
-
 def check_identity(binary,image):
     current=runner.source_build_args()
     identity=json.loads(Path(str(binary)+'.identity.json').read_text())
     info=runner.image_info(image,time.monotonic()+30);labels=info['Config']['Labels']
     if identity['binary_sha256']!=runtime.file_sha256(binary) or identity['LAYERFS_SOURCE_SEAL']!=current['LAYERFS_SOURCE_SEAL'] or labels['dev.layerfs.source-seal']!=current['LAYERFS_SOURCE_SEAL'] or labels['dev.layerfs.product-seal']!=current['LAYERFS_PRODUCT_SEAL']:
         raise ValueError('stale host/image/source identity')
-    if identity.get('integrated_format_probe',{}).get('status')!='PASS': raise ValueError('integrated linked-format probe missing')
+    probe=identity.get('integrated_format_probe',{})
+    if probe.get('status')!='PASS' or probe.get('storage_policy')!='ordinary': raise ValueError('ordinary linked-format probe missing')
     return current,identity,info
 
 
@@ -113,11 +67,11 @@ def smoke(args):
     with (Path(os.environ.get('TMPDIR','/tmp'))/'layerfs-infra-measurement.lock').open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         current,identity,info=check_identity(args.host_binary,args.image)
-        save(output/'identity.json',{'schema':'issue103-integration-smoke-v1','source':current,'host_identity':identity,'image_id':info['Id'],'contract_sha256':runtime.file_sha256(runner.REPO/CONTRACT)})
+        save(output/'identity.json',{'schema':'ordinary-storage-integration-smoke-v1','source':current,'host_identity':identity,'image_id':info['Id'],'contract_sha256':runtime.file_sha256(runner.REPO/'docs/roadmap/0.1/0.1.5/compaction-removal.md')})
         sample=None;result={'status':'INCOMPLETE','admission_eligible':False}
         host=output/'host-runtime';host.mkdir();tmp=host/'tmp';tmp.mkdir()
         try:
-            sample=runtime.start_sample(info['Id'],'layerfs-i103-'+uuid.uuid4().hex[:12],{'family':'issue103-integration-smoke-v1','run':output.name},deadline=runtime.Deadline.after(120))
+            sample=runtime.start_sample(info['Id'],'layerfs-i103-'+uuid.uuid4().hex[:12],{'family':'ordinary-storage-integration-smoke-v1','run':output.name},deadline=runtime.Deadline.after(120))
             command=[args.host_binary,'storage-integration-smoke',str(host),sample.id]
             result['command']=command
             raw=runtime.run(command,deadline=runtime.Deadline.after(300),env={**os.environ,'TMPDIR':str(tmp),'SQLITE_TMPDIR':str(tmp),'LAYERFS_EXEC_TRANSPORT':'daemon','LAYERFS_FUSE_TRANSPORT':'daemon'},check=False,output_limit=8*1024**2)

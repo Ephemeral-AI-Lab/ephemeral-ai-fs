@@ -8,6 +8,7 @@ does not select families, define benchmark timing, or retain result policy.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from copy import deepcopy
 import json
 import hashlib
 import shutil
@@ -35,6 +36,7 @@ _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
 _IMAGE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_./:@+-]{0,254}\Z")
 _LABEL_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
 _ENV_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+_INSPECTED_IMAGES: dict[str, dict] = {}
 
 
 class RuntimeFailure(RuntimeError):
@@ -248,6 +250,10 @@ def _json_result(result: CommandResult, label: str):
 
 def _inspect_image(reference: str, deadline: Deadline) -> dict:
     _image(reference)
+    # Tags remain freshly resolved. Only immutable IDs reuse a process-local
+    # inspection, and each fresh container is still checked against that exact ID.
+    if reference in _INSPECTED_IMAGES:
+        return deepcopy(_INSPECTED_IMAGES[reference])
     result = run(
         ["docker", "image", "inspect", reference],
         deadline=deadline,
@@ -259,6 +265,12 @@ def _inspect_image(reference: str, deadline: Deadline) -> dict:
     values = _json_result(result, "image inspection")
     if not isinstance(values, list) or len(values) != 1:
         raise RuntimeFailure("ambiguous image inspection")
+    identity = values[0].get("Id", "")
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", identity):
+        raise RuntimeFailure("invalid inspected image identity")
+    if reference.startswith("sha256:") and reference != identity:
+        raise RuntimeFailure("inspected image identity mismatch")
+    _INSPECTED_IMAGES[identity] = deepcopy(values[0])
     return values[0]
 
 
@@ -381,7 +393,7 @@ def start_sample(
     ]
     command.extend(["--publish", "127.0.0.1::41273"])
     _labels(command, owned)
-    command.extend([image, "-c",
+    command.extend([image_info["Id"], "-c",
         "/usr/local/bin/layerfs-daemon-entrypoint & daemon_pid=$!; "
         "wait \"$daemon_pid\"; daemon_status=$?; "
         "printf '%s\\n' \"$daemon_status\" >/run/layerfs/daemon-exit-code; "
@@ -397,27 +409,21 @@ def start_sample(
                 [
                     "docker", "exec", name, "/bin/bash", "-ceu",
                     'test "$(wc -c </run/layerfs/capability)" -eq 32; '
-                    'exec 3<>/dev/tcp/127.0.0.1/41273; exec 3>&-; exec 3<&-',
+                    'exec 3<>/dev/tcp/127.0.0.1/41273; exec 3>&-; exec 3<&-; '
+                    "od -An -tx1 -v /run/layerfs/capability | tr -d ' \\n'",
                 ],
                 deadline=readiness_deadline,
                 output_limit=4096,
                 check=False,
             )
             if ready.returncode == 0:
+                capability = ready.stdout_text().strip()
                 break
             inspection = _inspect_container(name, deadline)
             if not inspection.get("State", {}).get("Running"):
                 raise RuntimeFailure("sample daemon exited before readiness")
             readiness_deadline.require("sample daemon TCP readiness", reserve=0.05)
             time.sleep(0.05)
-        capability = run(
-            [
-                "docker", "exec", name, "/bin/sh", "-ceu",
-                "od -An -tx1 -v /run/layerfs/capability | tr -d ' \\n'",
-            ],
-            deadline=deadline,
-            output_limit=128,
-        ).stdout_text().strip()
         if not re.fullmatch(r"[a-f0-9]{64}", capability):
             raise RuntimeFailure("invalid sample daemon capability")
         inspection = _inspect_container(name, deadline)

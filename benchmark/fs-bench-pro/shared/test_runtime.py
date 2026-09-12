@@ -4,11 +4,54 @@ import sqlite3
 import tempfile
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 import runtime
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_image_inspection_reuses_only_immutable_ids_and_rechecks_tags(self):
+        first = {'Id': 'sha256:' + 'a' * 64, 'Config': {'Volumes': None}}
+        second = {'Id': 'sha256:' + 'b' * 64, 'Config': {'Volumes': None}}
+        with patch.dict(runtime._INSPECTED_IMAGES, {}, clear=True), patch.object(runtime, 'run') as run:
+            run.return_value = runtime.CommandResult((), 0, json.dumps([first]).encode(), b'', 0, False, False)
+            value = runtime._inspect_image('test:tag', runtime.Deadline.after(1))
+            value['Config']['Volumes'] = {'/changed': {}}
+            self.assertEqual(runtime._inspect_image(first['Id'], runtime.Deadline.after(1)), first)
+            self.assertEqual(run.call_count, 1)
+            run.return_value = runtime.CommandResult((), 0, json.dumps([second]).encode(), b'', 0, False, False)
+            self.assertEqual(runtime._inspect_image('test:tag', runtime.Deadline.after(1)), second)
+            self.assertEqual(run.call_count, 2)
+            with self.assertRaisesRegex(runtime.RuntimeFailure, 'identity mismatch'):
+                runtime._inspect_image('sha256:' + 'c' * 64, runtime.Deadline.after(1))
+
+    def test_readiness_and_capability_share_one_exec_with_failure_cleanup(self):
+        image = {'Id': 'sha256:' + 'a' * 64, 'Config': {'Volumes': None}}
+        for capability, valid in ((b'ab' * 32, True), (b'invalid', False)):
+            calls = []
+            def run(argv, **kwargs):
+                calls.append(argv)
+                stdout = capability if argv[:2] == ['docker', 'exec'] else b'container'
+                return runtime.CommandResult(tuple(argv), 0, stdout, b'', 0, False, False)
+            with patch.object(runtime, '_inspect_image', return_value=image), \
+                    patch.object(runtime, '_inspect_container', return_value={'Id': 'container'}), \
+                    patch.object(runtime, '_validate_sample_inspection') as validate, \
+                    patch.object(runtime, 'run', side_effect=run):
+                if valid:
+                    sample = runtime.start_sample('test:tag', 'sample', {}, deadline=runtime.Deadline.after(10))
+                    self.assertEqual(sample._capability, capability.decode())
+                    validate.assert_called_once()
+                else:
+                    with self.assertRaisesRegex(runtime.RuntimeFailure, 'invalid sample daemon capability'):
+                        runtime.start_sample('test:tag', 'sample', {}, deadline=runtime.Deadline.after(10))
+                    self.assertEqual(calls[-1], ['docker', 'rm', '--force', 'sample'])
+            commands = [argv for argv in calls if argv[:2] == ['docker', 'exec']]
+            self.assertEqual(len(commands), 1)
+            for required in ('wc -c', '/dev/tcp/127.0.0.1/41273', 'od -An -tx1'):
+                self.assertIn(required, commands[0][-1])
+            self.assertIn(image['Id'], calls[0])
+            self.assertNotIn('test:tag', calls[0])
+
     def test_bounded_output_and_timeout(self):
         result = runtime.run([sys.executable, "-c", "print('x'*100000)"], deadline=runtime.Deadline.after(2), output_limit=16)
         self.assertTrue(result.truncated)

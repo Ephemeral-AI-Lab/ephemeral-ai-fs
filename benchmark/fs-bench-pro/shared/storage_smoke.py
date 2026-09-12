@@ -449,7 +449,7 @@ def main(argv=None):
     p = argparse.ArgumentParser()
     p.add_argument("--storage-smoke", choices=tuple(CASES), required=True)
     p.add_argument("--storage-verify-run", type=Path)
-    p.add_argument("--storage-compact", action="store_true", help="issue103 stride3/full157 public compaction phase")
+    p.set_defaults(storage_compact=False)  # Historical verification may restore this from its saved identity.
     p.add_argument("--storage-compat-run", type=Path)
     p.add_argument("--source-arm", choices=("baseline","candidate"), default="candidate")
     p.add_argument("--repetition", type=int, choices=(1,2,3), default=1)
@@ -461,8 +461,6 @@ def main(argv=None):
     args = p.parse_args(argv)
     if not args.image or (args.output is None) == (args.storage_verify_run is None) or (args.storage_compat_run and (not args.output or args.storage_verify_run)):
         p.error("--image and exactly one of --output / --storage-verify-run required")
-    if args.storage_compact and (args.storage_smoke not in integrated_profiles or args.storage_compat_run):
-        p.error("integrated compaction is registered only for stride3/full157")
     with (Path(os.environ.get("TMPDIR","/tmp"))/"layerfs-infra-measurement.lock").open("a") as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         start = time.monotonic_ns()
@@ -472,8 +470,6 @@ def main(argv=None):
         labels = image["Config"]["Labels"]
         if host_identity["binary_sha256"] != runtime.file_sha256(args.host_binary) or host_identity["LAYERFS_SOURCE_SEAL"] != current["LAYERFS_SOURCE_SEAL"] or labels["dev.layerfs.product-seal"] != current["LAYERFS_PRODUCT_SEAL"] or labels["dev.layerfs.source-seal"] != current["LAYERFS_SOURCE_SEAL"]:
             raise ValueError("stale host/image/source identity")
-        if args.storage_compact and host_identity.get("integrated_format_probe",{}).get("status") != "PASS":
-            raise ValueError("linked integrated-format build probe missing")
         if shutil.disk_usage(args.output.parent if args.output and args.output.parent.exists() else runner.REPO).free < 50*GIB:
             raise RuntimeError("free disk reserve")
         deadline = runtime.Deadline.after(14400 if args.storage_smoke in ("deepseek-full", "deepseek-stride3", "deepseek-stride10") else 600 if args.storage_smoke in ("deepseek-five", "deepseek-ten") else 120)
@@ -490,7 +486,6 @@ def main(argv=None):
             mode = "verification"
         elif args.storage_verify_run:
             saved = json.loads((output/"identity.json").read_text())
-            if args.storage_compact and not saved.get("storage_compact",False): raise ValueError("compaction verification profile mismatch")
             args.storage_compact = saved.get("storage_compact",False)
             if args.storage_compact:
                 profile=integrated_profiles[args.storage_smoke]
@@ -536,13 +531,9 @@ def main(argv=None):
             performance = json.loads((folder/"performance-result.json").read_text()) if mode == "verification" else None
             if performance and performance["status"] != "PASS": raise ValueError("cannot qualify incomplete performance")
             result = run_case(args,folder,case,fixtures[case],image["Id"],mode,remaining_phase_seconds,performance)
-            if args.storage_compact and result["status"] == "PASS" and result["cleanup_status"] == "PASS":
-                from integrated_storage import compact, freeze
-                if mode == "performance":
-                    result["compaction"] = compact(args,folder)
-                    if result["compaction"]["status"] != "PASS": result["status"] = "INCOMPLETE"
-                else:
-                    save(folder/"verification-store-after.json",freeze(folder/"compacted-store/store.sqlite"))
+            if args.storage_compact and mode == "verification" and result["status"] == "PASS" and result["cleanup_status"] == "PASS":
+                from integrated_storage import freeze
+                save(folder/"verification-store-after.json", freeze(folder/"compacted-store/store.sqlite"))
             results.append(result)
             remaining_phase_seconds -= result.get("work_wall_ns",0)/1e9
             if result["status"] != "PASS": break

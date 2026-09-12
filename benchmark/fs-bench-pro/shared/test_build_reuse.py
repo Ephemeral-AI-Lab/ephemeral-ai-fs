@@ -1,4 +1,4 @@
-"""Offline boundaries for the #104 dependency-copy recipe in qualified builds."""
+"""Offline checks for qualified Cargo reuse, immutable copies and owned retention."""
 import fcntl
 import json
 import os
@@ -34,6 +34,16 @@ class BuildReuseTests(unittest.TestCase):
                     patch.object(runner, 'archive_image', side_effect=archive) as archived:
                 self.assertEqual(runner.main(['--build-image']), 0)
                 archived.assert_called_once()
+
+    def test_changed_source_cannot_publish_a_qualified_image(self):
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {'TMPDIR': folder}), \
+                patch.object(runner, 'source_build_args', side_effect=[
+                    {'LAYERFS_SOURCE_SEAL': 'a' * 64}, {'LAYERFS_SOURCE_SEAL': 'b' * 64}]), \
+                patch.object(runner.runtime, 'build_image', return_value=SimpleNamespace(returncode=0)), \
+                patch.object(runner, 'archive_image') as archive:
+            with self.assertRaisesRegex(ValueError, 'source changed'):
+                runner.main(['--build-image'])
+            archive.assert_not_called()
 
     def test_compilation_and_dependency_invalidation(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -106,6 +116,116 @@ class BuildReuseTests(unittest.TestCase):
             binary.write_bytes(b'corrupt')
             with self.assertRaisesRegex(ValueError, 'producer binary identity'):
                 runner.seed_host_dependencies(root / 'builds/native-third', values, binary)
+
+    def test_build_mode_is_validated_and_defaults_to_the_owned_incremental_cache(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(runner.build_mode(), 'incremental')
+        with patch.dict(os.environ, {'LAYERFS_BUILD_ISOLATION': 'sealed'}):
+            self.assertEqual(runner.build_mode(), 'sealed')
+        for value in ('', 'shared', 'per-seal', 'INCREMENTAL'):
+            with patch.dict(os.environ, {'LAYERFS_BUILD_ISOLATION': value}), self.assertRaises(ValueError):
+                runner.build_mode()
+        with tempfile.TemporaryDirectory() as folder:
+            with patch.object(runner, 'HOST_ROOT', Path(folder)):
+                self.assertEqual(runner.incremental_build_target(),
+                                 Path(folder) / 'builds' / runner.INCREMENTAL_TARGET_NAME)
+
+    def test_recompiled_packages_names_every_cargo_unit(self):
+        result = SimpleNamespace(
+            stdout=b'   Compiling layerfs-workspace v0.1.4 (/repo/crates/layerfs-workspace)\n'
+                   b'   Compiling layerfs-sdk v0.1.4 (/repo/crates/layerfs-sdk)\n'
+                   b'   Compiling layerfs-sdk v0.1.4 (/repo/crates/layerfs-sdk)\n',
+            stderr=b'    Finished `release` profile [optimized] target(s) in 19.17s\n'
+                   b'   Compiling fs-benchmark-pro v0.1.4 (/repo/benchmark/fs-bench-pro)\n')
+        self.assertEqual(runner.recompiled_packages(result),
+                         ['layerfs-workspace', 'layerfs-sdk', 'fs-benchmark-pro'])
+        self.assertEqual(runner.recompiled_packages(SimpleNamespace(stdout=b'', stderr=b'')), [])
+
+    def test_prune_retention_bounds_writable_build_caches_only(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            builds = root / 'builds'
+            names = ['native-' + str(i) * 64 for i in range(3)] + [runner.INCREMENTAL_TARGET_NAME]
+            for index, name in enumerate(names):
+                path = builds / name / 'release'
+                path.mkdir(parents=True)
+                (path / 'payload.bin').write_bytes(b'x' * (10 + index))
+                (builds / name / 'CACHEDIR.TAG').write_text('Signature: 8a477f597d28d172789f06886806bc55\n')
+                os.utime(builds / name, (1_000 + index, 1_000 + index))
+            protected = {}
+            for name in ('fixtures', 'prepared', 'samples', 'binary-archive', 'image-archive'):
+                path = root / name
+                path.mkdir()
+                (path / 'keep.bin').write_bytes(b'keep')
+                protected[path] = (path / 'keep.bin').read_bytes()
+            with patch.object(runner, 'HOST_ROOT', root):
+                receipt = runner.prune_build_caches(keep=2, apply=False)
+                self.assertEqual(receipt['removed'], [])
+                self.assertEqual(len(receipt['candidates']), 1)
+                self.assertTrue((builds / names[0]).is_dir())
+                receipt = runner.prune_build_caches(keep=2, apply=True)
+                removed = sorted(Path(entry['path']).name for entry in receipt['removed'])
+                self.assertEqual(removed, names[:1])
+                self.assertEqual(receipt['reclaimed_bytes'], sum(entry['bytes'] for entry in receipt['removed']))
+                self.assertEqual(sorted(Path(p).name for p in receipt['retained']),
+                                 names[1:3])
+                self.assertTrue((builds / runner.INCREMENTAL_TARGET_NAME).is_dir())
+                self.assertTrue(receipt['policy']['incremental_cache'] == runner.INCREMENTAL_TARGET_NAME)
+                self.assertEqual(receipt['policy']['protected'],
+                                 ['fixtures', 'prepared', 'samples', 'binary-archive', 'image-archive'])
+                for path, content in protected.items():
+                    self.assertEqual((path / 'keep.bin').read_bytes(), content)
+                again = runner.prune_build_caches(keep=2, apply=True)
+                self.assertEqual(again['removed'], [])
+                self.assertEqual(again['reclaimed_bytes'], 0)
+
+    def test_prune_fails_closed_before_removing_anything(self):
+        with tempfile.TemporaryDirectory() as folder, patch.object(runner, 'HOST_ROOT', Path(folder)):
+            root = Path(folder)
+            for keep in (-1, True, 0.5):
+                with self.assertRaisesRegex(ValueError, 'nonnegative'):
+                    runner.prune_build_caches(keep, apply=True)
+            target = root / ('builds/native-' + 'a' * 64)
+            target.mkdir(parents=True)
+            with self.assertRaisesRegex(ValueError, 'unrecognized'):
+                runner.prune_build_caches(0, apply=True)
+            self.assertTrue(target.exists())
+            target.rmdir()
+            target.symlink_to(root, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, 'unrecognized'):
+                runner.prune_build_caches(0, apply=True)
+            target.unlink()
+            (root / 'builds').rmdir()
+            (root / 'builds').symlink_to(root, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, 'independently owned'):
+                runner.prune_build_caches(0, apply=True)
+
+    def test_publishing_breaks_existing_links_and_archive_is_immutable(self):
+        with tempfile.TemporaryDirectory() as folder, patch.object(runner, 'HOST_ROOT', Path(folder)):
+            root = Path(folder)
+            control, active, built = (root / name for name in ('control', 'active', 'built'))
+            control.write_bytes(b'control')
+            active.hardlink_to(control)
+            built.write_bytes(b'candidate')
+            runner.copy_executable(built, active)
+            self.assertEqual(control.read_bytes(), b'control')
+            self.assertEqual(active.read_bytes(), b'candidate')
+            self.assertNotEqual(active.stat().st_ino, built.stat().st_ino)
+            identity = Path(str(active) + '.identity.json')
+            sha = runner.runtime.file_sha256(active)
+            identity.write_text(json.dumps({'binary_sha256': sha}))
+            runner.archive_binary(active)
+            archived = root / 'binary-archive' / sha / active.name
+            self.assertEqual(archived.stat().st_nlink, 1)
+            self.assertEqual(archived.stat().st_mode & 0o222, 0)
+            self.assertEqual(Path(str(archived) + '.identity.json').stat().st_mode & 0o222, 0)
+            active.write_bytes(b'next')
+            self.assertEqual(archived.read_bytes(), b'candidate')
+            archived.chmod(0o755)
+            archived.write_bytes(b'corrupt')
+            active.write_bytes(b'candidate')
+            with self.assertRaisesRegex(ValueError, 'custody mismatch'):
+                runner.archive_binary(active)
 
 
 if __name__ == '__main__':

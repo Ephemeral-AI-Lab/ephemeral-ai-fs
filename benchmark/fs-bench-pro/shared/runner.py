@@ -38,6 +38,12 @@ PRODUCT_TARGET_NS = 15_000_000_000
 HISTORICAL_PRODUCT_TARGET_SCOPE = (
     "reporting-only historical 15-second family target; not a collection acceptance gate"
 )
+# One owned writable cargo cache per toolchain/profile (#117). Cargo's own
+# fingerprints decide what is rebuilt; immutable per-seal executables stay in
+# binary-archive/ and every build receipt names the packages that recompiled.
+INCREMENTAL_TARGET_NAME = "incremental-1.85.1-release"
+BUILD_MODES = ("incremental", "sealed")
+DEFAULT_RETAINED_SEALED_BUILDS = 2
 
 
 def performance_target_status(elapsed_ns):
@@ -207,7 +213,7 @@ def source_build_args():
 
 
 def image_info(image, deadline):
-    value = json.loads(_text(_command(["docker", "image", "inspect", image], deadline).stdout))[0]
+    value = runtime._inspect_image(image, _deadline(deadline))
     if value.get("Config", {}).get("Volumes"):
         raise ValueError("image-declared volumes are forbidden")
     return value
@@ -282,6 +288,8 @@ def resolve_selection(args, deadline):
         raise ValueError("host binary seal mismatch; rebuild with --build-host")
     if host_identity["LAYERFS_PRODUCT_SEAL"] != identity.get("dev.layerfs.product-seal"):
         raise ValueError("host and Linux image product seals differ")
+    if not host_identity.get("LAYERFS_COMPILATION_SEAL") or host_identity["LAYERFS_COMPILATION_SEAL"] != identity.get("dev.layerfs.compilation-seal"):
+        raise ValueError("host and Linux image compilation seals differ; rebuild relevant executables")
     source = host_identity["LAYERFS_SOURCE_SEAL"]
     result = _command([args.host_binary, "infra-list", args.family]
                       + ([args.case] if args.case else []), deadline)
@@ -757,6 +765,69 @@ def seed_host_dependencies(build_target, values, binary):
     return receipt
 
 
+def build_mode():
+    """Select the owned build cache. `sealed` keeps the pre-#117 per-seal target."""
+    mode = os.environ.get("LAYERFS_BUILD_ISOLATION", "incremental")
+    if mode not in BUILD_MODES:
+        raise ValueError(f"LAYERFS_BUILD_ISOLATION must be one of {BUILD_MODES}")
+    return mode
+
+
+def incremental_build_target():
+    return HOST_ROOT / "builds" / INCREMENTAL_TARGET_NAME
+
+
+def recompiled_packages(result):
+    """Name every cargo unit the build actually recompiled; reused units are absent."""
+    packages = []
+    for line in (result.stdout + b"\n" + result.stderr).decode("utf-8", "replace").splitlines():
+        match = re.match(r"\s*Compiling\s+(\S+)\s+v(\S+)", line)
+        if match and match.group(1) not in packages:
+            packages.append(match.group(1))
+    return packages
+
+
+def prune_build_caches(keep=DEFAULT_RETAINED_SEALED_BUILDS, apply=False):
+    """Bounded retention for writable build caches (#117).
+
+    Retains the owned incremental cache, the newest `keep` per-seal native
+    targets, and anything outside `builds/`. Never touches fixtures, prepared
+    inputs, samples or the immutable binary/image archives.
+    """
+    if type(keep) is not int or keep < 0:
+        raise ValueError("retained build count must be a nonnegative integer")
+    builds = HOST_ROOT / "builds"
+    if builds.is_symlink() or builds.resolve().parent != HOST_ROOT.resolve():
+        raise ValueError("build cache root is not independently owned")
+    sealed = sorted((p for p in builds.iterdir() if re.fullmatch(r"native-[0-9a-f]{64}", p.name)),
+                    key=lambda p: p.lstat().st_mtime, reverse=True) if builds.exists() else []
+    retained, candidates = [], []
+    for index, path in enumerate(sealed):
+        marker = path / "CACHEDIR.TAG"
+        if path.is_symlink() or not path.is_dir() or marker.is_symlink() or not marker.is_file() or not marker.read_text().startswith(
+                "Signature: 8a477f597d28d172789f06886806bc55"):
+            raise ValueError("refusing unrecognized Cargo cache: " + str(path))
+        if index < keep:
+            retained.append(str(path))
+            continue
+        size = sum(f.lstat().st_size for f in path.rglob("*") if not f.is_symlink() and f.is_file())
+        candidates.append({"path": str(path), "bytes": size})
+    # Validate the complete selection before deleting any owned cache. Archives
+    # and sample/input roots never enter this selection; rmtree does not follow links.
+    if apply:
+        for entry in candidates:
+            shutil.rmtree(entry["path"])
+    receipt = {"schema": "layerfs-build-retention-v1", "policy": {
+        "retained_sealed_targets": keep, "incremental_cache": INCREMENTAL_TARGET_NAME,
+        "protected": ["fixtures", "prepared", "samples", "binary-archive", "image-archive"]},
+        "retained": retained, "incremental_target": str(incremental_build_target()),
+        "candidates": candidates, "removed": candidates if apply else [],
+        "candidate_bytes": sum(entry["bytes"] for entry in candidates),
+        "reclaimed_bytes": sum(entry["bytes"] for entry in candidates) if apply else 0,
+        "bytes_basis": "apparent file bytes; not a measured free-space delta", "apply": apply}
+    return receipt
+
+
 def verify_linked_schema(binary, expected):
     with tempfile.TemporaryDirectory(prefix="layerfs-build-schema-") as folder:
         observed = int(runtime.run([str(binary), "infra-schema-probe", str(Path(folder) / "store.sqlite")],
@@ -764,6 +835,17 @@ def verify_linked_schema(binary, expected):
     if observed != expected:
         raise ValueError(f"linked Store schema {observed} differs from source schema {expected}; stale build")
     return observed
+
+
+def copy_executable(source, destination, *, readonly=False):
+    """Replace, never overwrite an inode that may be linked to a control/cache."""
+    staging = destination.with_name(destination.name + ".copy-" + uuid.uuid4().hex)
+    try:
+        shutil.copy2(source, staging)
+        staging.chmod(0o555 if readonly else 0o755)
+        staging.replace(destination)
+    finally:
+        staging.unlink(missing_ok=True)
 
 
 def archive_binary(binary):
@@ -774,11 +856,16 @@ def archive_binary(binary):
     folder.mkdir(parents=True, exist_ok=True)
     archived = folder / binary.name
     if not archived.exists():
-        shutil.copy2(binary, archived)
+        copy_executable(binary, archived, readonly=True)
+    if archived.is_symlink() or archived.stat().st_nlink != 1:
+        raise ValueError("binary archive must be an independent copy")
+    archived.chmod(0o555)
     identity = Path(str(binary) + ".identity.json")
     if identity.exists():
         destination = folder / (binary.name + ".identity.json")
-        if not destination.exists(): shutil.copy2(identity, destination)
+        if not destination.exists():
+            shutil.copy2(identity, destination)
+            destination.chmod(0o444)
     observation = folder / (binary.name + ".archive-observation.json")
     if not observation.exists():
         saved = json.loads(identity.read_text()) if identity.exists() else None
@@ -818,7 +905,7 @@ def verify_integrated_format(binary):
             deadline=runtime.Deadline.after(30), env={"TMPDIR":str(root/"tmp"),"SQLITE_TMPDIR":str(root/"tmp")})
         records = [json.loads(line) for line in raw.stdout.decode().splitlines()]
         probes = [r for r in records if r.get("kind") == "storage-format-probe"]
-        if len(probes) != 1 or probes[0].get("status") != "PASS" or probes[0].get("schema_version") != 10 or probes[0].get("content_version") != 107:
+        if len(probes) != 1 or probes[0].get("status") != "PASS" or probes[0].get("schema_version") != 10 or probes[0].get("storage_policy") != "ordinary":
             raise ValueError("linked integrated product format probe failed")
         return {**probes[0], "records":records, "stdout_sha256":hashlib.sha256(raw.stdout).hexdigest()}
 
@@ -844,20 +931,35 @@ def main(argv=None):
     if "--storage-smoke" in argv:
         import storage_smoke
         return storage_smoke.main(argv)
-    if argv in (["--build-image"], ["--build-host"], ["--build-storage-smoke-image"]):
+    if argv[:1] == ["--prune-builds"] or argv in (["--build-image"], ["--build-host"], ["--build-storage-smoke-image"]):
         lock_path = Path(os.environ.get("TMPDIR", "/tmp")) / "layerfs-infra-measurement.lock"
         with lock_path.open("a") as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as error:
                 raise RuntimeError("another benchmark owns the measurement lock") from error
+            if argv[:1] == ["--prune-builds"]:
+                pruning = argparse.ArgumentParser(description="Retain recent owned Cargo targets; preserve immutable archives and inputs")
+                pruning.add_argument("--prune-builds", nargs="?", type=int, default=DEFAULT_RETAINED_SEALED_BUILDS,
+                                     const=DEFAULT_RETAINED_SEALED_BUILDS, metavar="KEEP")
+                pruning.add_argument("--apply", action="store_true", help="Delete the selected old targets (default: preview only)")
+                options = pruning.parse_args(argv)
+                receipt = prune_build_caches(keep=options.prune_builds, apply=options.apply)
+                print(json.dumps(receipt, sort_keys=True))
+                return 0
             values = source_build_args()
             if argv == ["--build-host"]:
                 binary = REPO / "target/release/fs-benchmark-pro"
-                build_target = HOST_ROOT / "builds" / ("native-" + values["LAYERFS_COMPILATION_SEAL"])
-                dependency_reuse = seed_host_dependencies(build_target, values, binary)
+                mode = build_mode()
+                dependency_reuse = None
+                if mode == "sealed":
+                    build_target = HOST_ROOT / "builds" / ("native-" + values["LAYERFS_COMPILATION_SEAL"])
+                    dependency_reuse = seed_host_dependencies(build_target, values, binary)
+                else:
+                    build_target = incremental_build_target()
+                    build_target.mkdir(parents=True, exist_ok=True)
                 try:
-                    result = runtime.run(["cargo", "+1.85.1", "build", "--locked", "--release", "-j" + values["LAYERFS_HOST_BUILD_JOBS"], "-p", "fs-benchmark-pro", "-p", "layerfs-layerstack-store", "--bins", "--target-dir", str(build_target)],
+                    result = runtime.run(["cargo", "+1.85.1", "build", "--locked", "--release", "-j" + values["LAYERFS_HOST_BUILD_JOBS"], "-p", "fs-benchmark-pro", "--bin", "fs-benchmark-pro", "--target-dir", str(build_target)],
                         deadline=runtime.Deadline.after(900), cwd=REPO, output_limit=1024**2, stream_output=True)
                 except runtime.CommandFailure as error:
                     print(_text(error.result.stderr), file=sys.stderr)
@@ -874,14 +976,15 @@ def main(argv=None):
                     raise ValueError("source changed during qualified build")
                 binary.parent.mkdir(parents=True, exist_ok=True)
                 archive_binary(binary)
-                shutil.copy2(built, binary)
-                identity = {**values, "native_build_wall_ns": result.wall_ns, "dependency_reuse": dependency_reuse, "build_target": str(build_target), "observed_schema_version": observed_schema, "binary_sha256": runtime.file_sha256(binary), "platform": platform.platform(), "rust_toolchain": "1.85.1", "schema_sha256": runtime.file_sha256(schema_path), "integrated_format_probe":integrated_probe}
+                copy_executable(built, binary)
+                identity = {**values, "native_build_wall_ns": result.wall_ns, "dependency_reuse": dependency_reuse,
+                            "build_mode": mode, "build_target": str(build_target),
+                            "recompiled_packages": recompiled_packages(result),
+                            "observed_schema_version": observed_schema, "binary_sha256": runtime.file_sha256(binary),
+                            "platform": platform.platform(), "rust_toolchain": "1.85.1",
+                            "schema_sha256": runtime.file_sha256(schema_path), "integrated_format_probe":integrated_probe}
                 Path(str(binary) + ".identity.json").write_text(json.dumps(identity, sort_keys=True))
-                compactor = binary.with_name("layerfs-store-compact")
-                archive_binary(compactor)
-                shutil.copy2(build_target / "release/layerfs-store-compact", compactor)
-                Path(str(compactor)+".identity.json").write_text(json.dumps({**identity,"binary_sha256":runtime.file_sha256(compactor),"entrypoint":"public LayerStackStore::compact_into"},sort_keys=True))
-                archive_binary(binary); archive_binary(compactor)
+                archive_binary(binary)
                 print(binary)
                 return 0
             tag = "layerfs-bench-infra:" + values["LAYERFS_SOURCE_SEAL"][:16]
@@ -896,6 +999,8 @@ def main(argv=None):
             if result.returncode:
                 print(_text(result.stderr)[-16384:], file=sys.stderr)
                 return result.returncode
+            if any(values.get(key) != value for key, value in source_build_args().items()):
+                raise ValueError("source changed during qualified image build")
             archive_image(tag)
             print(tag)
             return 0

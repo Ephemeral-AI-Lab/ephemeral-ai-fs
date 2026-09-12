@@ -13,7 +13,6 @@ FROM workload-build AS build
 
 ARG TARGETARCH
 ARG CARGO_BUILD_JOBS=2
-ARG LAYERFS_COMPILATION_SEAL
 
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
@@ -23,7 +22,7 @@ COPY benchmark/fs-bench-pro/Cargo.toml ./benchmark/fs-bench-pro/Cargo.toml
 COPY benchmark/fs-bench-pro/src ./benchmark/fs-bench-pro/src
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=layerfs-bench-native-${LAYERFS_COMPILATION_SEAL},target=/src/target,sharing=locked \
+    --mount=type=cache,id=layerfs-bench-rust-1.85.1-${TARGETARCH},target=/src/target,sharing=locked \
     case "$CARGO_BUILD_JOBS" in \
       ''|*[!0-9]*) exit 1 ;; \
     esac \
@@ -63,7 +62,7 @@ FROM build AS runtime-check
 
 # Explicit component checks; this stage never starts a Store or benchmark.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=layerfs-bench-native-${LAYERFS_COMPILATION_SEAL},target=/src/target,sharing=locked \
+    --mount=type=cache,id=layerfs-bench-rust-1.85.1-${TARGETARCH},target=/src/target,sharing=locked \
     cargo test --locked --jobs 2 -p layerfs-daemon --bin layerfs-daemon \
  && cargo check --locked --jobs 2 -p layerfs-workspace --features host-fuse \
  && cargo test --locked --jobs 2 -p layerfs-fuse --features proxy,live \
@@ -94,6 +93,7 @@ ARG LAYERFS_SOURCE_DIRTY
 ARG LAYERFS_SOURCE_SEAL
 ARG LAYERFS_PRODUCT_SEAL
 ARG WORKLOAD_SOURCE_SHA256
+ARG LAYERFS_COMPILATION_SEAL
 
 LABEL org.opencontainers.image.source="https://github.com/Ephemeral-AI-Lab/layerfs" \
       org.opencontainers.image.revision="$LAYERFS_SOURCE_COMMIT" \
@@ -101,6 +101,7 @@ LABEL org.opencontainers.image.source="https://github.com/Ephemeral-AI-Lab/layer
       dev.layerfs.source-dirty="$LAYERFS_SOURCE_DIRTY" \
       dev.layerfs.source-seal="$LAYERFS_SOURCE_SEAL" \
       dev.layerfs.product-seal="$LAYERFS_PRODUCT_SEAL" \
+      dev.layerfs.compilation-seal="$LAYERFS_COMPILATION_SEAL" \
       dev.layerfs.workload-source-sha256="$WORKLOAD_SOURCE_SHA256"
 
 ENV LAYERFS_SOURCE_COMMIT="$LAYERFS_SOURCE_COMMIT" \

@@ -140,13 +140,18 @@ class RunnerTests(unittest.TestCase):
         self.assertGreater(remaining, 4)
         self.assertLessEqual(remaining, 5)
 
-    def resolve(self, argv, row):
+    def resolve(self, argv, row, image_native="native"):
         args = runner.build_parser().parse_args(["--family", "payload_create_read", "--image", "sealed", "--case", "case", *argv])
         image = {"Id": "sha256:image", "Os": "linux", "Architecture": "arm64",
-                 "Config": {"Labels": {"dev.layerfs.source-seal": "source", "dev.layerfs.product-seal": "product"}}}
-        host_identity = {"binary_sha256": "binary", "LAYERFS_PRODUCT_SEAL": "product", "LAYERFS_SOURCE_SEAL": "source"}
+                 "Config": {"Labels": {"dev.layerfs.source-seal": "source", "dev.layerfs.product-seal": "product", "dev.layerfs.compilation-seal": image_native}}}
+        host_identity = {"binary_sha256": "binary", "LAYERFS_PRODUCT_SEAL": "product", "LAYERFS_SOURCE_SEAL": "source", "LAYERFS_COMPILATION_SEAL": "native"}
         with patch.object(runner.platform, "system", return_value="Darwin"), patch.object(runner.runtime, "file_sha256", return_value="binary"), patch.object(Path, "read_text", return_value=json.dumps(host_identity)), patch.object(runner, "image_info", return_value=image), patch.object(runner, "_command", return_value=SimpleNamespace(stdout=json.dumps({"family_id": "payload_create_read", "scenario_id": "case", **row}))):
             return args, runner.resolve_selection(args, 999999999)
+
+    def test_image_reuse_requires_matching_compilation_inputs(self):
+        for identity in (None, "older-workload"):
+            with self.assertRaisesRegex(ValueError, "compilation seals differ"):
+                self.resolve([], {}, image_native=identity)
 
     def test_n_does_not_change_seed(self):
         one_args, one = self.resolve(["--seed", "2", "--perf-fast"], {})
