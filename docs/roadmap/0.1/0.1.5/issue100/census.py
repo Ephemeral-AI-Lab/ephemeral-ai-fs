@@ -260,11 +260,34 @@ def inspect_connection(db, store, digest, start):
                             record_bytes=sum(selected[b][4] for b in members))
     counts['small_depth_counts'].update(str(x[0]) for x in closures.values())
     native_bases = set()
-    for item in selected.values():
+    for identity, item in selected.items():
         if item[0] == 2 and item[1] == 1:
-            base = selected[item[2]]
-            assert base[0] == 2 and base[1] == 0 and base[5] < item[5], 'native PREFIX requires an earlier physical FULL'
-            native_bases.add(item[2])
+            # Native PREFIX records form dependency chains: a prefix may name
+            # another prefix as its base. The physical pack order is not an
+            # invariant, so the census verifies the real one instead: every
+            # dependency either resolves inside this scan or is recorded as
+            # unresolved, the chain is acyclic, and it terminates at a record
+            # that is not itself a prefix.
+            chain, seen = [], set()
+            node = identity
+            while True:
+                current = selected.get(node)
+                if current is None:
+                    counts['large_CDC_PREFIX_chain_exit_unscanned'].update(objects=1)
+                    break
+                if node in seen:
+                    raise AssertionError('native PREFIX dependency cycle')
+                seen.add(node)
+                if current[0] != 2:
+                    raise AssertionError('native PREFIX dependency changed codec')
+                if current[1] != 1:
+                    native_bases.add(node)
+                    break
+                if len(chain) >= 1024:
+                    raise AssertionError('native PREFIX dependency chain bound')
+                chain.append(node)
+                node = current[2]
+            counts['large_CDC_PREFIX_chain_depth'].update({str(len(chain)): 1})
     counts['large_CDC_physical_FULL_bases'].update(count=len(native_bases),
         raw_bytes=sum(selected[b][3] for b in native_bases), record_bytes=sum(selected[b][4] for b in native_bases))
     for version, roles in [(1, ('metadata_legacy_FULL', 'metadata_legacy_DELTA')),
