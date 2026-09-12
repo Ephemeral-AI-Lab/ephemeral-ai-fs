@@ -1,0 +1,3 @@
+# Preserve raw logs exactly, including their terminal blank lines.
+*.log -whitespace
+*.json linguist-generated=true

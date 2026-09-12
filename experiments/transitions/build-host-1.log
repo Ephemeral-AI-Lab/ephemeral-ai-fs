@@ -1,0 +1,72 @@
+   Compiling libc v0.2.189
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.47
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.11
+   Compiling pkg-config v0.3.34
+   Compiling cfg-if v1.0.4
+   Compiling cfg_aliases v0.2.2
+   Compiling autocfg v1.5.1
+   Compiling constant_time_eq v0.4.2
+   Compiling arrayref v0.3.9
+   Compiling equivalent v1.0.2
+   Compiling winnow v1.0.4
+   Compiling arrayvec v0.7.8
+   Compiling bitflags v2.13.1
+   Compiling memoffset v0.9.1
+   Compiling hashbrown v0.17.1
+   Compiling toml_datetime v1.1.1+spec-1.1.0
+   Compiling smallvec v1.15.2
+   Compiling indexmap v2.14.1
+   Compiling parking_lot_core v0.9.12
+   Compiling toml_parser v1.1.3+spec-1.1.0
+   Compiling vcpkg v0.2.15
+   Compiling rustversion v1.0.23
+   Compiling toml_edit v0.25.13+spec-1.1.0
+   Compiling libsqlite3-sys v0.38.2
+   Compiling proc-macro-crate v3.5.0
+   Compiling nix v0.31.3
+   Compiling foldhash v0.2.0
+   Compiling ref-cast v1.0.27
+   Compiling zerocopy v0.8.56
+   Compiling scopeguard v1.2.0
+   Compiling lock_api v0.4.14
+   Compiling syn v2.0.119
+   Compiling syn v3.0.4
+   Compiling jobserver v0.1.35
+   Compiling cc v1.4.4
+   Compiling ref-cast-impl v1.0.27
+   Compiling blake3 v1.8.5
+   Compiling zstd-sys v2.0.16+zstd.1.5.7
+   Compiling fuser v0.18.0
+   Compiling nix v0.29.0
+   Compiling zerocopy-derive v0.8.56
+   Compiling num_enum_derive v0.7.6
+   Compiling num_enum v0.7.6
+   Compiling tokio-macros v2.6.1
+   Compiling parking_lot v0.12.5
+   Compiling layerfs-content v0.1.4 (/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/crates/layerfs-content)
+   Compiling hashlink v0.12.1
+   Compiling page_size v0.6.0
+   Compiling mio v1.2.3
+   Compiling socket2 v0.6.5
+   Compiling pin-project-lite v0.2.17
+   Compiling log v0.4.34
+   Compiling bytes v1.12.1
+   Compiling memchr v2.8.3
+   Compiling fallible-iterator v0.3.0
+   Compiling fallible-streaming-iterator v0.1.9
+   Compiling rusqlite v0.40.2
+   Compiling tokio v1.48.0
+   Compiling layerfs-workspace-core v0.1.4 (/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/crates/layerfs-workspace-core)
+   Compiling layerfs-daemon v0.1.4 (/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/crates/layerfs-daemon)
+   Compiling layerfs-materialization v0.1.4 (/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/crates/layerfs-materialization)
+   Compiling layerfs-fuse v0.1.4 (/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/crates/layerfs-fuse)
+   Compiling layerfs-layerstack-store v0.1.4 (/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/crates/layerfs-layerstack-store)
+   Compiling layerfs-workspace v0.1.4 (/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/crates/layerfs-workspace)
+   Compiling layerfs-monitor v0.1.4 (/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/crates/layerfs-monitor)
+   Compiling layerfs-sdk v0.1.4 (/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/crates/layerfs-sdk)
+   Compiling fs-benchmark-pro v0.1.4 (/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark/fs-bench-pro)
+    Finished `release` profile [optimized] target(s) in 47.69s
+/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro

@@ -1,0 +1,14 @@
+[
+  {
+    "flag": "--build-host",
+    "log": "build-host-3.log",
+    "wall_ns": 14949333750,
+    "exit_code": 0
+  },
+  {
+    "flag": "--build-image",
+    "log": "build-image-1.log",
+    "wall_ns": 66768237333,
+    "exit_code": 0
+  }
+]

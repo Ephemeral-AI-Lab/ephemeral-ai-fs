@@ -1,0 +1,2059 @@
+{
+  "admission_eligible": false,
+  "complete_wall_ns": 15362258417,
+  "results": [
+    {
+      "admission_eligible": false,
+      "case": "edit-64k",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/verification-1/r1-edit-64k/host-runtime",
+        "8a608f5aef64272dfc6d21e4f91ea7bf6a6d0fcd974f57b94edc09a86666749e",
+        "edit-64k",
+        "verify"
+      ],
+      "command_wall_ns": 547519625,
+      "complete_wall_ns": 1278485166,
+      "container": {
+        "id": "8a608f5aef64272dfc6d21e4f91ea7bf6a6d0fcd974f57b94edc09a86666749e",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "55185"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "verify",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "edit-64k",
+          "fixture_sha256": "9422dde539df8ebbc56a6f8802be728042d6c85d6fd3615c50fa05b05daccd95",
+          "init_ns": 2819959,
+          "initial_bytes": 65536,
+          "initial_file_root": "4df44c4eb752508b0876de2440ef258968fe43df9111f9fea1e6f3e57f7d047f",
+          "kind": "transition-setup",
+          "mode": "verification"
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([193, 38, 201, 122, 117, 65, 70, 48, 6, 98, 16, 210, 188, 240, 135, 30]), exit_code: Some(0), signal: None, elapsed_ns: 5018541, total_wall_ns: 5018541, spawn_ns: 1537875, supervisor_queue_ns: 40542, runtime_ns: 3420625, drain_ns: 13667, terminal_publication_ns: 4708, unattributed_ns: 1124, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 531417, decode_ns: 437875, spawn_ns: 171541, runtime_ns: 3257000, drain_ns: 2209 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([249, 7, 246, 193, 179, 204, 224, 197, 165, 5, 251, 29, 66, 98, 82, 157]), exit_code: Some(0), signal: None, elapsed_ns: 5190708, total_wall_ns: 5190708, spawn_ns: 1890667, supervisor_queue_ns: 33542, runtime_ns: 3253958, drain_ns: 8708, terminal_publication_ns: 3084, unattributed_ns: 749, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 859541, decode_ns: 745416, spawn_ns: 176166, runtime_ns: 3110667, drain_ns: 1916 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "edit-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 66380,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66372,
+          "commit_full_selected": 2,
+          "commit_id": "12d68b072a9cbe6e53536538fc02b4dcf10626718c6e266253f4fe239589df7712",
+          "commit_ns": 5825792,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 7791833,
+          "edit_ns": 1966041,
+          "file_root": "6caeef4570d7d70283959dc735d419103b6a38c3117ed0c279426ca735714089",
+          "host_lifetime_peak_rss_bytes": 14417920,
+          "host_system_cpu_ns": 4706500,
+          "host_user_cpu_ns": 3108291,
+          "kind": "transition-step",
+          "lifecycle_ns": 31362959,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 0,
+          "store_allocated_bytes": 147456,
+          "supplied_bytes": 1
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([199, 39, 47, 232, 154, 221, 216, 149, 53, 219, 201, 186, 16, 136, 75, 74]), exit_code: Some(0), signal: None, elapsed_ns: 5094125, total_wall_ns: 5094125, spawn_ns: 1651833, supervisor_queue_ns: 56333, runtime_ns: 3372917, drain_ns: 9250, terminal_publication_ns: 3291, unattributed_ns: 501, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 676708, decode_ns: 599250, spawn_ns: 178667, runtime_ns: 3256333, drain_ns: 18834 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([140, 224, 229, 17, 23, 21, 149, 20, 20, 219, 102, 107, 67, 225, 19, 158]), exit_code: Some(0), signal: None, elapsed_ns: 8111750, total_wall_ns: 8111750, spawn_ns: 2538167, supervisor_queue_ns: 50084, runtime_ns: 5505042, drain_ns: 14500, terminal_publication_ns: 3250, unattributed_ns: 707, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 859916, decode_ns: 801083, spawn_ns: 167500, runtime_ns: 5321708, drain_ns: 3292 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 22142976,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 2,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 1,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "edit-127k",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/verification-1/r1-edit-127k/host-runtime",
+        "636fab39eb6e891a95a73c7948cd7f88ab3de2880ff64092fddcd031e7946fce",
+        "edit-127k",
+        "verify"
+      ],
+      "command_wall_ns": 598706708,
+      "complete_wall_ns": 1344743834,
+      "container": {
+        "id": "636fab39eb6e891a95a73c7948cd7f88ab3de2880ff64092fddcd031e7946fce",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "55211"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "verify",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "edit-127k",
+          "fixture_sha256": "861cc846879eb6a184e294e7c86196f71e377360a0da40fbf85556b1ce8c5ad6",
+          "init_ns": 3743583,
+          "initial_bytes": 130048,
+          "initial_file_root": "55d695ad6e1b6208fa168b43f00a0790ddf9419f4625bfdf041d1bf8ffac38c9",
+          "kind": "transition-setup",
+          "mode": "verification"
+        },
+        {
+          "bytes": 130048,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([8, 99, 105, 22, 218, 24, 96, 146, 91, 230, 122, 249, 93, 182, 128, 200]), exit_code: Some(0), signal: None, elapsed_ns: 6573750, total_wall_ns: 6573750, spawn_ns: 2062708, supervisor_queue_ns: 45000, runtime_ns: 4448792, drain_ns: 12334, terminal_publication_ns: 4125, unattributed_ns: 791, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 992959, decode_ns: 893250, spawn_ns: 191542, runtime_ns: 4208792, drain_ns: 36333 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 130048,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([195, 235, 174, 1, 24, 29, 217, 42, 56, 241, 17, 202, 125, 175, 70, 191]), exit_code: Some(0), signal: None, elapsed_ns: 5545208, total_wall_ns: 5545208, spawn_ns: 1519750, supervisor_queue_ns: 40791, runtime_ns: 3969583, drain_ns: 10500, terminal_publication_ns: 3958, unattributed_ns: 626, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 511625, decode_ns: 427083, spawn_ns: 172792, runtime_ns: 3826667, drain_ns: 3500 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "after_bytes": 130048,
+          "before_bytes": 130048,
+          "case": "edit-127k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 130892,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 130886,
+          "commit_full_selected": 2,
+          "commit_id": "12cf3bdd58560c6ea1ee98d5eeca13db79003ae03bfb24273e25bd56680345667f",
+          "commit_ns": 6476250,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 8521125,
+          "edit_ns": 2044875,
+          "file_root": "0c8c142eda7498135e857e8a5416fcf391fb826fea6b01513e19477e1ec41ffd",
+          "host_lifetime_peak_rss_bytes": 14483456,
+          "host_system_cpu_ns": 4973250,
+          "host_user_cpu_ns": 4055375,
+          "kind": "transition-step",
+          "lifecycle_ns": 34890875,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 381,
+          "step": 0,
+          "store_allocated_bytes": 217088,
+          "supplied_bytes": 1
+        },
+        {
+          "bytes": 130048,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([152, 52, 87, 76, 76, 130, 94, 118, 231, 103, 41, 102, 96, 22, 171, 97]), exit_code: Some(0), signal: None, elapsed_ns: 5963792, total_wall_ns: 5963792, spawn_ns: 1264292, supervisor_queue_ns: 45417, runtime_ns: 4640250, drain_ns: 8375, terminal_publication_ns: 3000, unattributed_ns: 2458, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 437916, decode_ns: 391958, spawn_ns: 179375, runtime_ns: 4487667, drain_ns: 27834 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 130048,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([39, 225, 213, 24, 209, 165, 153, 20, 220, 116, 52, 114, 84, 93, 11, 221]), exit_code: Some(0), signal: None, elapsed_ns: 5668791, total_wall_ns: 5668791, spawn_ns: 1708208, supervisor_queue_ns: 45041, runtime_ns: 3900833, drain_ns: 9709, terminal_publication_ns: 4333, unattributed_ns: 667, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 610500, decode_ns: 525708, spawn_ns: 211541, runtime_ns: 3802666, drain_ns: 24250 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 22470656,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 2,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 1,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "edit-128k",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/verification-1/r1-edit-128k/host-runtime",
+        "dd248fc4ad839dfb564a143d042c9c4ed929403ebba3dd92cb0fc62583c9c150",
+        "edit-128k",
+        "verify"
+      ],
+      "command_wall_ns": 541019625,
+      "complete_wall_ns": 1295684666,
+      "container": {
+        "id": "dd248fc4ad839dfb564a143d042c9c4ed929403ebba3dd92cb0fc62583c9c150",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "55233"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "verify",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "edit-128k",
+          "fixture_sha256": "f1d6a7f32d8aec37205081203af8a7c6de8f05b59f04bf50048487105326d67a",
+          "init_ns": 3081500,
+          "initial_bytes": 131072,
+          "initial_file_root": "8dfb4cde90e7d09c2704345cfe79e98078c7284cf55d66ce527330d59643cb9a",
+          "kind": "transition-setup",
+          "mode": "verification"
+        },
+        {
+          "bytes": 131072,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([25, 147, 98, 138, 46, 31, 159, 135, 248, 0, 178, 244, 71, 57, 176, 204]), exit_code: Some(0), signal: None, elapsed_ns: 6982541, total_wall_ns: 6982541, spawn_ns: 2485791, supervisor_queue_ns: 46417, runtime_ns: 4436000, drain_ns: 9708, terminal_publication_ns: 3500, unattributed_ns: 1125, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 1408750, decode_ns: 1287375, spawn_ns: 188750, runtime_ns: 4201000, drain_ns: 25375 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 131072,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([20, 90, 214, 90, 64, 171, 131, 184, 70, 197, 172, 84, 41, 58, 16, 93]), exit_code: Some(0), signal: None, elapsed_ns: 5852083, total_wall_ns: 5852083, spawn_ns: 1498833, supervisor_queue_ns: 44625, runtime_ns: 4293541, drain_ns: 10542, terminal_publication_ns: 4125, unattributed_ns: 417, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 529709, decode_ns: 454125, spawn_ns: 164750, runtime_ns: 4067583, drain_ns: 22958 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "after_bytes": 131072,
+          "before_bytes": 131072,
+          "case": "edit-128k",
+          "cdc_bytes_scanned": 1,
+          "commit_decoded_read_bytes": 1381,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 39794,
+          "commit_full_selected": 5,
+          "commit_id": "122da7f9572ac6429bac848aae9f338e3eb06743634e316e9335f2b919b2fb1432",
+          "commit_ns": 5071334,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 7016792,
+          "edit_ns": 1945458,
+          "file_root": "0fd3cf4714b0e144bbf883c775cdbd99bc05838a437dd0cf498f5f24e3728841",
+          "host_lifetime_peak_rss_bytes": 13795328,
+          "host_system_cpu_ns": 4690084,
+          "host_user_cpu_ns": 3962958,
+          "kind": "transition-step",
+          "lifecycle_ns": 31611375,
+          "native_full_count": 1,
+          "native_prefix_count": 0,
+          "representation": "chunked",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 824,
+          "step": 0,
+          "store_allocated_bytes": 212992,
+          "supplied_bytes": 1
+        },
+        {
+          "bytes": 131072,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([92, 0, 112, 191, 200, 185, 80, 6, 94, 0, 114, 83, 186, 119, 52, 125]), exit_code: Some(0), signal: None, elapsed_ns: 5751291, total_wall_ns: 5751291, spawn_ns: 1546458, supervisor_queue_ns: 41166, runtime_ns: 4151458, drain_ns: 8542, terminal_publication_ns: 3000, unattributed_ns: 667, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 555292, decode_ns: 445541, spawn_ns: 164083, runtime_ns: 4056834, drain_ns: 21667 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 131072,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([244, 168, 236, 26, 9, 109, 66, 33, 43, 13, 142, 137, 80, 242, 188, 39]), exit_code: Some(0), signal: None, elapsed_ns: 6135625, total_wall_ns: 6135625, spawn_ns: 1664083, supervisor_queue_ns: 47833, runtime_ns: 4408750, drain_ns: 11125, terminal_publication_ns: 2916, unattributed_ns: 918, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 530250, decode_ns: 461125, spawn_ns: 244542, runtime_ns: 4331792, drain_ns: 39833 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 22548480,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 2,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 1,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "edit-129k",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/verification-1/r1-edit-129k/host-runtime",
+        "4985b5bb4ebac115c3a7e90fa9377ae58fe012141ff0be1072393cc2233f21a3",
+        "edit-129k",
+        "verify"
+      ],
+      "command_wall_ns": 592032958,
+      "complete_wall_ns": 1289197958,
+      "container": {
+        "id": "4985b5bb4ebac115c3a7e90fa9377ae58fe012141ff0be1072393cc2233f21a3",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "55255"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "verify",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "edit-129k",
+          "fixture_sha256": "aee209a2d6174a8b0c0a234b4b5907ba447c356b72175820648b1bd082a39bbc",
+          "init_ns": 2914292,
+          "initial_bytes": 132096,
+          "initial_file_root": "8fbe2b3cc5ffbc872e6199a44268f7f06d02ae5fd24b9379dc9dd8a551035a64",
+          "kind": "transition-setup",
+          "mode": "verification"
+        },
+        {
+          "bytes": 132096,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([130, 163, 71, 235, 210, 230, 104, 238, 201, 240, 228, 184, 17, 232, 85, 86]), exit_code: Some(0), signal: None, elapsed_ns: 8286083, total_wall_ns: 8286083, spawn_ns: 2146166, supervisor_queue_ns: 58958, runtime_ns: 6065000, drain_ns: 10500, terminal_publication_ns: 4583, unattributed_ns: 876, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 788084, decode_ns: 639166, spawn_ns: 242541, runtime_ns: 5965625, drain_ns: 43416 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 132096,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([104, 253, 203, 87, 172, 195, 152, 78, 153, 163, 158, 74, 251, 81, 231, 147]), exit_code: Some(0), signal: None, elapsed_ns: 5893125, total_wall_ns: 5893125, spawn_ns: 1613958, supervisor_queue_ns: 34625, runtime_ns: 4227583, drain_ns: 12625, terminal_publication_ns: 3666, unattributed_ns: 668, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 527875, decode_ns: 428750, spawn_ns: 191416, runtime_ns: 4073750, drain_ns: 21083 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "after_bytes": 132096,
+          "before_bytes": 132096,
+          "case": "edit-129k",
+          "cdc_bytes_scanned": 1,
+          "commit_decoded_read_bytes": 1381,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 39794,
+          "commit_full_selected": 5,
+          "commit_id": "123a406ed117b3130c147a41fb76350c1ee0436c59a6c685b623806c3387445b80",
+          "commit_ns": 6072834,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 9227167,
+          "edit_ns": 3154333,
+          "file_root": "1bfebeb374ac4597c107e6f6514b2fc12910b06b8d3676d6f6e3f55a9f075867",
+          "host_lifetime_peak_rss_bytes": 13893632,
+          "host_system_cpu_ns": 5435541,
+          "host_user_cpu_ns": 4337667,
+          "kind": "transition-step",
+          "lifecycle_ns": 39594417,
+          "native_full_count": 1,
+          "native_prefix_count": 0,
+          "representation": "chunked",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 824,
+          "step": 0,
+          "store_allocated_bytes": 212992,
+          "supplied_bytes": 1
+        },
+        {
+          "bytes": 132096,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([107, 108, 28, 110, 186, 20, 13, 4, 89, 137, 13, 206, 214, 151, 244, 207]), exit_code: Some(0), signal: None, elapsed_ns: 6528625, total_wall_ns: 6528625, spawn_ns: 1494167, supervisor_queue_ns: 42250, runtime_ns: 4973792, drain_ns: 9125, terminal_publication_ns: 8417, unattributed_ns: 874, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 525083, decode_ns: 442125, spawn_ns: 226458, runtime_ns: 4839083, drain_ns: 1792 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 132096,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([212, 235, 62, 110, 116, 137, 26, 148, 135, 100, 229, 105, 9, 67, 112, 227]), exit_code: Some(0), signal: None, elapsed_ns: 7088125, total_wall_ns: 7088125, spawn_ns: 2018834, supervisor_queue_ns: 58250, runtime_ns: 4993958, drain_ns: 12833, terminal_publication_ns: 3417, unattributed_ns: 833, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 1049458, decode_ns: 985625, spawn_ns: 173000, runtime_ns: 4743375, drain_ns: 46333 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 22831104,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 2,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 1,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "edit-16m",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/verification-1/r1-edit-16m/host-runtime",
+        "bedfb895bcebdca127ecf5bf133e0cdb93f1d555469c59285aae3dc431dc2337",
+        "edit-16m",
+        "verify"
+      ],
+      "command_wall_ns": 1451751833,
+      "complete_wall_ns": 2194745375,
+      "container": {
+        "id": "bedfb895bcebdca127ecf5bf133e0cdb93f1d555469c59285aae3dc431dc2337",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "55277"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "verify",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "edit-16m",
+          "fixture_sha256": "ace7a450f65687f0874aca3a6d17447b21724e53a783339a430b008aef17f7a3",
+          "init_ns": 50762583,
+          "initial_bytes": 16777216,
+          "initial_file_root": "ab142ffbcdc62a82405614473c5a97fa71c716f17509433e63b85ca9291ad390",
+          "kind": "transition-setup",
+          "mode": "verification"
+        },
+        {
+          "bytes": 16777216,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([150, 16, 150, 110, 147, 104, 102, 204, 175, 187, 142, 197, 139, 39, 40, 99]), exit_code: Some(0), signal: None, elapsed_ns: 104848875, total_wall_ns: 104848875, spawn_ns: 4380750, supervisor_queue_ns: 67250, runtime_ns: 100383875, drain_ns: 12541, terminal_publication_ns: 3750, unattributed_ns: 709, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 1478125, decode_ns: 1147708, spawn_ns: 314334, runtime_ns: 100587125, drain_ns: 36333 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 16777216,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([130, 245, 0, 91, 108, 198, 17, 166, 238, 138, 116, 245, 248, 133, 253, 108]), exit_code: Some(0), signal: None, elapsed_ns: 92390583, total_wall_ns: 92390583, spawn_ns: 2403000, supervisor_queue_ns: 53291, runtime_ns: 89916083, drain_ns: 9583, terminal_publication_ns: 7500, unattributed_ns: 1126, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 956875, decode_ns: 790292, spawn_ns: 240000, runtime_ns: 89770541, drain_ns: 19041 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "after_bytes": 16777216,
+          "before_bytes": 16777216,
+          "case": "edit-16m",
+          "cdc_bytes_scanned": 1,
+          "commit_decoded_read_bytes": 17001,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 56783,
+          "commit_full_selected": 9,
+          "commit_id": "1264a91d9459f68fad39fb312f223b7171c012611b99723b016ef3080184ce7568",
+          "commit_ns": 7259583,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 9456958,
+          "edit_ns": 2197375,
+          "file_root": "c5c77517dfc0d5c998818724614b34e405525214ab28dd5d2e78335ccd55a25f",
+          "host_lifetime_peak_rss_bytes": 76873728,
+          "host_system_cpu_ns": 32899000,
+          "host_user_cpu_ns": 202930000,
+          "kind": "transition-step",
+          "lifecycle_ns": 361760709,
+          "native_full_count": 1,
+          "native_prefix_count": 0,
+          "representation": "chunked",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 14241,
+          "step": 0,
+          "store_allocated_bytes": 17076224,
+          "supplied_bytes": 1
+        },
+        {
+          "bytes": 16777216,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([112, 19, 76, 58, 47, 84, 57, 56, 60, 131, 69, 53, 119, 238, 228, 123]), exit_code: Some(0), signal: None, elapsed_ns: 95222250, total_wall_ns: 95222250, spawn_ns: 2300917, supervisor_queue_ns: 52875, runtime_ns: 92854084, drain_ns: 9917, terminal_publication_ns: 3625, unattributed_ns: 832, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 748250, decode_ns: 588584, spawn_ns: 239375, runtime_ns: 92747959, drain_ns: 41042 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 16777216,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([86, 71, 64, 78, 140, 140, 209, 136, 13, 24, 113, 44, 87, 45, 57, 64]), exit_code: Some(0), signal: None, elapsed_ns: 85743916, total_wall_ns: 85743916, spawn_ns: 2340666, supervisor_queue_ns: 50417, runtime_ns: 83335084, drain_ns: 10834, terminal_publication_ns: 5625, unattributed_ns: 1290, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 777958, decode_ns: 634625, spawn_ns: 246209, runtime_ns: 83170041, drain_ns: 42333 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 75517952,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 2,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 1,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "oscillate",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/verification-1/r1-oscillate/host-runtime",
+        "7f48ca905f9019ec69eeff9b55cee05aee47798eee4cb90c45dc78b0d3004c04",
+        "oscillate",
+        "verify"
+      ],
+      "command_wall_ns": 853914000,
+      "complete_wall_ns": 1598028917,
+      "container": {
+        "id": "7f48ca905f9019ec69eeff9b55cee05aee47798eee4cb90c45dc78b0d3004c04",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "55303"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "verify",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "oscillate",
+          "fixture_sha256": "861cc846879eb6a184e294e7c86196f71e377360a0da40fbf85556b1ce8c5ad6",
+          "init_ns": 3771500,
+          "initial_bytes": 130048,
+          "initial_file_root": "55d695ad6e1b6208fa168b43f00a0790ddf9419f4625bfdf041d1bf8ffac38c9",
+          "kind": "transition-setup",
+          "mode": "verification"
+        },
+        {
+          "bytes": 132096,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([223, 6, 85, 243, 62, 74, 212, 155, 79, 220, 158, 164, 135, 31, 12, 61]), exit_code: Some(0), signal: None, elapsed_ns: 6421667, total_wall_ns: 6421667, spawn_ns: 2206542, supervisor_queue_ns: 48375, runtime_ns: 4145792, drain_ns: 16584, terminal_publication_ns: 3625, unattributed_ns: 749, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 1126292, decode_ns: 1007250, spawn_ns: 195000, runtime_ns: 3876583, drain_ns: 7041 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 132096,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([74, 239, 168, 221, 195, 184, 40, 76, 97, 47, 156, 236, 8, 180, 178, 35]), exit_code: Some(0), signal: None, elapsed_ns: 5963875, total_wall_ns: 5963875, spawn_ns: 1911167, supervisor_queue_ns: 39042, runtime_ns: 3999083, drain_ns: 10167, terminal_publication_ns: 3708, unattributed_ns: 708, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 634917, decode_ns: 529708, spawn_ns: 174417, runtime_ns: 3935333, drain_ns: 24375 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "after_bytes": 132096,
+          "before_bytes": 130048,
+          "case": "oscillate",
+          "cdc_bytes_scanned": 132096,
+          "commit_decoded_read_bytes": 1301,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 1258,
+          "commit_full_selected": 12,
+          "commit_id": "1238f4d4379751fbb7bd866d6205f5dd6b4c3be978a39f2e89af41c4b02cdaef5b",
+          "commit_ns": 7229042,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 9044042,
+          "edit_ns": 1815000,
+          "file_root": "3aebc5b02e819ec634970f8091b3d00b8d3723abccfefff97824f6626bfc293b",
+          "host_lifetime_peak_rss_bytes": 14893056,
+          "host_system_cpu_ns": 5663666,
+          "host_user_cpu_ns": 4132958,
+          "kind": "transition-step",
+          "lifecycle_ns": 37320625,
+          "native_full_count": 8,
+          "native_prefix_count": 0,
+          "representation": "chunked",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 133047,
+          "step": 0,
+          "store_allocated_bytes": 348160,
+          "supplied_bytes": 2048
+        },
+        {
+          "bytes": 130048,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([154, 163, 207, 18, 97, 212, 143, 82, 215, 75, 168, 250, 21, 135, 56, 125]), exit_code: Some(0), signal: None, elapsed_ns: 5991666, total_wall_ns: 5991666, spawn_ns: 1550500, supervisor_queue_ns: 41542, runtime_ns: 4383833, drain_ns: 11709, terminal_publication_ns: 3334, unattributed_ns: 748, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 502209, decode_ns: 420583, spawn_ns: 186125, runtime_ns: 4227041, drain_ns: 4167 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 130048,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([60, 166, 16, 195, 248, 148, 111, 210, 226, 43, 231, 237, 198, 188, 167, 221]), exit_code: Some(0), signal: None, elapsed_ns: 5784375, total_wall_ns: 5784375, spawn_ns: 1704125, supervisor_queue_ns: 45625, runtime_ns: 4014833, drain_ns: 15250, terminal_publication_ns: 3875, unattributed_ns: 667, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 602709, decode_ns: 492000, spawn_ns: 205250, runtime_ns: 3798125, drain_ns: 15334 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "after_bytes": 130048,
+          "before_bytes": 132096,
+          "case": "oscillate",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 132944,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 264236,
+          "commit_full_selected": 0,
+          "commit_id": "12ff5b06ee4aa9cea58c9eca52a1c0816740697f84473b09be673fdb08c61db55e",
+          "commit_ns": 4795292,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6883459,
+          "edit_ns": 2088167,
+          "file_root": "55d695ad6e1b6208fa168b43f00a0790ddf9419f4625bfdf041d1bf8ffac38c9",
+          "host_lifetime_peak_rss_bytes": 15220736,
+          "host_system_cpu_ns": 4503000,
+          "host_user_cpu_ns": 3814917,
+          "kind": "transition-step",
+          "lifecycle_ns": 29538833,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": true,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 0,
+          "step": 1,
+          "store_allocated_bytes": 348160,
+          "supplied_bytes": 0
+        },
+        {
+          "bytes": 132096,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([175, 158, 17, 184, 104, 203, 59, 39, 85, 179, 28, 228, 4, 84, 206, 46]), exit_code: Some(0), signal: None, elapsed_ns: 5658458, total_wall_ns: 5658458, spawn_ns: 1614292, supervisor_queue_ns: 55250, runtime_ns: 3969333, drain_ns: 13791, terminal_publication_ns: 4625, unattributed_ns: 1167, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 612250, decode_ns: 526375, spawn_ns: 178875, runtime_ns: 3830750, drain_ns: 27541 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 132096,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([116, 214, 18, 132, 234, 113, 237, 93, 221, 251, 90, 107, 223, 182, 140, 171]), exit_code: Some(0), signal: None, elapsed_ns: 5944875, total_wall_ns: 5944875, spawn_ns: 1834875, supervisor_queue_ns: 37125, runtime_ns: 4056166, drain_ns: 11250, terminal_publication_ns: 4708, unattributed_ns: 751, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 776167, decode_ns: 647792, spawn_ns: 192875, runtime_ns: 3927667, drain_ns: 20083 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "after_bytes": 132096,
+          "before_bytes": 130048,
+          "case": "oscillate",
+          "cdc_bytes_scanned": 132096,
+          "commit_decoded_read_bytes": 1618,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 133824,
+          "commit_full_selected": 0,
+          "commit_id": "12f915b4969415ee061c5cd3dc60bb25866fbecbbb70af92b391f887bf8331a053",
+          "commit_ns": 5002000,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 7158292,
+          "edit_ns": 2156292,
+          "file_root": "3aebc5b02e819ec634970f8091b3d00b8d3723abccfefff97824f6626bfc293b",
+          "host_lifetime_peak_rss_bytes": 15843328,
+          "host_system_cpu_ns": 4524125,
+          "host_user_cpu_ns": 3638375,
+          "kind": "transition-step",
+          "lifecycle_ns": 35297000,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "chunked",
+          "reused_prior_content_root": true,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 0,
+          "step": 2,
+          "store_allocated_bytes": 348160,
+          "supplied_bytes": 2048
+        },
+        {
+          "bytes": 130048,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([132, 222, 196, 126, 184, 251, 132, 100, 210, 14, 187, 126, 202, 45, 24, 82]), exit_code: Some(0), signal: None, elapsed_ns: 5965417, total_wall_ns: 5965417, spawn_ns: 1915625, supervisor_queue_ns: 51875, runtime_ns: 3982125, drain_ns: 11042, terminal_publication_ns: 4042, unattributed_ns: 708, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 813750, decode_ns: 755584, spawn_ns: 182834, runtime_ns: 3816791, drain_ns: 28666 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 130048,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([33, 237, 117, 8, 172, 133, 2, 127, 183, 51, 6, 167, 166, 32, 115, 222]), exit_code: Some(0), signal: None, elapsed_ns: 5301667, total_wall_ns: 5301667, spawn_ns: 1677083, supervisor_queue_ns: 44167, runtime_ns: 3567375, drain_ns: 9041, terminal_publication_ns: 3042, unattributed_ns: 959, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 593917, decode_ns: 457125, spawn_ns: 208791, runtime_ns: 3479208, drain_ns: 1791 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "after_bytes": 130048,
+          "before_bytes": 132096,
+          "case": "oscillate",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 132944,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 264236,
+          "commit_full_selected": 0,
+          "commit_id": "121b17d75727e463cb9cd55245b72a77758358819fe74c8f11b8e4c02f48b4bb43",
+          "commit_ns": 4749625,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6452708,
+          "edit_ns": 1703083,
+          "file_root": "55d695ad6e1b6208fa168b43f00a0790ddf9419f4625bfdf041d1bf8ffac38c9",
+          "host_lifetime_peak_rss_bytes": 15876096,
+          "host_system_cpu_ns": 4467708,
+          "host_user_cpu_ns": 3670167,
+          "kind": "transition-step",
+          "lifecycle_ns": 33221209,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": true,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 0,
+          "step": 3,
+          "store_allocated_bytes": 348160,
+          "supplied_bytes": 0
+        },
+        {
+          "bytes": 132096,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([49, 226, 100, 223, 1, 93, 10, 26, 233, 40, 193, 38, 247, 85, 65, 57]), exit_code: Some(0), signal: None, elapsed_ns: 5440875, total_wall_ns: 5440875, spawn_ns: 1763125, supervisor_queue_ns: 40083, runtime_ns: 3617208, drain_ns: 16042, terminal_publication_ns: 3834, unattributed_ns: 583, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 644292, decode_ns: 546959, spawn_ns: 183042, runtime_ns: 3513375, drain_ns: 20709 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 132096,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([36, 24, 40, 166, 207, 43, 138, 130, 79, 64, 74, 20, 104, 238, 138, 149]), exit_code: Some(0), signal: None, elapsed_ns: 5539708, total_wall_ns: 5539708, spawn_ns: 1644458, supervisor_queue_ns: 39625, runtime_ns: 3835417, drain_ns: 14458, terminal_publication_ns: 5125, unattributed_ns: 625, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 575750, decode_ns: 447958, spawn_ns: 191875, runtime_ns: 3693500, drain_ns: 17042 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "after_bytes": 132096,
+          "before_bytes": 130048,
+          "case": "oscillate",
+          "cdc_bytes_scanned": 132096,
+          "commit_decoded_read_bytes": 1618,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 133824,
+          "commit_full_selected": 0,
+          "commit_id": "1205298d704810f532fe839c814d7fa2f145410f4fc39d036a89a104626e112564",
+          "commit_ns": 5099167,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 7135542,
+          "edit_ns": 2036375,
+          "file_root": "3aebc5b02e819ec634970f8091b3d00b8d3723abccfefff97824f6626bfc293b",
+          "host_lifetime_peak_rss_bytes": 15958016,
+          "host_system_cpu_ns": 4453916,
+          "host_user_cpu_ns": 3696334,
+          "kind": "transition-step",
+          "lifecycle_ns": 33402667,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "chunked",
+          "reused_prior_content_root": true,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 0,
+          "step": 4,
+          "store_allocated_bytes": 348160,
+          "supplied_bytes": 2048
+        },
+        {
+          "bytes": 130048,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([52, 122, 93, 60, 85, 106, 194, 234, 24, 140, 150, 112, 241, 66, 69, 46]), exit_code: Some(0), signal: None, elapsed_ns: 6101709, total_wall_ns: 6101709, spawn_ns: 1749959, supervisor_queue_ns: 43667, runtime_ns: 4295458, drain_ns: 8250, terminal_publication_ns: 3625, unattributed_ns: 750, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 715291, decode_ns: 608875, spawn_ns: 178375, runtime_ns: 4183833, drain_ns: 15541 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 130048,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([168, 31, 20, 29, 53, 151, 12, 248, 103, 164, 229, 30, 240, 8, 74, 90]), exit_code: Some(0), signal: None, elapsed_ns: 5708667, total_wall_ns: 5708667, spawn_ns: 1781500, supervisor_queue_ns: 41625, runtime_ns: 3870750, drain_ns: 10250, terminal_publication_ns: 3792, unattributed_ns: 750, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 659958, decode_ns: 550417, spawn_ns: 166167, runtime_ns: 3649000, drain_ns: 45958 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "after_bytes": 130048,
+          "before_bytes": 132096,
+          "case": "oscillate",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 132944,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 264236,
+          "commit_full_selected": 0,
+          "commit_id": "127b3f2cb8ca44e19873d11f0521633bcde3050ffe04b34f62d45c56061d30778a",
+          "commit_ns": 5236791,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 7096625,
+          "edit_ns": 1859834,
+          "file_root": "55d695ad6e1b6208fa168b43f00a0790ddf9419f4625bfdf041d1bf8ffac38c9",
+          "host_lifetime_peak_rss_bytes": 16007168,
+          "host_system_cpu_ns": 4669250,
+          "host_user_cpu_ns": 3756834,
+          "kind": "transition-step",
+          "lifecycle_ns": 33058000,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": true,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 0,
+          "step": 5,
+          "store_allocated_bytes": 348160,
+          "supplied_bytes": 0
+        },
+        {
+          "bytes": 130048,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([14, 41, 47, 138, 49, 61, 204, 97, 6, 246, 62, 24, 188, 147, 66, 53]), exit_code: Some(0), signal: None, elapsed_ns: 6102250, total_wall_ns: 6102250, spawn_ns: 1872416, supervisor_queue_ns: 54167, runtime_ns: 4160542, drain_ns: 10833, terminal_publication_ns: 3708, unattributed_ns: 584, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 617583, decode_ns: 523500, spawn_ns: 231875, runtime_ns: 4058792, drain_ns: 25000 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 132096,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([103, 98, 20, 31, 97, 129, 98, 250, 72, 183, 4, 192, 39, 3, 187, 39]), exit_code: Some(0), signal: None, elapsed_ns: 6128458, total_wall_ns: 6128458, spawn_ns: 1746542, supervisor_queue_ns: 44875, runtime_ns: 4322375, drain_ns: 10125, terminal_publication_ns: 3959, unattributed_ns: 582, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 591334, decode_ns: 482625, spawn_ns: 203833, runtime_ns: 4261583, drain_ns: 22500 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 130048,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([6, 99, 129, 228, 107, 16, 252, 187, 17, 59, 6, 219, 220, 37, 65, 85]), exit_code: Some(0), signal: None, elapsed_ns: 5654375, total_wall_ns: 5654375, spawn_ns: 1484500, supervisor_queue_ns: 50166, runtime_ns: 4106084, drain_ns: 8959, terminal_publication_ns: 3792, unattributed_ns: 874, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 506084, decode_ns: 417208, spawn_ns: 179875, runtime_ns: 4041125, drain_ns: 1750 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 132096,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([183, 199, 215, 201, 154, 62, 255, 119, 95, 237, 245, 212, 133, 16, 234, 80]), exit_code: Some(0), signal: None, elapsed_ns: 6154250, total_wall_ns: 6154250, spawn_ns: 1730917, supervisor_queue_ns: 46958, runtime_ns: 4364167, drain_ns: 8209, terminal_publication_ns: 3333, unattributed_ns: 666, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 592375, decode_ns: 507541, spawn_ns: 220666, runtime_ns: 4246291, drain_ns: 22792 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 130048,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([255, 108, 181, 230, 105, 254, 202, 171, 33, 247, 144, 13, 27, 250, 201, 73]), exit_code: Some(0), signal: None, elapsed_ns: 5743875, total_wall_ns: 5743875, spawn_ns: 1710416, supervisor_queue_ns: 50750, runtime_ns: 3970750, drain_ns: 6542, terminal_publication_ns: 4833, unattributed_ns: 584, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 555500, decode_ns: 473541, spawn_ns: 168458, runtime_ns: 3710375, drain_ns: 21875 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 132096,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([154, 103, 32, 122, 220, 99, 243, 140, 4, 106, 200, 206, 53, 105, 240, 170]), exit_code: Some(0), signal: None, elapsed_ns: 6902084, total_wall_ns: 6902084, spawn_ns: 2229750, supervisor_queue_ns: 48750, runtime_ns: 4608167, drain_ns: 10958, terminal_publication_ns: 3292, unattributed_ns: 1167, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 1348083, decode_ns: 1247875, spawn_ns: 160292, runtime_ns: 4459500, drain_ns: 24291 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 130048,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([81, 189, 154, 181, 187, 23, 106, 37, 245, 224, 134, 169, 85, 225, 78, 78]), exit_code: Some(0), signal: None, elapsed_ns: 6864417, total_wall_ns: 6864417, spawn_ns: 1717042, supervisor_queue_ns: 57875, runtime_ns: 5076583, drain_ns: 8500, terminal_publication_ns: 3666, unattributed_ns: 751, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 586583, decode_ns: 512208, spawn_ns: 246541, runtime_ns: 4923375, drain_ns: 24417 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 73252864,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 7,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 1,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "batched-crossings",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/verification-1/r1-batched-crossings/host-runtime",
+        "e1c055d567721ffc68301081077d7caf8aa69c1f6dbf9fb8c80243bc2e56c407",
+        "batched-crossings",
+        "verify"
+      ],
+      "command_wall_ns": 597021000,
+      "complete_wall_ns": 1285652833,
+      "container": {
+        "id": "e1c055d567721ffc68301081077d7caf8aa69c1f6dbf9fb8c80243bc2e56c407",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "55390"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "verify",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "batched-crossings",
+          "fixture_sha256": "861cc846879eb6a184e294e7c86196f71e377360a0da40fbf85556b1ce8c5ad6",
+          "init_ns": 3780625,
+          "initial_bytes": 130048,
+          "initial_file_root": "55d695ad6e1b6208fa168b43f00a0790ddf9419f4625bfdf041d1bf8ffac38c9",
+          "kind": "transition-setup",
+          "mode": "verification"
+        },
+        {
+          "bytes": 122880,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([44, 56, 102, 238, 157, 213, 212, 57, 96, 142, 176, 79, 104, 39, 175, 61]), exit_code: Some(0), signal: None, elapsed_ns: 5870375, total_wall_ns: 5870375, spawn_ns: 1928166, supervisor_queue_ns: 48334, runtime_ns: 3878958, drain_ns: 9375, terminal_publication_ns: 4709, unattributed_ns: 833, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 777250, decode_ns: 599375, spawn_ns: 197417, runtime_ns: 3744083, drain_ns: 34708 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 122880,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([180, 50, 228, 171, 6, 4, 145, 9, 93, 215, 221, 242, 187, 186, 74, 44]), exit_code: Some(0), signal: None, elapsed_ns: 6134041, total_wall_ns: 6134041, spawn_ns: 1652000, supervisor_queue_ns: 38209, runtime_ns: 4427667, drain_ns: 11291, terminal_publication_ns: 4125, unattributed_ns: 749, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 535166, decode_ns: 442625, spawn_ns: 178417, runtime_ns: 4264041, drain_ns: 1917 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "after_bytes": 122880,
+          "before_bytes": 130048,
+          "case": "batched-crossings",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 130892,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 130886,
+          "commit_full_selected": 2,
+          "commit_id": "125735b0e7be1ae0c2d7eafff4fbf0f0e48bc5c3d3340f2b2d1ec563c20c8c2082",
+          "commit_ns": 6058708,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 12463458,
+          "edit_ns": 6404750,
+          "file_root": "005be899035cd8d5f4d0b554c97732c36c1aad0ede8059d370e583db8ed481c7",
+          "host_lifetime_peak_rss_bytes": 15319040,
+          "host_system_cpu_ns": 5903709,
+          "host_user_cpu_ns": 4245125,
+          "kind": "transition-step",
+          "lifecycle_ns": 40037292,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 4,
+          "selected_encoded_bytes": 377,
+          "step": 0,
+          "store_allocated_bytes": 217088,
+          "supplied_bytes": 17408
+        },
+        {
+          "bytes": 130048,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([67, 89, 37, 252, 42, 2, 54, 107, 248, 26, 51, 21, 139, 81, 167, 237]), exit_code: Some(0), signal: None, elapsed_ns: 5766958, total_wall_ns: 5766958, spawn_ns: 1840042, supervisor_queue_ns: 41542, runtime_ns: 3872416, drain_ns: 9042, terminal_publication_ns: 3250, unattributed_ns: 666, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 653167, decode_ns: 532833, spawn_ns: 231958, runtime_ns: 3787542, drain_ns: 23875 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 122880,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([119, 15, 138, 169, 219, 56, 185, 195, 152, 79, 102, 187, 194, 96, 103, 84]), exit_code: Some(0), signal: None, elapsed_ns: 7494292, total_wall_ns: 7494292, spawn_ns: 2081084, supervisor_queue_ns: 41792, runtime_ns: 5355125, drain_ns: 11250, terminal_publication_ns: 4250, unattributed_ns: 791, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 843875, decode_ns: 735375, spawn_ns: 226875, runtime_ns: 5125542, drain_ns: 2667 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 22757376,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 2,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 1,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "shrink-1m",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/verification-1/r1-shrink-1m/host-runtime",
+        "753d5fb633cb0f65435bbf9978c9bdd745593d6e2fba03d308fe15cd9308b4c8",
+        "shrink-1m",
+        "verify"
+      ],
+      "command_wall_ns": 593846250,
+      "complete_wall_ns": 1390575584,
+      "container": {
+        "id": "753d5fb633cb0f65435bbf9978c9bdd745593d6e2fba03d308fe15cd9308b4c8",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "55412"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "verify",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "shrink-1m",
+          "fixture_sha256": "0d8801271ec551ff9dd856ffcd7b9f45baf38a17005eeb572630c9abe925bc31",
+          "init_ns": 7462458,
+          "initial_bytes": 1048576,
+          "initial_file_root": "2a5f08ebc55f73ba882189874a5239e2437adb69d24d034363b589d1d8b5c3a5",
+          "kind": "transition-setup",
+          "mode": "verification"
+        },
+        {
+          "bytes": 81920,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([218, 181, 23, 187, 63, 164, 189, 88, 109, 138, 212, 187, 64, 170, 242, 95]), exit_code: Some(0), signal: None, elapsed_ns: 6528500, total_wall_ns: 6528500, spawn_ns: 1733042, supervisor_queue_ns: 47667, runtime_ns: 4709333, drain_ns: 33042, terminal_publication_ns: 4458, unattributed_ns: 958, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 592042, decode_ns: 468959, spawn_ns: 200833, runtime_ns: 4453083, drain_ns: 47084 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 81920,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([51, 137, 243, 94, 74, 58, 197, 92, 133, 27, 0, 229, 192, 1, 222, 169]), exit_code: Some(0), signal: None, elapsed_ns: 6421917, total_wall_ns: 6421917, spawn_ns: 2521584, supervisor_queue_ns: 45250, runtime_ns: 3835208, drain_ns: 15750, terminal_publication_ns: 3125, unattributed_ns: 1000, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 1246875, decode_ns: 1146167, spawn_ns: 266500, runtime_ns: 3749834, drain_ns: 21209 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "after_bytes": 81920,
+          "before_bytes": 1048576,
+          "case": "shrink-1m",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 821,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 93843,
+          "commit_full_selected": 4,
+          "commit_id": "12833b513f81c5234d1ae14200338858aa3c7a0fb26f43604a10dff4ad0f462dac",
+          "commit_ns": 7207833,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 9110625,
+          "edit_ns": 1902792,
+          "file_root": "4f7a9b03a7cc60304bdbbc1fcb76a9f9f990eae32ec7cad4bb798b7ef61a64b4",
+          "host_lifetime_peak_rss_bytes": 21954560,
+          "host_system_cpu_ns": 5164875,
+          "host_user_cpu_ns": 4025791,
+          "kind": "transition-step",
+          "lifecycle_ns": 37432167,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 82255,
+          "step": 0,
+          "store_allocated_bytes": 1220608,
+          "supplied_bytes": 0
+        },
+        {
+          "bytes": 1048576,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([169, 94, 172, 10, 137, 39, 217, 242, 40, 65, 173, 29, 170, 19, 70, 56]), exit_code: Some(0), signal: None, elapsed_ns: 14421458, total_wall_ns: 14421458, spawn_ns: 2106875, supervisor_queue_ns: 36167, runtime_ns: 12250250, drain_ns: 18500, terminal_publication_ns: 7750, unattributed_ns: 1916, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 740333, decode_ns: 608625, spawn_ns: 231584, runtime_ns: 11898375, drain_ns: 55500 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 81920,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([90, 82, 7, 130, 213, 179, 208, 163, 66, 28, 101, 146, 49, 154, 190, 8]), exit_code: Some(0), signal: None, elapsed_ns: 6993958, total_wall_ns: 6993958, spawn_ns: 1729417, supervisor_queue_ns: 63125, runtime_ns: 5186000, drain_ns: 10208, terminal_publication_ns: 4208, unattributed_ns: 1000, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 586416, decode_ns: 484541, spawn_ns: 195041, runtime_ns: 5036208, drain_ns: 40417 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 25079808,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 2,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 1,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "shrink-16m",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/verification-1/r1-shrink-16m/host-runtime",
+        "de7db0fc102c2b702f0d27f709a612d35a0f91c5992da2b7bf00dddb33d6ff97",
+        "shrink-16m",
+        "verify"
+      ],
+      "command_wall_ns": 924249666,
+      "complete_wall_ns": 1567245875,
+      "container": {
+        "id": "de7db0fc102c2b702f0d27f709a612d35a0f91c5992da2b7bf00dddb33d6ff97",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "55438"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "verify",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "shrink-16m",
+          "fixture_sha256": "ace7a450f65687f0874aca3a6d17447b21724e53a783339a430b008aef17f7a3",
+          "init_ns": 49635458,
+          "initial_bytes": 16777216,
+          "initial_file_root": "ab142ffbcdc62a82405614473c5a97fa71c716f17509433e63b85ca9291ad390",
+          "kind": "transition-setup",
+          "mode": "verification"
+        },
+        {
+          "bytes": 81920,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([163, 35, 210, 44, 138, 244, 22, 177, 165, 177, 50, 20, 120, 42, 153, 202]), exit_code: Some(0), signal: None, elapsed_ns: 6245875, total_wall_ns: 6245875, spawn_ns: 1590292, supervisor_queue_ns: 52667, runtime_ns: 4588459, drain_ns: 10209, terminal_publication_ns: 3500, unattributed_ns: 748, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 578583, decode_ns: 460959, spawn_ns: 180750, runtime_ns: 4468625, drain_ns: 33291 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 81920,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([54, 163, 79, 36, 232, 27, 81, 94, 98, 30, 166, 5, 235, 199, 177, 169]), exit_code: Some(0), signal: None, elapsed_ns: 5047125, total_wall_ns: 5047125, spawn_ns: 1500250, supervisor_queue_ns: 37667, runtime_ns: 3494542, drain_ns: 9708, terminal_publication_ns: 4042, unattributed_ns: 916, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 528166, decode_ns: 393375, spawn_ns: 167167, runtime_ns: 3333583, drain_ns: 46042 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "after_bytes": 81920,
+          "before_bytes": 16777216,
+          "case": "shrink-16m",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 821,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 95687,
+          "commit_full_selected": 4,
+          "commit_id": "1255cf69c051868b0f75c97a0b161da16da5596e7a5a538f52f265b9bc7773c666",
+          "commit_ns": 7103500,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 8516209,
+          "edit_ns": 1412709,
+          "file_root": "4f7a9b03a7cc60304bdbbc1fcb76a9f9f990eae32ec7cad4bb798b7ef61a64b4",
+          "host_lifetime_peak_rss_bytes": 76398592,
+          "host_system_cpu_ns": 5072542,
+          "host_user_cpu_ns": 3860250,
+          "kind": "transition-step",
+          "lifecycle_ns": 33169000,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 82255,
+          "step": 0,
+          "store_allocated_bytes": 17145856,
+          "supplied_bytes": 0
+        },
+        {
+          "bytes": 16777216,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([241, 99, 97, 166, 10, 56, 69, 68, 251, 90, 115, 194, 56, 42, 155, 60]), exit_code: Some(0), signal: None, elapsed_ns: 136499000, total_wall_ns: 136499000, spawn_ns: 3645750, supervisor_queue_ns: 49333, runtime_ns: 132784541, drain_ns: 13875, terminal_publication_ns: 4292, unattributed_ns: 1209, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 1047291, decode_ns: 873750, spawn_ns: 302791, runtime_ns: 132598625, drain_ns: 51709 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 81920,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([95, 143, 90, 148, 27, 39, 179, 255, 99, 26, 15, 164, 17, 122, 227, 162]), exit_code: Some(0), signal: None, elapsed_ns: 7082792, total_wall_ns: 7082792, spawn_ns: 2063833, supervisor_queue_ns: 51583, runtime_ns: 4921125, drain_ns: 40167, terminal_publication_ns: 5292, unattributed_ns: 792, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 633042, decode_ns: 524125, spawn_ns: 194542, runtime_ns: 4484792, drain_ns: 137584 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 40726528,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 2,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 1,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "chain-64k",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/verification-1/r1-chain-64k/host-runtime",
+        "0c9ab4850b8b44cc4d9907aaf46ba4fc011208c2876cf8bfc61c7e00643caf4e",
+        "chain-64k",
+        "verify"
+      ],
+      "command_wall_ns": 954430959,
+      "complete_wall_ns": 1645407666,
+      "container": {
+        "id": "0c9ab4850b8b44cc4d9907aaf46ba4fc011208c2876cf8bfc61c7e00643caf4e",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "55465"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "verify",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "chain-64k",
+          "fixture_sha256": "9422dde539df8ebbc56a6f8802be728042d6c85d6fd3615c50fa05b05daccd95",
+          "init_ns": 2778292,
+          "initial_bytes": 65536,
+          "initial_file_root": "4df44c4eb752508b0876de2440ef258968fe43df9111f9fea1e6f3e57f7d047f",
+          "kind": "transition-setup",
+          "mode": "verification"
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([83, 141, 196, 215, 58, 35, 54, 215, 103, 187, 96, 231, 143, 79, 61, 9]), exit_code: Some(0), signal: None, elapsed_ns: 7458750, total_wall_ns: 7458750, spawn_ns: 3058084, supervisor_queue_ns: 55750, runtime_ns: 4329667, drain_ns: 10000, terminal_publication_ns: 4167, unattributed_ns: 1082, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 1820792, decode_ns: 1651375, spawn_ns: 193875, runtime_ns: 4117041, drain_ns: 2250 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([95, 165, 70, 253, 172, 66, 88, 233, 213, 44, 139, 89, 159, 95, 22, 240]), exit_code: Some(0), signal: None, elapsed_ns: 6080458, total_wall_ns: 6080458, spawn_ns: 2998625, supervisor_queue_ns: 53000, runtime_ns: 3014792, drain_ns: 9916, terminal_publication_ns: 3416, unattributed_ns: 709, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 869250, decode_ns: 763000, spawn_ns: 182417, runtime_ns: 2928875, drain_ns: 23875 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 66380,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66372,
+          "commit_full_selected": 2,
+          "commit_id": "12175b16b7be0ee5c67432152ccb17764b9a8e313ea8cc78b9406a2bf0e20c1bba",
+          "commit_ns": 6020667,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 8393667,
+          "edit_ns": 2373000,
+          "file_root": "6caeef4570d7d70283959dc735d419103b6a38c3117ed0c279426ca735714089",
+          "host_lifetime_peak_rss_bytes": 14516224,
+          "host_system_cpu_ns": 5052000,
+          "host_user_cpu_ns": 3054250,
+          "kind": "transition-step",
+          "lifecycle_ns": 35639333,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 0,
+          "store_allocated_bytes": 147456,
+          "supplied_bytes": 1
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([254, 192, 75, 28, 145, 24, 150, 133, 144, 164, 13, 221, 12, 12, 128, 158]), exit_code: Some(0), signal: None, elapsed_ns: 4898416, total_wall_ns: 4898416, spawn_ns: 1830291, supervisor_queue_ns: 39000, runtime_ns: 3015833, drain_ns: 8875, terminal_publication_ns: 3458, unattributed_ns: 959, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 821916, decode_ns: 733667, spawn_ns: 177375, runtime_ns: 2905166, drain_ns: 21875 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([113, 122, 99, 183, 52, 39, 184, 88, 88, 52, 118, 181, 35, 70, 24, 103]), exit_code: Some(0), signal: None, elapsed_ns: 4385166, total_wall_ns: 4385166, spawn_ns: 1457083, supervisor_queue_ns: 46541, runtime_ns: 2869084, drain_ns: 8542, terminal_publication_ns: 3375, unattributed_ns: 541, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 515875, decode_ns: 430500, spawn_ns: 160750, runtime_ns: 2742333, drain_ns: 23417 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 131943,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66437,
+          "commit_full_selected": 2,
+          "commit_id": "12dafaa537e356c10d6c9599acd6f336bf1252dcc7319b433ca8448bd598f2e23a",
+          "commit_ns": 5017584,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6958751,
+          "edit_ns": 1941167,
+          "file_root": "4992941b74030ab24c3ada7e1bf5e75e414f34c0313ab25af2d041cf15163858",
+          "host_lifetime_peak_rss_bytes": 15024128,
+          "host_system_cpu_ns": 4284750,
+          "host_user_cpu_ns": 2903667,
+          "kind": "transition-step",
+          "lifecycle_ns": 27566541,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 1,
+          "store_allocated_bytes": 147456,
+          "supplied_bytes": 1
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([185, 84, 23, 90, 55, 154, 20, 20, 106, 45, 152, 59, 9, 232, 142, 3]), exit_code: Some(0), signal: None, elapsed_ns: 4978334, total_wall_ns: 4978334, spawn_ns: 2024209, supervisor_queue_ns: 41625, runtime_ns: 2898333, drain_ns: 9500, terminal_publication_ns: 3959, unattributed_ns: 708, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 960083, decode_ns: 839459, spawn_ns: 169167, runtime_ns: 2794125, drain_ns: 3292 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([76, 172, 16, 41, 151, 109, 174, 216, 47, 82, 161, 22, 70, 146, 238, 176]), exit_code: Some(0), signal: None, elapsed_ns: 4459750, total_wall_ns: 4459750, spawn_ns: 1444667, supervisor_queue_ns: 34416, runtime_ns: 2967542, drain_ns: 8667, terminal_publication_ns: 3667, unattributed_ns: 791, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 489834, decode_ns: 407375, spawn_ns: 154792, runtime_ns: 2860458, drain_ns: 19125 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 197502,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66498,
+          "commit_full_selected": 2,
+          "commit_id": "124aca8e4f9ce96a9b414126fd08dea5ce1cc06109b62db2a499d98e2dc819b1ed",
+          "commit_ns": 4849667,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6728000,
+          "edit_ns": 1878333,
+          "file_root": "289a5c19c6d7c339f02807d651f25a1c08eded5ef5bc32fc9d887cc60790c97a",
+          "host_lifetime_peak_rss_bytes": 15122432,
+          "host_system_cpu_ns": 4257250,
+          "host_user_cpu_ns": 3072084,
+          "kind": "transition-step",
+          "lifecycle_ns": 31928166,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 2,
+          "store_allocated_bytes": 147456,
+          "supplied_bytes": 1
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([217, 232, 166, 190, 91, 58, 95, 84, 235, 143, 26, 84, 242, 185, 15, 8]), exit_code: Some(0), signal: None, elapsed_ns: 5226041, total_wall_ns: 5226041, spawn_ns: 1680916, supervisor_queue_ns: 49917, runtime_ns: 3479375, drain_ns: 11083, terminal_publication_ns: 3709, unattributed_ns: 1041, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 630500, decode_ns: 518292, spawn_ns: 209750, runtime_ns: 3389125, drain_ns: 20042 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([201, 3, 40, 202, 138, 0, 42, 116, 96, 78, 149, 117, 194, 151, 142, 161]), exit_code: Some(0), signal: None, elapsed_ns: 4826833, total_wall_ns: 4826833, spawn_ns: 1676250, supervisor_queue_ns: 42542, runtime_ns: 3095541, drain_ns: 8250, terminal_publication_ns: 3416, unattributed_ns: 834, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 571167, decode_ns: 483834, spawn_ns: 188333, runtime_ns: 3010000, drain_ns: 22042 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 263061,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66559,
+          "commit_full_selected": 2,
+          "commit_id": "1292784b6343007bc9e2ada7da04dae1ae0db79c21043ce60919d48934a1ab9c4d",
+          "commit_ns": 4724792,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6665917,
+          "edit_ns": 1941125,
+          "file_root": "53ebfb085d438ec01d187c4d04125fc550832ab6116f45cafeb24670fcfc52eb",
+          "host_lifetime_peak_rss_bytes": 15220736,
+          "host_system_cpu_ns": 4025959,
+          "host_user_cpu_ns": 3235750,
+          "kind": "transition-step",
+          "lifecycle_ns": 30014917,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 3,
+          "store_allocated_bytes": 147456,
+          "supplied_bytes": 1
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([50, 110, 124, 81, 45, 207, 127, 139, 23, 69, 127, 101, 61, 184, 248, 1]), exit_code: Some(0), signal: None, elapsed_ns: 4936667, total_wall_ns: 4936667, spawn_ns: 1333625, supervisor_queue_ns: 45000, runtime_ns: 3534500, drain_ns: 11125, terminal_publication_ns: 11709, unattributed_ns: 708, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 473208, decode_ns: 400166, spawn_ns: 166166, runtime_ns: 3359334, drain_ns: 51917 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([143, 44, 90, 184, 104, 242, 248, 232, 168, 243, 174, 60, 19, 92, 36, 216]), exit_code: Some(0), signal: None, elapsed_ns: 6414000, total_wall_ns: 6414000, spawn_ns: 2473250, supervisor_queue_ns: 51209, runtime_ns: 3874500, drain_ns: 10917, terminal_publication_ns: 3458, unattributed_ns: 666, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 1340500, decode_ns: 1251375, spawn_ns: 177375, runtime_ns: 3831167, drain_ns: 22166 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 328620,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66620,
+          "commit_full_selected": 2,
+          "commit_id": "12e865884589c63c2d066995f562d896cae09388f47ef3a59a4c1ff4e4f3ea23e1",
+          "commit_ns": 4581250,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6617875,
+          "edit_ns": 2036625,
+          "file_root": "024e639fc743b6861af9307679c1c7c39c5569e6634a4be9648404f8a3bbfb09",
+          "host_lifetime_peak_rss_bytes": 15319040,
+          "host_system_cpu_ns": 4574416,
+          "host_user_cpu_ns": 3412125,
+          "kind": "transition-step",
+          "lifecycle_ns": 32119125,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 4,
+          "store_allocated_bytes": 155648,
+          "supplied_bytes": 1
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([239, 25, 28, 12, 192, 53, 197, 130, 218, 52, 45, 147, 16, 20, 31, 63]), exit_code: Some(0), signal: None, elapsed_ns: 4320875, total_wall_ns: 4320875, spawn_ns: 1439833, supervisor_queue_ns: 42125, runtime_ns: 2815375, drain_ns: 7917, terminal_publication_ns: 14875, unattributed_ns: 750, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 509041, decode_ns: 440583, spawn_ns: 161375, runtime_ns: 2714792, drain_ns: 3750 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([180, 254, 167, 108, 104, 93, 162, 157, 240, 30, 182, 115, 209, 64, 174, 242]), exit_code: Some(0), signal: None, elapsed_ns: 5616875, total_wall_ns: 5616875, spawn_ns: 1488417, supervisor_queue_ns: 37625, runtime_ns: 4075709, drain_ns: 11375, terminal_publication_ns: 3167, unattributed_ns: 582, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 543083, decode_ns: 465833, spawn_ns: 159333, runtime_ns: 3884041, drain_ns: 25708 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 394179,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66681,
+          "commit_full_selected": 2,
+          "commit_id": "12945e0d63188ef4a78e2677c98a478b840f9a299bcc8f1b5f3c88b7607e67042f",
+          "commit_ns": 4761833,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6884124,
+          "edit_ns": 2122291,
+          "file_root": "8ffb70d191631ba8c1407aed985923522304f35873cf533ec5254f5967a89720",
+          "host_lifetime_peak_rss_bytes": 15368192,
+          "host_system_cpu_ns": 4237959,
+          "host_user_cpu_ns": 3549042,
+          "kind": "transition-step",
+          "lifecycle_ns": 29661708,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 5,
+          "store_allocated_bytes": 155648,
+          "supplied_bytes": 1
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([107, 182, 218, 245, 100, 161, 85, 140, 121, 207, 198, 231, 159, 57, 37, 150]), exit_code: Some(0), signal: None, elapsed_ns: 5086834, total_wall_ns: 5086834, spawn_ns: 1730709, supervisor_queue_ns: 53750, runtime_ns: 3287833, drain_ns: 10208, terminal_publication_ns: 3292, unattributed_ns: 1042, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 622458, decode_ns: 509083, spawn_ns: 182292, runtime_ns: 3185417, drain_ns: 21666 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([246, 218, 25, 255, 124, 189, 0, 6, 114, 43, 11, 190, 135, 191, 200, 160]), exit_code: Some(0), signal: None, elapsed_ns: 5289709, total_wall_ns: 5289709, spawn_ns: 1829125, supervisor_queue_ns: 87125, runtime_ns: 3357250, drain_ns: 10541, terminal_publication_ns: 4208, unattributed_ns: 1460, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 582917, decode_ns: 492000, spawn_ns: 183375, runtime_ns: 3213500, drain_ns: 29625 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 459738,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 66742,
+          "commit_full_selected": 4,
+          "commit_id": "124a3e296c72f6fca1a685239bdbe1ead8b97bc0521fe32b78eb59804a45e9339d",
+          "commit_ns": 5475500,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 8055125,
+          "edit_ns": 2579625,
+          "file_root": "5827e5a0b423c374bf32b90c32f130534efd8683befa05b4973815386f54aa01",
+          "host_lifetime_peak_rss_bytes": 17842176,
+          "host_system_cpu_ns": 4688125,
+          "host_user_cpu_ns": 3728084,
+          "kind": "transition-step",
+          "lifecycle_ns": 30287625,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 65869,
+          "step": 6,
+          "store_allocated_bytes": 221184,
+          "supplied_bytes": 1
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([165, 106, 180, 69, 144, 122, 230, 196, 122, 156, 182, 50, 223, 51, 99, 42]), exit_code: Some(0), signal: None, elapsed_ns: 4995000, total_wall_ns: 4995000, spawn_ns: 1452917, supervisor_queue_ns: 45375, runtime_ns: 3482750, drain_ns: 9166, terminal_publication_ns: 4041, unattributed_ns: 751, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 445750, decode_ns: 387792, spawn_ns: 182417, runtime_ns: 3271417, drain_ns: 34292 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([221, 107, 112, 203, 8, 97, 12, 30, 125, 1, 113, 222, 167, 41, 67, 83]), exit_code: Some(0), signal: None, elapsed_ns: 5015042, total_wall_ns: 5015042, spawn_ns: 1608167, supervisor_queue_ns: 57625, runtime_ns: 3330625, drain_ns: 13667, terminal_publication_ns: 3958, unattributed_ns: 1000, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 577500, decode_ns: 485417, spawn_ns: 172583, runtime_ns: 3242542, drain_ns: 25834 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 66384,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66376,
+          "commit_full_selected": 2,
+          "commit_id": "12e520a6b484975313e724555dd7020c6199fd76bfcddb4ff651c6520066c007a6",
+          "commit_ns": 4297209,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6121793,
+          "edit_ns": 1824584,
+          "file_root": "d8805ffbf3ebf043d3c5ef9aedac87bc53ac419802ef0460d7e346a190478cf2",
+          "host_lifetime_peak_rss_bytes": 17891328,
+          "host_system_cpu_ns": 4038167,
+          "host_user_cpu_ns": 2585125,
+          "kind": "transition-step",
+          "lifecycle_ns": 26825292,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 7,
+          "store_allocated_bytes": 221184,
+          "supplied_bytes": 1
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([179, 128, 250, 170, 24, 147, 212, 176, 177, 153, 12, 19, 90, 32, 107, 78]), exit_code: Some(0), signal: None, elapsed_ns: 4597583, total_wall_ns: 4597583, spawn_ns: 1604250, supervisor_queue_ns: 55250, runtime_ns: 2924209, drain_ns: 9959, terminal_publication_ns: 3292, unattributed_ns: 623, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 524333, decode_ns: 445792, spawn_ns: 201083, runtime_ns: 2842875, drain_ns: 22625 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([119, 139, 153, 142, 52, 130, 205, 56, 21, 123, 8, 222, 18, 152, 37, 255]), exit_code: Some(0), signal: None, elapsed_ns: 5073125, total_wall_ns: 5073125, spawn_ns: 1962041, supervisor_queue_ns: 40083, runtime_ns: 3057292, drain_ns: 9292, terminal_publication_ns: 3709, unattributed_ns: 708, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 945375, decode_ns: 851000, spawn_ns: 197167, runtime_ns: 2872959, drain_ns: 38250 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 131943,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66437,
+          "commit_full_selected": 2,
+          "commit_id": "121c6c8af502a5230a4fa3f379f60230ebf7b412c35c72fd0701354fd132a37555",
+          "commit_ns": 4933458,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6788166,
+          "edit_ns": 1854708,
+          "file_root": "66adc70487fd802d65f44e8ed9466120af6537c5675a5aaf1bf6ae1cc2469743",
+          "host_lifetime_peak_rss_bytes": 17956864,
+          "host_system_cpu_ns": 4349750,
+          "host_user_cpu_ns": 2982375,
+          "kind": "transition-step",
+          "lifecycle_ns": 29386042,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 8,
+          "store_allocated_bytes": 221184,
+          "supplied_bytes": 1
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([119, 191, 65, 84, 8, 59, 147, 68, 219, 213, 122, 214, 84, 201, 249, 131]), exit_code: Some(0), signal: None, elapsed_ns: 4612542, total_wall_ns: 4612542, spawn_ns: 1509334, supervisor_queue_ns: 49125, runtime_ns: 3038917, drain_ns: 9541, terminal_publication_ns: 4750, unattributed_ns: 875, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 511542, decode_ns: 432209, spawn_ns: 193750, runtime_ns: 2946792, drain_ns: 26166 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([206, 0, 166, 59, 229, 203, 75, 168, 116, 163, 16, 192, 99, 157, 87, 182]), exit_code: Some(0), signal: None, elapsed_ns: 5107709, total_wall_ns: 5107709, spawn_ns: 1481959, supervisor_queue_ns: 45084, runtime_ns: 3559458, drain_ns: 16250, terminal_publication_ns: 4208, unattributed_ns: 750, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 484375, decode_ns: 406167, spawn_ns: 159584, runtime_ns: 3366834, drain_ns: 25875 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 197502,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66498,
+          "commit_full_selected": 2,
+          "commit_id": "12029cdab61c21233e732eec344c1d1c618883fc46730b12c652c44fe1ff0052f7",
+          "commit_ns": 5080375,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 7009042,
+          "edit_ns": 1928667,
+          "file_root": "2c1517c15e6030fd8f23c28354ccee157285c60c4b6d41205d35d3afe731edbe",
+          "host_lifetime_peak_rss_bytes": 18038784,
+          "host_system_cpu_ns": 4073333,
+          "host_user_cpu_ns": 3038959,
+          "kind": "transition-step",
+          "lifecycle_ns": 26899416,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 9,
+          "store_allocated_bytes": 221184,
+          "supplied_bytes": 1
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([121, 77, 64, 50, 65, 143, 46, 96, 54, 23, 23, 19, 0, 227, 66, 106]), exit_code: Some(0), signal: None, elapsed_ns: 5311625, total_wall_ns: 5311625, spawn_ns: 1584250, supervisor_queue_ns: 42208, runtime_ns: 3666583, drain_ns: 13500, terminal_publication_ns: 3917, unattributed_ns: 1167, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 587084, decode_ns: 499792, spawn_ns: 192583, runtime_ns: 3549125, drain_ns: 18000 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([43, 97, 148, 133, 160, 12, 207, 107, 57, 66, 150, 5, 164, 50, 150, 11]), exit_code: Some(0), signal: None, elapsed_ns: 5819500, total_wall_ns: 5819500, spawn_ns: 1844333, supervisor_queue_ns: 56458, runtime_ns: 3900416, drain_ns: 13750, terminal_publication_ns: 3750, unattributed_ns: 793, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 633583, decode_ns: 574542, spawn_ns: 304792, runtime_ns: 3806458, drain_ns: 27083 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([235, 168, 15, 25, 64, 5, 97, 176, 109, 74, 172, 183, 141, 63, 206, 79]), exit_code: Some(0), signal: None, elapsed_ns: 5627292, total_wall_ns: 5627292, spawn_ns: 1414042, supervisor_queue_ns: 54000, runtime_ns: 4145083, drain_ns: 9667, terminal_publication_ns: 3416, unattributed_ns: 1084, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 488792, decode_ns: 422375, spawn_ns: 212375, runtime_ns: 4055583, drain_ns: 19458 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([252, 163, 107, 236, 173, 107, 41, 228, 6, 33, 59, 237, 148, 138, 151, 233]), exit_code: Some(0), signal: None, elapsed_ns: 5576083, total_wall_ns: 5576083, spawn_ns: 1533625, supervisor_queue_ns: 48250, runtime_ns: 3980250, drain_ns: 9917, terminal_publication_ns: 3541, unattributed_ns: 500, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 553125, decode_ns: 455834, spawn_ns: 206042, runtime_ns: 3891291, drain_ns: 22583 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([244, 102, 150, 216, 112, 208, 143, 187, 133, 121, 197, 104, 55, 176, 59, 17]), exit_code: Some(0), signal: None, elapsed_ns: 5289584, total_wall_ns: 5289584, spawn_ns: 1357709, supervisor_queue_ns: 45250, runtime_ns: 3864583, drain_ns: 15458, terminal_publication_ns: 3459, unattributed_ns: 3125, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 489666, decode_ns: 403500, spawn_ns: 151708, runtime_ns: 3638667, drain_ns: 3875 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([3, 145, 167, 90, 210, 1, 221, 8, 195, 252, 190, 222, 107, 146, 237, 35]), exit_code: Some(0), signal: None, elapsed_ns: 5063542, total_wall_ns: 5063542, spawn_ns: 1507417, supervisor_queue_ns: 53459, runtime_ns: 3484375, drain_ns: 13708, terminal_publication_ns: 3750, unattributed_ns: 833, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 533834, decode_ns: 459708, spawn_ns: 213334, runtime_ns: 3386167, drain_ns: 16084 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([27, 97, 137, 145, 169, 12, 231, 171, 54, 219, 121, 179, 96, 27, 66, 90]), exit_code: Some(0), signal: None, elapsed_ns: 5528583, total_wall_ns: 5528583, spawn_ns: 1764666, supervisor_queue_ns: 48792, runtime_ns: 3696917, drain_ns: 13000, terminal_publication_ns: 4333, unattributed_ns: 875, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 787208, decode_ns: 722209, spawn_ns: 152459, runtime_ns: 3614125, drain_ns: 21583 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([109, 242, 4, 0, 116, 195, 89, 181, 67, 111, 17, 189, 107, 113, 13, 72]), exit_code: Some(0), signal: None, elapsed_ns: 4983000, total_wall_ns: 4983000, spawn_ns: 1506583, supervisor_queue_ns: 39583, runtime_ns: 3424834, drain_ns: 8125, terminal_publication_ns: 3291, unattributed_ns: 584, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 557125, decode_ns: 478458, spawn_ns: 184291, runtime_ns: 3301584, drain_ns: 29875 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([227, 237, 193, 27, 1, 245, 54, 45, 245, 43, 161, 129, 167, 110, 4, 206]), exit_code: Some(0), signal: None, elapsed_ns: 5164875, total_wall_ns: 5164875, spawn_ns: 1345208, supervisor_queue_ns: 54833, runtime_ns: 3745708, drain_ns: 14167, terminal_publication_ns: 4208, unattributed_ns: 751, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 452083, decode_ns: 399000, spawn_ns: 187167, runtime_ns: 3652583, drain_ns: 1875 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([235, 158, 233, 70, 192, 147, 155, 227, 253, 95, 205, 0, 65, 24, 207, 62]), exit_code: Some(0), signal: None, elapsed_ns: 5077875, total_wall_ns: 5077875, spawn_ns: 1252292, supervisor_queue_ns: 43084, runtime_ns: 3766542, drain_ns: 10209, terminal_publication_ns: 4583, unattributed_ns: 1165, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 450459, decode_ns: 393625, spawn_ns: 156833, runtime_ns: 3558875, drain_ns: 2500 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "bytes": 65536,
+          "kind": "transition-fuse-proof",
+          "receipt": "Some(ExecutionReceipt { execution_id: ExecutionId([69, 107, 212, 133, 40, 49, 88, 26, 78, 15, 83, 26, 244, 99, 227, 12]), exit_code: Some(0), signal: None, elapsed_ns: 4897417, total_wall_ns: 4897417, spawn_ns: 1207292, supervisor_queue_ns: 41333, runtime_ns: 3629416, drain_ns: 14833, terminal_publication_ns: 3666, unattributed_ns: 877, transport: Daemon, daemon_timing: Some(DaemonTiming { accept_bind_ns: 442375, decode_ns: 391167, spawn_ns: 152791, runtime_ns: 3506083, drain_ns: 4916 }), docker_engine_calls: 0, stdout_bytes: 0, stderr_bytes: 0, stopped: false })",
+          "status": "PASS"
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 73347072,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 11,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 1,
+      "status": "PASS",
+      "timed_out": false
+    }
+  ],
+  "status": "PASS"
+}

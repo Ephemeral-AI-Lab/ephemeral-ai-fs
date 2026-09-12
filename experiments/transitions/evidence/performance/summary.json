@@ -1,0 +1,4687 @@
+{
+  "admission_eligible": false,
+  "complete_wall_ns": 40239438792,
+  "results": [
+    {
+      "admission_eligible": false,
+      "case": "edit-64k",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/performance-1/r1-edit-64k/host-runtime",
+        "cba05c88e4585202d409ad5ee7b897a0989d5310c885b3282ea8682531dafbbc",
+        "edit-64k",
+        "performance"
+      ],
+      "command_wall_ns": 1174844959,
+      "complete_wall_ns": 1859998958,
+      "container": {
+        "id": "cba05c88e4585202d409ad5ee7b897a0989d5310c885b3282ea8682531dafbbc",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "54486"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "performance",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "edit-64k",
+          "fixture_sha256": "9422dde539df8ebbc56a6f8802be728042d6c85d6fd3615c50fa05b05daccd95",
+          "init_ns": 4267584,
+          "initial_bytes": 65536,
+          "initial_file_root": "4df44c4eb752508b0876de2440ef258968fe43df9111f9fea1e6f3e57f7d047f",
+          "kind": "transition-setup",
+          "mode": "performance"
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "edit-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 66380,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66372,
+          "commit_full_selected": 2,
+          "commit_id": "124399eba3760c6f411626722dc0744952aadeca217f397bcdc1e2e8a424dbb3c3",
+          "commit_ns": 6288875,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 8589375,
+          "edit_ns": 2300500,
+          "file_root": "6caeef4570d7d70283959dc735d419103b6a38c3117ed0c279426ca735714089",
+          "host_lifetime_peak_rss_bytes": 14057472,
+          "host_system_cpu_ns": 6020833,
+          "host_user_cpu_ns": 2197583,
+          "kind": "transition-step",
+          "lifecycle_ns": 26594792,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 0,
+          "store_allocated_bytes": 147456,
+          "supplied_bytes": 1
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 5160960,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 0,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 1,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "edit-127k",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/performance-1/r1-edit-127k/host-runtime",
+        "a5e46617016c64b03ee3cd22d87d22c2de369ecd130dc88ac68c159dc6db462c",
+        "edit-127k",
+        "performance"
+      ],
+      "command_wall_ns": 536935209,
+      "complete_wall_ns": 1286678875,
+      "container": {
+        "id": "a5e46617016c64b03ee3cd22d87d22c2de369ecd130dc88ac68c159dc6db462c",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "54499"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "performance",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "edit-127k",
+          "fixture_sha256": "861cc846879eb6a184e294e7c86196f71e377360a0da40fbf85556b1ce8c5ad6",
+          "init_ns": 4274875,
+          "initial_bytes": 130048,
+          "initial_file_root": "55d695ad6e1b6208fa168b43f00a0790ddf9419f4625bfdf041d1bf8ffac38c9",
+          "kind": "transition-setup",
+          "mode": "performance"
+        },
+        {
+          "after_bytes": 130048,
+          "before_bytes": 130048,
+          "case": "edit-127k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 130892,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 130886,
+          "commit_full_selected": 2,
+          "commit_id": "12d62ce2504c8877fb22c2a9ad4daee3248477c7dea1847408a34867a5343494f7",
+          "commit_ns": 5745375,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 8592833,
+          "edit_ns": 2847458,
+          "file_root": "0c8c142eda7498135e857e8a5416fcf391fb826fea6b01513e19477e1ec41ffd",
+          "host_lifetime_peak_rss_bytes": 14680064,
+          "host_system_cpu_ns": 4377833,
+          "host_user_cpu_ns": 2479375,
+          "kind": "transition-step",
+          "lifecycle_ns": 26570250,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 381,
+          "step": 0,
+          "store_allocated_bytes": 217088,
+          "supplied_bytes": 1
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 4902912,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 0,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 1,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "edit-128k",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/performance-1/r1-edit-128k/host-runtime",
+        "7263d3c6b5c833c184b2d987491de8988e1859082fa1bb33538cd196b161940a",
+        "edit-128k",
+        "performance"
+      ],
+      "command_wall_ns": 552162667,
+      "complete_wall_ns": 1311498125,
+      "container": {
+        "id": "7263d3c6b5c833c184b2d987491de8988e1859082fa1bb33538cd196b161940a",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "54515"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "performance",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "edit-128k",
+          "fixture_sha256": "f1d6a7f32d8aec37205081203af8a7c6de8f05b59f04bf50048487105326d67a",
+          "init_ns": 2972625,
+          "initial_bytes": 131072,
+          "initial_file_root": "8dfb4cde90e7d09c2704345cfe79e98078c7284cf55d66ce527330d59643cb9a",
+          "kind": "transition-setup",
+          "mode": "performance"
+        },
+        {
+          "after_bytes": 131072,
+          "before_bytes": 131072,
+          "case": "edit-128k",
+          "cdc_bytes_scanned": 1,
+          "commit_decoded_read_bytes": 3158,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 40940,
+          "commit_full_selected": 5,
+          "commit_id": "129bfbe11d46ea5d2b44325f106c7d461a410331b044aad3c322e9bbc0a606891f",
+          "commit_ns": 5637000,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 7716083,
+          "edit_ns": 2079083,
+          "file_root": "0fd3cf4714b0e144bbf883c775cdbd99bc05838a437dd0cf498f5f24e3728841",
+          "host_lifetime_peak_rss_bytes": 12730368,
+          "host_system_cpu_ns": 4556125,
+          "host_user_cpu_ns": 2139750,
+          "kind": "transition-step",
+          "lifecycle_ns": 24786250,
+          "native_full_count": 1,
+          "native_prefix_count": 0,
+          "representation": "chunked",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 823,
+          "step": 0,
+          "store_allocated_bytes": 212992,
+          "supplied_bytes": 1
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 5390336,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 0,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 1,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "edit-129k",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/performance-1/r1-edit-129k/host-runtime",
+        "e0200d5d54525c12007ed2c24e31af8f19ac9c23bc9f0334c07a01744cddfdad",
+        "edit-129k",
+        "performance"
+      ],
+      "command_wall_ns": 548715292,
+      "complete_wall_ns": 1201609000,
+      "container": {
+        "id": "e0200d5d54525c12007ed2c24e31af8f19ac9c23bc9f0334c07a01744cddfdad",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "54526"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "performance",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "edit-129k",
+          "fixture_sha256": "aee209a2d6174a8b0c0a234b4b5907ba447c356b72175820648b1bd082a39bbc",
+          "init_ns": 4080083,
+          "initial_bytes": 132096,
+          "initial_file_root": "8fbe2b3cc5ffbc872e6199a44268f7f06d02ae5fd24b9379dc9dd8a551035a64",
+          "kind": "transition-setup",
+          "mode": "performance"
+        },
+        {
+          "after_bytes": 132096,
+          "before_bytes": 132096,
+          "case": "edit-129k",
+          "cdc_bytes_scanned": 1,
+          "commit_decoded_read_bytes": 3158,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 40941,
+          "commit_full_selected": 5,
+          "commit_id": "127e23abac3ba02badb2652bbc793890d07b814e4b456619d384749af3795966bf",
+          "commit_ns": 5585083,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 7521833,
+          "edit_ns": 1936750,
+          "file_root": "1bfebeb374ac4597c107e6f6514b2fc12910b06b8d3676d6f6e3f55a9f075867",
+          "host_lifetime_peak_rss_bytes": 12795904,
+          "host_system_cpu_ns": 4380125,
+          "host_user_cpu_ns": 1999666,
+          "kind": "transition-step",
+          "lifecycle_ns": 24296917,
+          "native_full_count": 1,
+          "native_prefix_count": 0,
+          "representation": "chunked",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 824,
+          "step": 0,
+          "store_allocated_bytes": 212992,
+          "supplied_bytes": 1
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 4874240,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 0,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 1,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "edit-16m",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/performance-1/r1-edit-16m/host-runtime",
+        "7cd71ae0b7f0cb727d6708d8ca414b675115690c56dcd411fef0a74b7b44482a",
+        "edit-16m",
+        "performance"
+      ],
+      "command_wall_ns": 657747208,
+      "complete_wall_ns": 1355466625,
+      "container": {
+        "id": "7cd71ae0b7f0cb727d6708d8ca414b675115690c56dcd411fef0a74b7b44482a",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "54537"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "performance",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "edit-16m",
+          "fixture_sha256": "ace7a450f65687f0874aca3a6d17447b21724e53a783339a430b008aef17f7a3",
+          "init_ns": 50893833,
+          "initial_bytes": 16777216,
+          "initial_file_root": "ab142ffbcdc62a82405614473c5a97fa71c716f17509433e63b85ca9291ad390",
+          "kind": "transition-setup",
+          "mode": "performance"
+        },
+        {
+          "after_bytes": 16777216,
+          "before_bytes": 16777216,
+          "case": "edit-16m",
+          "cdc_bytes_scanned": 1,
+          "commit_decoded_read_bytes": 38322,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 74953,
+          "commit_full_selected": 9,
+          "commit_id": "1238d12c5cbfb1ce6e647598885bb4a457d8f5630ceeac49bbea4ad7f7165188f8",
+          "commit_ns": 6316042,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 8359667,
+          "edit_ns": 2043625,
+          "file_root": "c5c77517dfc0d5c998818724614b34e405525214ab28dd5d2e78335ccd55a25f",
+          "host_lifetime_peak_rss_bytes": 76038144,
+          "host_system_cpu_ns": 4606375,
+          "host_user_cpu_ns": 2890000,
+          "kind": "transition-step",
+          "lifecycle_ns": 25591292,
+          "native_full_count": 1,
+          "native_prefix_count": 0,
+          "representation": "chunked",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 14242,
+          "step": 0,
+          "store_allocated_bytes": 17076224,
+          "supplied_bytes": 1
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 5410816,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 0,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 1,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "oscillate",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/performance-1/r1-oscillate/host-runtime",
+        "2081ad9117817f2e2bf25245c4085cf9cda3f8add13f87f809bf42bcf648645e",
+        "oscillate",
+        "performance"
+      ],
+      "command_wall_ns": 641038334,
+      "complete_wall_ns": 1395291792,
+      "container": {
+        "id": "2081ad9117817f2e2bf25245c4085cf9cda3f8add13f87f809bf42bcf648645e",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "54548"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "performance",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "oscillate",
+          "fixture_sha256": "861cc846879eb6a184e294e7c86196f71e377360a0da40fbf85556b1ce8c5ad6",
+          "init_ns": 3356750,
+          "initial_bytes": 130048,
+          "initial_file_root": "55d695ad6e1b6208fa168b43f00a0790ddf9419f4625bfdf041d1bf8ffac38c9",
+          "kind": "transition-setup",
+          "mode": "performance"
+        },
+        {
+          "after_bytes": 132096,
+          "before_bytes": 130048,
+          "case": "oscillate",
+          "cdc_bytes_scanned": 132096,
+          "commit_decoded_read_bytes": 1301,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 1260,
+          "commit_full_selected": 12,
+          "commit_id": "1265ab6964a2b369efff677682ed1650851969b1c0b84fde25ab2d559f40159eee",
+          "commit_ns": 6430125,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 8466375,
+          "edit_ns": 2036250,
+          "file_root": "3aebc5b02e819ec634970f8091b3d00b8d3723abccfefff97824f6626bfc293b",
+          "host_lifetime_peak_rss_bytes": 15777792,
+          "host_system_cpu_ns": 4727791,
+          "host_user_cpu_ns": 2521125,
+          "kind": "transition-step",
+          "lifecycle_ns": 26026167,
+          "native_full_count": 8,
+          "native_prefix_count": 0,
+          "representation": "chunked",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 133049,
+          "step": 0,
+          "store_allocated_bytes": 348160,
+          "supplied_bytes": 2048
+        },
+        {
+          "after_bytes": 130048,
+          "before_bytes": 132096,
+          "case": "oscillate",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 133562,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 264813,
+          "commit_full_selected": 0,
+          "commit_id": "12ff0cbe9ac6736070b628d01e25a8795fb23dd16938534c37b6915346024caa1e",
+          "commit_ns": 4438334,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6059751,
+          "edit_ns": 1621417,
+          "file_root": "55d695ad6e1b6208fa168b43f00a0790ddf9419f4625bfdf041d1bf8ffac38c9",
+          "host_lifetime_peak_rss_bytes": 16105472,
+          "host_system_cpu_ns": 3378041,
+          "host_user_cpu_ns": 1872625,
+          "kind": "transition-step",
+          "lifecycle_ns": 17851334,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": true,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 0,
+          "step": 1,
+          "store_allocated_bytes": 348160,
+          "supplied_bytes": 0
+        },
+        {
+          "after_bytes": 132096,
+          "before_bytes": 130048,
+          "case": "oscillate",
+          "cdc_bytes_scanned": 132096,
+          "commit_decoded_read_bytes": 1618,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 133828,
+          "commit_full_selected": 0,
+          "commit_id": "128f432c43974ed2f6775c265504eea55a00fb78abe3fda8721d32759df23c4cc6",
+          "commit_ns": 4496583,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6461500,
+          "edit_ns": 1964917,
+          "file_root": "3aebc5b02e819ec634970f8091b3d00b8d3723abccfefff97824f6626bfc293b",
+          "host_lifetime_peak_rss_bytes": 16236544,
+          "host_system_cpu_ns": 3738000,
+          "host_user_cpu_ns": 1869459,
+          "kind": "transition-step",
+          "lifecycle_ns": 23737750,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "chunked",
+          "reused_prior_content_root": true,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 0,
+          "step": 2,
+          "store_allocated_bytes": 348160,
+          "supplied_bytes": 2048
+        },
+        {
+          "after_bytes": 130048,
+          "before_bytes": 132096,
+          "case": "oscillate",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 133562,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 264813,
+          "commit_full_selected": 0,
+          "commit_id": "12abbb4b451a18e26ca8570763e2a30fdd20578c5c4f75a2d37fb7656a3b50f8e6",
+          "commit_ns": 4396958,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6159750,
+          "edit_ns": 1762792,
+          "file_root": "55d695ad6e1b6208fa168b43f00a0790ddf9419f4625bfdf041d1bf8ffac38c9",
+          "host_lifetime_peak_rss_bytes": 16416768,
+          "host_system_cpu_ns": 3521709,
+          "host_user_cpu_ns": 1821000,
+          "kind": "transition-step",
+          "lifecycle_ns": 21688208,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": true,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 0,
+          "step": 3,
+          "store_allocated_bytes": 348160,
+          "supplied_bytes": 0
+        },
+        {
+          "after_bytes": 132096,
+          "before_bytes": 130048,
+          "case": "oscillate",
+          "cdc_bytes_scanned": 132096,
+          "commit_decoded_read_bytes": 1618,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 133828,
+          "commit_full_selected": 0,
+          "commit_id": "124a1babbc85e84c21768fbff66d70f3d27281b1d32c99cd8a0692340ebf40663e",
+          "commit_ns": 4137500,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 5980333,
+          "edit_ns": 1842833,
+          "file_root": "3aebc5b02e819ec634970f8091b3d00b8d3723abccfefff97824f6626bfc293b",
+          "host_lifetime_peak_rss_bytes": 16531456,
+          "host_system_cpu_ns": 3320416,
+          "host_user_cpu_ns": 1792125,
+          "kind": "transition-step",
+          "lifecycle_ns": 21152458,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "chunked",
+          "reused_prior_content_root": true,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 0,
+          "step": 4,
+          "store_allocated_bytes": 348160,
+          "supplied_bytes": 2048
+        },
+        {
+          "after_bytes": 130048,
+          "before_bytes": 132096,
+          "case": "oscillate",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 133562,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 264813,
+          "commit_full_selected": 0,
+          "commit_id": "12b6e408861ea1d5516f37416bd6435c6e1edf35f18e8ccbce3302383d49bebd8f",
+          "commit_ns": 4735916,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 7358582,
+          "edit_ns": 2622666,
+          "file_root": "55d695ad6e1b6208fa168b43f00a0790ddf9419f4625bfdf041d1bf8ffac38c9",
+          "host_lifetime_peak_rss_bytes": 16564224,
+          "host_system_cpu_ns": 3845916,
+          "host_user_cpu_ns": 1929709,
+          "kind": "transition-step",
+          "lifecycle_ns": 24348750,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": true,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 0,
+          "step": 5,
+          "store_allocated_bytes": 348160,
+          "supplied_bytes": 0
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 71802880,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 0,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 1,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "batched-crossings",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/performance-1/r1-batched-crossings/host-runtime",
+        "953d5eaa7c1ab2116cfaa611ce46733c53083ece0a86c3fbf2789de1d556f726",
+        "batched-crossings",
+        "performance"
+      ],
+      "command_wall_ns": 610631375,
+      "complete_wall_ns": 1357014084,
+      "container": {
+        "id": "953d5eaa7c1ab2116cfaa611ce46733c53083ece0a86c3fbf2789de1d556f726",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "54597"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "performance",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "batched-crossings",
+          "fixture_sha256": "861cc846879eb6a184e294e7c86196f71e377360a0da40fbf85556b1ce8c5ad6",
+          "init_ns": 3487375,
+          "initial_bytes": 130048,
+          "initial_file_root": "55d695ad6e1b6208fa168b43f00a0790ddf9419f4625bfdf041d1bf8ffac38c9",
+          "kind": "transition-setup",
+          "mode": "performance"
+        },
+        {
+          "after_bytes": 122880,
+          "before_bytes": 130048,
+          "case": "batched-crossings",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 130892,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 130886,
+          "commit_full_selected": 2,
+          "commit_id": "12ef677a2847ec728c1476819de3d835255aa4e6609f7a40fdb9c7cd449abf06c6",
+          "commit_ns": 6048166,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 13198166,
+          "edit_ns": 7150000,
+          "file_root": "005be899035cd8d5f4d0b554c97732c36c1aad0ede8059d370e583db8ed481c7",
+          "host_lifetime_peak_rss_bytes": 14385152,
+          "host_system_cpu_ns": 5086459,
+          "host_user_cpu_ns": 2695917,
+          "kind": "transition-step",
+          "lifecycle_ns": 28182125,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 4,
+          "selected_encoded_bytes": 377,
+          "step": 0,
+          "store_allocated_bytes": 217088,
+          "supplied_bytes": 17408
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 5132288,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 0,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 1,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "shrink-1m",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/performance-1/r1-shrink-1m/host-runtime",
+        "6259abf4a4b273e879f3767378d3c99f8c3b1c4b78fb6293d9adb9ddef25420d",
+        "shrink-1m",
+        "performance"
+      ],
+      "command_wall_ns": 559259750,
+      "complete_wall_ns": 1316550875,
+      "container": {
+        "id": "6259abf4a4b273e879f3767378d3c99f8c3b1c4b78fb6293d9adb9ddef25420d",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "54615"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "performance",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "shrink-1m",
+          "fixture_sha256": "0d8801271ec551ff9dd856ffcd7b9f45baf38a17005eeb572630c9abe925bc31",
+          "init_ns": 7682000,
+          "initial_bytes": 1048576,
+          "initial_file_root": "2a5f08ebc55f73ba882189874a5239e2437adb69d24d034363b589d1d8b5c3a5",
+          "kind": "transition-setup",
+          "mode": "performance"
+        },
+        {
+          "after_bytes": 81920,
+          "before_bytes": 1048576,
+          "case": "shrink-1m",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 4438,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 96624,
+          "commit_full_selected": 4,
+          "commit_id": "12b3d6cf3df8704c42bbbde2ad29bc6dce17838cbf741d7a2c44e508cf7a335ab0",
+          "commit_ns": 6311041,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 8453291,
+          "edit_ns": 2142250,
+          "file_root": "4f7a9b03a7cc60304bdbbc1fcb76a9f9f990eae32ec7cad4bb798b7ef61a64b4",
+          "host_lifetime_peak_rss_bytes": 19873792,
+          "host_system_cpu_ns": 4467167,
+          "host_user_cpu_ns": 2448542,
+          "kind": "transition-step",
+          "lifecycle_ns": 25017667,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 82255,
+          "step": 0,
+          "store_allocated_bytes": 1220608,
+          "supplied_bytes": 0
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 5165056,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 0,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 1,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "shrink-16m",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/performance-1/r1-shrink-16m/host-runtime",
+        "6aacd9c150548771757d041229b1871ac42dff8d9abc56f729027dc1c98b2814",
+        "shrink-16m",
+        "performance"
+      ],
+      "command_wall_ns": 657187375,
+      "complete_wall_ns": 1468081666,
+      "container": {
+        "id": "6aacd9c150548771757d041229b1871ac42dff8d9abc56f729027dc1c98b2814",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "54627"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "performance",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "shrink-16m",
+          "fixture_sha256": "ace7a450f65687f0874aca3a6d17447b21724e53a783339a430b008aef17f7a3",
+          "init_ns": 54225208,
+          "initial_bytes": 16777216,
+          "initial_file_root": "ab142ffbcdc62a82405614473c5a97fa71c716f17509433e63b85ca9291ad390",
+          "kind": "transition-setup",
+          "mode": "performance"
+        },
+        {
+          "after_bytes": 81920,
+          "before_bytes": 16777216,
+          "case": "shrink-16m",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 11796,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 104841,
+          "commit_full_selected": 4,
+          "commit_id": "12998b628d7101f7bab4c84d8b12f777fc3e03f0374d1408195aee225b1ea7fe30",
+          "commit_ns": 6128833,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 8299791,
+          "edit_ns": 2170958,
+          "file_root": "4f7a9b03a7cc60304bdbbc1fcb76a9f9f990eae32ec7cad4bb798b7ef61a64b4",
+          "host_lifetime_peak_rss_bytes": 77840384,
+          "host_system_cpu_ns": 4594459,
+          "host_user_cpu_ns": 2651583,
+          "kind": "transition-step",
+          "lifecycle_ns": 24050458,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 82255,
+          "step": 0,
+          "store_allocated_bytes": 17145856,
+          "supplied_bytes": 0
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 4907008,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 0,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 1,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "chain-64k",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/performance-1/r1-chain-64k/host-runtime",
+        "f8dffcde3c52498e84f55b00d17574ef52a6cfd8176382cc2b5aad191b4d93f1",
+        "chain-64k",
+        "performance"
+      ],
+      "command_wall_ns": 698793042,
+      "complete_wall_ns": 1395569500,
+      "container": {
+        "id": "f8dffcde3c52498e84f55b00d17574ef52a6cfd8176382cc2b5aad191b4d93f1",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "54639"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "performance",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "chain-64k",
+          "fixture_sha256": "9422dde539df8ebbc56a6f8802be728042d6c85d6fd3615c50fa05b05daccd95",
+          "init_ns": 3145042,
+          "initial_bytes": 65536,
+          "initial_file_root": "4df44c4eb752508b0876de2440ef258968fe43df9111f9fea1e6f3e57f7d047f",
+          "kind": "transition-setup",
+          "mode": "performance"
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 66380,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66372,
+          "commit_full_selected": 2,
+          "commit_id": "1271769cb78aa1c9f72ac447536ee507f23df6e9865355dcd79315fa6f7e39d82e",
+          "commit_ns": 5619459,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 7837500,
+          "edit_ns": 2218041,
+          "file_root": "6caeef4570d7d70283959dc735d419103b6a38c3117ed0c279426ca735714089",
+          "host_lifetime_peak_rss_bytes": 15695872,
+          "host_system_cpu_ns": 3955000,
+          "host_user_cpu_ns": 2161792,
+          "kind": "transition-step",
+          "lifecycle_ns": 24399500,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 0,
+          "store_allocated_bytes": 147456,
+          "supplied_bytes": 1
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 131943,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66437,
+          "commit_full_selected": 2,
+          "commit_id": "12ed569a977876cb5d4e3a055abab0d4266c0a2304ff881649b549992092f75388",
+          "commit_ns": 6973083,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 8884458,
+          "edit_ns": 1911375,
+          "file_root": "4992941b74030ab24c3ada7e1bf5e75e414f34c0313ab25af2d041cf15163858",
+          "host_lifetime_peak_rss_bytes": 16056320,
+          "host_system_cpu_ns": 3819916,
+          "host_user_cpu_ns": 2070042,
+          "kind": "transition-step",
+          "lifecycle_ns": 20770750,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 1,
+          "store_allocated_bytes": 147456,
+          "supplied_bytes": 1
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 197502,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66498,
+          "commit_full_selected": 2,
+          "commit_id": "1256a5421b21ac6f0b3c07d4aa8042b0ef265fc15e4e0287afd9e050c5974c9bf2",
+          "commit_ns": 4580500,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6555459,
+          "edit_ns": 1974959,
+          "file_root": "289a5c19c6d7c339f02807d651f25a1c08eded5ef5bc32fc9d887cc60790c97a",
+          "host_lifetime_peak_rss_bytes": 16187392,
+          "host_system_cpu_ns": 3348250,
+          "host_user_cpu_ns": 2017292,
+          "kind": "transition-step",
+          "lifecycle_ns": 22468959,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 2,
+          "store_allocated_bytes": 147456,
+          "supplied_bytes": 1
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 263061,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66559,
+          "commit_full_selected": 2,
+          "commit_id": "1295fce14941cc6a7676cc003b713559e105330fd5a2d9f323be3dbfecb449fe74",
+          "commit_ns": 4060333,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6194874,
+          "edit_ns": 2134541,
+          "file_root": "53ebfb085d438ec01d187c4d04125fc550832ab6116f45cafeb24670fcfc52eb",
+          "host_lifetime_peak_rss_bytes": 16236544,
+          "host_system_cpu_ns": 3124583,
+          "host_user_cpu_ns": 1976584,
+          "kind": "transition-step",
+          "lifecycle_ns": 21246209,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 3,
+          "store_allocated_bytes": 147456,
+          "supplied_bytes": 1
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 328620,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66620,
+          "commit_full_selected": 2,
+          "commit_id": "1232eb0ea8d63e5465d85ed2b20e6c4988cf3f72f12cd772297c9fe773cfc6a539",
+          "commit_ns": 4355833,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6288791,
+          "edit_ns": 1932958,
+          "file_root": "024e639fc743b6861af9307679c1c7c39c5569e6634a4be9648404f8a3bbfb09",
+          "host_lifetime_peak_rss_bytes": 16302080,
+          "host_system_cpu_ns": 3267542,
+          "host_user_cpu_ns": 2240917,
+          "kind": "transition-step",
+          "lifecycle_ns": 20500500,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 4,
+          "store_allocated_bytes": 155648,
+          "supplied_bytes": 1
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 394179,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66681,
+          "commit_full_selected": 2,
+          "commit_id": "12fac19115444e3ac815fef1fcdfea588746a18590e6986c1de7da47fb31bc0755",
+          "commit_ns": 4106083,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6353791,
+          "edit_ns": 2247708,
+          "file_root": "8ffb70d191631ba8c1407aed985923522304f35873cf533ec5254f5967a89720",
+          "host_lifetime_peak_rss_bytes": 16449536,
+          "host_system_cpu_ns": 3105250,
+          "host_user_cpu_ns": 2319625,
+          "kind": "transition-step",
+          "lifecycle_ns": 21237959,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 5,
+          "store_allocated_bytes": 155648,
+          "supplied_bytes": 1
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 459738,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 66742,
+          "commit_full_selected": 4,
+          "commit_id": "12ad929df8dd8d82958ee8604430e927698857f0a116f6d04fd8d90d3e51a4b322",
+          "commit_ns": 4898333,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 7106208,
+          "edit_ns": 2207875,
+          "file_root": "5827e5a0b423c374bf32b90c32f130534efd8683befa05b4973815386f54aa01",
+          "host_lifetime_peak_rss_bytes": 16678912,
+          "host_system_cpu_ns": 3403583,
+          "host_user_cpu_ns": 2673459,
+          "kind": "transition-step",
+          "lifecycle_ns": 19137250,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 65869,
+          "step": 6,
+          "store_allocated_bytes": 221184,
+          "supplied_bytes": 1
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 66384,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66376,
+          "commit_full_selected": 2,
+          "commit_id": "12fb724e529f069357d902dbd4ae7b36393cec729c6532128f47b52d65837e32ca",
+          "commit_ns": 4002833,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 5985750,
+          "edit_ns": 1982917,
+          "file_root": "d8805ffbf3ebf043d3c5ef9aedac87bc53ac419802ef0460d7e346a190478cf2",
+          "host_lifetime_peak_rss_bytes": 16728064,
+          "host_system_cpu_ns": 3001958,
+          "host_user_cpu_ns": 1636084,
+          "kind": "transition-step",
+          "lifecycle_ns": 18201875,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 7,
+          "store_allocated_bytes": 221184,
+          "supplied_bytes": 1
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 131943,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66437,
+          "commit_full_selected": 2,
+          "commit_id": "123bec6279d3c7e0a83e52aaaa23326948422d89cf62802514fd769b206286e330",
+          "commit_ns": 4128584,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6364543,
+          "edit_ns": 2235959,
+          "file_root": "66adc70487fd802d65f44e8ed9466120af6537c5675a5aaf1bf6ae1cc2469743",
+          "host_lifetime_peak_rss_bytes": 16793600,
+          "host_system_cpu_ns": 3233792,
+          "host_user_cpu_ns": 1784375,
+          "kind": "transition-step",
+          "lifecycle_ns": 18571416,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 8,
+          "store_allocated_bytes": 221184,
+          "supplied_bytes": 1
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 197502,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66498,
+          "commit_full_selected": 2,
+          "commit_id": "12506d1e234690665c4e2d266794627c66c7f7837c8601642bb129c49c47ab6285",
+          "commit_ns": 3980875,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 5916167,
+          "edit_ns": 1935292,
+          "file_root": "2c1517c15e6030fd8f23c28354ccee157285c60c4b6d41205d35d3afe731edbe",
+          "host_lifetime_peak_rss_bytes": 16859136,
+          "host_system_cpu_ns": 3306042,
+          "host_user_cpu_ns": 1880917,
+          "kind": "transition-step",
+          "lifecycle_ns": 18026209,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 9,
+          "store_allocated_bytes": 221184,
+          "supplied_bytes": 1
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 71815168,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 0,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 1,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "chain-64k",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/performance-1/r2-chain-64k/host-runtime",
+        "277cf519d17cd12bca05cf67c9e5df59381b55190cd096176436960f8c08ac38",
+        "chain-64k",
+        "performance"
+      ],
+      "command_wall_ns": 747210125,
+      "complete_wall_ns": 1440568583,
+      "container": {
+        "id": "277cf519d17cd12bca05cf67c9e5df59381b55190cd096176436960f8c08ac38",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "54708"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "performance",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "chain-64k",
+          "fixture_sha256": "9422dde539df8ebbc56a6f8802be728042d6c85d6fd3615c50fa05b05daccd95",
+          "init_ns": 3659542,
+          "initial_bytes": 65536,
+          "initial_file_root": "4df44c4eb752508b0876de2440ef258968fe43df9111f9fea1e6f3e57f7d047f",
+          "kind": "transition-setup",
+          "mode": "performance"
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 66380,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66372,
+          "commit_full_selected": 2,
+          "commit_id": "1209adb7b97e95f20a1b9068a6cbc7e7aa5044d061abb3b4c3a25db5ca157ab669",
+          "commit_ns": 5904958,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 7902458,
+          "edit_ns": 1997500,
+          "file_root": "6caeef4570d7d70283959dc735d419103b6a38c3117ed0c279426ca735714089",
+          "host_lifetime_peak_rss_bytes": 13320192,
+          "host_system_cpu_ns": 4499250,
+          "host_user_cpu_ns": 2157500,
+          "kind": "transition-step",
+          "lifecycle_ns": 23482000,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 0,
+          "store_allocated_bytes": 147456,
+          "supplied_bytes": 1
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 131943,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66437,
+          "commit_full_selected": 2,
+          "commit_id": "12b80851739c1661e30c4bda0b8e197dd1fb03961f0865c5c89c84a625a1d3efd6",
+          "commit_ns": 4474250,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6357583,
+          "edit_ns": 1883333,
+          "file_root": "4992941b74030ab24c3ada7e1bf5e75e414f34c0313ab25af2d041cf15163858",
+          "host_lifetime_peak_rss_bytes": 13516800,
+          "host_system_cpu_ns": 3358416,
+          "host_user_cpu_ns": 1818250,
+          "kind": "transition-step",
+          "lifecycle_ns": 17266666,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 1,
+          "store_allocated_bytes": 147456,
+          "supplied_bytes": 1
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 197502,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66498,
+          "commit_full_selected": 2,
+          "commit_id": "122037fe289d3bc7b1545c6d40421d421914537d6441317fde3c637e3ce977bc22",
+          "commit_ns": 4874209,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6638209,
+          "edit_ns": 1764000,
+          "file_root": "289a5c19c6d7c339f02807d651f25a1c08eded5ef5bc32fc9d887cc60790c97a",
+          "host_lifetime_peak_rss_bytes": 13664256,
+          "host_system_cpu_ns": 3552708,
+          "host_user_cpu_ns": 2024167,
+          "kind": "transition-step",
+          "lifecycle_ns": 24441584,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 2,
+          "store_allocated_bytes": 147456,
+          "supplied_bytes": 1
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 263061,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66559,
+          "commit_full_selected": 2,
+          "commit_id": "12a5c8b75ee90036382cde20a380ac3fefdd2db4e32aca0e95c90a6305cc83578a",
+          "commit_ns": 4840459,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6822625,
+          "edit_ns": 1982166,
+          "file_root": "53ebfb085d438ec01d187c4d04125fc550832ab6116f45cafeb24670fcfc52eb",
+          "host_lifetime_peak_rss_bytes": 13697024,
+          "host_system_cpu_ns": 3696959,
+          "host_user_cpu_ns": 2163834,
+          "kind": "transition-step",
+          "lifecycle_ns": 23235166,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 3,
+          "store_allocated_bytes": 147456,
+          "supplied_bytes": 1
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 328620,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66620,
+          "commit_full_selected": 2,
+          "commit_id": "1239ba25deb20eb28cbad299cf7222c388dd05c6fde5d415e1bdedfd7474bc7d84",
+          "commit_ns": 4460500,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6915750,
+          "edit_ns": 2455250,
+          "file_root": "024e639fc743b6861af9307679c1c7c39c5569e6634a4be9648404f8a3bbfb09",
+          "host_lifetime_peak_rss_bytes": 13778944,
+          "host_system_cpu_ns": 3487167,
+          "host_user_cpu_ns": 2250125,
+          "kind": "transition-step",
+          "lifecycle_ns": 22046375,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 4,
+          "store_allocated_bytes": 155648,
+          "supplied_bytes": 1
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 394179,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66681,
+          "commit_full_selected": 2,
+          "commit_id": "12859e5ba6604c58a79b4a8b87cb5ed75899b89cc5956bbf1fd7bf44a86b5739af",
+          "commit_ns": 4465750,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6723667,
+          "edit_ns": 2257917,
+          "file_root": "8ffb70d191631ba8c1407aed985923522304f35873cf533ec5254f5967a89720",
+          "host_lifetime_peak_rss_bytes": 14057472,
+          "host_system_cpu_ns": 3624958,
+          "host_user_cpu_ns": 2462542,
+          "kind": "transition-step",
+          "lifecycle_ns": 21272166,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 5,
+          "store_allocated_bytes": 155648,
+          "supplied_bytes": 1
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 459738,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 66742,
+          "commit_full_selected": 4,
+          "commit_id": "1241f90379e4d0d3caa31e911645c6e44a49f8c6b208a85ba4cf1f09009adad1c6",
+          "commit_ns": 4686375,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6969417,
+          "edit_ns": 2283042,
+          "file_root": "5827e5a0b423c374bf32b90c32f130534efd8683befa05b4973815386f54aa01",
+          "host_lifetime_peak_rss_bytes": 14123008,
+          "host_system_cpu_ns": 3565708,
+          "host_user_cpu_ns": 2590208,
+          "kind": "transition-step",
+          "lifecycle_ns": 19480458,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 65869,
+          "step": 6,
+          "store_allocated_bytes": 221184,
+          "supplied_bytes": 1
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 66384,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66376,
+          "commit_full_selected": 2,
+          "commit_id": "125d4d4bf4c66cd6e2bd9ec8ed2afb4e12891da7420be2f46bb7a0745bb454192a",
+          "commit_ns": 4365834,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6038709,
+          "edit_ns": 1672875,
+          "file_root": "d8805ffbf3ebf043d3c5ef9aedac87bc53ac419802ef0460d7e346a190478cf2",
+          "host_lifetime_peak_rss_bytes": 14204928,
+          "host_system_cpu_ns": 3497375,
+          "host_user_cpu_ns": 1680750,
+          "kind": "transition-step",
+          "lifecycle_ns": 18289792,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 7,
+          "store_allocated_bytes": 221184,
+          "supplied_bytes": 1
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 131943,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66437,
+          "commit_full_selected": 2,
+          "commit_id": "12e35c8d3c0dc87832b0b31d0556b6ae36288f65e504ef890b6f75483c9641bc83",
+          "commit_ns": 4187125,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6242792,
+          "edit_ns": 2055667,
+          "file_root": "66adc70487fd802d65f44e8ed9466120af6537c5675a5aaf1bf6ae1cc2469743",
+          "host_lifetime_peak_rss_bytes": 14270464,
+          "host_system_cpu_ns": 3484250,
+          "host_user_cpu_ns": 1943291,
+          "kind": "transition-step",
+          "lifecycle_ns": 19057209,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 8,
+          "store_allocated_bytes": 221184,
+          "supplied_bytes": 1
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 197502,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66498,
+          "commit_full_selected": 2,
+          "commit_id": "127c1cbadc17d7e4ed11b7df307610877b1104696eaf1c3ab94771c13935967dd0",
+          "commit_ns": 4085709,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6066750,
+          "edit_ns": 1981041,
+          "file_root": "2c1517c15e6030fd8f23c28354ccee157285c60c4b6d41205d35d3afe731edbe",
+          "host_lifetime_peak_rss_bytes": 14319616,
+          "host_system_cpu_ns": 3413417,
+          "host_user_cpu_ns": 1884875,
+          "kind": "transition-step",
+          "lifecycle_ns": 19127875,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 9,
+          "store_allocated_bytes": 221184,
+          "supplied_bytes": 1
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 71831552,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 0,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 2,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "shrink-16m",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/performance-1/r2-shrink-16m/host-runtime",
+        "99b3c3a6a0a3106ca580abec5de3fcf1062bd562c9204bd98659c15b8a765418",
+        "shrink-16m",
+        "performance"
+      ],
+      "command_wall_ns": 651032791,
+      "complete_wall_ns": 1351234458,
+      "container": {
+        "id": "99b3c3a6a0a3106ca580abec5de3fcf1062bd562c9204bd98659c15b8a765418",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "54773"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "performance",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "shrink-16m",
+          "fixture_sha256": "ace7a450f65687f0874aca3a6d17447b21724e53a783339a430b008aef17f7a3",
+          "init_ns": 51365125,
+          "initial_bytes": 16777216,
+          "initial_file_root": "ab142ffbcdc62a82405614473c5a97fa71c716f17509433e63b85ca9291ad390",
+          "kind": "transition-setup",
+          "mode": "performance"
+        },
+        {
+          "after_bytes": 81920,
+          "before_bytes": 16777216,
+          "case": "shrink-16m",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 11796,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 104841,
+          "commit_full_selected": 4,
+          "commit_id": "12c4da4ba2b0a25ee72aa171a956b2a4c9e4a82736f5c014b5305a2ea46888bb48",
+          "commit_ns": 6064500,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 7889084,
+          "edit_ns": 1824584,
+          "file_root": "4f7a9b03a7cc60304bdbbc1fcb76a9f9f990eae32ec7cad4bb798b7ef61a64b4",
+          "host_lifetime_peak_rss_bytes": 76759040,
+          "host_system_cpu_ns": 4466375,
+          "host_user_cpu_ns": 2493500,
+          "kind": "transition-step",
+          "lifecycle_ns": 24031417,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 82255,
+          "step": 0,
+          "store_allocated_bytes": 17145856,
+          "supplied_bytes": 0
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 5414912,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 0,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 2,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "shrink-1m",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/performance-1/r2-shrink-1m/host-runtime",
+        "e1aecdd4fe97378cc30db418fca51b633e2f7e59053a077b07afec057b4caa02",
+        "shrink-1m",
+        "performance"
+      ],
+      "command_wall_ns": 555312292,
+      "complete_wall_ns": 1206498334,
+      "container": {
+        "id": "e1aecdd4fe97378cc30db418fca51b633e2f7e59053a077b07afec057b4caa02",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "54784"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "performance",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "shrink-1m",
+          "fixture_sha256": "0d8801271ec551ff9dd856ffcd7b9f45baf38a17005eeb572630c9abe925bc31",
+          "init_ns": 6895875,
+          "initial_bytes": 1048576,
+          "initial_file_root": "2a5f08ebc55f73ba882189874a5239e2437adb69d24d034363b589d1d8b5c3a5",
+          "kind": "transition-setup",
+          "mode": "performance"
+        },
+        {
+          "after_bytes": 81920,
+          "before_bytes": 1048576,
+          "case": "shrink-1m",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 4438,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 96624,
+          "commit_full_selected": 4,
+          "commit_id": "1273c2c5648b908e91cfc0ae6c9f7d5208356c28ace055c3fcd490c6ab3077cc86",
+          "commit_ns": 6409792,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 8016042,
+          "edit_ns": 1606250,
+          "file_root": "4f7a9b03a7cc60304bdbbc1fcb76a9f9f990eae32ec7cad4bb798b7ef61a64b4",
+          "host_lifetime_peak_rss_bytes": 21397504,
+          "host_system_cpu_ns": 4353083,
+          "host_user_cpu_ns": 2507625,
+          "kind": "transition-step",
+          "lifecycle_ns": 24146333,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 82255,
+          "step": 0,
+          "store_allocated_bytes": 1220608,
+          "supplied_bytes": 0
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 4902912,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 0,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 2,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "batched-crossings",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/performance-1/r2-batched-crossings/host-runtime",
+        "0a0eceffb8408c1c001583eecffb8359d7877c3b53c0b9b2688eb9613a706bad",
+        "batched-crossings",
+        "performance"
+      ],
+      "command_wall_ns": 495680708,
+      "complete_wall_ns": 1141546959,
+      "container": {
+        "id": "0a0eceffb8408c1c001583eecffb8359d7877c3b53c0b9b2688eb9613a706bad",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "54793"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "performance",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "batched-crossings",
+          "fixture_sha256": "861cc846879eb6a184e294e7c86196f71e377360a0da40fbf85556b1ce8c5ad6",
+          "init_ns": 4092250,
+          "initial_bytes": 130048,
+          "initial_file_root": "55d695ad6e1b6208fa168b43f00a0790ddf9419f4625bfdf041d1bf8ffac38c9",
+          "kind": "transition-setup",
+          "mode": "performance"
+        },
+        {
+          "after_bytes": 122880,
+          "before_bytes": 130048,
+          "case": "batched-crossings",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 130892,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 130886,
+          "commit_full_selected": 2,
+          "commit_id": "12d6659ff4157c7ac9bab9c91a4904a06bf2c85a589d8b48fbecaaf20087c8d3fa",
+          "commit_ns": 6378292,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 12639000,
+          "edit_ns": 6260708,
+          "file_root": "005be899035cd8d5f4d0b554c97732c36c1aad0ede8059d370e583db8ed481c7",
+          "host_lifetime_peak_rss_bytes": 15007744,
+          "host_system_cpu_ns": 4916083,
+          "host_user_cpu_ns": 2676250,
+          "kind": "transition-step",
+          "lifecycle_ns": 29209166,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 4,
+          "selected_encoded_bytes": 377,
+          "step": 0,
+          "store_allocated_bytes": 217088,
+          "supplied_bytes": 17408
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 4366336,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 0,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 2,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "oscillate",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/performance-1/r2-oscillate/host-runtime",
+        "1f63d2f4d520592b91db1f9c9dae2678b3043ce4a803ddea1e193c3323dfa53c",
+        "oscillate",
+        "performance"
+      ],
+      "command_wall_ns": 656159583,
+      "complete_wall_ns": 1402231000,
+      "container": {
+        "id": "1f63d2f4d520592b91db1f9c9dae2678b3043ce4a803ddea1e193c3323dfa53c",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "54802"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "performance",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "oscillate",
+          "fixture_sha256": "861cc846879eb6a184e294e7c86196f71e377360a0da40fbf85556b1ce8c5ad6",
+          "init_ns": 3620666,
+          "initial_bytes": 130048,
+          "initial_file_root": "55d695ad6e1b6208fa168b43f00a0790ddf9419f4625bfdf041d1bf8ffac38c9",
+          "kind": "transition-setup",
+          "mode": "performance"
+        },
+        {
+          "after_bytes": 132096,
+          "before_bytes": 130048,
+          "case": "oscillate",
+          "cdc_bytes_scanned": 132096,
+          "commit_decoded_read_bytes": 1301,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 1260,
+          "commit_full_selected": 12,
+          "commit_id": "123aeba49d56770cb22704f312d5f7f7054280ad433504687cdf6daf91a1c4f67e",
+          "commit_ns": 6981458,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 9285374,
+          "edit_ns": 2303916,
+          "file_root": "3aebc5b02e819ec634970f8091b3d00b8d3723abccfefff97824f6626bfc293b",
+          "host_lifetime_peak_rss_bytes": 15745024,
+          "host_system_cpu_ns": 4854042,
+          "host_user_cpu_ns": 2506208,
+          "kind": "transition-step",
+          "lifecycle_ns": 25663458,
+          "native_full_count": 8,
+          "native_prefix_count": 0,
+          "representation": "chunked",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 133049,
+          "step": 0,
+          "store_allocated_bytes": 348160,
+          "supplied_bytes": 2048
+        },
+        {
+          "after_bytes": 130048,
+          "before_bytes": 132096,
+          "case": "oscillate",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 133562,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 264813,
+          "commit_full_selected": 0,
+          "commit_id": "1221b4631a0913a41f7b98af5c30d5adaab93a56e5061cd323044bada2d4837aa1",
+          "commit_ns": 4908458,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6730875,
+          "edit_ns": 1822417,
+          "file_root": "55d695ad6e1b6208fa168b43f00a0790ddf9419f4625bfdf041d1bf8ffac38c9",
+          "host_lifetime_peak_rss_bytes": 16007168,
+          "host_system_cpu_ns": 3535292,
+          "host_user_cpu_ns": 1864667,
+          "kind": "transition-step",
+          "lifecycle_ns": 20574500,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": true,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 0,
+          "step": 1,
+          "store_allocated_bytes": 348160,
+          "supplied_bytes": 0
+        },
+        {
+          "after_bytes": 132096,
+          "before_bytes": 130048,
+          "case": "oscillate",
+          "cdc_bytes_scanned": 132096,
+          "commit_decoded_read_bytes": 1618,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 133828,
+          "commit_full_selected": 0,
+          "commit_id": "1229f7cd1af1fbe826aa0fad0f5bdf0fa7c4208f6123701d256fb74742d1e7bf6e",
+          "commit_ns": 4202250,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6277375,
+          "edit_ns": 2075125,
+          "file_root": "3aebc5b02e819ec634970f8091b3d00b8d3723abccfefff97824f6626bfc293b",
+          "host_lifetime_peak_rss_bytes": 16531456,
+          "host_system_cpu_ns": 3672500,
+          "host_user_cpu_ns": 1913666,
+          "kind": "transition-step",
+          "lifecycle_ns": 22864917,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "chunked",
+          "reused_prior_content_root": true,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 0,
+          "step": 2,
+          "store_allocated_bytes": 348160,
+          "supplied_bytes": 2048
+        },
+        {
+          "after_bytes": 130048,
+          "before_bytes": 132096,
+          "case": "oscillate",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 133562,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 264813,
+          "commit_full_selected": 0,
+          "commit_id": "1236ab4172819add491f5eb7673cbd163e83f0582e8644832a6638db11cef227fa",
+          "commit_ns": 4291375,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6297875,
+          "edit_ns": 2006500,
+          "file_root": "55d695ad6e1b6208fa168b43f00a0790ddf9419f4625bfdf041d1bf8ffac38c9",
+          "host_lifetime_peak_rss_bytes": 16580608,
+          "host_system_cpu_ns": 3550791,
+          "host_user_cpu_ns": 1761167,
+          "kind": "transition-step",
+          "lifecycle_ns": 22471833,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": true,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 0,
+          "step": 3,
+          "store_allocated_bytes": 348160,
+          "supplied_bytes": 0
+        },
+        {
+          "after_bytes": 132096,
+          "before_bytes": 130048,
+          "case": "oscillate",
+          "cdc_bytes_scanned": 132096,
+          "commit_decoded_read_bytes": 1618,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 133828,
+          "commit_full_selected": 0,
+          "commit_id": "122dc56c56da46aa416b948e0d7f203da52d1b71ca8e9db8d24258d4a3741f29c4",
+          "commit_ns": 4344209,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6477209,
+          "edit_ns": 2133000,
+          "file_root": "3aebc5b02e819ec634970f8091b3d00b8d3723abccfefff97824f6626bfc293b",
+          "host_lifetime_peak_rss_bytes": 16629760,
+          "host_system_cpu_ns": 3357042,
+          "host_user_cpu_ns": 1894417,
+          "kind": "transition-step",
+          "lifecycle_ns": 22483458,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "chunked",
+          "reused_prior_content_root": true,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 0,
+          "step": 4,
+          "store_allocated_bytes": 348160,
+          "supplied_bytes": 2048
+        },
+        {
+          "after_bytes": 130048,
+          "before_bytes": 132096,
+          "case": "oscillate",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 133562,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 264813,
+          "commit_full_selected": 0,
+          "commit_id": "12a0bea61e0e9ad9878110d81f05c93af8a6f7dc76e322f6bed2ef345c8c4a64a5",
+          "commit_ns": 4467375,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6441292,
+          "edit_ns": 1973917,
+          "file_root": "55d695ad6e1b6208fa168b43f00a0790ddf9419f4625bfdf041d1bf8ffac38c9",
+          "host_lifetime_peak_rss_bytes": 16662528,
+          "host_system_cpu_ns": 3566542,
+          "host_user_cpu_ns": 1807167,
+          "kind": "transition-step",
+          "lifecycle_ns": 22206375,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": true,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 0,
+          "step": 5,
+          "store_allocated_bytes": 348160,
+          "supplied_bytes": 0
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 71786496,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 0,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 2,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "edit-16m",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/performance-1/r2-edit-16m/host-runtime",
+        "08f6957a71d01a9c8bd7a0ac4b684bbfdc74a90510aca79c4704c11ecf904e70",
+        "edit-16m",
+        "performance"
+      ],
+      "command_wall_ns": 656149417,
+      "complete_wall_ns": 1343631334,
+      "container": {
+        "id": "08f6957a71d01a9c8bd7a0ac4b684bbfdc74a90510aca79c4704c11ecf904e70",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "54844"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "performance",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "edit-16m",
+          "fixture_sha256": "ace7a450f65687f0874aca3a6d17447b21724e53a783339a430b008aef17f7a3",
+          "init_ns": 50989584,
+          "initial_bytes": 16777216,
+          "initial_file_root": "ab142ffbcdc62a82405614473c5a97fa71c716f17509433e63b85ca9291ad390",
+          "kind": "transition-setup",
+          "mode": "performance"
+        },
+        {
+          "after_bytes": 16777216,
+          "before_bytes": 16777216,
+          "case": "edit-16m",
+          "cdc_bytes_scanned": 1,
+          "commit_decoded_read_bytes": 38322,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 74953,
+          "commit_full_selected": 9,
+          "commit_id": "12535010e2d8a89ef3c27906ce0a6f35c99ee9901879e4003b91d0d89814bb2caf",
+          "commit_ns": 6399042,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 8215500,
+          "edit_ns": 1816458,
+          "file_root": "c5c77517dfc0d5c998818724614b34e405525214ab28dd5d2e78335ccd55a25f",
+          "host_lifetime_peak_rss_bytes": 76333056,
+          "host_system_cpu_ns": 4396417,
+          "host_user_cpu_ns": 2896000,
+          "kind": "transition-step",
+          "lifecycle_ns": 23496666,
+          "native_full_count": 1,
+          "native_prefix_count": 0,
+          "representation": "chunked",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 14242,
+          "step": 0,
+          "store_allocated_bytes": 17076224,
+          "supplied_bytes": 1
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 5136384,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 0,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 2,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "edit-129k",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/performance-1/r2-edit-129k/host-runtime",
+        "f6046d7e522b176b113d7869fe0b688662525951e4e82ae4bb021e784713407f",
+        "edit-129k",
+        "performance"
+      ],
+      "command_wall_ns": 492350917,
+      "complete_wall_ns": 1190055584,
+      "container": {
+        "id": "f6046d7e522b176b113d7869fe0b688662525951e4e82ae4bb021e784713407f",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "54854"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "performance",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "edit-129k",
+          "fixture_sha256": "aee209a2d6174a8b0c0a234b4b5907ba447c356b72175820648b1bd082a39bbc",
+          "init_ns": 3445542,
+          "initial_bytes": 132096,
+          "initial_file_root": "8fbe2b3cc5ffbc872e6199a44268f7f06d02ae5fd24b9379dc9dd8a551035a64",
+          "kind": "transition-setup",
+          "mode": "performance"
+        },
+        {
+          "after_bytes": 132096,
+          "before_bytes": 132096,
+          "case": "edit-129k",
+          "cdc_bytes_scanned": 1,
+          "commit_decoded_read_bytes": 3158,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 40941,
+          "commit_full_selected": 5,
+          "commit_id": "123dfe0312581fae9566115540079cd01c8ae308b26b8f5e71b8857370db802f1d",
+          "commit_ns": 4411833,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6144833,
+          "edit_ns": 1733000,
+          "file_root": "1bfebeb374ac4597c107e6f6514b2fc12910b06b8d3676d6f6e3f55a9f075867",
+          "host_lifetime_peak_rss_bytes": 13713408,
+          "host_system_cpu_ns": 3806292,
+          "host_user_cpu_ns": 1776833,
+          "kind": "transition-step",
+          "lifecycle_ns": 21779334,
+          "native_full_count": 1,
+          "native_prefix_count": 0,
+          "representation": "chunked",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 824,
+          "step": 0,
+          "store_allocated_bytes": 212992,
+          "supplied_bytes": 1
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 5136384,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 0,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 2,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "edit-128k",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/performance-1/r2-edit-128k/host-runtime",
+        "0bf6bd87e39bdbebccf8cb3dd8645feab21428cd112e6b23f365d07623b8dc2f",
+        "edit-128k",
+        "performance"
+      ],
+      "command_wall_ns": 548638791,
+      "complete_wall_ns": 1240462083,
+      "container": {
+        "id": "0bf6bd87e39bdbebccf8cb3dd8645feab21428cd112e6b23f365d07623b8dc2f",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "54867"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "performance",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "edit-128k",
+          "fixture_sha256": "f1d6a7f32d8aec37205081203af8a7c6de8f05b59f04bf50048487105326d67a",
+          "init_ns": 3249542,
+          "initial_bytes": 131072,
+          "initial_file_root": "8dfb4cde90e7d09c2704345cfe79e98078c7284cf55d66ce527330d59643cb9a",
+          "kind": "transition-setup",
+          "mode": "performance"
+        },
+        {
+          "after_bytes": 131072,
+          "before_bytes": 131072,
+          "case": "edit-128k",
+          "cdc_bytes_scanned": 1,
+          "commit_decoded_read_bytes": 3158,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 40940,
+          "commit_full_selected": 5,
+          "commit_id": "12a2b5973f49c9a6268419e2d9774834825dc4ce33784276b07ad1fd75ca6c0e8e",
+          "commit_ns": 5658417,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 7223375,
+          "edit_ns": 1564958,
+          "file_root": "0fd3cf4714b0e144bbf883c775cdbd99bc05838a437dd0cf498f5f24e3728841",
+          "host_lifetime_peak_rss_bytes": 12943360,
+          "host_system_cpu_ns": 4235250,
+          "host_user_cpu_ns": 2151542,
+          "kind": "transition-step",
+          "lifecycle_ns": 23414875,
+          "native_full_count": 1,
+          "native_prefix_count": 0,
+          "representation": "chunked",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 824,
+          "step": 0,
+          "store_allocated_bytes": 212992,
+          "supplied_bytes": 1
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 4644864,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 0,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 2,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "edit-127k",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/performance-1/r2-edit-127k/host-runtime",
+        "b42bb82e4abaa0bbf43fcde76e19e2732175a34f5cfbb8fe5c6dee416fded5c4",
+        "edit-127k",
+        "performance"
+      ],
+      "command_wall_ns": 546477166,
+      "complete_wall_ns": 1287721584,
+      "container": {
+        "id": "b42bb82e4abaa0bbf43fcde76e19e2732175a34f5cfbb8fe5c6dee416fded5c4",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "54876"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "performance",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "edit-127k",
+          "fixture_sha256": "861cc846879eb6a184e294e7c86196f71e377360a0da40fbf85556b1ce8c5ad6",
+          "init_ns": 3952166,
+          "initial_bytes": 130048,
+          "initial_file_root": "55d695ad6e1b6208fa168b43f00a0790ddf9419f4625bfdf041d1bf8ffac38c9",
+          "kind": "transition-setup",
+          "mode": "performance"
+        },
+        {
+          "after_bytes": 130048,
+          "before_bytes": 130048,
+          "case": "edit-127k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 130892,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 130886,
+          "commit_full_selected": 2,
+          "commit_id": "124ac497557b9ac7f4c452bed6248631c331c2c3a9ede85ae6252faeecad91386d",
+          "commit_ns": 6074167,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 8184917,
+          "edit_ns": 2110750,
+          "file_root": "0c8c142eda7498135e857e8a5416fcf391fb826fea6b01513e19477e1ec41ffd",
+          "host_lifetime_peak_rss_bytes": 14548992,
+          "host_system_cpu_ns": 4546500,
+          "host_user_cpu_ns": 2510000,
+          "kind": "transition-step",
+          "lifecycle_ns": 26174417,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 381,
+          "step": 0,
+          "store_allocated_bytes": 217088,
+          "supplied_bytes": 1
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 5160960,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 0,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 2,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "edit-64k",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/performance-1/r2-edit-64k/host-runtime",
+        "f2cbd5eb6a323d8ff395f66788921476d43cae66b8afc834c79efa24c32e66c8",
+        "edit-64k",
+        "performance"
+      ],
+      "command_wall_ns": 555282000,
+      "complete_wall_ns": 1349590666,
+      "container": {
+        "id": "f2cbd5eb6a323d8ff395f66788921476d43cae66b8afc834c79efa24c32e66c8",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "54887"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "performance",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "edit-64k",
+          "fixture_sha256": "9422dde539df8ebbc56a6f8802be728042d6c85d6fd3615c50fa05b05daccd95",
+          "init_ns": 2913750,
+          "initial_bytes": 65536,
+          "initial_file_root": "4df44c4eb752508b0876de2440ef258968fe43df9111f9fea1e6f3e57f7d047f",
+          "kind": "transition-setup",
+          "mode": "performance"
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "edit-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 66380,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66372,
+          "commit_full_selected": 2,
+          "commit_id": "12fd730ce3845a8ef69b415c4944ffd9ea7eef593bcd347d7c50d557b9103ff532",
+          "commit_ns": 6107417,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 8338750,
+          "edit_ns": 2231333,
+          "file_root": "6caeef4570d7d70283959dc735d419103b6a38c3117ed0c279426ca735714089",
+          "host_lifetime_peak_rss_bytes": 14172160,
+          "host_system_cpu_ns": 4839708,
+          "host_user_cpu_ns": 2339583,
+          "kind": "transition-step",
+          "lifecycle_ns": 26300209,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 0,
+          "store_allocated_bytes": 147456,
+          "supplied_bytes": 1
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 5156864,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 0,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 2,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "edit-64k",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/performance-1/r3-edit-64k/host-runtime",
+        "5500952fd17727e7ded602e069a1c3580ae54ddd0dca8be320afd0f7aa2fa9e6",
+        "edit-64k",
+        "performance"
+      ],
+      "command_wall_ns": 547884375,
+      "complete_wall_ns": 1244444250,
+      "container": {
+        "id": "5500952fd17727e7ded602e069a1c3580ae54ddd0dca8be320afd0f7aa2fa9e6",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "54900"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "performance",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "edit-64k",
+          "fixture_sha256": "9422dde539df8ebbc56a6f8802be728042d6c85d6fd3615c50fa05b05daccd95",
+          "init_ns": 2939959,
+          "initial_bytes": 65536,
+          "initial_file_root": "4df44c4eb752508b0876de2440ef258968fe43df9111f9fea1e6f3e57f7d047f",
+          "kind": "transition-setup",
+          "mode": "performance"
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "edit-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 66380,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66372,
+          "commit_full_selected": 2,
+          "commit_id": "122571abbb1e49655e84a074c50ad6051796b711749a9b528ffd1c77284fcfab57",
+          "commit_ns": 6262833,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 8424208,
+          "edit_ns": 2161375,
+          "file_root": "6caeef4570d7d70283959dc735d419103b6a38c3117ed0c279426ca735714089",
+          "host_lifetime_peak_rss_bytes": 14221312,
+          "host_system_cpu_ns": 4468291,
+          "host_user_cpu_ns": 2253666,
+          "kind": "transition-step",
+          "lifecycle_ns": 25302541,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 0,
+          "store_allocated_bytes": 147456,
+          "supplied_bytes": 1
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 5132288,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 0,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 3,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "edit-127k",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/performance-1/r3-edit-127k/host-runtime",
+        "10a032cb44a08fa0e905b97c127840fc4ae99a200560f2dbaf6aee4bec9b3d7a",
+        "edit-127k",
+        "performance"
+      ],
+      "command_wall_ns": 541510458,
+      "complete_wall_ns": 1293042750,
+      "container": {
+        "id": "10a032cb44a08fa0e905b97c127840fc4ae99a200560f2dbaf6aee4bec9b3d7a",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "54911"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "performance",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "edit-127k",
+          "fixture_sha256": "861cc846879eb6a184e294e7c86196f71e377360a0da40fbf85556b1ce8c5ad6",
+          "init_ns": 3231208,
+          "initial_bytes": 130048,
+          "initial_file_root": "55d695ad6e1b6208fa168b43f00a0790ddf9419f4625bfdf041d1bf8ffac38c9",
+          "kind": "transition-setup",
+          "mode": "performance"
+        },
+        {
+          "after_bytes": 130048,
+          "before_bytes": 130048,
+          "case": "edit-127k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 130892,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 130886,
+          "commit_full_selected": 2,
+          "commit_id": "12928c4ab9e19d4315f1b1a2aa6ba18ccdc47c8441a8cd2e4ae938857823e27ac2",
+          "commit_ns": 6208333,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 8311666,
+          "edit_ns": 2103333,
+          "file_root": "0c8c142eda7498135e857e8a5416fcf391fb826fea6b01513e19477e1ec41ffd",
+          "host_lifetime_peak_rss_bytes": 14352384,
+          "host_system_cpu_ns": 4459083,
+          "host_user_cpu_ns": 2463958,
+          "kind": "transition-step",
+          "lifecycle_ns": 24275875,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 381,
+          "step": 0,
+          "store_allocated_bytes": 217088,
+          "supplied_bytes": 1
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 4644864,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 0,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 3,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "edit-128k",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/performance-1/r3-edit-128k/host-runtime",
+        "9c93cd4cf7caa6a85d064a3f3b60185d2d3165760d3e0be8600dbe55a94f277f",
+        "edit-128k",
+        "performance"
+      ],
+      "command_wall_ns": 548035000,
+      "complete_wall_ns": 1295486791,
+      "container": {
+        "id": "9c93cd4cf7caa6a85d064a3f3b60185d2d3165760d3e0be8600dbe55a94f277f",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "54920"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "performance",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "edit-128k",
+          "fixture_sha256": "f1d6a7f32d8aec37205081203af8a7c6de8f05b59f04bf50048487105326d67a",
+          "init_ns": 2697209,
+          "initial_bytes": 131072,
+          "initial_file_root": "8dfb4cde90e7d09c2704345cfe79e98078c7284cf55d66ce527330d59643cb9a",
+          "kind": "transition-setup",
+          "mode": "performance"
+        },
+        {
+          "after_bytes": 131072,
+          "before_bytes": 131072,
+          "case": "edit-128k",
+          "cdc_bytes_scanned": 1,
+          "commit_decoded_read_bytes": 3158,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 40941,
+          "commit_full_selected": 5,
+          "commit_id": "123aa087893171885dfd77303e4f19db7ee26dd5e358143642b7b17790f8432509",
+          "commit_ns": 4958792,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6699000,
+          "edit_ns": 1740208,
+          "file_root": "0fd3cf4714b0e144bbf883c775cdbd99bc05838a437dd0cf498f5f24e3728841",
+          "host_lifetime_peak_rss_bytes": 12697600,
+          "host_system_cpu_ns": 3824750,
+          "host_user_cpu_ns": 1951417,
+          "kind": "transition-step",
+          "lifecycle_ns": 24389625,
+          "native_full_count": 1,
+          "native_prefix_count": 0,
+          "representation": "chunked",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 824,
+          "step": 0,
+          "store_allocated_bytes": 212992,
+          "supplied_bytes": 1
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 4874240,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 0,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 3,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "edit-129k",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/performance-1/r3-edit-129k/host-runtime",
+        "48b8ca92ea4816f3e685cafe13cacafb06dac59d60473e352fa4ca4c1132c6f3",
+        "edit-129k",
+        "performance"
+      ],
+      "command_wall_ns": 496651708,
+      "complete_wall_ns": 1222262708,
+      "container": {
+        "id": "48b8ca92ea4816f3e685cafe13cacafb06dac59d60473e352fa4ca4c1132c6f3",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "54930"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "performance",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "edit-129k",
+          "fixture_sha256": "aee209a2d6174a8b0c0a234b4b5907ba447c356b72175820648b1bd082a39bbc",
+          "init_ns": 3226334,
+          "initial_bytes": 132096,
+          "initial_file_root": "8fbe2b3cc5ffbc872e6199a44268f7f06d02ae5fd24b9379dc9dd8a551035a64",
+          "kind": "transition-setup",
+          "mode": "performance"
+        },
+        {
+          "after_bytes": 132096,
+          "before_bytes": 132096,
+          "case": "edit-129k",
+          "cdc_bytes_scanned": 1,
+          "commit_decoded_read_bytes": 3158,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 40941,
+          "commit_full_selected": 5,
+          "commit_id": "12c3f9d354b6675065e2bdb24412e8745a1dccfc0b5336ff379c820b56428fd31b",
+          "commit_ns": 5371459,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 7066668,
+          "edit_ns": 1695209,
+          "file_root": "1bfebeb374ac4597c107e6f6514b2fc12910b06b8d3676d6f6e3f55a9f075867",
+          "host_lifetime_peak_rss_bytes": 12713984,
+          "host_system_cpu_ns": 3817208,
+          "host_user_cpu_ns": 1922917,
+          "kind": "transition-step",
+          "lifecycle_ns": 21340458,
+          "native_full_count": 1,
+          "native_prefix_count": 0,
+          "representation": "chunked",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 824,
+          "step": 0,
+          "store_allocated_bytes": 212992,
+          "supplied_bytes": 1
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 5132288,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 0,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 3,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "edit-16m",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/performance-1/r3-edit-16m/host-runtime",
+        "bcac4969c0e4628baa4ffb9d34427fa7d373e70d812b26fe93afdb5672847ab3",
+        "edit-16m",
+        "performance"
+      ],
+      "command_wall_ns": 650710834,
+      "complete_wall_ns": 1393628250,
+      "container": {
+        "id": "bcac4969c0e4628baa4ffb9d34427fa7d373e70d812b26fe93afdb5672847ab3",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "54941"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "performance",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "edit-16m",
+          "fixture_sha256": "ace7a450f65687f0874aca3a6d17447b21724e53a783339a430b008aef17f7a3",
+          "init_ns": 52628000,
+          "initial_bytes": 16777216,
+          "initial_file_root": "ab142ffbcdc62a82405614473c5a97fa71c716f17509433e63b85ca9291ad390",
+          "kind": "transition-setup",
+          "mode": "performance"
+        },
+        {
+          "after_bytes": 16777216,
+          "before_bytes": 16777216,
+          "case": "edit-16m",
+          "cdc_bytes_scanned": 1,
+          "commit_decoded_read_bytes": 38322,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 74952,
+          "commit_full_selected": 9,
+          "commit_id": "129aa5d2d39d98599d18725ced622b597bd884e2f849d6c6e58d257b6ae9a402e0",
+          "commit_ns": 5433167,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 7246542,
+          "edit_ns": 1813375,
+          "file_root": "c5c77517dfc0d5c998818724614b34e405525214ab28dd5d2e78335ccd55a25f",
+          "host_lifetime_peak_rss_bytes": 76447744,
+          "host_system_cpu_ns": 4163500,
+          "host_user_cpu_ns": 2535875,
+          "kind": "transition-step",
+          "lifecycle_ns": 21891750,
+          "native_full_count": 1,
+          "native_prefix_count": 0,
+          "representation": "chunked",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 14241,
+          "step": 0,
+          "store_allocated_bytes": 17080320,
+          "supplied_bytes": 1
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 4907008,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 0,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 3,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "oscillate",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/performance-1/r3-oscillate/host-runtime",
+        "27024a751e208ab8958292b914263ff50452a9fd2412e3724d6119bf0b1fcb63",
+        "oscillate",
+        "performance"
+      ],
+      "command_wall_ns": 588051792,
+      "complete_wall_ns": 1276041917,
+      "container": {
+        "id": "27024a751e208ab8958292b914263ff50452a9fd2412e3724d6119bf0b1fcb63",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "54954"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "performance",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "oscillate",
+          "fixture_sha256": "861cc846879eb6a184e294e7c86196f71e377360a0da40fbf85556b1ce8c5ad6",
+          "init_ns": 3414292,
+          "initial_bytes": 130048,
+          "initial_file_root": "55d695ad6e1b6208fa168b43f00a0790ddf9419f4625bfdf041d1bf8ffac38c9",
+          "kind": "transition-setup",
+          "mode": "performance"
+        },
+        {
+          "after_bytes": 132096,
+          "before_bytes": 130048,
+          "case": "oscillate",
+          "cdc_bytes_scanned": 132096,
+          "commit_decoded_read_bytes": 1301,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 1260,
+          "commit_full_selected": 12,
+          "commit_id": "125a399303a0b18b1e7e6cbc8e69ba626a19ccf16c895d3f8164ba9f344d8fb6eb",
+          "commit_ns": 5841875,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 7472042,
+          "edit_ns": 1630167,
+          "file_root": "3aebc5b02e819ec634970f8091b3d00b8d3723abccfefff97824f6626bfc293b",
+          "host_lifetime_peak_rss_bytes": 15220736,
+          "host_system_cpu_ns": 4344167,
+          "host_user_cpu_ns": 2342708,
+          "kind": "transition-step",
+          "lifecycle_ns": 22753958,
+          "native_full_count": 8,
+          "native_prefix_count": 0,
+          "representation": "chunked",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 133049,
+          "step": 0,
+          "store_allocated_bytes": 348160,
+          "supplied_bytes": 2048
+        },
+        {
+          "after_bytes": 130048,
+          "before_bytes": 132096,
+          "case": "oscillate",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 133562,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 264813,
+          "commit_full_selected": 0,
+          "commit_id": "1284180155f0e3d5598cb68560b37e952633ec41215b899d8074bf7c266da02677",
+          "commit_ns": 5338334,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 8022001,
+          "edit_ns": 2683667,
+          "file_root": "55d695ad6e1b6208fa168b43f00a0790ddf9419f4625bfdf041d1bf8ffac38c9",
+          "host_lifetime_peak_rss_bytes": 15466496,
+          "host_system_cpu_ns": 4422666,
+          "host_user_cpu_ns": 1839375,
+          "kind": "transition-step",
+          "lifecycle_ns": 18585292,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": true,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 0,
+          "step": 1,
+          "store_allocated_bytes": 348160,
+          "supplied_bytes": 0
+        },
+        {
+          "after_bytes": 132096,
+          "before_bytes": 130048,
+          "case": "oscillate",
+          "cdc_bytes_scanned": 132096,
+          "commit_decoded_read_bytes": 1618,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 133828,
+          "commit_full_selected": 0,
+          "commit_id": "1224447ad8b98dadb48474b01eb13c33bebd5195f61c2be9ba866232d30222cc72",
+          "commit_ns": 4031000,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 5867083,
+          "edit_ns": 1836083,
+          "file_root": "3aebc5b02e819ec634970f8091b3d00b8d3723abccfefff97824f6626bfc293b",
+          "host_lifetime_peak_rss_bytes": 15941632,
+          "host_system_cpu_ns": 3363791,
+          "host_user_cpu_ns": 1774375,
+          "kind": "transition-step",
+          "lifecycle_ns": 20763875,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "chunked",
+          "reused_prior_content_root": true,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 0,
+          "step": 2,
+          "store_allocated_bytes": 348160,
+          "supplied_bytes": 2048
+        },
+        {
+          "after_bytes": 130048,
+          "before_bytes": 132096,
+          "case": "oscillate",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 133562,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 264813,
+          "commit_full_selected": 0,
+          "commit_id": "126b6f3ea8f161d2ae04b416a07ab7ffd8e909d77d09dba6acc1ea11c1eb617841",
+          "commit_ns": 4040833,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 5737917,
+          "edit_ns": 1697084,
+          "file_root": "55d695ad6e1b6208fa168b43f00a0790ddf9419f4625bfdf041d1bf8ffac38c9",
+          "host_lifetime_peak_rss_bytes": 16056320,
+          "host_system_cpu_ns": 3423000,
+          "host_user_cpu_ns": 1719375,
+          "kind": "transition-step",
+          "lifecycle_ns": 20556625,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": true,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 0,
+          "step": 3,
+          "store_allocated_bytes": 348160,
+          "supplied_bytes": 0
+        },
+        {
+          "after_bytes": 132096,
+          "before_bytes": 130048,
+          "case": "oscillate",
+          "cdc_bytes_scanned": 132096,
+          "commit_decoded_read_bytes": 1618,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 133828,
+          "commit_full_selected": 0,
+          "commit_id": "12fa0680a7c508fda16866107da5b2b912150409a04a73ec142e2855f373d3f1f3",
+          "commit_ns": 4245750,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6413833,
+          "edit_ns": 2168083,
+          "file_root": "3aebc5b02e819ec634970f8091b3d00b8d3723abccfefff97824f6626bfc293b",
+          "host_lifetime_peak_rss_bytes": 16121856,
+          "host_system_cpu_ns": 3760875,
+          "host_user_cpu_ns": 1956042,
+          "kind": "transition-step",
+          "lifecycle_ns": 21361042,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "chunked",
+          "reused_prior_content_root": true,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 0,
+          "step": 4,
+          "store_allocated_bytes": 348160,
+          "supplied_bytes": 2048
+        },
+        {
+          "after_bytes": 130048,
+          "before_bytes": 132096,
+          "case": "oscillate",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 133562,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 264813,
+          "commit_full_selected": 0,
+          "commit_id": "123461e79d30ca929a12f1f638dda62bbf024dff6e736e301a6eac75cb565cc2e1",
+          "commit_ns": 4187500,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6019125,
+          "edit_ns": 1831625,
+          "file_root": "55d695ad6e1b6208fa168b43f00a0790ddf9419f4625bfdf041d1bf8ffac38c9",
+          "host_lifetime_peak_rss_bytes": 16154624,
+          "host_system_cpu_ns": 3312375,
+          "host_user_cpu_ns": 1728125,
+          "kind": "transition-step",
+          "lifecycle_ns": 20329042,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": true,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 0,
+          "step": 5,
+          "store_allocated_bytes": 348160,
+          "supplied_bytes": 0
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 71766016,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 0,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 3,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "batched-crossings",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/performance-1/r3-batched-crossings/host-runtime",
+        "f7998a720e0cedcd78bc872d2ffa9e164d6295f68a4d6c8a108e9fab9af636a7",
+        "batched-crossings",
+        "performance"
+      ],
+      "command_wall_ns": 484975708,
+      "complete_wall_ns": 1181478375,
+      "container": {
+        "id": "f7998a720e0cedcd78bc872d2ffa9e164d6295f68a4d6c8a108e9fab9af636a7",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "54995"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "performance",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "batched-crossings",
+          "fixture_sha256": "861cc846879eb6a184e294e7c86196f71e377360a0da40fbf85556b1ce8c5ad6",
+          "init_ns": 3389375,
+          "initial_bytes": 130048,
+          "initial_file_root": "55d695ad6e1b6208fa168b43f00a0790ddf9419f4625bfdf041d1bf8ffac38c9",
+          "kind": "transition-setup",
+          "mode": "performance"
+        },
+        {
+          "after_bytes": 122880,
+          "before_bytes": 130048,
+          "case": "batched-crossings",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 130892,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 130886,
+          "commit_full_selected": 2,
+          "commit_id": "12bd2a519d501fb7ae56248ae714cb84606015b5f0ea1e32bce9df843f15debbc8",
+          "commit_ns": 5067458,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 11506291,
+          "edit_ns": 6438833,
+          "file_root": "005be899035cd8d5f4d0b554c97732c36c1aad0ede8059d370e583db8ed481c7",
+          "host_lifetime_peak_rss_bytes": 14745600,
+          "host_system_cpu_ns": 4826084,
+          "host_user_cpu_ns": 2397625,
+          "kind": "transition-step",
+          "lifecycle_ns": 26131791,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 4,
+          "selected_encoded_bytes": 377,
+          "step": 0,
+          "store_allocated_bytes": 217088,
+          "supplied_bytes": 17408
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 4644864,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 0,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 3,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "shrink-1m",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/performance-1/r3-shrink-1m/host-runtime",
+        "d746eb026bd5f546353b5a671729d522ddf22583fba1d3ecdf5dd8186d102523",
+        "shrink-1m",
+        "performance"
+      ],
+      "command_wall_ns": 484410250,
+      "complete_wall_ns": 1176877875,
+      "container": {
+        "id": "d746eb026bd5f546353b5a671729d522ddf22583fba1d3ecdf5dd8186d102523",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "55004"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "performance",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "shrink-1m",
+          "fixture_sha256": "0d8801271ec551ff9dd856ffcd7b9f45baf38a17005eeb572630c9abe925bc31",
+          "init_ns": 7042208,
+          "initial_bytes": 1048576,
+          "initial_file_root": "2a5f08ebc55f73ba882189874a5239e2437adb69d24d034363b589d1d8b5c3a5",
+          "kind": "transition-setup",
+          "mode": "performance"
+        },
+        {
+          "after_bytes": 81920,
+          "before_bytes": 1048576,
+          "case": "shrink-1m",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 4438,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 96624,
+          "commit_full_selected": 4,
+          "commit_id": "1269cdca8e299c49130a60fa2e2b7e5ea8e0561b9b80e02c5bad49545acb5b814f",
+          "commit_ns": 5940125,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 7676500,
+          "edit_ns": 1736375,
+          "file_root": "4f7a9b03a7cc60304bdbbc1fcb76a9f9f990eae32ec7cad4bb798b7ef61a64b4",
+          "host_lifetime_peak_rss_bytes": 20119552,
+          "host_system_cpu_ns": 4363166,
+          "host_user_cpu_ns": 2368792,
+          "kind": "transition-step",
+          "lifecycle_ns": 22539209,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 82255,
+          "step": 0,
+          "store_allocated_bytes": 1220608,
+          "supplied_bytes": 0
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 4866048,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 0,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 3,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "shrink-16m",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/performance-1/r3-shrink-16m/host-runtime",
+        "82e5fb20e7cf808f1ccc8aaa48ad24ba612e8d576aeadbeb0276fc5585cccb66",
+        "shrink-16m",
+        "performance"
+      ],
+      "command_wall_ns": 641824583,
+      "complete_wall_ns": 1335368833,
+      "container": {
+        "id": "82e5fb20e7cf808f1ccc8aaa48ad24ba612e8d576aeadbeb0276fc5585cccb66",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "55013"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "performance",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "shrink-16m",
+          "fixture_sha256": "ace7a450f65687f0874aca3a6d17447b21724e53a783339a430b008aef17f7a3",
+          "init_ns": 48751875,
+          "initial_bytes": 16777216,
+          "initial_file_root": "ab142ffbcdc62a82405614473c5a97fa71c716f17509433e63b85ca9291ad390",
+          "kind": "transition-setup",
+          "mode": "performance"
+        },
+        {
+          "after_bytes": 81920,
+          "before_bytes": 16777216,
+          "case": "shrink-16m",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 11796,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 104841,
+          "commit_full_selected": 4,
+          "commit_id": "12089585012e98599ba6132db92add794def79d7bf05e0c54e169c00bacbe6d387",
+          "commit_ns": 6161042,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 8870667,
+          "edit_ns": 2709625,
+          "file_root": "4f7a9b03a7cc60304bdbbc1fcb76a9f9f990eae32ec7cad4bb798b7ef61a64b4",
+          "host_lifetime_peak_rss_bytes": 76546048,
+          "host_system_cpu_ns": 4879500,
+          "host_user_cpu_ns": 2458000,
+          "kind": "transition-step",
+          "lifecycle_ns": 25324709,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 82255,
+          "step": 0,
+          "store_allocated_bytes": 17145856,
+          "supplied_bytes": 0
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 4870144,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 0,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 3,
+      "status": "PASS",
+      "timed_out": false
+    },
+    {
+      "admission_eligible": false,
+      "case": "chain-64k",
+      "cleanup_status": "PASS",
+      "command": [
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/target/release/fs-benchmark-pro",
+        "transition-experiment",
+        "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/transition-experiments/performance-1/r3-chain-64k/host-runtime",
+        "8e96d40589f263ac6a17443f9e3031f49ec8556cd55fa1fb1a8336106dee906d",
+        "chain-64k",
+        "performance"
+      ],
+      "command_wall_ns": 698073792,
+      "complete_wall_ns": 1437641958,
+      "container": {
+        "id": "8e96d40589f263ac6a17443f9e3031f49ec8556cd55fa1fb1a8336106dee906d",
+        "observation": {
+          "host_config": {
+            "Binds": null,
+            "CapAdd": [
+              "CAP_SYS_ADMIN"
+            ],
+            "Devices": [
+              {
+                "CgroupPermissions": "rwm",
+                "PathInContainer": "/dev/fuse",
+                "PathOnHost": "/dev/fuse"
+              }
+            ],
+            "Memory": 2147483648,
+            "MemorySwap": 2147483648,
+            "Mounts": null,
+            "NanoCpus": 2000000000,
+            "NetworkMode": "bridge",
+            "PidsLimit": 256,
+            "PortBindings": {
+              "41273/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": ""
+                }
+              ]
+            }
+          },
+          "image_volumes": null,
+          "mounts": [],
+          "ports": {
+            "41273/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "55022"
+              }
+            ]
+          },
+          "validated": true
+        }
+      },
+      "exit_code": 0,
+      "mode": "performance",
+      "records": [
+        {
+          "admission_eligible": false,
+          "case": "chain-64k",
+          "fixture_sha256": "9422dde539df8ebbc56a6f8802be728042d6c85d6fd3615c50fa05b05daccd95",
+          "init_ns": 2667917,
+          "initial_bytes": 65536,
+          "initial_file_root": "4df44c4eb752508b0876de2440ef258968fe43df9111f9fea1e6f3e57f7d047f",
+          "kind": "transition-setup",
+          "mode": "performance"
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 66380,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66372,
+          "commit_full_selected": 2,
+          "commit_id": "12da9373290cf4b46f81ae1556db22f09c2e13abd26f54fd8b0cba1ebdf42bed01",
+          "commit_ns": 4622125,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6724458,
+          "edit_ns": 2102333,
+          "file_root": "6caeef4570d7d70283959dc735d419103b6a38c3117ed0c279426ca735714089",
+          "host_lifetime_peak_rss_bytes": 13942784,
+          "host_system_cpu_ns": 4301875,
+          "host_user_cpu_ns": 2029375,
+          "kind": "transition-step",
+          "lifecycle_ns": 22126541,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 0,
+          "store_allocated_bytes": 147456,
+          "supplied_bytes": 1
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 131943,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66437,
+          "commit_full_selected": 2,
+          "commit_id": "12a27118ad770882a1c142ad55ce6f2d0d99c4f2081d7a01bcf9d8ef9da4a40709",
+          "commit_ns": 3754209,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 5639459,
+          "edit_ns": 1885250,
+          "file_root": "4992941b74030ab24c3ada7e1bf5e75e414f34c0313ab25af2d041cf15163858",
+          "host_lifetime_peak_rss_bytes": 14123008,
+          "host_system_cpu_ns": 3199500,
+          "host_user_cpu_ns": 1697709,
+          "kind": "transition-step",
+          "lifecycle_ns": 16601042,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 1,
+          "store_allocated_bytes": 147456,
+          "supplied_bytes": 1
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 197502,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66498,
+          "commit_full_selected": 2,
+          "commit_id": "12c94f7e75310dd6d5dad5907e381641c79670b135ff05132bd60ce75d074b001c",
+          "commit_ns": 4104333,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 5990833,
+          "edit_ns": 1886500,
+          "file_root": "289a5c19c6d7c339f02807d651f25a1c08eded5ef5bc32fc9d887cc60790c97a",
+          "host_lifetime_peak_rss_bytes": 14319616,
+          "host_system_cpu_ns": 3053166,
+          "host_user_cpu_ns": 1862750,
+          "kind": "transition-step",
+          "lifecycle_ns": 20237083,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 2,
+          "store_allocated_bytes": 147456,
+          "supplied_bytes": 1
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 263061,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66559,
+          "commit_full_selected": 2,
+          "commit_id": "12fbcb3501b560231305769e5e68de152d0e42083c2ed186eed0ffb356f1962612",
+          "commit_ns": 3962625,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 5880667,
+          "edit_ns": 1918042,
+          "file_root": "53ebfb085d438ec01d187c4d04125fc550832ab6116f45cafeb24670fcfc52eb",
+          "host_lifetime_peak_rss_bytes": 14368768,
+          "host_system_cpu_ns": 3154083,
+          "host_user_cpu_ns": 1968542,
+          "kind": "transition-step",
+          "lifecycle_ns": 20027292,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 3,
+          "store_allocated_bytes": 147456,
+          "supplied_bytes": 1
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 328620,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66620,
+          "commit_full_selected": 2,
+          "commit_id": "12929ded36a9985b7211d40d42fc01236fc72b0c644d6973e687e32b38bef89d59",
+          "commit_ns": 4291625,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6588791,
+          "edit_ns": 2297166,
+          "file_root": "024e639fc743b6861af9307679c1c7c39c5569e6634a4be9648404f8a3bbfb09",
+          "host_lifetime_peak_rss_bytes": 14434304,
+          "host_system_cpu_ns": 3267500,
+          "host_user_cpu_ns": 2108500,
+          "kind": "transition-step",
+          "lifecycle_ns": 21084500,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 4,
+          "store_allocated_bytes": 155648,
+          "supplied_bytes": 1
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 394179,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66681,
+          "commit_full_selected": 2,
+          "commit_id": "1287609701e6f73aa38e91aff6f728cad9f21b34d732a3cf00b42862236c2f9b2f",
+          "commit_ns": 4422458,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6466958,
+          "edit_ns": 2044500,
+          "file_root": "8ffb70d191631ba8c1407aed985923522304f35873cf533ec5254f5967a89720",
+          "host_lifetime_peak_rss_bytes": 14778368,
+          "host_system_cpu_ns": 3499792,
+          "host_user_cpu_ns": 2269833,
+          "kind": "transition-step",
+          "lifecycle_ns": 21097459,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 5,
+          "store_allocated_bytes": 155648,
+          "supplied_bytes": 1
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 459738,
+          "commit_delta_selected": 0,
+          "commit_encoded_read_bytes": 66742,
+          "commit_full_selected": 4,
+          "commit_id": "1295a3778c39d1a59a160990e20db370343d0630cd775e579fe3a52508a76ceb60",
+          "commit_ns": 4534625,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6570416,
+          "edit_ns": 2035791,
+          "file_root": "5827e5a0b423c374bf32b90c32f130534efd8683befa05b4973815386f54aa01",
+          "host_lifetime_peak_rss_bytes": 14876672,
+          "host_system_cpu_ns": 3097208,
+          "host_user_cpu_ns": 2438416,
+          "kind": "transition-step",
+          "lifecycle_ns": 19000375,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 65869,
+          "step": 6,
+          "store_allocated_bytes": 221184,
+          "supplied_bytes": 1
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 66384,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66376,
+          "commit_full_selected": 2,
+          "commit_id": "12b3637874e0a5ac9a671ea8c3bd0a0990a1bd4d527e723098da54c5dee17feaad",
+          "commit_ns": 3864208,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 5746958,
+          "edit_ns": 1882750,
+          "file_root": "d8805ffbf3ebf043d3c5ef9aedac87bc53ac419802ef0460d7e346a190478cf2",
+          "host_lifetime_peak_rss_bytes": 14974976,
+          "host_system_cpu_ns": 3293250,
+          "host_user_cpu_ns": 1610125,
+          "kind": "transition-step",
+          "lifecycle_ns": 18542375,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 7,
+          "store_allocated_bytes": 221184,
+          "supplied_bytes": 1
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 131943,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66437,
+          "commit_full_selected": 2,
+          "commit_id": "12721ef134e8867de124dd25ae14bd263a36498efb16079d22aba867ac14a08e30",
+          "commit_ns": 3685792,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 5906001,
+          "edit_ns": 2220209,
+          "file_root": "66adc70487fd802d65f44e8ed9466120af6537c5675a5aaf1bf6ae1cc2469743",
+          "host_lifetime_peak_rss_bytes": 15073280,
+          "host_system_cpu_ns": 3328958,
+          "host_user_cpu_ns": 1749250,
+          "kind": "transition-step",
+          "lifecycle_ns": 18529667,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 8,
+          "store_allocated_bytes": 221184,
+          "supplied_bytes": 1
+        },
+        {
+          "after_bytes": 65536,
+          "before_bytes": 65536,
+          "case": "chain-64k",
+          "cdc_bytes_scanned": 0,
+          "commit_decoded_read_bytes": 197502,
+          "commit_delta_selected": 2,
+          "commit_encoded_read_bytes": 66498,
+          "commit_full_selected": 2,
+          "commit_id": "12b9a185d415cb748b464a518a8705b73af5e8b950a1e0267740c98d8a764b1bee",
+          "commit_ns": 4654875,
+          "diagnostic_records": 1,
+          "edit_commit_ns": 6368208,
+          "edit_ns": 1713333,
+          "file_root": "2c1517c15e6030fd8f23c28354ccee157285c60c4b6d41205d35d3afe731edbe",
+          "host_lifetime_peak_rss_bytes": 17383424,
+          "host_system_cpu_ns": 3484459,
+          "host_user_cpu_ns": 1979417,
+          "kind": "transition-step",
+          "lifecycle_ns": 17995916,
+          "native_full_count": 0,
+          "native_prefix_count": 0,
+          "representation": "small",
+          "reused_prior_content_root": false,
+          "sdk_edit_calls": 1,
+          "selected_encoded_bytes": 379,
+          "step": 9,
+          "store_allocated_bytes": 221184,
+          "supplied_bytes": 1
+        },
+        {
+          "admission_eligible": false,
+          "compactions": 0,
+          "container_peak_memory_bytes": 71348224,
+          "fuse_verified": true,
+          "kind": "transition-complete",
+          "retained_versions_verified": 0,
+          "status": "PASS"
+        }
+      ],
+      "repetition": 3,
+      "status": "PASS",
+      "timed_out": false
+    }
+  ],
+  "status": "PASS"
+}
