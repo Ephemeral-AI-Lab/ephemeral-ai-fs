@@ -12,6 +12,39 @@ import runner
 
 
 class BuildReuseTests(unittest.TestCase):
+    def test_docker_owned_source_refresh_rebuilds_backdated_content(self):
+        dockerfile = (runner.BENCH / 'Dockerfile.layerfs').read_text()
+        refresh = next(line.strip()[3:].removesuffix(' \\') for line in dockerfile.splitlines()
+                       if line.strip().startswith('&& find Cargo.toml Cargo.lock '))
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / 'crates/cache-probe/src/main.rs'
+            source.parent.mkdir(parents=True)
+            (root / 'tools').mkdir()
+            (root / 'benchmark/fs-bench-pro').mkdir(parents=True)
+            (root / 'Cargo.toml').write_text('[workspace]\nmembers=["crates/cache-probe"]\nresolver="2"\n')
+            (source.parent.parent / 'Cargo.toml').write_text(
+                '[package]\nname="cache-probe"\nversion="0.0.0"\nedition="2021"\n')
+            (root / 'Cargo.lock').write_text('version = 4\n\n[[package]]\nname = "cache-probe"\nversion = "0.0.0"\n')
+            source.write_text('fn main() { println!("old"); }\n')
+            stamp = source.stat().st_mtime_ns
+            target = root / 'shared-target'
+            command = ['cargo', '+1.85.1', 'build', '--locked', '--offline', '--target-dir', str(target)]
+            def build():
+                runner.runtime.run(command, cwd=root, deadline=runner.runtime.Deadline.after(30))
+                return runner.runtime.run([str(target / 'debug/cache-probe')],
+                    deadline=runner.runtime.Deadline.after(5)).stdout.strip()
+            self.assertEqual(build(), b'old')
+            source.write_text('fn main() { println!("new"); }\n')
+            os.utime(source, ns=(stamp, stamp))
+            self.assertEqual(build(), b'old', 'reproduce Cargo false-fresh shared-cache boundary')
+            sentinel = target / 'retained-dependency-cache'
+            sentinel.write_bytes(b'preserve')
+            runner.runtime.run(['sh', '-c', refresh], cwd=root,
+                deadline=runner.runtime.Deadline.after(5))
+            self.assertEqual(build(), b'new')
+            self.assertEqual(sentinel.read_bytes(), b'preserve')
+
     def test_host_jobs_are_bounded_and_recorded_in_compatibility(self):
         with patch.dict(os.environ, {}, clear=True), patch.object(os, 'cpu_count', return_value=14):
             self.assertEqual(runner.host_build_jobs(), 8)

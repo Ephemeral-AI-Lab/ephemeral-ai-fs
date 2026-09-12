@@ -21,6 +21,8 @@ COPY tools ./tools
 COPY benchmark/fs-bench-pro/Cargo.toml ./benchmark/fs-bench-pro/Cargo.toml
 COPY benchmark/fs-bench-pro/src ./benchmark/fs-bench-pro/src
 
+# Docker COPY preserves source mtimes, which can predate a shared Cargo target.
+# Refresh owned inputs whenever this RUN executes; registry dependencies stay cached.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,id=layerfs-bench-rust-1.85.1-${TARGETARCH},target=/src/target,sharing=locked \
     case "$CARGO_BUILD_JOBS" in \
@@ -34,6 +36,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
       *) exit 1 ;; \
     esac \
  && rustup target add "$target" \
+ && find Cargo.toml Cargo.lock crates tools benchmark/fs-bench-pro -type f -exec touch {} + \
  && cargo build --locked --release --target "$target" --jobs "$CARGO_BUILD_JOBS" \
       -p layerfs-daemon \
  && cargo build --locked --release --target "$target" --jobs "$CARGO_BUILD_JOBS" \
@@ -63,7 +66,8 @@ FROM build AS runtime-check
 # Explicit component checks; this stage never starts a Store or benchmark.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,id=layerfs-bench-rust-1.85.1-${TARGETARCH},target=/src/target,sharing=locked \
-    cargo test --locked --jobs 2 -p layerfs-daemon --bin layerfs-daemon \
+    find Cargo.toml Cargo.lock crates tools benchmark/fs-bench-pro -type f -exec touch {} + \
+ && cargo test --locked --jobs 2 -p layerfs-daemon --bin layerfs-daemon \
  && cargo check --locked --jobs 2 -p layerfs-workspace --features host-fuse \
  && cargo test --locked --jobs 2 -p layerfs-fuse --features proxy,live \
       --test proxy owned_write_reply_releases_receive_loop_and_completes_once \
