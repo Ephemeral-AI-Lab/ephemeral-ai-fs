@@ -38,6 +38,34 @@ def seal(root):
             for p in sorted(root.rglob("*")) if p.is_file() and not p.is_symlink()}
 
 
+def validate_execution_identity(args, current, host, image):
+    labels=image["Config"]["Labels"]
+    if host["binary_sha256"]!=runtime.file_sha256(args.host_binary):
+        raise ValueError("host binary seal mismatch")
+    for key,label in (("LAYERFS_SOURCE_SEAL","source-seal"),
+                      ("LAYERFS_PRODUCT_SEAL","product-seal"),
+                      ("LAYERFS_COMPILATION_SEAL","compilation-seal")):
+        if not host.get(key) or host[key]!=labels.get("dev.layerfs."+label):
+            raise ValueError("host/image identity mismatch: "+key)
+    if args.source_arm!='baseline' and any(host[key]!=current[key] for key in
+            ("LAYERFS_SOURCE_SEAL","LAYERFS_PRODUCT_SEAL","LAYERFS_COMPILATION_SEAL")):
+        raise ValueError("stale candidate source identity")
+    if host.get('WORKLOAD_SOURCE_SHA256')!=current['WORKLOAD_SOURCE_SHA256']:
+        raise ValueError("historical importer workload identity mismatch")
+    probe=host.get('integrated_format_probe',{})
+    if probe.get('status')!='PASS' or probe.get('storage_policy')!='ordinary' or probe.get('schema_version')!=10:
+        raise ValueError("ordinary schema10 format probe required")
+    # Product provenance belongs to the executable, even with a current Python
+    # orchestrator driving an explicitly selected archived comparator.
+    return {key:host[key] for key in current if key in host}
+
+
+def history_harness_identity():
+    names=('runner.py','runtime.py','storage_smoke.py','integrated_storage.py',
+           'repository_history.py','deepseek_ten.py')
+    return {name:runtime.file_sha256(Path(__file__).parent/name) for name in names}
+
+
 def disk(root):
     apparent = allocated = 0
     for base, dirs, files in os.walk(root):
@@ -467,9 +495,8 @@ def main(argv=None):
         current = runner.source_build_args()
         host_identity = json.loads(Path(args.host_binary+".identity.json").read_text())
         image = runner.image_info(args.image,time.monotonic()+30)
-        labels = image["Config"]["Labels"]
-        if host_identity["binary_sha256"] != runtime.file_sha256(args.host_binary) or host_identity["LAYERFS_SOURCE_SEAL"] != current["LAYERFS_SOURCE_SEAL"] or labels["dev.layerfs.product-seal"] != current["LAYERFS_PRODUCT_SEAL"] or labels["dev.layerfs.source-seal"] != current["LAYERFS_SOURCE_SEAL"]:
-            raise ValueError("stale host/image/source identity")
+        producer=validate_execution_identity(args,current,host_identity,image)
+        harness=history_harness_identity()
         if shutil.disk_usage(args.output.parent if args.output and args.output.parent.exists() else runner.REPO).free < 50*GIB:
             raise RuntimeError("free disk reserve")
         deadline = runtime.Deadline.after(14400 if args.storage_smoke in ("deepseek-full", "deepseek-stride3", "deepseek-stride10") else 600 if args.storage_smoke in ("deepseek-five", "deepseek-ten") else 120)
@@ -486,6 +513,8 @@ def main(argv=None):
             mode = "verification"
         elif args.storage_verify_run:
             saved = json.loads((output/"identity.json").read_text())
+            if saved.get('source_arm','candidate')!=args.source_arm or saved.get('harness',harness)!=harness:
+                raise ValueError('verification source arm/harness mismatch')
             args.storage_compact = saved.get("storage_compact",False)
             if args.storage_compact:
                 profile=integrated_profiles[args.storage_smoke]
@@ -513,7 +542,8 @@ def main(argv=None):
         else:
             output.mkdir(parents=True,exist_ok=False)
             save(output/"identity.json", {"schema":"deepseek-full-issue100-v1" if args.storage_smoke == "deepseek-full" else "storage-smoke-v1","smoke":args.storage_smoke,"family":"small_file_delta_smoke" if args.storage_smoke == "small-file-delta-10x30-v1" else "storage-smoke-v1","source_arm":args.source_arm,"repetition":args.repetition,
-                "host_identity":host_identity,"image_id":image["Id"],"source":current,"fixtures":fixtures,
+                "host_identity":host_identity,"image_id":image["Id"],"source":producer,
+                "orchestrator_source":current,"harness":harness,"fixtures":fixtures,
                 "storage_compact":args.storage_compact,
                 "integrated_contract_sha256":runtime.file_sha256(runner.REPO/integrated_profiles[args.storage_smoke]["contract"]) if args.storage_compact else None,
                 "integrated_scenario":integrated_profiles[args.storage_smoke]["scenario"] if args.storage_compact else None,

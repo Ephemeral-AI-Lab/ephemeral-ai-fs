@@ -21,6 +21,9 @@ PROFILES = {
         'indices': tuple(range(1,158)), 'checkpoint_map': {},
         'access_profile': 'historical-access-full157-integrated-v1', 'case_suffix': '-f157-v1'},
 }
+ORDINARY_FULL = {'contract': 'docs/roadmap/0.1/0.1.5/full157-execution-contract.md',
+    'indices': tuple(range(1,158)), 'checkpoint_map': {},
+    'access_profile': 'historical-access-full157-ordinary-v1', 'case_suffix': '-f157-ordinary-v1'}
 
 
 def save(path, value):
@@ -92,25 +95,90 @@ def smoke(args):
         return 0 if result['status']=='PASS' and result.get('cleanup_status')=='PASS' else 1
 
 
+def access_performance(run, profile):
+    identity=json.loads((run/'identity.json').read_text())
+    folder=run/identity['smoke']
+    performance=json.loads((folder/'performance-result.json').read_text())
+    if json.loads((run/'performance-summary.json').read_text())['status']!='PASS' or performance['status']!='PASS' or performance.get('cleanup_status')!='PASS':
+        raise ValueError('complete history performance and cleanup required')
+    rows=performance['records']; count=len(profile['indices'])
+    if len(rows)!=count or tuple(r['full157_index'] for r in rows)!=profile['indices'] or [r['index'] for r in rows]!=list(range(1,count+1)):
+        raise ValueError('retained checkpoint mapping')
+    if any(r['identity']!=(r['commit_id'] or 'initial') for r in rows):
+        raise ValueError('produced checkpoint identity mismatch')
+    return identity,folder,performance
+
+
+def ordinary_access_profile(identity):
+    if identity.get('storage_compact') is not False or identity['smoke']!='deepseek-full':
+        raise ValueError('ordinary full157 producer required')
+    if identity['full_run_contract_sha256']!=runtime.file_sha256(runner.REPO/ORDINARY_FULL['contract']):
+        raise ValueError('prospective full157 contract changed')
+    return ORDINARY_FULL
+
+
+def freeze_access(run):
+    run=Path(run).resolve()
+    profile=ordinary_access_profile(json.loads((run/'identity.json').read_text()))
+    identity,folder,performance=access_performance(run,profile)
+    if list(run.glob('verification-*')) or list(folder.glob('verification-*')):
+        raise ValueError('freeze measured ordinary Store before verification starts')
+    source=folder/'host-runtime/store.sqlite'
+    measured=json.loads((run/'performance-manifest.json').read_text())
+    expected=measured.get(str(source.relative_to(run)))
+    if not expected or runtime.file_sha256(source)!=expected:
+        raise ValueError('measured ordinary Store changed before freeze')
+    observation=runner.sdk_store_observation(source)
+    archive=folder/'frozen-measured-store'; archive.mkdir()
+    copied=runtime.closed_store_copy(source,archive/'store.sqlite',deadline=runtime.Deadline.after(120))
+    frozen=freeze(archive/'store.sqlite')
+    if frozen['sha256']!=expected: raise ValueError('frozen ordinary Store identity mismatch')
+    save(folder/'access-freeze.json',{'schema':'ordinary-history-access-freeze-v1','status':'PASS',
+        'identity_sha256':runtime.file_sha256(run/'identity.json'),
+        'history_result_sha256':runtime.file_sha256(folder/'performance-result.json'),
+        'performance_manifest_sha256':runtime.file_sha256(run/'performance-manifest.json'),
+        'branch_id':(folder/'host-runtime/branch-id').read_text().strip(),
+        'measured_store':{**observation,'sha256':expected},'frozen_store':frozen,'copy':copied})
+    print(json.dumps({'status':'PASS','store':str(archive/'store.sqlite'),'states':len(performance['records'])}),flush=True)
+    return 0
+
+
 def prepare_access(run, destination, data):
     import hashlib
     run=Path(run).resolve(); destination=Path(destination).resolve(); data=Path(data)
     identity=json.loads((run/'identity.json').read_text())
-    if not identity.get('storage_compact') or identity['smoke'] not in PROFILES: raise ValueError('registered integrated producer required')
-    profile=PROFILES[identity['smoke']]; count=len(profile['indices'])
+    compact=identity.get('storage_compact') is True
+    if compact and identity['smoke'] not in PROFILES: raise ValueError('registered integrated producer required')
+    profile=PROFILES[identity['smoke']] if compact else ordinary_access_profile(identity)
+    identity,folder,performance=access_performance(run,profile); count=len(profile['indices'])
     if json.loads((run/'verification-summary.json').read_text())['status']!='PASS': raise ValueError('complete history verification must finish first')
-    folder=run/identity['smoke']
-    performance=json.loads((folder/'performance-result.json').read_text())
     verification=json.loads((folder/'verification-result.json').read_text())
-    if len(performance['records'])!=count or len(verification['records'])!=count or verification['status']!='PASS': raise ValueError('exact state verification incomplete')
+    if len(verification['records'])!=count or verification['status']!='PASS' or verification.get('cleanup_status')!='PASS': raise ValueError('exact state verification incomplete')
     for observed,produced in zip(verification['records'],performance['records']):
         if observed['status']!='PASS' or observed['index']!=produced['index'] or observed['identity']!=produced['identity']:
             raise ValueError('state verification identity mismatch')
-    if identity['integrated_scenario']!=profile['scenario'] or runtime.file_sha256(runner.REPO/profile['contract'])!=identity['integrated_contract_sha256']:
-        raise ValueError('prospective contract changed')
-    compaction=json.loads((folder/'compaction-result.json').read_text())
     master=folder/'frozen-measured-store/store.sqlite'
-    if compaction['status']!='PASS' or runtime.file_sha256(master)!=compaction['measured_store']['sha256']: raise ValueError('measured frozen image mismatch')
+    if compact:
+        if identity['integrated_scenario']!=profile['scenario'] or runtime.file_sha256(runner.REPO/profile['contract'])!=identity['integrated_contract_sha256']:
+            raise ValueError('prospective contract changed')
+        compaction=json.loads((folder/'compaction-result.json').read_text())
+        if compaction['status']!='PASS' or runtime.file_sha256(master)!=compaction['measured_store']['sha256']: raise ValueError('measured frozen image mismatch')
+        custody={'compaction_result_sha256':runtime.file_sha256(folder/'compaction-result.json')}
+        branch_id=(folder/'host-runtime/branch-id').read_text().strip()
+    else:
+        frozen=json.loads((folder/'access-freeze.json').read_text())
+        bindings={'identity_sha256':run/'identity.json','history_result_sha256':folder/'performance-result.json',
+            'performance_manifest_sha256':run/'performance-manifest.json'}
+        if frozen['status']!='PASS' or any(frozen[key]!=runtime.file_sha256(path) for key,path in bindings.items()):
+            raise ValueError('ordinary access performance custody changed')
+        observed=freeze(master)
+        if any(observed[key]!=frozen['frozen_store'][key] for key in ('sha256','files','allocated_bytes','apparent_bytes')):
+            raise ValueError('measured frozen ordinary Store changed')
+        custody={'access_freeze_sha256':runtime.file_sha256(folder/'access-freeze.json'),
+            'measured_store':frozen['measured_store'],
+            'verification_store':{**runner.sdk_store_observation(folder/'host-runtime/store.sqlite'),
+                'sha256':runtime.file_sha256(folder/'host-runtime/store.sqlite')}}
+        branch_id=frozen['branch_id']
     indexed={r['full157_index']:r for r in performance['records']}
     if tuple(indexed)!=profile['indices'] or [r['index'] for r in performance['records']]!=list(range(1,count+1)): raise ValueError('retained checkpoint mapping')
     template=json.loads((runner.BENCH/'families/historical_access/fixture.json').read_text())
@@ -142,11 +210,11 @@ def prepare_access(run, destination, data):
         cases.append(case)
     fixture={'schema':'historical-access-v2','profile':profile['access_profile'],
         'contract_commit':identity['source']['LAYERFS_SOURCE_COMMIT'],'contract_sha256':runtime.file_sha256(runner.REPO/profile['contract']),
-        'store_sha256':compaction['measured_store']['sha256'],'store':str(master),
-        'branch_id':(folder/'host-runtime/branch-id').read_text().strip(),
+        'store_sha256':runtime.file_sha256(master),'store':str(master),
+        'branch_id':branch_id,
         'history_result_sha256':runtime.file_sha256(folder/'performance-result.json'),
         'verification_result_sha256':runtime.file_sha256(folder/'verification-result.json'),
-        'compaction_result_sha256':runtime.file_sha256(folder/'compaction-result.json'),'cases':cases}
+        **custody,'cases':cases}
     save(destination,fixture)
     print(json.dumps({'fixture':str(destination),'store':str(master),'cases':len(cases),'status':'PASS'}))
     return 0
@@ -157,15 +225,17 @@ def main(argv=None):
     choice=parser.add_mutually_exclusive_group(required=True)
     choice.add_argument('--integration-smoke')
     choice.add_argument('--prepare-access')
+    choice.add_argument('--freeze-access',help='freeze a complete ordinary full157 measured Store before verification')
     parser.add_argument('--output')
     parser.add_argument('--data',default='/Users/yifanxu/Ephemeral-AI-Lab/deepseek-history-data')
     parser.add_argument('--image')
     parser.add_argument('--host-binary',default=str(runner.REPO/'target/release/fs-benchmark-pro'))
     args=parser.parse_args(argv)
-    if args.prepare_access:
-        if not args.output: parser.error('--prepare-access requires --output')
+    if args.prepare_access or args.freeze_access:
+        if args.prepare_access and not args.output: parser.error('--prepare-access requires --output')
         with (Path(os.environ.get('TMPDIR','/tmp'))/'layerfs-infra-measurement.lock').open('a') as lock:
             fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            if args.freeze_access: return freeze_access(args.freeze_access)
             return prepare_access(args.prepare_access,args.output,args.data)
     if not args.image: parser.error('--integration-smoke requires --image')
     return smoke(args)
