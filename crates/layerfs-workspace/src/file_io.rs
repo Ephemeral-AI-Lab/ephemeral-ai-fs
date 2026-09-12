@@ -1515,6 +1515,83 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// #116 RCA: the fact charge counts pieces too, so a cheaper per-file
+    /// representation lowers both budgets. Measures the compact shape's real
+    /// fact charge and the ceiling each budget implies.
+    #[test]
+    #[ignore = "issue116 root-cause probe"]
+    fn issue116_fact_ceiling_probe() {
+        use layerfs_workspace_core::{Data, FileData};
+        fn fact_charge(node: &layerfs_workspace_core::Node) -> u64 {
+            let paths = node.paths.iter().map(|p| 4 + p.len()).sum::<usize>();
+            let (pieces, inline) = match &node.data {
+                Data::File(FileData::Edited { pieces, .. }) => {
+                    (pieces.count(), usize::try_from(pieces.inline_len()).unwrap())
+                }
+                _ => (0, 0),
+            };
+            let bound = 128 + paths + pieces * 49 + inline;
+            ((bound - inline) as u64) * 8 + 1024
+        }
+        let (root, mut ws) = workspace("fact-ceiling");
+        let base = vec![5u8; 49_152];
+        // Shape A: one contiguous write per file.
+        for index in 0..4_000u32 {
+            let name = format!("a{index:06}");
+            let node = ws.create_file(ROOT, name.as_bytes(), 0o600).unwrap().node;
+            ws.write(node, 0, &base).unwrap();
+            if index % 1_000 == 999 {
+                let mut total = 0u64;
+                let mut files = 0u64;
+                let mut pieces = 0u64;
+                for id in ws.live.dirty.iter() {
+                    let Some(node) = ws.live.nodes.get(id) else {
+                        continue;
+                    };
+                    if let Data::File(FileData::Edited { pieces: tree, .. }) = &node.data {
+                        files += 1;
+                        pieces += tree.count() as u64;
+                        total += fact_charge(node);
+                    }
+                }
+                println!(
+                    "RCA FACTCEIL shape=compact files={files} pieces={pieces} fact_charge={total} per_file={} charge={}",
+                    total / files.max(1),
+                    ws.pending_charge_snapshot().0
+                );
+            }
+        }
+        // Shape B: one contiguous write plus one small splice per file.
+        for index in 0..4_000u32 {
+            let name = format!("g{index:06}");
+            let node = ws.create_file(ROOT, name.as_bytes(), 0o600).unwrap().node;
+            ws.write(node, 0, &base).unwrap();
+            ws.write(node, 1000, b"C6000000001").unwrap();
+            if index % 1_000 == 999 {
+                let mut total = 0u64;
+                let mut files = 0u64;
+                let mut pieces = 0u64;
+                for id in ws.live.dirty.iter() {
+                    let Some(node) = ws.live.nodes.get(id) else {
+                        continue;
+                    };
+                    if let Data::File(FileData::Edited { pieces: tree, .. }) = &node.data {
+                        files += 1;
+                        pieces += tree.count() as u64;
+                        total += fact_charge(node);
+                    }
+                }
+                println!(
+                    "RCA FACTCEIL shape=splice files={files} pieces={pieces} fact_charge={total} per_file={} charge={}",
+                    total / files.max(1),
+                    ws.pending_charge_snapshot().0
+                );
+            }
+        }
+        drop(ws);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn short_spool_append_restores_high_water_and_piece_root() {
         let (root, mut workspace) = workspace("short-append");
