@@ -574,6 +574,18 @@ impl Workspace {
             .saturating_add(elapsed_ns(started));
         Ok(())
     }
+    /// Test-only pending-workspace charge snapshot for capacity diagnostics.
+    #[cfg(test)]
+    pub(crate) fn pending_charge_snapshot(&self) -> (u64, u64, u64, usize, usize) {
+        (
+            self.live.piece_allocation_bytes,
+            self.live.inline_bytes,
+            self.live.spool_bytes,
+            self.live.dirty.len(),
+            self.live.nodes.len(),
+        )
+    }
+
     pub(crate) fn take_spool_write_metrics(&mut self) -> SpoolWriteMetrics {
         std::mem::take(&mut self.backing.metrics)
     }
@@ -1093,6 +1105,115 @@ mod tests {
         );
         drop(workspace);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// #116 Phase 1: locate the pending-workspace ceiling for many distinct
+    /// changed files with the workload's real 4 KiB inline replacement.
+    /// Explicit selection only.
+    #[test]
+    #[ignore = "issue116 phase-1 capacity probe"]
+    fn issue116_many_changed_files_charge_probe() {
+        let (root, mut workspace) = workspace("many-changed-files");
+        let payload = vec![7u8; 4096];
+        let mut accepted = 0u32;
+        for index in 0..20_000u32 {
+            let name = format!("f{index}");
+            let node = workspace.create_file(ROOT, name.as_bytes(), 0o600).unwrap().node;
+            match workspace.write(node, 0, &payload) {
+                Ok(_) => {
+                    accepted += 1;
+                    if accepted % 500 == 0 {
+                        let (charge, inline, spool, dirty, nodes) =
+                            workspace.pending_charge_snapshot();
+                        println!(
+                            "PROBE CHG accepted={accepted} piece_charge={charge} inline={inline} spool={spool} dirty={dirty} nodes={nodes}"
+                        );
+                    }
+                }
+                Err(error) => {
+                    let (charge, inline, spool, dirty, nodes) = workspace.pending_charge_snapshot();
+                    println!(
+                        "PROBE CHG rejected_at={index} accepted={accepted} error={error:?} piece_charge={charge} inline={inline} spool={spool} dirty={dirty} nodes={nodes}"
+                    );
+                    break;
+                }
+            }
+        }
+        let (charge, inline, spool, dirty, nodes) = workspace.pending_charge_snapshot();
+        println!(
+            "PROBE CHG end accepted={accepted} piece_charge={charge} inline={inline} spool={spool} dirty={dirty} nodes={nodes}"
+        );
+        drop(workspace);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// #116 Phase 1: locate the pending-workspace ceiling for the exact
+    /// sequence edit shape (a small inline splice inside a larger base file).
+    /// Explicit selection only.
+    #[test]
+    #[ignore = "issue116 phase-1 capacity probe"]
+    fn issue116_splice_shape_charge_probe() {
+        let (root, mut workspace) = workspace("splice-shape");
+        let base = vec![5u8; 49_152];
+        let mut accepted = 0u32;
+        for index in 0..20_000u32 {
+            let name = format!("f{index}");
+            let node = workspace.create_file(ROOT, name.as_bytes(), 0o600).unwrap().node;
+            workspace.write(node, 0, &base).unwrap();
+            match workspace.write(node, 1000, b"C6000000001") {
+                Ok(_) => {
+                    accepted += 1;
+                    if accepted % 250 == 0 {
+                        let (charge, inline, spool, dirty, nodes) =
+                            workspace.pending_charge_snapshot();
+                        println!(
+                            "PROBE SPLICE accepted={accepted} piece_charge={charge} inline={inline} spool={spool} dirty={dirty} nodes={nodes}"
+                        );
+                    }
+                }
+                Err(error) => {
+                    let (charge, inline, spool, dirty, nodes) = workspace.pending_charge_snapshot();
+                    println!(
+                        "PROBE SPLICE rejected_at={index} accepted={accepted} error={error:?} piece_charge={charge} inline={inline} spool={spool} dirty={dirty} nodes={nodes}"
+                    );
+                    break;
+                }
+            }
+        }
+        let (charge, inline, spool, dirty, nodes) = workspace.pending_charge_snapshot();
+        println!(
+            "PROBE SPLICE end accepted={accepted} piece_charge={charge} inline={inline} spool={spool} dirty={dirty} nodes={nodes}"
+        );
+        drop(workspace);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// #116 Phase 1: per-file pending piece charge for the sequence edit shape.
+    #[test]
+    #[ignore = "issue116 phase-1 capacity probe"]
+    fn issue116_per_file_charge_probe() {
+        let (root, mut workspace) = workspace("per-file-charge");
+        for (label, size, offset) in [
+            ("tiny", 4096u64, 1024u64),
+            ("medium", 49_152, 1000),
+            ("anchor", 200_000_000, 1000),
+        ] {
+            let base = vec![5u8; size as usize];
+            let node = workspace
+                .create_file(ROOT, label.as_bytes(), 0o600)
+                .unwrap()
+                .node;
+            workspace.write(node, 0, &base).unwrap();
+            let (before, _, _, _, _) = workspace.pending_charge_snapshot();
+            workspace.write(node, offset, b"C6000000001").unwrap();
+            let (after, _, _, _, _) = workspace.pending_charge_snapshot();
+            println!(
+                "PROBE PERFILE label={label} size={size} delta={} cumulative={after}",
+                after - before
+            );
+        }
+        drop(workspace);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

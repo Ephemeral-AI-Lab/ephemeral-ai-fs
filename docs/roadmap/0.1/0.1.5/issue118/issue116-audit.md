@@ -93,8 +93,8 @@ mutation, and a wide single directory are different capabilities.
 |---|---|---|
 | Large single file, repeated same-range overwrite | see §3 probe A | bounded actual-code probe |
 | Large single file, append growth | spool quota (1 GiB) or piece count | source proof |
-| Many changed files in one pending set | see §3 probe B | bounded actual-code probe |
-| Wide single directory | see §3 probe C | bounded actual-code probe |
+| Many changed files in one pending set | 2 MiB pending piece allocation; 5,461 changed files for the sequence splice shape, 262,144 for one compact spool piece per file | measured public boundary (§7) and bounded probe (§3) |
+| Wide single directory | same pending piece allocation; no separate width counter located | bounded actual-code probe |
 | Deep path | 256 components / 4,096 path bytes | source proof |
 | Long history | no small fixed ceiling; ancestry traversal 1,000,000 steps; reopened reconstruction cost grows with history | source proof + prior public sequence evidence |
 
@@ -167,7 +167,67 @@ a #116 restriction. The historical ≈5,461 changed-file boundary remains a
 route-specific observation with no located counter; the located per-workspace
 bounds in §1.1 remain the enforceable ones.
 
-## 6. Dispositions and the bounded repair
+## 7. Public default-budget spill coverage: measured boundary
+
+The deferred public `namespace-100000 --sequence 32000` spill-scale selection
+(`docs/roadmap/0.1/0.1.5/issue111/commit-stage3-contract.md`: 32,000 edits
+≈ 2.02·B, two capacity crossings plus a partial third run) was executed against
+the exact final treatment. Raw attempts and container diagnostics:
+`benchmark-results/host-store/issue118/20260912/k32000-spill-1/`,
+`k6000-diag3/`, `k5000-boundary/`, `k5461-boundary/`.
+
+**Result: the workload is not reachable on the default budget, and the exact
+reason is located.**
+
+| Observation | Value |
+|---|---|
+| `namespace-100000 --sequence 32000` | FAIL at accepted edit 5,641 with `Workspace(InvalidExecution)`; bootstrap 100,000 files / 500,000,000 bytes PASS |
+| Owner-side core error (container log, bounded diagnostic) | `InvalidInput("workspace piece allocation limit")` |
+| `namespace-100000 --sequence 6000` | FAIL at accepted edit 5,461, same error |
+| `namespace-100000 --sequence 5461` | PASS: `edit_count=5461`, `edit_piece_count=16383`, `edit_piece_logical_charge=2097024` bytes against the 2,097,152-byte `MAX_PIECE_ALLOCATION` |
+| `namespace-100000 --sequence 5000` | PASS |
+
+The sequence edits **distinct** files (`plans()` advances `next` per edit), so a
+K-edit sequence needs K distinct changed files. The exact sequence edit shape — a
+12-byte inline splice inside a base file — costs **384 bytes per changed file**
+in `piece_allocation_bytes`: three `PieceNode`s of `size_of::<PieceNode>() = 128`
+bytes (left base, inline splice, right base), measured independently at 376–384
+bytes per file for 4 KiB, 48 KiB and 200 MB base files. `2097152 / 384 = 5461.3`,
+so the budget admits exactly 5,461 such files. The sequence's own commit
+diagnostics confirm the same number from the product's accounting.
+
+Consequences, stated explicitly:
+
+- The tiered spill threshold in `changes.rs` is
+  `batch_size = (8 MiB / 4096).clamp(1, 128) = 128` pending frontier keys, so a
+  5,000-file pending set already spills in the public route; the K5000/K5461
+  public runs exercise the spill path.
+- Reaching the Stage3 contract's 15,873-key spill-scale crossing in **one
+  pending set** requires ≈15,873 distinct changed files, which needs
+  ≈5.8 MiB of pending piece allocation under the current 3-node-per-splice
+  representation — 2.9× the declared 2 MiB budget.
+- Therefore `k32000` is **BLOCKED on the default budget**, not merely NOT_RUN.
+  It cannot be completed by retrying, by a larger timeout, or by the sequence
+  runner: the pending-workspace piece budget rejects the 5,462nd changed file
+  before the spill-scale crossing is reachable.
+- Raising the 2 MiB budget is explicitly **not** the repair (#116: "repair the
+  route-specific changed-file ceiling rather than raising the 2 MiB piece
+  budget"). The 2 MiB figure is a real memory bound at 128 bytes per node, so
+  the required repair is a **more compact pending-splice representation** for the
+  common "small splice in a base file" shape (for example a bounded ordered
+  splice list over the compact base/spool payload, materialized into the piece
+  tree only past a small threshold). That is a representation change of the
+  pending edit state, not a quota change, and it is **not implemented here**: it
+  touches every pending-edit read/write/capture invariant and needs its own
+  focused correctness campaign. It is recorded as the concrete, falsifiable
+  follow-up with the exact measured per-file charge and the boundary commands
+  above.
+
+No hidden PASS is claimed: the previously blocked public spill coverage remains
+unsatisfied, with its exact blocking quantity and the boundary at which it
+blocks.
+
+## 8. Dispositions and the bounded repair
 
 | Restriction | Disposition | Rationale |
 |---|---|---|

@@ -496,6 +496,9 @@ struct PreparedFacts {
 
 fn core(error: layerfs_workspace_core::Error) -> PortError {
     use layerfs_workspace_core::Error;
+    if std::env::var_os("LAYERFS_EDIT_FAILURE_DIAGNOSTIC").is_some() {
+        eprintln!("{{\"kind\":\"edit-core-failure\",\"error\":{:?}}}", format!("{error:?}"));
+    }
     match error {
         Error::NotFound(_) => PortError::NotFound,
         Error::InvalidInput("name exists") => PortError::Exists,
