@@ -2,7 +2,6 @@ use crate::{Data, Error, FileData, LiveWorkspace, NodeId, Result};
 use layerfs_content::file::content::FileContentRoot;
 use std::sync::Arc;
 
-pub const MAX_EDITS_PER_FILE: u32 = 4_096;
 pub const MAX_PIECES_PER_FILE: usize = 8_193;
 pub const MAX_INLINE_PER_EDIT: usize = 1024 * 1024;
 pub const MAX_INLINE_PER_WORKSPACE: u64 = 8 * 1024 * 1024;
@@ -238,7 +237,7 @@ impl LiveWorkspace {
         let generations = prepared
             .generations
             .checked_add(1)
-            .ok_or(Error::InvalidInput("workspace edit limit"))?;
+            .ok_or(Error::InvalidInput("workspace edit generation"))?;
         self.mutation_generation
             .checked_add(generations)
             .ok_or(Error::Integrity("Workspace mutation generation"))?;
@@ -250,11 +249,9 @@ impl LiveWorkspace {
             FileData::Base { len, .. } => (None, 0, *len),
             FileData::Edited { pieces, edits, .. } => (Some(pieces), *edits, pieces.len()),
         };
-        let edits = u32::try_from(generations)
-            .ok()
-            .and_then(|n| prior_edits.checked_add(n))
-            .filter(|n| *n <= MAX_EDITS_PER_FILE)
-            .ok_or(Error::InvalidInput("workspace edit limit"))?;
+        let edits = prior_edits
+            .checked_add(generations)
+            .ok_or(Error::InvalidInput("workspace edit counter"))?;
         match &replacement {
             Some(Piece::Inline { bytes, .. }) if bytes.len() > MAX_INLINE_PER_EDIT => {
                 return Err(Error::InvalidInput("workspace inline edit limit"))
@@ -365,11 +362,13 @@ impl LiveWorkspace {
     }
 }
 
-pub fn next_edit(edits: u32) -> Result<u32> {
+pub fn next_edit(edits: u64) -> Result<u64> {
+    // The cumulative pre-Commit edit count is informational, not a budget: the
+    // real bounds are the per-file piece count and the pending-workspace piece,
+    // inline and spool charges. Only genuine counter overflow is rejected.
     edits
         .checked_add(1)
-        .filter(|v| *v <= MAX_EDITS_PER_FILE)
-        .ok_or(Error::InvalidInput("workspace edit limit"))
+        .ok_or(Error::InvalidInput("workspace edit counter"))
 }
 
 pub fn check_logical_allocation_charge(bytes: u64) -> Result<()> {

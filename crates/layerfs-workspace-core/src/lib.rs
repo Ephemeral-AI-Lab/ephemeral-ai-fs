@@ -74,7 +74,7 @@ pub enum FileData {
         base: Option<(FileContentRoot, u64)>,
         spool_high_water: u64,
         pieces: crate::file_edit::PieceTree,
-        edits: u32,
+        edits: u64,
     },
 }
 
@@ -294,9 +294,9 @@ mod tests {
     }
 
     #[test]
-    fn truncate_preparation_preserves_exact_inode_ranges_and_edit_budget() {
+    fn truncate_preparation_preserves_exact_inode_ranges_and_edit_counter() {
         use crate::backing::{BackingId, BackingRef};
-        use crate::file_edit::{SpoolSlice, MAX_EDITS_PER_FILE};
+        use crate::file_edit::SpoolSlice;
         let (mut live, file) = live_file();
         let backing = BackingRef::new(BackingId(1), vec![7; 8]);
         let write = live
@@ -344,10 +344,31 @@ mod tests {
         else {
             unreachable!()
         };
-        *edits = MAX_EDITS_PER_FILE;
+        // A large cumulative edit count is retained and does not itself reject:
+        // only a genuine counter overflow does, and that is checked before any
+        // live-state change.
+        {
+            let Data::File(FileData::Edited { edits, .. }) =
+                &mut live.nodes.get_mut(&file).unwrap().data
+            else {
+                unreachable!()
+            };
+            *edits = u64::MAX;
+        }
         let before = live.nodes[&file].clone();
         assert!(live.prepare_truncate(file, 0).is_err());
         assert_eq!(live.nodes[&file], before);
+        {
+            let Data::File(FileData::Edited { edits, .. }) =
+                &mut live.nodes.get_mut(&file).unwrap().data
+            else {
+                unreachable!()
+            };
+            *edits = 1_000_000;
+        }
+        let prepared = live.prepare_truncate(file, 0).unwrap().unwrap();
+        live.apply_edit(prepared).unwrap();
+        assert_eq!(live.attr(file).unwrap().size, 0);
     }
 
     #[test]

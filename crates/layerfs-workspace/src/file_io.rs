@@ -1,7 +1,7 @@
 use crate::cow_tree::{Data, FileData, Node, NodeId, Workspace};
 use crate::file_edit::{Piece, PieceTree, SpoolSlice};
 #[cfg(test)]
-use crate::file_edit::{MAX_EDITS_PER_FILE, MAX_INLINE_PER_WORKSPACE};
+use crate::file_edit::MAX_INLINE_PER_WORKSPACE;
 use layerfs_content::file::content::read_range;
 use layerfs_layerstack_store::{CoreReader, Result, SnapshotReader, StoreError};
 use layerfs_workspace_core::backing::{BackingId, BackingRef};
@@ -1079,12 +1079,18 @@ mod tests {
         );
 
         let file = workspace.create_file(ROOT, b"limit", 0o600).unwrap().node;
-        for value in 0..MAX_EDITS_PER_FILE {
+        // Rewriting one byte in place coalesces to a single piece, so the
+        // cumulative edit count grows past the old 4,096 counter without any
+        // piece, inline, spool or allocation budget being reached. The last
+        // write still succeeds and the file keeps its exact contents.
+        let rewrites = 5_000u32;
+        for value in 0..rewrites {
             workspace.write(file, 0, &[(value & 0xff) as u8]).unwrap();
         }
-        let before = workspace.read(file, 0, 1).unwrap();
-        assert!(workspace.write(file, 0, b"x").is_err());
-        assert_eq!(workspace.read(file, 0, 1).unwrap(), before);
+        assert_eq!(
+            workspace.read(file, 0, 1).unwrap(),
+            vec![((rewrites - 1) & 0xff) as u8]
+        );
         drop(workspace);
         std::fs::remove_dir_all(root).unwrap();
     }

@@ -142,9 +142,11 @@ fn whole_file_empty_generation_reclaims_edit_budget() {
             applied += 1;
         }
         assert_eq!(std::fs::read(mount.join("file")).unwrap(), expected);
-        // The new nonempty generation still accepts exactly 4096 edits.
-        // Its final fill above is edit one; these fill the remaining budget.
-        for ordinal in 1..4096 {
+        // The nonempty generation keeps accepting edits past the old 4,096
+        // cumulative counter: coalescing leaves one piece, so no piece, inline,
+        // spool or allocation budget is reached. The final state is committed
+        // and reopened below.
+        for ordinal in 1..5000 {
             expected = vec![ordinal as u8; 64];
             edit(
                 &workspaces,
@@ -155,20 +157,6 @@ fn whole_file_empty_generation_reclaims_edit_budget() {
             )
             .map_err(|error| format!("nonempty edit={ordinal}: {error:?}"))?;
         }
-        let error = edit(
-            &workspaces,
-            &session,
-            0,
-            64,
-            WorkspaceFileReplacement::Inline(vec![7; 64]),
-        )
-        .unwrap_err();
-        assert!(matches!(
-            error,
-            WorkspaceError::Storage(layerfs_layerstack_store::StoreError::InvalidInput(
-                "workspace edit limit"
-            ))
-        ));
         assert_eq!(std::fs::read(mount.join("file")).unwrap(), expected);
         Ok(())
     })();

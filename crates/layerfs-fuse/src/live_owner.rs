@@ -2915,9 +2915,7 @@ impl LiveOwner {
                     })
                 };
                 input.done().map_err(io)?;
-                if count == 0
-                    || count > layerfs_workspace_core::file_edit::MAX_EDITS_PER_FILE as usize
-                {
+                if count == 0 {
                     return Err(PortError::Invalid);
                 }
                 if self.0.edit.lock().map_err(|_| PortError::Io)?.is_some()

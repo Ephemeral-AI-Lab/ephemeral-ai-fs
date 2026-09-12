@@ -398,10 +398,9 @@ pub fn node_in(
                 _ => return Err(invalid()),
             };
             let spool_high_water = input.u64()?;
-            let edits = input.u32()?;
-            if edits > layerfs_workspace_core::file_edit::MAX_EDITS_PER_FILE {
-                return Err(invalid());
-            }
+            // The cumulative pre-Commit edit count is informational; the piece,
+            // inline, spool and allocation charges below remain the real bounds.
+            let edits = input.u64()?;
             let count = input.count(5)?;
             if count > layerfs_workspace_core::file_edit::MAX_PIECES_PER_FILE {
                 return Err(invalid());

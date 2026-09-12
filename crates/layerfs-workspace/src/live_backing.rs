@@ -1966,9 +1966,7 @@ impl RemoteWorkspace {
         {
             return Err(crate::WorkspaceError::InvalidExecution);
         }
-        if edits.is_empty()
-            || edits.len() > layerfs_workspace_core::file_edit::MAX_EDITS_PER_FILE as usize
-        {
+        if edits.is_empty() {
             return Err(crate::WorkspaceError::InvalidExecution);
         }
         if edits.iter().any(|edit| matches!(&edit.replacement, crate::WorkspaceFileReplacement::Inline(bytes) if bytes.len() > 1024 * 1024)) {
