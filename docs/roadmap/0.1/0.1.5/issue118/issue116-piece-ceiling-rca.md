@@ -154,7 +154,76 @@ atomic Commit boundary, checked arithmetic instead of a moved ceiling, and
 unchanged SDK/FUSE/mmap/truncation/sparse/hardlink/cancellation/rollback
 semantics.
 
-## 8. Reproduction
+## 8. What the ceiling becomes after the compact representation
+
+Removing the piece ceiling does not by itself make the workload unbounded: the
+**changed-fact memory charge** (`live_wire::MAX_FACT_MEMORY = 96 MiB`, charged
+per node as `(node_encoded_bound - inline_len) × 8 + 1024`) becomes the next
+binding budget. Measured with the real shape (15-character path, 3 pieces,
+12 inline bytes): **3,360 bytes per changed file**, flat from 1 to 5,001 files
+(`issue116-audit/rca-fact.log`).
+
+| Representation | Piece budget allows | Fact budget allows | Binding | Files supported |
+|---|---:|---:|---|---:|
+| current (3 nodes × 128 B = 384 B/file) | 5,461 | 29,959 | piece | **5,461** (measured) |
+| compact splice list ≈56 B/file | 37,449 | 29,959 | fact | **29,959** |
+| compact splice list ≈40 B/file | 52,428 | 29,959 | fact | **29,959** |
+| 1 node/file | 16,384 | 29,959 | piece | 16,384 |
+
+So the representation change raises the real ceiling from **5,461 to ≈29,960
+files (5.5×)** — comfortably past the 15,873-key spill-scale crossing, but
+**just short of the 32,000 distinct files K32000 needs** (path length barely
+matters: 7 vs 16 characters moves the fact ceiling only 29,746–30,393).
+
+### The fact charge is provably conservative
+
+Measured resident cost of the same pending set (`issue116-audit/rca-rss.log`):
+
+| Changed files | Charged fact bytes | Peak RSS | RSS growth over baseline | Real bytes/file |
+|---:|---:|---:|---:|---:|
+| 1,001 | 3,363,360 | 15,384,576 | 3,538,944 | 3,536 |
+| 3,001 | 10,083,360 | 18,546,688 | 6,700,032 | 2,232 |
+| 5,001 | 16,803,360 | 22,315,008 | 10,458,624 | 2,091 |
+
+At the current ceiling the product charges **16.8 MB** while the whole process
+uses **22.3 MB peak RSS** (baseline 11.8 MB) — i.e. the charge covers the entire
+process growth and still over-states it by ~1.6×. The 1,024-byte-per-node floor
+alone caps any fact budget at 98,304 nodes, and the ×8 encoded multiplier is the
+other conservative term.
+
+That means a second, independent repair is available **if** K32000 specifically
+is required: re-derive the fact charge from measured live-set cost (for example
+a 512-byte node floor and a 4× multiplier, still ~1.5× above the observed
+2,091 bytes/file) instead of the current conservative formula. That would put
+the post-representation ceiling near **49,000 files**, above K32000. It changes
+the shared live-state reservation accounting, so it needs its own resource
+proof and must not be bundled silently into the representation change.
+
+## 9. Why the compact representation is not trivial
+
+It is a **bounded but real** data-structure change, not a counter deletion:
+
+- `PieceTree` gains a compact form (base/spool reference + ordered splice list)
+  alongside the existing single-range `compact_spool` fast path, and `replace`,
+  `range_with_visits`, `pieces`, `count`, `len`, `inline_len`, `spool_len`,
+  `logical_allocation_charge` and the two collapse cases must all handle it.
+- `replace` must stay bounded per edit: appending one splice to a k-entry list
+  is O(k) with k small, and the form must fall back to the tree past a threshold
+  rather than degrade into a per-edit rebuild of the whole file.
+- Consolidation must not drop a range that a held `ReadPlan`, mapping, in-flight
+  operation or retry still owns.
+- Every invariant #116 lists stays: no extra Commit, unchanged atomic boundary,
+  checked arithmetic, and unchanged truncation/sparse/hardlink/cancellation/
+  rollback/mmap semantics.
+- Verification is the expensive half: focused splice/coalesce/sparse/truncate
+  checks, wire round-trip, `check_piece_resources` exactness, plus the existing
+  75 workspace lib, 40 fuse and 12 file-edit integration tests, then the public
+  K5000/K5461/K32000 boundary re-runs.
+
+Realistic effort: roughly 250–400 lines of product change plus 400–700 lines of
+tests, with a correctness risk concentrated in `PieceTree::replace`.
+
+## 10. Reproduction
 
 ```bash
 # exact boundary through the public workload
@@ -171,6 +240,12 @@ python3 benchmark/fs-bench-pro/shared/runner.py --family init_namespace \
 
 # exact structure and charge decomposition
 cargo +1.85.1 test -p layerfs-workspace --lib issue116_piece_charge_rca \
+  -- --ignored --nocapture --test-threads=1
+
+# next-budget (fact charge) and real resident cost
+cargo +1.85.1 test -p layerfs-workspace --lib issue116_fact_charge_probe \
+  -- --ignored --nocapture --test-threads=1
+cargo +1.85.1 test -p layerfs-workspace --lib issue116_pending_set_rss_probe \
   -- --ignored --nocapture --test-threads=1
 ```
 

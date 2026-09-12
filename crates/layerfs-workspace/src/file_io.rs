@@ -1321,6 +1321,157 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// #116 RCA: which budget binds next, using the product's own fact-charge
+    /// formula (live_wire::node_encoded_bound, charged 8x + 1024 per node).
+    #[test]
+    #[ignore = "issue116 root-cause probe"]
+    fn issue116_fact_charge_probe() {
+        use layerfs_workspace_core::{Data, FileData};
+        fn encoded_bound(node: &layerfs_workspace_core::Node) -> usize {
+            let paths = node.paths.iter().map(|p| 4 + p.len()).sum::<usize>();
+            let data = match &node.data {
+                Data::File(FileData::Edited { pieces, .. }) => {
+                    pieces.count() * 49 + usize::try_from(pieces.inline_len()).unwrap()
+                }
+                Data::Directory(d) => d.changes.keys().map(|n| 12 + n.len()).sum(),
+                Data::Symlink(target) => target.len(),
+                Data::File(_) => 0,
+            };
+            128 + paths + data
+        }
+        let (root, mut workspace) = workspace("fact-charge");
+        let base = vec![5u8; 49_152];
+        let mut previous = 0u64;
+        let mut directories = std::collections::BTreeMap::new();
+        for index in 0..12_000u32 {
+            let group = index / 100;
+            let directory = match directories.get(&group) {
+                Some(node) => *node,
+                None => {
+                    let name = format!("d{group:04}");
+                    let node = workspace.mkdir(ROOT, name.as_bytes(), 0o750).unwrap().node;
+                    directories.insert(group, node);
+                    node
+                }
+            };
+            let name = format!("f{index:06}");
+            let node = match workspace.create_file(directory, name.as_bytes(), 0o600) {
+                Ok(attr) => attr.node,
+                Err(error) => {
+                    println!("RCA FACT create_rejected_at={index} error={error:?}");
+                    break;
+                }
+            };
+            workspace.write(node, 0, &base).unwrap();
+            if let Err(error) = workspace.write(node, 1000, b"C6000000001") {
+                println!("RCA FACT write_rejected_at={index} error={error:?}");
+                break;
+            }
+            if index % 1_000 == 0 || index == 11_999 {
+                let mut fact = 0u64;
+                let mut files = 0u64;
+                for id in workspace.live.dirty.iter() {
+                    let Some(node) = workspace.live.nodes.get(id) else {
+                        continue;
+                    };
+                    if matches!(node.data, Data::File(FileData::Edited { .. })) {
+                        files += 1;
+                        fact += (encoded_bound(node) as u64) * 8 + 1024;
+                    }
+                }
+                let (charge, _, _, dirty, _) = workspace.pending_charge_snapshot();
+                println!(
+                    "RCA FACT files={files} piece_charge={charge} fact_charge={fact} fact_per_file={} dirty={dirty} delta_since_last={}",
+                    fact / files.max(1),
+                    fact - previous
+                );
+                previous = fact;
+            }
+        }
+        drop(workspace);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// #116 RCA: real resident cost of a large pending set versus the charged
+    /// budgets, so the ceilings can be compared with actual memory.
+    #[test]
+    #[ignore = "issue116 root-cause probe"]
+    fn issue116_pending_set_rss_probe() {
+        use layerfs_workspace_core::{Data, FileData};
+        fn rss_bytes() -> u64 {
+            // macOS has no /proc; ask ps for this process's resident set size.
+            let output = std::process::Command::new("ps")
+                .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+                .output();
+            match output {
+                Ok(output) => String::from_utf8_lossy(&output.stdout)
+                    .trim()
+                    .parse::<u64>()
+                    .map(|kib| kib * 1024)
+                    .unwrap_or(0),
+                Err(_) => 0,
+            }
+        }
+        fn encoded_bound(node: &layerfs_workspace_core::Node) -> usize {
+            let paths = node.paths.iter().map(|p| 4 + p.len()).sum::<usize>();
+            let data = match &node.data {
+                Data::File(FileData::Edited { pieces, .. }) => {
+                    pieces.count() * 49 + usize::try_from(pieces.inline_len()).unwrap()
+                }
+                Data::Directory(d) => d.changes.keys().map(|n| 12 + n.len()).sum(),
+                Data::Symlink(target) => target.len(),
+                Data::File(_) => 0,
+            };
+            128 + paths + data
+        }
+        let (root, mut workspace) = workspace("rss");
+        let base = vec![5u8; 49_152];
+        println!("RCA RSS baseline peak={} B", rss_bytes());
+        let mut directories = std::collections::BTreeMap::new();
+        for index in 0..20_000u32 {
+            let group = index / 100;
+            let directory = match directories.get(&group) {
+                Some(node) => *node,
+                None => {
+                    let name = format!("d{group:04}");
+                    let node = workspace.mkdir(ROOT, name.as_bytes(), 0o750).unwrap().node;
+                    directories.insert(group, node);
+                    node
+                }
+            };
+            let name = format!("f{index:06}");
+            let node = workspace.create_file(directory, name.as_bytes(), 0o600).unwrap().node;
+            workspace.write(node, 0, &base).unwrap();
+            if let Err(error) = workspace.write(node, 1000, b"C6000000001") {
+                println!("RCA RSS rejected_at={index} error={error:?}");
+                break;
+            }
+            if index % 1_000 == 0 {
+                let mut fact = 0u64;
+                let mut files = 0u64;
+                let mut nodes = 0u64;
+                for id in workspace.live.dirty.iter() {
+                    let Some(node) = workspace.live.nodes.get(id) else {
+                        continue;
+                    };
+                    nodes += 1;
+                    if matches!(node.data, Data::File(FileData::Edited { .. })) {
+                        files += 1;
+                        fact += (encoded_bound(node) as u64) * 8 + 1024;
+                    }
+                }
+                let (charge, _, _, dirty, _) = workspace.pending_charge_snapshot();
+                println!(
+                    "RCA RSS files={files} dirty_nodes={nodes} piece_charge={charge} fact_charge={fact} peak_rss={} bytes_per_file={}",
+                    rss_bytes(),
+                    rss_bytes() / files.max(1)
+                );
+            }
+        }
+        drop(workspace);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn short_spool_append_restores_high_water_and_piece_root() {
         let (root, mut workspace) = workspace("short-append");
