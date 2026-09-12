@@ -484,3 +484,22 @@ historical-access cases and11 verification runs pass15-second contracts; cold
 range decoding22,216,028B for6421B remains a limitation. Exact sources, costs,
 commands and immutable evidence: [full157 result](../issue103/full157-integrated-results.md).
 The full #102 campaign and release remain incomplete.
+
+
+## 2026-09-11 — explicit compaction dropped from the product
+
+Owner decision: compaction is too slow and not useful enough for the intended
+real workloads; existing ordinary deduplication and compression already meet the
+owner's needs. The full157 saving remains valid historical evidence, but required
+626.313062 seconds of additional API time. A smaller archived Store does not
+justify that cost as a product step.
+
+The local removal deletes the public compaction API/CLI and benchmark producer;
+ordinary schema10 content/metadata admission stays enabled. Keep authenticated
+read compatibility for previously compacted Stores. Future work must improve
+ordinary writes without background rewrites or hidden compaction. The old 66 MB
+compacted result does not automatically become an uncompacted acceptance gate.
+
+See [the current decision and validation boundary](../compaction-removal.md).
+This supersedes earlier compaction continuation items in this ledger, preserves
+all original measurements, and does not close unrelated latency/storage targets.

@@ -214,7 +214,10 @@ fn finalized_writer_precomputes_small_candidate_signatures() {
     };
     // Anchor-less small files carry the producer-computed signature.
     let (id, hints) = build(true, None);
-    assert_eq!(id, ObjectId::for_bytes(&layerfs_content::file::content::encode_small(&raw).unwrap()));
+    assert_eq!(
+        id,
+        ObjectId::for_bytes(&layerfs_content::file::content::encode_small(&raw).unwrap())
+    );
     assert_eq!(hints.prior_ids[0], None);
     assert_eq!(hints.small_signature, Some(expected));
     // Explicit predecessors keep the lazy consumer fallback.

@@ -691,7 +691,6 @@ fn run() -> AnyResult<()> {
             Some(
                 "storage-smoke-session"
                     | "historical-access-session"
-                    | "storage-compact"
                     | "storage-format-probe"
                     | "storage-integration-smoke"
             )

@@ -1,5 +1,14 @@
 # Mental model of the v0.1.5 hybrid
 
+> **Current product decision (2026-09-11): explicit compaction is removed.**
+> Reason: compaction is too slow for the intended practical workloads; ordinary
+> deduplication and compression already provide enough value for those use cases.
+> v0.1.5 uses ordinary schema10 Init/Commit storage: exact CAS, compression,
+> bounded small-file deltas, compact scoped namespaces and pooled metadata.
+> Previously compacted Stores remain readable. Earlier compaction results below
+> are historical evidence, not a required product step or current storage claim.
+> See [the compaction removal decision](compaction-removal.md).
+
 > **Status:** Agreed design, reconciled 2026-09-09. See [spec.md](spec.md) for the
 > technical contract and [workflow.md](workflow.md) for detailed ASCII workflows.
 > Only the ten-file/thirty-commit smoke runs during implementation verification.

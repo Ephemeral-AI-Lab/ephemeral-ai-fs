@@ -5,13 +5,11 @@ mod delta;
 mod diagnostic;
 pub(crate) mod metadata;
 pub(crate) use admission::PreparedAdmission;
-mod compaction;
 mod pack;
 mod read;
-mod whole;
-pub use compaction::{CompactionOptions, CompactionReceipt};
 pub(crate) mod small_candidates;
 mod spill;
+mod whole;
 #[cfg(test)]
 use spill::SeenStorage;
 pub use spill::SpillableObjectSet;

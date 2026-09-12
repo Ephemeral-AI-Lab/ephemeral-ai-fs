@@ -15,13 +15,12 @@ pub use layerfs_layerstack_store::{
 };
 pub use layerfs_layerstack_store::{
     AddLayerResult, BranchId, BranchRecord, BuildCounters, CandidateReceipt, CanonicalStorage,
-    CommitId, CommitRecord, CompactionOptions, CompactionReceipt, DiffAspects, DiffEntry,
-    DiffRequest, EntityName, FuseWriteReceipt, InitializeLayerStackResult, LayerId, LayerRecord,
-    LayerStackId, LayerStackInitialization, LayerStackInitializationReceipt, LayerStackRecord,
-    LayerStackStore, LocalForkSource, NodeSummary, ObjectSource, ReconcileChoice,
-    ReconcileConflict, ReconcileConflictKind, StorageReceipt, StoreCounts, StoreError,
-    WorkspaceCommitDiagnostics, WorkspaceCommitReceipt, WorkspaceLifecycleKind,
-    WorkspaceLifecycleReceipt,
+    CommitId, CommitRecord, DiffAspects, DiffEntry, DiffRequest, EntityName, FuseWriteReceipt,
+    InitializeLayerStackResult, LayerId, LayerRecord, LayerStackId, LayerStackInitialization,
+    LayerStackInitializationReceipt, LayerStackRecord, LayerStackStore, LocalForkSource,
+    NodeSummary, ObjectSource, ReconcileChoice, ReconcileConflict, ReconcileConflictKind,
+    StorageReceipt, StoreCounts, StoreError, WorkspaceCommitDiagnostics, WorkspaceCommitReceipt,
+    WorkspaceLifecycleKind, WorkspaceLifecycleReceipt,
 };
 pub use layerfs_monitor::{
     CandidateStats, CandidateTotals, DatabaseSnapshot, DedupAnalysis, MonitorError,

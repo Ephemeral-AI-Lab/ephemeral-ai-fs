@@ -1,5 +1,14 @@
 # LayerFS v0.1.5: bounded delta storage
 
+> **Current product decision (2026-09-11): explicit compaction is removed.**
+> Reason: compaction is too slow for the intended practical workloads; ordinary
+> deduplication and compression already provide enough value for those use cases.
+> v0.1.5 uses ordinary schema10 Init/Commit storage: exact CAS, compression,
+> bounded small-file deltas, compact scoped namespaces and pooled metadata.
+> Previously compacted Stores remain readable. Earlier compaction results below
+> are historical evidence, not a required product step or current storage claim.
+> See [the compaction removal decision](compaction-removal.md).
+
 > **Current promoted product:** schema10 with scoped inline namespaces, authenticated
 > metadata groups/deltas and ordinary physical admission. [#103 integration and
 > compacted storage results](issue103/full157-integrated-results.md) are complete.

@@ -828,7 +828,7 @@ pub fn dispatch(args: &[OsString]) -> AnyResult<()> {
     if args.first().is_some_and(|a| {
         matches!(
             a.to_str(),
-            Some("storage-compact" | "storage-format-probe" | "storage-integration-smoke")
+            Some("storage-format-probe" | "storage-integration-smoke")
         )
     }) {
         return integrated::dispatch(args);

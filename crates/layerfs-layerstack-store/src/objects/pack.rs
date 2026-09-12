@@ -444,6 +444,7 @@ impl NativeEncoder {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn new_whole() -> Result<Self> {
         Ok(Self {
             profile: ContentProfile::Whole,
@@ -1192,6 +1193,7 @@ mod zstandard {
         workspace(2 * 1024 * 1024, 2 * 1024 * 1024)
     }
 
+    #[cfg(test)]
     pub(super) fn whole_workspace() -> Result<Vec<u64>> {
         unsafe {
             let mut parameters = ZSTD_getCParams(3, 2 * 1024 * 1024, 2 * 1024 * 1024);

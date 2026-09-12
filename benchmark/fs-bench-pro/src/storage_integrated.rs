@@ -1,165 +1,7 @@
-//! Preregistered issue103 adapters: call public product operations only.
+//! Ordinary schema10 format probe and correctness-only live smoke.
 use super::*;
 use layerfs_sdk::ContainerBinding;
-use std::time::Duration;
 
-fn receipt_json(r: &layerfs_sdk::CompactionReceipt) -> String {
-    macro_rules! numeric { ($($field:ident),* $(,)?) => { vec![$((stringify!($field), r.$field.to_string())),*] }; }
-    let mut fields = numeric![
-        source_allocated_bytes,
-        final_allocated_bytes,
-        final_apparent_bytes,
-        named_temporary_peak_bytes,
-        original_objects_verified,
-        added_owners_verified,
-        whole_owners,
-        small_full,
-        small_prefix,
-        whole_full,
-        whole_prefix,
-        native_slices,
-        native_full,
-        candidate_trials,
-        max_depth,
-        max_canonical_closure,
-        max_encoded_closure,
-        inventory_ns,
-        owner_ns,
-        encoding_ns,
-        vacuum_ns,
-        verification_ns,
-        publication_ns,
-        total_ns
-    ];
-    fields.extend([
-        ("published", r.published.to_string()),
-        ("cleanup_complete", r.cleanup_complete.to_string()),
-        ("directory_synced", r.directory_synced.to_string()),
-        (
-            "publication_notes",
-            format!(
-                "[{}]",
-                r.publication_notes
-                    .iter()
-                    .map(|v| quote(v))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            ),
-        ),
-    ]);
-    format!(
-        "{{{}}}",
-        fields
-            .iter()
-            .map(|(k, v)| format!("{}:{v}", quote(k)))
-            .collect::<Vec<_>>()
-            .join(",")
-    )
-}
-fn compact(
-    store: &LayerStackStore,
-    destination: &Path,
-    limit: u64,
-    trace_path: &Path,
-) -> AnyResult<layerfs_sdk::CompactionReceipt> {
-    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let source_inode = std::fs::metadata(store.path())?.ino();
-    let mut trace = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(trace_path)?;
-    let trace_inode = trace.metadata()?.ino();
-    let signal = stop.clone();
-    let observer = std::thread::spawn(move || -> std::io::Result<(u64, u64, u64)> {
-        use std::io::Write;
-        let began = Instant::now();
-        let mut peak = 0;
-        let mut unlinked_peak = 0;
-        let mut samples = 0;
-        loop {
-            let mut scanned = 0;
-            let mut seen = std::collections::BTreeSet::new();
-            let mut allocated = 0;
-            let mut unlinked = 0;
-            for entry in std::fs::read_dir("/dev/fd")? {
-                scanned += 1;
-                if scanned > 1024 {
-                    return Err(std::io::Error::other("compaction FD observer bound"));
-                }
-                let entry = entry?;
-                let fd = entry
-                    .file_name()
-                    .to_string_lossy()
-                    .parse::<u32>()
-                    .unwrap_or(0);
-                if fd < 3 {
-                    continue;
-                }
-                let Ok(m) = std::fs::metadata(entry.path()) else {
-                    continue;
-                };
-                if !m.is_file()
-                    || [source_inode, trace_inode].contains(&m.ino())
-                    || !seen.insert((m.dev(), m.ino()))
-                {
-                    continue;
-                }
-                allocated += m.blocks() * 512;
-                if m.nlink() == 0 {
-                    unlinked += m.blocks() * 512;
-                }
-            }
-            peak = peak.max(allocated);
-            unlinked_peak = unlinked_peak.max(unlinked);
-            samples += 1;
-            writeln!(trace,"{{\"elapsed_ns\":{},\"open_temp_allocated_bytes\":{allocated},\"unlinked_allocated_bytes\":{unlinked}}}",began.elapsed().as_nanos())?;
-            if signal.load(std::sync::atomic::Ordering::Acquire) {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        trace.flush()?;
-        Ok((peak, unlinked_peak, samples))
-    });
-    let mut published_receipt = None;
-    let result = timed(store, "compaction", || {
-        let receipt = store.compact_into(
-            destination,
-            layerfs_sdk::CompactionOptions {
-                temporary_byte_limit: limit,
-            },
-        )?;
-        published_receipt = Some(receipt.clone());
-        Ok(receipt)
-    });
-    stop.store(true, std::sync::atomic::Ordering::Release);
-    let observed = observer.join().map_err(|_| "compaction observer panic");
-    if let Some(receipt) = &published_receipt {
-        emit("storage-compaction", &[("receipt", receipt_json(receipt))]);
-    }
-    let (peak, unlinked, samples) = observed??;
-    emit(
-        "storage-compaction-open-files",
-        &[
-            ("sampled_peak_allocated_bytes", peak.to_string()),
-            (
-                "sampled_unlinked_peak_allocated_bytes",
-                unlinked.to_string(),
-            ),
-            ("samples", samples.to_string()),
-            ("trace", quote(&trace_path.to_string_lossy())),
-        ],
-    );
-    let receipt = result?;
-    if !receipt.published
-        || !receipt.cleanup_complete
-        || !receipt.directory_synced
-        || !receipt.publication_notes.is_empty()
-    {
-        return Err("compaction publication/cleanup incomplete; receipt retained".into());
-    }
-    Ok(receipt)
-}
 fn random(n: usize) -> Vec<u8> {
     let mut seed = 0x4101937du32;
     (0..n)
@@ -218,26 +60,15 @@ fn probe(root: &Path) -> AnyResult<()> {
             })?,
         ))
     })??;
-    let r = compact(
-        &store,
-        &root.join("compacted.sqlite"),
-        4 * 1024 * 1024 * 1024,
-        &root.join("probe-open-files.jsonl"),
-    )?;
-    if schema != 10
-        || groups == 0
-        || r.whole_prefix == 0
-        || r.small_prefix == 0
-        || r.native_slices == 0
-    {
-        return Err("linked integrated format probe failed".into());
+    if schema != 10 || groups == 0 {
+        return Err("linked ordinary schema10 format probe failed".into());
     }
     emit(
         "storage-format-probe",
         &[
             ("schema_version", schema.to_string()),
             ("metadata_groups", groups.to_string()),
-            ("content_version", "107".into()),
+            ("storage_policy", quote("ordinary")),
             ("sqlite_version", quote(rusqlite::version())),
             ("status", quote("PASS")),
         ],
@@ -311,13 +142,7 @@ fn smoke(root: &Path, container: &ContainerId) -> AnyResult<()> {
         + &format!("; printf changed > {MOUNT}/small-a; test \"$(cat {MOUNT}/alias)\" = changed");
     let head =
         exec_session(store.clone(), &binding, container, branch, script, true)?.ok_or("commit")?;
-    let destination = root.join("compacted.sqlite");
-    compact(
-        &store,
-        &destination,
-        4 * 1024 * 1024 * 1024,
-        &root.join("smoke-open-files.jsonl"),
-    )?;
+    let destination = store.path().to_path_buf();
     drop(store);
     let store = Arc::new(LayerStackStore::connect(&destination)?);
     let old = store.fork_branch(
@@ -364,23 +189,13 @@ fn smoke(root: &Path, container: &ContainerId) -> AnyResult<()> {
             ("status", quote("PASS")),
             ("exec_calls", "4".into()),
             ("created_commits", "2".into()),
-            ("compactions", "1".into()),
+            ("compactions", "0".into()),
         ],
     );
     Ok(())
 }
 pub(super) fn dispatch(args: &[OsString]) -> AnyResult<()> {
     match args {
-        [command, source, destination, limit, trace] if command == "storage-compact" => {
-            let store = LayerStackStore::connect(Path::new(source))?;
-            compact(
-                &store,
-                Path::new(destination),
-                limit.to_str().ok_or("limit")?.parse()?,
-                Path::new(trace),
-            )?;
-            Ok(())
-        }
         [command, root] if command == "storage-format-probe" => probe(Path::new(root)),
         [command, root, container] if command == "storage-integration-smoke" => smoke(
             Path::new(root),
@@ -392,6 +207,43 @@ pub(super) fn dispatch(args: &[OsString]) -> AnyResult<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ordinary_format_probe_does_not_create_compacted_storage() {
+        let root = std::env::temp_dir().join(format!(
+            "layerfs-ordinary-probe-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        super::probe(&root).unwrap();
+        let names = std::fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            names,
+            ["input", "store.sqlite"]
+                .into_iter()
+                .map(std::ffi::OsString::from)
+                .collect()
+        );
+        let store = super::LayerStackStore::connect(root.join("store.sqlite")).unwrap();
+        let compacted: bool = store
+            .inspect_connection(|db| {
+                db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM object_packs WHERE substr(data,1,6)=x'4c46434e5431')",
+            [], |row| row.get(0))
+            })
+            .unwrap()
+            .unwrap();
+        assert!(!compacted);
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn integration_scripts_parse_with_and_without_following_mutations() {
         for after in [false, true] {

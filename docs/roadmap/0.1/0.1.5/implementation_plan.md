@@ -1,5 +1,14 @@
 # v0.1.5 issue #100 implementation and verification plan
 
+> **Current product decision (2026-09-11): explicit compaction is removed.**
+> Reason: compaction is too slow for the intended practical workloads; ordinary
+> deduplication and compression already provide enough value for those use cases.
+> v0.1.5 uses ordinary schema10 Init/Commit storage: exact CAS, compression,
+> bounded small-file deltas, compact scoped namespaces and pooled metadata.
+> Previously compacted Stores remain readable. Earlier compaction results below
+> are historical evidence, not a required product step or current storage claim.
+> See [the compaction removal decision](compaction-removal.md).
+
 > **Issue #100 measured outcome, 2026-09-10:** The retained implementation allocates
 > **49,319,936 bytes**, with **49,250,304 bytes** growth, ten Created outcomes,
 > exact same-Store verification and clean teardown. It is **4,319,936 bytes above

@@ -1,3 +1,4 @@
+//! Read compatibility for previously compacted Stores; writers exist only in tests.
 //! Product content compaction wire format. Canonical identities stay unchanged;
 //! whole-file owners are authenticated physical dependencies of native slices.
 use super::{
@@ -116,6 +117,7 @@ pub(super) fn record(bytes: &[u8], canonical_length: usize) -> Result<Record<'_>
     })
 }
 
+#[cfg(test)]
 pub(super) fn encode(
     role: Role,
     raw_length: usize,
@@ -143,6 +145,7 @@ pub(super) fn encode(
     Ok(bytes)
 }
 
+#[cfg(test)]
 pub(super) fn slice(owner: ObjectId, offset: usize, length: usize) -> Result<Vec<u8>> {
     let mut bytes = Vec::with_capacity(41);
     bytes.push(4);
@@ -200,6 +203,7 @@ pub(super) fn range(starts: &[u8], length: usize, number: usize) -> Result<Range
     Ok(selected)
 }
 
+#[cfg(test)]
 pub(super) fn assemble(records: &[Vec<u8>]) -> Result<Vec<u8>> {
     let length = 16 + 4 * records.len() + records.iter().map(Vec::len).sum::<usize>();
     if records.is_empty() || records.len() > 256 || length > PACK_LIMIT {
