@@ -499,10 +499,16 @@ fn run_selected(
         Ok(())
     } else {
         let case = workload_source::workspace_registry::resolve(id)?;
+        // The fast verifier compares against `registry::fixture`, which is the
+        // initial state. Families whose declared final state differs from that
+        // fixture keep the full verify route instead.
         let fast = mode == "verify"
             && !matches!(
                 family,
-                "git_tool_workflow" | "edit_length_changing_capped" | "workspace_reliability"
+                "git_tool_workflow"
+                    | "edit_length_changing_capped"
+                    | "workspace_reliability"
+                    | "file_size_transition"
             )
             && case.kind != "boundaries";
         let args = [

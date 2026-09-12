@@ -467,7 +467,11 @@ pub(crate) fn verify_root(
                 validate_regular(&reader, file_root)?;
                 let length = regular_length(&reader, file_root)?;
                 if length != content.len() {
-                    return Err(format!("canonical length: {path}").into());
+                    return Err(format!(
+                        "canonical length: {path} observed {length} expected {}",
+                        content.len()
+                    )
+                    .into());
                 }
                 let mut sink = CompareSink {
                     expected: content,

@@ -97,7 +97,7 @@ pub(crate) fn operations(case: &Case) -> Result<Vec<BoundaryOp>> {
         rows.push(BoundaryOp::AliasTruncate { len: 1 });
         rows.push(BoundaryOp::AliasTruncate { len: 1 });
         rows.push(BoundaryOp::AtomicReplace {
-            len: v016::BOUNDARY_BELOW,
+            len: v016::BOUNDARY_EXACT,
         });
         return Ok(rows);
     }
@@ -142,6 +142,7 @@ pub(crate) fn expected(case: &Case, seed: u8, step: usize) -> Result<Vec<Entry>>
         return Err("boundary expected step outside the declared schedule".into());
     }
     let mut entries = fixture(case, seed)?;
+    let mut previous_bytes: Option<Vec<u8>> = None;
     let mut bytes = {
         let mut out = Vec::new();
         d::content(FAMILY_ID, "target", seed, 0, "boundary-target", plan.initial_len)?
@@ -163,50 +164,51 @@ pub(crate) fn expected(case: &Case, seed: u8, step: usize) -> Result<Vec<Entry>>
                 let mut tail = replacement(case, seed, *visit, *len)?;
                 bytes.append(&mut tail);
             }
-            // Truncate by one byte, then append a different tail of the same
-            // length. The operation exercises a real ftruncate and a real
-            // write; its net length change is zero, exactly as declared.
+            // One real removal from the end of the file.
             BoundaryOp::Remove { len, visit } => {
+                let _ = visit;
                 let keep = bytes.len() - *len as usize;
                 bytes.truncate(keep);
-                let mut tail = replacement(case, seed, *visit, *len)?;
-                bytes.append(&mut tail);
             }
             BoundaryOp::AliasAppend { len } => {
                 let mut tail = replacement(case, seed, index, *len)?;
                 bytes.append(&mut tail);
             }
             BoundaryOp::AliasTruncate { len } => {
+                let _ = index;
                 let keep = bytes.len() - *len as usize;
                 bytes.truncate(keep);
-                let mut tail = replacement(case, seed, index, *len)?;
-                bytes.append(&mut tail);
             }
             BoundaryOp::AtomicReplace { len } => {
                 let mut out = Vec::new();
-                d::content(FAMILY_ID, "atomic-replace", seed, index, &case.id, *len)?.write_to(&mut out)?;
+                d::content(FAMILY_ID, "atomic-replace", seed, index, &case.id, *len)?
+                    .write_to(&mut out)?;
+                previous_bytes = Some(bytes);
                 bytes = out;
             }
         }
     }
     let length = bytes.len() as u64;
+    // The atomic replacement replaces only the target name. When the plan has
+    // an alias, the pre-replacement inode survives under that name: the alias
+    // keeps the previous bytes and the target becomes a separate inode with the
+    // new content, which is what the final inode classes record.
+    if plan.alias {
+        // Uniform representation for the verifier: the alias is always a
+        // regular file, holding the shared content before the replacement and
+        // the surviving pre-replacement inode afterwards.
+        let content = previous_bytes.unwrap_or_else(|| bytes.clone());
+        let alias = entries
+            .iter_mut()
+            .find(|entry| entry.path == ALIAS)
+            .ok_or("boundary alias entry")?;
+        alias.kind = EntryKind::File(Content::Literal(content));
+    }
     let target = entries
         .iter_mut()
         .find(|entry| entry.path == TARGET)
         .ok_or("boundary target entry")?;
     target.kind = EntryKind::File(Content::Literal(bytes.clone()));
-    // The alias is a hardlink before the final replacement and a separate
-    // inode afterwards; the oracle records the declared relationship.
-    let alias_replaced = plan.alias && step >= operations.len();
-    if plan.alias {
-        let alias = entries
-            .iter_mut()
-            .find(|entry| entry.path == ALIAS)
-            .ok_or("boundary alias entry")?;
-        if alias_replaced {
-            alias.kind = EntryKind::File(Content::Literal(bytes.clone()));
-        }
-    }
     let witness = entries
         .iter()
         .find(|entry| entry.path == WITNESS)
@@ -232,7 +234,9 @@ pub(crate) fn declared_length(case: &Case, step: usize) -> Result<u64> {
             BoundaryOp::Append { len, .. } | BoundaryOp::AliasAppend { len } => {
                 length += *len;
             }
-            BoundaryOp::Remove { .. } | BoundaryOp::AliasTruncate { .. } => {}
+            BoundaryOp::Remove { len, .. } | BoundaryOp::AliasTruncate { len } => {
+                length -= *len;
+            }
             BoundaryOp::AtomicReplace { len } => length = *len,
         }
     }
@@ -279,8 +283,8 @@ pub(crate) fn self_check() -> Result<()> {
         }
         // The declared length sequence, checked against an independent model.
         let expected_lengths: Vec<u64> = match case.id.as_str() {
-            ROUNDTRIP => vec![131_071, 131_072, 131_073, 131_073, 131_073],
-            ALIAS_ROUNDTRIP => vec![131_071, 131_072, 131_073, 131_073, 131_073, 131_071],
+            ROUNDTRIP => vec![131_071, 131_072, 131_073, 131_072, 131_071],
+            ALIAS_ROUNDTRIP => vec![131_071, 131_072, 131_073, 131_072, 131_071, 131_072],
             SMALL_CONTROL => vec![4_096, 4_096, 4_096],
             BELOW => vec![131_071, 131_071, 131_071],
             EXACT => vec![131_072, 131_072, 131_072],
@@ -312,22 +316,55 @@ pub(crate) fn self_check() -> Result<()> {
             }
         }
     }
-    // The alias plan preserves the original alias name after replacement.
+    // The alias plan preserves the original alias name and separates the two
+    // inode classes after the final atomic replacement.
     let alias = cases()
         .into_iter()
         .find(|case| case.id == ALIAS_ROUNDTRIP)
         .ok_or("alias roundtrip case")?;
-    let final_state = expected(&alias, 1, 5)?;
-    if !final_state.iter().any(|entry| entry.path == ALIAS) {
-        return Err("alias roundtrip must preserve the alias name".into());
-    }
-    if final_state
-        .iter()
-        .filter(|entry| matches!(entry.kind, EntryKind::File(_)))
-        .count()
-        != 3
+    let operations = operations(&alias)?;
+    let before = expected(&alias, 1, operations.len() - 1)?;
+    let after = expected(&alias, 1, operations.len())?;
+    let _ = (&before, &after);
+    let length_of = |entries: &[Entry], path: &str| -> Result<u64> {
+        match &entries
+            .iter()
+            .find(|entry| entry.path == path)
+            .ok_or("alias roundtrip path")?
+            .kind
+        {
+            EntryKind::File(content) => Ok(content.len()),
+            _ => Err("alias roundtrip kind".into()),
+        }
+    };
+    if !after.iter().any(|entry| entry.path == ALIAS)
+        || after
+            .iter()
+            .filter(|entry| matches!(entry.kind, EntryKind::File(_)))
+            .count()
+            != 3
     {
         return Err("alias roundtrip final path count".into());
+    }
+    // Before the replacement the alias shares the target inode; afterwards the
+    // two classes hold different lengths.
+    // Before the replacement the alias shares the target inode, so the two
+    // names agree; afterwards the surviving alias keeps the pre-replacement
+    // bytes and the target holds the new content.
+    let previous = length_of(&before, TARGET)?;
+    let replaced = length_of(&after, TARGET)?;
+    if length_of(&before, ALIAS)? != previous
+        || length_of(&after, ALIAS)? != previous
+        || replaced == previous
+    {
+        return Err(format!(
+            "alias roundtrip must separate the replaced inode: before {}/{}, after {}/{}",
+            previous,
+            length_of(&before, ALIAS)?,
+            replaced,
+            length_of(&after, ALIAS)?
+        )
+        .into());
     }
     let _ = sdk_edit_common::sha256_hex(b"v016-boundary-self-check");
     Ok(())
@@ -335,6 +372,8 @@ pub(crate) fn self_check() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+
+
 
 
 

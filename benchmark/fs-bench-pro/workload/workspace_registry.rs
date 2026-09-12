@@ -68,6 +68,17 @@ pub(crate) fn fixture(case: &Case, seed: u8) -> Result<Vec<Entry>> {
 
 pub(crate) fn expected(case: &Case, seed: u8, step: usize) -> Result<Vec<Entry>> {
     if case.family=="edit_length_changing_capped" {return super::edit_length_changing_capped::expected(case,seed,step);}
+    // v0.1.6 boundary cases declare a final state that differs from the initial
+    // fixture, so their oracle comes from the family recipe and operation
+    // algebra rather than from `fixture`.
+    if case.family=="file_size_transition" {
+        let rows = super::file_size_transition::expected(case,seed,step)?;
+        if std::env::var_os("LAYERFS_V016_ORACLE_DEBUG").is_some() {
+            let target = rows.iter().find(|e| e.path=="data/target.bin").map(|e| match &e.kind { super::workspace_common::EntryKind::File(c) => c.len(), _ => u64::MAX });
+            eprintln!("v016-oracle-debug case={} seed={} step={} target={:?}", case.id, seed, step, target);
+        }
+        return Ok(rows);
+    }
     valid_seed(seed)?;
     if case.kind=="boundaries" { return super::dedup_cdc_locality::boundaries(); }
     dispatch_family!(case, expected, seed, step)

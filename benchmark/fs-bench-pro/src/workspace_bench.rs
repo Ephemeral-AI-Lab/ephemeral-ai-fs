@@ -1634,7 +1634,7 @@ fn run_case(
                         BoundaryOp::Remove { len, visit } => {
                             let current =
                                 workload_source::file_size_transition::declared_length(case, step)?;
-                            (current - *len, 0, *len, *visit)
+                            (current - *len, *len, 0, *visit)
                         }
                         BoundaryOp::AliasAppend { len } => {
                             let current =
@@ -1644,7 +1644,7 @@ fn run_case(
                         BoundaryOp::AliasTruncate { len } => {
                             let current =
                                 workload_source::file_size_transition::declared_length(case, step)?;
-                            (current - *len, 0, *len, step)
+                            (current - *len, *len, 0, step)
                         }
                         BoundaryOp::AtomicReplace { len } => {
                             let current =
@@ -1652,9 +1652,11 @@ fn run_case(
                             (0, current, *len, step)
                         }
                     };
-                    let replacement = workload_source::file_size_transition::replacement(
-                        case, seed, visit, len,
-                    )?;
+                    let replacement = if len == 0 {
+                        Vec::new()
+                    } else {
+                        workload_source::file_size_transition::replacement(case, seed, visit, len)?
+                    };
                     let request = WorkspaceFileRangeEdit {
                         workspace_id: session.id,
                         path: workload_source::file_size_transition::TARGET.to_string(),
@@ -1662,6 +1664,23 @@ fn run_case(
                         delete_len,
                         replacement: WorkspaceFileReplacement::Inline(replacement),
                     };
+                    emit(
+                        "v016-edit-debug",
+                        &[
+                            ("step", step.to_string()),
+                            ("start", request.start.to_string()),
+                            ("delete_len", request.delete_len.to_string()),
+                            (
+                                "replacement_len",
+                                match &request.replacement {
+                                    WorkspaceFileReplacement::Inline(bytes) => bytes.len(),
+                                    WorkspaceFileReplacement::Zero(len) => *len as usize,
+                                    _ => 0,
+                                }
+                                .to_string(),
+                            ),
+                        ],
+                    );
                     product_budget.begin("sdk-edit")?;
                     let start = product_budget.start_clock("sdk-edit")?;
                     let result = client.edit_workspace_file_range(request);
@@ -2046,7 +2065,15 @@ fn run_case(
             }
         }
         if !fast && !sampled && case.family != "dedup_branch_history" {
-            let mut expected = registry::expected(case, seed, registry::steps(case))?;
+            // v0.1.6 boundary cases declare a final state that differs from the
+            // initial fixture (length transitions, an alias split by the final
+            // atomic replacement), so the oracle comes from the family's own
+            // recipe and operation algebra.
+            let mut expected = if case.family == "file_size_transition" {
+                workload_source::file_size_transition::expected(case, seed, registry::steps(case))?
+            } else {
+                registry::expected(case, seed, registry::steps(case))?
+            };
             if case.kind == "git-tool" {
                 let manifest = std::fs::read_to_string(
                     Path::new(&std::env::var("LAYERFS_V013_VERIFIER_EXCHANGE_HOST")?)
