@@ -71,8 +71,14 @@ are reconstructed artifacts, not evidence: every derived number comes from
 directories), which was required at 99 % root-volume capacity. The two arm build
 trees remain excluded and are identified by `arm-identity-<arm>.json`.
 
-**Fixture custody failure.** The immutable `namespace-100000` fixture lost two
-100 MB payload files during this campaign; `fixture-validation.json` (before)
-passes and `fixture-validation-final.json` (after) fails. Details and the rejected
-identity-matched run are in `custody/fixture-damage.json` and
-`commit-stage3-results.md` §5.3.
+**Fixture custody failure: repaired.** The immutable `namespace-100000` fixture lost
+two 100 MB payload files at `2026-09-12T02:13:32Z`; `fixture-validation.json` (before)
+passes and `fixture-validation-final.json` (after the damage) fails. The content is
+produced by a deterministic generator, so it was regenerated, proved reproducible
+against two independent generations and the registered digests, and re-validated:
+`fixture-validation-restored.json` reports `VALIDATION PASS` / `VERIFIED_IDENTITY`
+with the registered digest `6fc793a9…1ac80a7e`. The damaged tree is retained in
+quarantine (`benchmark-results/host-store/fixtures/.damaged-…-20260912T023240Z`) and
+the run it rejected is retained as failed evidence. Both public campaigns therefore
+measured byte-identical fixture content. Full detail: `custody/fixture-damage.json`
+and `commit-stage3-results.md` §5.3.
