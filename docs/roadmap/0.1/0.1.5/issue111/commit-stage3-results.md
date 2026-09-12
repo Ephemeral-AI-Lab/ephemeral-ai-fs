@@ -399,9 +399,12 @@ Post-call RSS is not an operation-peak measurement and is not claimed as one.
 
 ## 8. Correctness, verification and custody
 
-- **Unit suite**: `cargo test -p layerfs-workspace` — 67 lib tests pass, 1 ignored
-  (the explicitly selected structural sweep), 12 + 2 integration tests pass. Log
-  `proof/layerfs-workspace-lib-tests.log`.
+- **Unit suite**: `cargo test -p layerfs-workspace` — 67 lib tests pass, 2 ignored
+  (the explicitly selected structural sweep and the reduced-budget integration
+  proof, both run and reported in §3.2 and §4), 12 + 2 integration tests pass. Log
+  `proof/layerfs-workspace-lib-tests.log`; both ignored proofs re-run green at the
+  final commit (`proof/layerfs-workspace-structural-sweep.log`,
+  `proof/layerfs-workspace-reduced-budget.log`).
 - **Public correctness gates** (fail-closed, from raw receipts): every one of the 24
   cells has `exit_code = 0`, container removed, proof `PASS`, the declared
   `Created`/`UpToDate` result, the exact bootstrap canonical identity
