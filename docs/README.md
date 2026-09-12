@@ -1,12 +1,20 @@
 # LayerFS documentation
 
-> **Status:** Current documentation entry point; v0.1.4 release documentation.
+> **Status:** Current documentation entry point; v0.1.5 release documentation.
 
-## Use LayerFS v0.1.4
+## Use LayerFS v0.1.5
+
+- [Manual](versioned/0.1.5/README.md)
+- [Release record and accepted limitations](../release-notes/0.1.5/README.md)
+- [Owner acceptance, waivers and issue disposition](../release-notes/0.1.5/acceptance.md)
+- [Schema-10 compatibility and no-promotion boundary](versioned/0.1.5/storage-format.md)
+- [Honest limitations](versioned/0.1.5/limitations.md)
+
+## Historical LayerFS 0.1.4
 
 - [Manual](versioned/0.1.4/README.md)
-- [Release record and accepted limitations](../release-notes/0.1.4/README.md)
-- [Schema compatibility and no-migration boundary](versioned/0.1.4/storage-format.md)
+- [Release record](../release-notes/0.1.4/README.md)
+- [Every v0.1.4 benchmark family and case](../release-notes/0.1.4/benchmark-closeout.md)
 
 ## Historical LayerFS 0.1.3
 
@@ -20,7 +28,7 @@
 - [Limitations](versioned/0.1.3/limitations.md)
 - [Release record](../release-notes/0.1.3/README.md)
 
-- [Every v0.1.4 benchmark family and case](../release-notes/0.1.4/benchmark-closeout.md)
+- [Every v0.1.5 benchmark family and case](../release-notes/0.1.5/benchmark-closeout.md)
 
 ## Plan and build
 
