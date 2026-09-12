@@ -148,10 +148,19 @@
   },
   "publication": {
     "tag": "v0.1.5",
-    "tag_commit": "RECORDED_AFTER_TAG",
+    "tag_object": "5c7c9b0b01107461c3c144bd910539a6d73b12af",
+    "tag_commit": "6ee1ec94cfdcb7bc8c55830e8348d553c20e2f13",
     "github_release": "https://github.com/Ephemeral-AI-Lab/layerfs/releases/tag/v0.1.5",
     "assets": "layerfs-0.1.5.tar.gz, layerfs-0.1.5.zip, layerfs-0.1.5-benchmark-data.tar.gz, Cargo.lock, LICENSE, SHA256SUMS",
-    "checksums": "recorded in release-notes/0.1.5/artifacts.md",
+    "asset_validation": "PASS (4,801 tagged source members; 1,307 tracked evidence members; untracked files excluded; SHA256SUMS re-verified)",
+    "checksums": {
+      "layerfs-0.1.5.tar.gz": "b7439c3421cb627374f17a46ab1d03d288bd46554a7ccd59e9730250237df5b2",
+      "layerfs-0.1.5.zip": "99b5c5332aa689063225950c98fcd8896dff369fcd7e81da8224dc443bbbd245",
+      "layerfs-0.1.5-benchmark-data.tar.gz": "608c553978a559db520ea8d8aaa4682d98ef4ce62f9d32336553ee7d28748628",
+      "Cargo.lock": "ddef31ec251492102f76c51f8916006bcf35f12818ffd864c2500192e262f4f4",
+      "LICENSE": "e20a92efe4b92c0460bd0c475395166e37b6450ed410af155fa0ed99d479f676"
+    },
+    "recorded_in": "release-notes/0.1.5/artifacts.md",
     "no_crates_io_package": true,
     "no_prebuilt_executable": true,
     "no_public_runtime_image": true

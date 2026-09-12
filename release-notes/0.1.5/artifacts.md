@@ -30,8 +30,28 @@ untracked raw bytes. That limitation is stated here rather than implied.
 ## Published checksums
 
 <!-- CHECKSUMS:BEGIN -->
-Checksums are recorded here after the assets are built from the tag, so that no
-hash is invented before it exists.
+The `v0.1.5` tag is an annotated tag (`5c7c9b0b01107461c3c144bd910539a6d73b12af`)
+resolving to commit **`6ee1ec94cfdcb7bc8c55830e8348d553c20e2f13`**. The six assets
+were prepared from that tag with `release-notes/0.1.5/prepare_artifacts.py`
+(validation PASS: 4,801 tagged source members, 1,307 tracked evidence members,
+untracked files excluded, `SHA256SUMS` re-verified) and published at
+<https://github.com/Ephemeral-AI-Lab/layerfs/releases/tag/v0.1.5>.
+
+| Asset | Bytes | SHA-256 |
+|---|---:|---|
+| `layerfs-0.1.5.tar.gz` | 63,465,344 | `b7439c3421cb627374f17a46ab1d03d288bd46554a7ccd59e9730250237df5b2` |
+| `layerfs-0.1.5.zip` | 69,459,204 | `99b5c5332aa689063225950c98fcd8896dff369fcd7e81da8224dc443bbbd245` |
+| `layerfs-0.1.5-benchmark-data.tar.gz` | 11,786,849 | `608c553978a559db520ea8d8aaa4682d98ef4ce62f9d32336553ee7d28748628` |
+| `Cargo.lock` | 27,680 | `ddef31ec251492102f76c51f8916006bcf35f12818ffd864c2500192e262f4f4` |
+| `LICENSE` | 1,069 | `e20a92efe4b92c0460bd0c475395166e37b6450ed410af155fa0ed99d479f676` |
+
+`SHA256SUMS` contains exactly those five checksums in that order. GitHub's
+automatically generated source archives are additional platform downloads and
+are not covered by this list.
+
+This checksum record is a documentation commit **after** the tag; the tag tree
+itself differs from the measured product commit only by documentation and the
+version bump, as stated in [verification](verification.md).
 <!-- CHECKSUMS:END -->
 
 ## Publication sequence
