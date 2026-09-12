@@ -1,0 +1,161 @@
+{
+  "schema": "layerfs-v015-release-record-v1",
+  "status": "RELEASE_PREPARED_FROM_INHERITED_CAMPAIGN",
+  "package_version": "0.1.5",
+  "measured_product": {
+    "source_commit": "1ff1f2dddeb60493953311de316fa5bec4634a1a",
+    "source_dirty": false,
+    "LAYERFS_SOURCE_SEAL": "a555211fdc6e96e025764eba2c2c36f709baa7e9446840a07a8669935252fec3",
+    "LAYERFS_PRODUCT_SEAL": "276c5970aabf485594d90ae30920b3cdb310134a7572589c558063a9d52ce093",
+    "host_binary_sha256": "c55daf13e372331a5ab6dbd465ece351a55923831c45864325ac46b1508fa295",
+    "image": "sha256:c83085b897e272204e5477e66b33ec9b328af568299448872441e7a676ce1761",
+    "image_tag": "layerfs-bench-infra:a555211fdc6e96e0",
+    "build_identity_probe": {
+      "kind": "storage-format-probe",
+      "schema_version": 10,
+      "storage_policy": "ordinary",
+      "sqlite_version": "3.51.0",
+      "status": "PASS"
+    },
+    "native_gate": {
+      "command": "tools/test-fast.sh",
+      "status": "PASS",
+      "tests": 530,
+      "wall_seconds": 118,
+      "exit_code": 0,
+      "source": "inherited from the #120 campaign; not re-run for this release"
+    }
+  },
+  "applicability": {
+    "decision": "3e308a8f2 is behavior-neutral (transparent type alias, identity reborrow x4, identical control flow, identity conversion; remainder rustfmt reflow)",
+    "record": "docs/roadmap/0.1/0.1.5/issue120/applicability-3e308a8f2.md",
+    "reused_final_treatment": {
+      "host_binary_sha256": "b5f089ebcd6fa2fa939feb9bccc5300ca8ede798820fe8fd9aace8799fe4ec0b",
+      "scope": [
+        "ordinary full157 stride-1 construction (763.218 s, 157/157 steps)",
+        "full157 same-Store verification (735.749 s; 157 states / 904,143 entries / 4,936,693,030 B)",
+        "physical census (allocated 83,951,616 B; apparent 82,583,552 B; pack rows 1,058; store_sha256 88b4fe70...)",
+        "Git157 read-only control with retained allocation-layout WARN (56,197,120 B live vs 56,373,248 B recorded)",
+        "historical access 11 performance + 11 proofs (2.525-3.232 s / 2.48-2.87 s, all inside the unwaived 15 s envelope)",
+        "default-budget K32000 route + independent verification (32,000 edits, charge 2,048,000 under the 2,097,152 B budget, verification 68.576 s)",
+        "K6000 boundary (14.61 s) and default-budget frontier proof at exactly 2B, 4B, 8B"
+      ]
+    },
+    "tag_tree_delta": "documentation, the release-policy correction, the versioned manual, the changelog, release-notes/0.1.5/ and the workspace version bump 0.1.4 -> 0.1.5 (12 project-owned packages in Cargo.lock; imported packages unchanged); no Rust implementation, schema, codec, workload, timer or verifier source differs"
+  },
+  "campaign_tallies": {
+    "registered_performance_selections": 198,
+    "performance_fresh": 182,
+    "performance_reused": 16,
+    "performance_pass": 56,
+    "performance_warn": 125,
+    "performance_fail": 1,
+    "proof_only_selections": 29,
+    "proof_only_pass": 28,
+    "proof_only_not_run_optional": 1,
+    "fresh_independent_proofs": 182,
+    "fresh_proofs_pass": 182,
+    "cleanup_failures": 0,
+    "open_s0": 0,
+    "open_s1": 0,
+    "verified_cold_member": {
+      "case": "init_namespace/namespace-100000",
+      "contract": "namespace-100000-cold-v2",
+      "resident_pages_after_eviction": 0,
+      "expected_pages": 125169,
+      "metadata": "VERIFIED",
+      "acquisition_wall_seconds": 25.942,
+      "complete_envelope_seconds": 31.615
+    },
+    "campaign_context_vs_v0_1_3": {
+      "cells_15_percent_or_more_slower": 139,
+      "comparable_cells": 198,
+      "median_ratio": 1.34,
+      "total_added_seconds": 33.115,
+      "note": "context for future target selection; never an acceptance gate"
+    }
+  },
+  "waivers": [
+    {
+      "target": "dedup_branch_history/dedup-history-unrelated-500-mixed-v2 family timer pure_call_sum_ns < 15 s",
+      "decision": "owner-waived on 2026-09-13",
+      "measured": "16.107 s (16,106,808,892 ns); complete command 19.057 s; cleanup PASS; historical_product_target_status=TARGET_MISS",
+      "sample": "one complete public sample, seed 1, repetition 1, on c55daf13... @ 1ff1f2ddd",
+      "reason": "#116 bounded pending representation (owner-required) +1.98 s plus #107 pack coalescing (owner-accepted) +0.33 s; the breach predates this campaign (15.772 s on the #116-only treatment); the cell is 0.89x v0.1.3",
+      "residual_risk": "worst-case unrelated-history tier runs approximately 7 % over its historical gate",
+      "record": "release-notes/0.1.5/waivers.md section 1",
+      "retains_disposition": "FAIL - unrepaired (S2)"
+    },
+    {
+      "target": "init_namespace/namespace-100000 cold Init <= 2.7 s",
+      "decision": "owner-WAIVED in #118 (2026-09-12); carried forward verbatim",
+      "measured": "4.3975 s on the v0.1.5 candidate (VERIFIED_COLD)",
+      "record": "release-notes/0.1.5/waivers.md section 2",
+      "source": "benchmark-results/host-store/issue118/20260912/owner-cold-target-waiver.json",
+      "scope": "that target only",
+      "retains_disposition": "TARGET_MISS"
+    },
+    {
+      "target": "Stage2 K10 sequence target",
+      "decision": "owner-WAIVED in #118",
+      "record": "release-notes/0.1.5/waivers.md section 3"
+    },
+    {
+      "target": "namespace-100000 --sequence 32000 against the historical 15 s family target (reporting-only per the harness)",
+      "decision": "recorded as WARN, not waived and not hidden",
+      "measured": "31.765 s against the family target; the route itself COMPLETE with 32,000 edits and independent verification PASS (68.576 s)",
+      "record": "release-notes/0.1.5/waivers.md section 4"
+    },
+    {
+      "target": "#107 self-declared >= 1.5 % allocated-byte reduction on the affected ordinary history",
+      "decision": "accepted by explicit owner decision (owner-107-acceptance.json), not re-based",
+      "measured": "allocated +0.02 % (83,935,232 -> 83,951,616 B); apparent -1.13 %; pack overflow slack -43 %; pack rows 3,457 -> 1,058",
+      "record": "release-notes/0.1.5/waivers.md section 6"
+    }
+  ],
+  "retained_warnings": [
+    "Git157 allocation-layout WARN (live 56,197,120 B vs recorded 56,373,248 B; apparent/pack bytes unchanged)",
+    "full157 single-sample +1.1 % wall WARN accepted by the owner",
+    "cold-openat paired WARN; active-K100 Commit +0.311 ms; documented prior unused_mut warning",
+    "125 WARN performance cells (worst ratios: dedup-cdc-scattered-100 3.45x, dedup-cross-file-unique-100 3.35x, namespace-100 3.22x)"
+  ],
+  "unmet_and_unclaimed": [
+    "#108 per-commit targets 3.4/2.8 ms (candidate 6.22/4.03 ms on distributed/recurring-500) and per-edit targets 2.4/1.4 ms (candidate path 7.6-15.4 ms); no fix landed",
+    "#112 G0 harness attribution and all G1-G6 optimizations; nothing executed or claimed",
+    "#114 scattered-100 timer-to-command-window gap approximately 452 ms and the slab_send_blocked_ns mechanism remain unattributed",
+    "endurance (600 s sustained proof) unqualified (NOT_RUN_OPTIONAL)"
+  ],
+  "release_preparation_gates": {
+    "cargo build --workspace": "PASS (dev profile)",
+    "cargo fmt --all -- --check": "PASS",
+    "cargo clippy --workspace --all-targets --all-features -- -D warnings": "FAIL - pre-existing on the inherited tree; all findings inside #[cfg(test)] code; reproduced identically with the version bump reverted under both 1.96.0 and 1.85.1; not fixed because a source change would invalidate the measured product identity",
+    "cargo clippy --workspace --locked -- -D warnings (the CI-enforced form, toolchain 1.96.0)": "PASS",
+    "git diff --check": "PASS",
+    "note": "no benchmark, proof or test-suite execution was performed for this release"
+  },
+  "derived_tables": {
+    "benchmark-performance.csv": "one row per registered performance selection, derived from the #120 final report section 2 and re-verified against the receipts",
+    "benchmark-verification.csv": "one row per registered selection proof disposition (227 rows)",
+    "benchmark-closeout.md": "every family and case, generated report-only",
+    "generator": "release-notes/0.1.5/derive_tables.py (CSVs) and release-notes/0.1.5/generate_closeout.py (closeout); both read the published #120 report and re-verify every receipt path"
+  },
+  "evidence_roots": {
+    "campaign_receipts": "benchmark-results/host-store/issue120/{performance,verification,diagnostics}/** (local immutable evidence; not tracked in Git)",
+    "campaign_reports": "docs/roadmap/0.1/0.1.5/issue120/**",
+    "issue118_evidence": "benchmark-results/host-store/issue118/20260912/**",
+    "v0_1_3_baseline": "docs/roadmap/0.1/0.1.3/checkpoint-evidence/performance.csv",
+    "v0_1_5_earlier_baselines": "docs/roadmap/0.1/0.1.5/issue104/case-results.csv, docs/roadmap/0.1/0.1.5/issue102/requalification-current-source-20260910.md"
+  },
+  "publication": {
+    "tag": "v0.1.5",
+    "tag_commit": "RECORDED_AFTER_TAG",
+    "github_release": "https://github.com/Ephemeral-AI-Lab/layerfs/releases/tag/v0.1.5",
+    "assets": "layerfs-0.1.5.tar.gz, layerfs-0.1.5.zip, layerfs-0.1.5-benchmark-data.tar.gz, Cargo.lock, LICENSE, SHA256SUMS",
+    "checksums": "recorded in release-notes/0.1.5/artifacts.md",
+    "no_crates_io_package": true,
+    "no_prebuilt_executable": true,
+    "no_public_runtime_image": true
+  },
+  "publication_authorization": "Owner directed the v0.1.5 closure on 2026-09-13: close the v0.1.5 issue set honestly, prepare the release documents, bump the version, tag v0.1.5 and publish the source-only GitHub release using the inherited #120 campaign without re-measurement.",
+  "closeout_report": "benchmark-closeout.md"
+}
