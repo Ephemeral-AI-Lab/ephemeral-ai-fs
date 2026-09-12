@@ -1,0 +1,86 @@
+// Run with Playwright available: node web/test3d.cjs [preview URL]
+const assert=require('node:assert/strict');
+const {chromium}=require('playwright');
+(async()=>{
+ const browser=await chromium.launch({channel:'chrome',headless:true,args:['--enable-unsafe-swiftshader']});
+ try{
+ const page=await browser.newPage({viewport:{width:1440,height:1150}}),errors=[];
+ page.on('pageerror',e=>errors.push(e.message));
+ await page.goto(process.argv[2]||'http://127.0.0.1:8765/');
+ await page.waitForFunction(()=>window.topology3D?.visible);
+ assert.equal(await page.locator('[data-node3d]').count(),12);
+ const idle=()=>page.waitForFunction(()=>document.querySelector('#three-view').dataset.animating==='false');
+ await idle();
+ const stableId=await page.locator('[data-node3d="L1"]').getAttribute('data-object');
+ const originalPosition=await page.locator('[data-node3d="L2"]').getAttribute('style');
+ await page.locator('#three-picker').selectOption('L2');
+ await page.waitForFunction(()=>document.querySelector('#three-view').dataset.animating==='true');
+ await idle();
+ assert.notEqual(await page.locator('[data-node3d="L2"]').getAttribute('style'),originalPosition,'Selected layer must expand its space');
+ assert.equal(await page.locator('[data-node3d="L1"]').getAttribute('data-object'),stableId,'Scene objects must survive selection');
+ await page.evaluate(()=>{topologyModel.select('L3');topologyModel.select('L1');topologyModel.select('L2');});
+ await idle();assert.equal(await page.locator('#inspector h2').innerText(),'L2');
+ await page.emulateMedia({reducedMotion:'reduce'});
+ await page.locator('[data-camera="stack"]').click();await idle();
+ assert.equal(await page.locator('[data-node3d="L1"]').getAttribute('data-object'),stableId);
+ await page.emulateMedia({reducedMotion:'no-preference'});
+ await page.locator('[data-camera="overview"]').click();await idle();
+
+ const overlapping=await page.locator('.three-node:not([hidden])').evaluateAll(nodes=>{const rects=nodes.map(n=>n.getBoundingClientRect());return rects.some((a,i)=>rects.slice(i+1).some(b=>a.left<b.right&&a.right>b.left&&a.top<b.bottom&&a.bottom>b.top));});
+ assert.equal(overlapping,false,'Default labels must not overlap');
+ await page.locator('#three-picker').selectOption('narrow');
+ assert.equal(await page.locator('#inspector h2').innerText(),'narrow');
+ await page.locator('#view-history').click();
+ assert.equal(await page.locator('#history-title').innerText(),'narrow');
+ await page.locator('#three-picker').selectOption('minimal');
+ assert.equal(await page.locator('#history-title').innerText(),'minimal');
+ await page.locator('#close-history').click();
+ await page.locator('#add-stack').click();
+ assert.equal(await page.locator('[data-node3d="L4"]').count(),1);
+ await idle();
+ assert.equal(await page.locator('[data-node3d="L1"]').getAttribute('data-object'),stableId,'Promotion must preserve existing objects');
+ const before=await page.locator('[data-node3d="L3"]').getAttribute('style');
+ const canvas=await page.locator('#three-view canvas').boundingBox();
+ await page.mouse.move(canvas.x+canvas.width*.3,canvas.y+canvas.height*.8);
+ await page.mouse.down();await page.mouse.move(canvas.x+canvas.width*.55,canvas.y+canvas.height*.75,{steps:12});await page.mouse.up();
+ assert.notEqual(await page.locator('[data-node3d="L3"]').getAttribute('style'),before,'Orbit must change projection');
+ await page.locator('#fit').click();
+ await page.locator('[data-camera="layer"]').click();
+ assert.equal(await page.locator('[data-node3d="L1"]').count(),0,'Layer view isolates the selected base');
+ await page.locator('[data-camera="stack"]').click();
+ assert.equal(await page.locator('[data-node3d="L1"]').count(),1);
+ await page.locator('[data-camera="overview"]').click();
+ await page.locator('#three-picker').selectOption('narrow');
+ assert.ok((await page.locator('#three-breadcrumbs').innerText()).includes('search-a'));
+ await page.locator('#nav-parent').click();
+ assert.equal(await page.locator('#inspector h2').innerText(),'search-a');
+ await page.locator('#nav-next').click();
+ assert.equal(await page.locator('#inspector h2').innerText(),'search-b');
+ await page.locator('#frame-selected').click();
+ await page.locator('#layer-spacing').fill('6');
+ await page.locator('#three-view canvas').focus();
+ await page.keyboard.press('Home');
+ assert.equal(await page.locator('[data-camera="overview"]').getAttribute('aria-pressed'),'true');
+ await page.locator('#mode-2d').click();assert.equal(await page.locator('#extent').isVisible(),true);
+ await page.locator('[data-collapse="search-a"]').click();
+ await page.locator('#mode-3d').click();assert.equal(await page.locator('[data-node3d="refine"]').count(),0);
+ await page.locator('#expand').click();assert.equal(await page.locator('[data-node3d="refine"]').count(),1);
+ for(const width of [375,768,1440]){await page.setViewportSize({width,height:1000});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);}
+
+ await page.locator('#simulation-open').click();
+ await page.getByRole('button',{name:'Generate scene',exact:true}).click();await idle();
+ assert.equal(await page.locator('[data-node3d]').count(),12);
+ await page.locator('#three-picker').selectOption('app-l3-b1');await page.locator('#add-stack').click();await idle();
+ assert.equal(await page.locator('[data-node3d="L4"]').count(),1);
+ await page.locator('#mode-2d').click();assert.equal(await page.locator('.node.layer .head').count(),1);
+ await page.locator('#mode-3d').click();await idle();
+ await page.locator('#simulation-open').click();
+ assert.equal(await page.locator('[name="stacks"]').count(),0);await page.locator('[name="layerCount"]').fill('1');await page.locator('[name="branchCount"]').fill('1');
+ await page.getByRole('button',{name:'Generate scene',exact:true}).click();await idle();
+ assert.equal(await page.locator('[data-node3d]').count(),2);
+ assert.equal(await page.locator('[data-node3d="L1"]').count(),1);
+ assert.equal(await page.locator('[data-node3d="L4"]').count(),0,'Old scene must be cleared');
+ assert.deepEqual(errors,[]);
+ console.log('PASS: WebGL, labels, selection/history, promotion, orbit, fit, 2D/3D, collapse, responsive layout, persistent objects, transitions, rapid selection, reduced motion.');
+ }finally{await browser.close();}
+})().catch(e=>{console.error(e);process.exitCode=1;});
