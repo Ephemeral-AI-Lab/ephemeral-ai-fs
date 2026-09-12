@@ -138,13 +138,11 @@ fn native_admission_actual_prior_depth_first_hint_and_readback() {
         let prepared = f.prepare(vec![target.clone()]);
         assert_eq!(prepared.objects[0].delta, depth <= 4);
         assert!(prepared.objects[0].retained.is_some());
+        let pack_bytes = prepared.packs[0].prepared_bytes();
         assert_eq!(
-            pack::versioned_header(
-                prepared.packs[0][..16].try_into().unwrap(),
-                prepared.packs[0].len()
-            )
-            .unwrap()
-            .version,
+            pack::versioned_header(pack_bytes[..16].try_into().unwrap(), pack_bytes.len())
+                .unwrap()
+                .version,
             pack::Version::Native
         );
         f.publish(prepared);
@@ -231,7 +229,9 @@ fn native_admission_peak_reservations_reject_unowned_buffers() {
     assert!(prepared.native_scratch(&pending, &groups, 0, 0).is_err());
     assert!(prepared.data_reserve(6 * 1024 * 1024).is_err());
     // An already assembled ordinary pack remains charged in the next lane.
-    prepared.packs.push(vec![0; 2 * 1024 * 1024]);
+    prepared
+        .packs
+        .push(PreparedPack::assembled(vec![0; 2 * 1024 * 1024]));
     assert!(prepared.native_scratch(&Vec::new(), &groups, 0, 1).is_err());
     let signature_capacity = prepared.small_signatures.capacity();
     let small = AuthenticatedCanonicalObject::new(
@@ -658,8 +658,9 @@ fn locator_publication_is_sorted_without_changing_native_pack_bytes() {
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap();
+    let encoded: Vec<Vec<u8>> = packs.iter().map(PreparedPack::prepared_bytes).collect();
     assert_eq!(
-        stored, packs,
+        stored, encoded,
         "sorting SQL locators must not change physical encoding"
     );
     for object in objects {

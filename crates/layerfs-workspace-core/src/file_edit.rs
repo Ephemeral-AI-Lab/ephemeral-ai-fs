@@ -517,6 +517,211 @@ pub struct SpoolSlice {
     pub len: u64,
 }
 
+/// Bounded compact pending state for the common shape "one equal-length
+/// overwrite of a committed base file with inline replacement bytes". It
+/// replaces the three treap nodes (left base, splice, right base) that the same
+/// shape otherwise needs: the base content root describes both remainders, and
+/// the replacement length equals the replaced length, so one length serves the
+/// base and the result. The 64-byte descriptor is charged at exactly that size;
+/// the replacement bytes stay charged through the workspace inline budget.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompactSplice {
+    base: FileContentRoot,
+    len: u64,
+    offset: u64,
+    bytes: Arc<[u8]>,
+}
+
+/// The same bounded shape when the replacement is an already admitted spool
+/// slice rather than resident inline bytes. Charged at exactly its own size.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompactSpoolSplice {
+    base: FileContentRoot,
+    len: u64,
+    offset: u64,
+    slice: SpoolSlice,
+}
+
+impl CompactSplice {
+    fn fits(&self) -> bool {
+        let replace = self.bytes.len() as u64;
+        replace != 0 && self.offset.checked_add(replace).is_some_and(|end| end <= self.len)
+    }
+
+    fn pieces(&self) -> Vec<Piece> {
+        splice_pieces(
+            Piece::Base {
+                root: self.base,
+                offset: 0,
+                len: self.len,
+            },
+            self.offset,
+            Piece::Inline {
+                bytes: self.bytes.clone(),
+                offset: 0,
+                len: self.bytes.len() as u64,
+            },
+        )
+    }
+
+    fn charge(&self) -> u64 {
+        std::mem::size_of::<Self>() as u64
+    }
+}
+
+impl CompactSpoolSplice {
+    fn fits(&self) -> bool {
+        self.slice.len != 0
+            && self
+                .offset
+                .checked_add(self.slice.len)
+                .is_some_and(|end| end <= self.len)
+    }
+
+    fn pieces(&self) -> Vec<Piece> {
+        splice_pieces(
+            Piece::Base {
+                root: self.base,
+                offset: 0,
+                len: self.len,
+            },
+            self.offset,
+            Piece::Spool {
+                segment: self.slice.segment.clone(),
+                offset: self.slice.offset,
+                len: self.slice.len,
+            },
+        )
+    }
+
+    fn charge(&self) -> u64 {
+        std::mem::size_of::<Self>() as u64
+    }
+}
+
+/// Logical pieces of one bounded splice: the base remainder before the
+/// replacement, the replacement, and the base remainder after it. Empty
+/// remainders are omitted, so the logical piece count is 1..=3.
+fn splice_pieces(base: Piece, offset: u64, replacement: Piece) -> Vec<Piece> {
+    let base_len = base.len();
+    let mut pieces = Vec::with_capacity(3);
+    if offset != 0 {
+        pieces.push(base.slice(0, offset).expect("validated splice lead"));
+    }
+    let replace = replacement.len();
+    pieces.push(replacement);
+    let consumed = offset + replace;
+    if consumed < base_len {
+        pieces.push(
+            base.slice(consumed, base_len - consumed)
+                .expect("validated splice trail"),
+        );
+    }
+    pieces
+}
+
+/// One candidate bounded compact edit, before it is charged and installed.
+enum BoundedEdit {
+    Inline(CompactSplice),
+    Spool(CompactSpoolSplice),
+}
+
+impl BoundedEdit {
+    fn fits(&self) -> bool {
+        match self {
+            Self::Inline(splice) => splice.fits(),
+            Self::Spool(splice) => splice.fits(),
+        }
+    }
+
+    fn into_tree(self, source: &PieceTree) -> Result<PieceTree> {
+        if !self.fits() {
+            return Err(Error::Integrity("bounded splice"));
+        }
+        // The descriptor replaces the single base node entirely: the base root
+        // and length it carries describe both remainders, so no node is retained.
+        let mut next = source.clone();
+        next.root = None;
+        next.compact_spool = None;
+        match self {
+            Self::Inline(splice) => next.compact_splice = Some(Box::new(splice)),
+            Self::Spool(splice) => next.compact_spool_splice = Some(Box::new(splice)),
+        }
+        Ok(next)
+    }
+}
+
+/// Read-only wire view of the bounded pending form.
+pub enum CompactPending<'a> {
+    Inline {
+        base: FileContentRoot,
+        len: u64,
+        offset: u64,
+        bytes: &'a [u8],
+    },
+    Spool {
+        base: FileContentRoot,
+        len: u64,
+        offset: u64,
+        slice: &'a SpoolSlice,
+    },
+}
+
+/// Read-only view over whichever bounded compact form a tree currently holds.
+#[derive(Clone, Copy)]
+enum CompactView<'a> {
+    Inline(&'a CompactSplice),
+    Spool(&'a CompactSpoolSplice),
+}
+
+impl<'a> CompactView<'a> {
+    fn len(&self) -> u64 {
+        match self {
+            Self::Inline(splice) => splice.len,
+            Self::Spool(splice) => splice.len,
+        }
+    }
+
+    fn offset(&self) -> u64 {
+        match self {
+            Self::Inline(splice) => splice.offset,
+            Self::Spool(splice) => splice.offset,
+        }
+    }
+
+    fn replacement_len(&self) -> u64 {
+        match self {
+            Self::Inline(splice) => splice.bytes.len() as u64,
+            Self::Spool(splice) => splice.slice.len,
+        }
+    }
+
+    fn charge(&self) -> u64 {
+        match self {
+            Self::Inline(splice) => splice.charge(),
+            Self::Spool(splice) => splice.charge(),
+        }
+    }
+
+    fn pieces(&self) -> Vec<Piece> {
+        match self {
+            Self::Inline(splice) => splice.pieces(),
+            Self::Spool(splice) => splice.pieces(),
+        }
+    }
+
+    /// Bounded contribution of this form to the encoded wire node: the envelope
+    /// base root and length, the spool high-water mark and edit counter, one
+    /// splice tag, the splice offset and its payload.
+    fn encoded_bound(&self, inline_len: u64) -> u64 {
+        let payload = match self {
+            Self::Inline(_) => 1 + 4 + inline_len,
+            Self::Spool(_) => 1 + 8 + 8 + 8,
+        };
+        1 + 32 + 8 + 8 + 8 + 8 + payload
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PieceTree {
     root: Link,
@@ -524,6 +729,10 @@ pub struct PieceTree {
     // A compact physical-range handle replaces per-file path/descriptor ownership.
     // Its one-word logical piece charge preserves the existing dense-file budget.
     compact_spool: Option<Arc<SpoolSlice>>,
+    // Bounded compact pending forms for one equal-length overwrite. At most one
+    // is set, and both are boxed so an unedited node carries only the slot.
+    compact_splice: Option<Box<CompactSplice>>,
+    compact_spool_splice: Option<Box<CompactSpoolSplice>>,
 }
 
 impl PieceTree {
@@ -536,7 +745,88 @@ impl PieceTree {
             root: None,
             serial: 0,
             compact_spool: None,
+            compact_splice: None,
+            compact_spool_splice: None,
         }
+    }
+
+    /// Whichever bounded compact splice form this tree currently holds.
+    fn compact(&self) -> Option<CompactView<'_>> {
+        match (&self.compact_splice, &self.compact_spool_splice) {
+            (Some(splice), None) => Some(CompactView::Inline(splice)),
+            (None, Some(splice)) => Some(CompactView::Spool(splice)),
+            _ => None,
+        }
+    }
+
+    /// Encoded wire bound of the compact form, or the rooted piece-list bound.
+    /// Returns `None` for a rooted tree so the caller keeps its own formula.
+    pub fn compact_encoded_bound(&self) -> Option<u64> {
+        let compact = self.compact()?;
+        let inline = self.inline_len();
+        Some(compact.encoded_bound(inline))
+    }
+
+    /// Bounded pending view for the wire, or `None` for any rooted tree.
+    pub fn compact_pending(&self) -> Option<CompactPending<'_>> {
+        match self.compact()? {
+            CompactView::Inline(splice) => Some(CompactPending::Inline {
+                base: splice.base,
+                len: splice.len,
+                offset: splice.offset,
+                bytes: &splice.bytes,
+            }),
+            CompactView::Spool(splice) => Some(CompactPending::Spool {
+                base: splice.base,
+                len: splice.len,
+                offset: splice.offset,
+                slice: &splice.slice,
+            }),
+        }
+    }
+
+    /// Rebuild the bounded inline form from an authenticated wire node.
+    pub fn compact_inline(
+        base: FileContentRoot,
+        len: u64,
+        offset: u64,
+        bytes: Arc<[u8]>,
+    ) -> Result<Self> {
+        let splice = CompactSplice {
+            base,
+            len,
+            offset,
+            bytes,
+        };
+        if !splice.fits() {
+            return Err(Error::InvalidInput("bounded splice"));
+        }
+        let mut tree = Self::empty();
+        tree.compact_splice = Some(Box::new(splice));
+        check_logical_allocation_charge(tree.logical_allocation_charge()?)?;
+        Ok(tree)
+    }
+
+    /// Rebuild the bounded spool form from an authenticated wire node.
+    pub fn compact_spool_splice(
+        base: FileContentRoot,
+        len: u64,
+        offset: u64,
+        slice: SpoolSlice,
+    ) -> Result<Self> {
+        let splice = CompactSpoolSplice {
+            base,
+            len,
+            offset,
+            slice,
+        };
+        if !splice.fits() {
+            return Err(Error::InvalidInput("bounded splice"));
+        }
+        let mut tree = Self::empty();
+        tree.compact_spool_splice = Some(Box::new(splice));
+        check_logical_allocation_charge(tree.logical_allocation_charge()?)?;
+        Ok(tree)
     }
 
     pub fn base(root: FileContentRoot, len: u64) -> Result<Self> {
@@ -566,32 +856,97 @@ impl PieceTree {
     }
 
     pub fn len(&self) -> u64 {
-        self.compact_len() + link_len(&self.root)
+        self.compact().map_or(0, |compact| compact.len())
+            + self.compact_len()
+            + link_len(&self.root)
     }
 
     pub fn count(&self) -> usize {
-        usize::from(self.compact_len() != 0) + link_count(&self.root)
+        let compact = self
+            .compact()
+            .map_or(0, |compact| {
+                let consumed = compact.offset() + compact.replacement_len();
+                1 + usize::from(compact.offset() != 0) + usize::from(consumed < compact.len())
+            });
+        compact + usize::from(self.compact_len() != 0) + link_count(&self.root)
     }
 
     pub fn inline_len(&self) -> u64 {
-        link_inline_len(&self.root)
+        let compact = match self.compact() {
+            Some(CompactView::Inline(splice)) => splice.bytes.len() as u64,
+            _ => 0,
+        };
+        compact + link_inline_len(&self.root)
     }
 
     pub fn height(&self) -> usize {
-        usize::from(self.compact_len() != 0).max(link_height(&self.root))
+        let compact = self
+            .compact()
+            .map_or(0, |compact| if compact.offset() == 0 { 2 } else { 3 });
+        compact
+            .max(usize::from(self.compact_len() != 0))
+            .max(link_height(&self.root))
     }
 
     pub fn spool_len(&self) -> u64 {
-        self.compact_len() + link_spool_len(&self.root)
+        let compact = match self.compact() {
+            Some(CompactView::Spool(splice)) => splice.slice.len,
+            _ => 0,
+        };
+        compact + self.compact_len() + link_spool_len(&self.root)
     }
 
     pub fn logical_allocation_charge(&self) -> Result<u64> {
+        if let Some(compact) = self.compact() {
+            return Ok(compact.charge());
+        }
         if self.compact_len() != 0 {
             return Ok(std::mem::size_of::<u64>() as u64);
         }
         (self.count() as u64)
             .checked_mul(std::mem::size_of::<PieceNode>() as u64)
             .ok_or(Error::InvalidInput("piece allocation charge"))
+    }
+
+    /// The whole content is one base range, so a bounded splice can be described
+    /// without a node. `None` for any other tree shape.
+    fn single_base(&self) -> Option<(FileContentRoot, u64)> {
+        if self.compact_spool.is_some() || self.compact().is_some() {
+            return None;
+        }
+        let node = self.root.as_ref()?;
+        if node.left.is_some() || node.right.is_some() {
+            return None;
+        }
+        match &node.piece {
+            Piece::Base {
+                root,
+                offset: 0,
+                len,
+            } => Some((*root, *len)),
+            _ => None,
+        }
+    }
+
+    /// Materialize the bounded splice into ordinary pieces so a more complex
+    /// edit keeps the existing tree representation. Returns the same tree when
+    /// no bounded form is set.
+    fn materialized(&self) -> Result<Self> {
+        if self.compact().is_none() {
+            return Ok(self.clone());
+        }
+        let pieces = self.compact().expect("compact form").pieces();
+        let mut next = self.clone();
+        next.compact_splice = None;
+        next.compact_spool_splice = None;
+        let mut root = None;
+        for piece in pieces {
+            let priority = next.priority()?;
+            let node = Some(PieceNode::new(piece, priority, None, None)?);
+            root = merge(&root, &node)?;
+        }
+        next.root = root;
+        Ok(next)
     }
 
     pub fn replace(
@@ -609,7 +964,58 @@ impl PieceTree {
         let mut replacement = replacement.into_iter();
         let first = replacement.next();
         let mut replacement = replacement.peekable();
-        if self.root.is_none() && start == self.compact_len() && delete_len == 0 {
+        // Bounded compact form for one equal-length overwrite of a committed base
+        // file: exactly the information three treap nodes carry (left base,
+        // replacement, right base), described by one bounded descriptor. Any
+        // other shape, and every further edit of an already compact file, keeps
+        // the existing tree, so the growing-file representation is unchanged.
+        if replacement.peek().is_none() {
+            if let Some((base, base_len)) = self.single_base() {
+                if end <= base_len {
+                    let bounded = match &first {
+                        Some(Piece::Inline { bytes, offset, len })
+                            if *offset == 0 && *len == bytes.len() as u64 && *len == delete_len =>
+                        {
+                            Some(BoundedEdit::Inline(CompactSplice {
+                                base,
+                                len: base_len,
+                                offset: start,
+                                bytes: bytes.clone(),
+                            }))
+                        }
+                        Some(Piece::Spool {
+                            segment,
+                            offset,
+                            len,
+                        }) if *len == delete_len => {
+                            Some(BoundedEdit::Spool(CompactSpoolSplice {
+                                base,
+                                len: base_len,
+                                offset: start,
+                                slice: SpoolSlice {
+                                    segment: segment.clone(),
+                                    offset: *offset,
+                                    len: *len,
+                                },
+                            }))
+                        }
+                        _ => None,
+                    };
+                    if let Some(bounded) = bounded {
+                        let next = bounded.into_tree(self)?;
+                        check_logical_allocation_charge(next.logical_allocation_charge()?)?;
+                        if next.count() > MAX_PIECES_PER_FILE || next.len() > MAX_RESULT_BYTES {
+                            return Err(Error::InvalidInput("workspace piece limit"));
+                        }
+                        return Ok(next);
+                    }
+                }
+            }
+        }
+        // A compact tree is materialized before any other edit, so the tree path
+        // below stays the single rooted implementation.
+        let materialized = self.materialized()?;
+        if self.compact().is_none() && self.root.is_none() && start == self.compact_len() && delete_len == 0 {
             if let Some(Piece::Spool {
                 segment,
                 offset,
@@ -636,7 +1042,7 @@ impl PieceTree {
                 }
             }
         }
-        let mut next = self.clone();
+        let mut next = materialized;
         if let Some(slice) = next.compact_spool.take() {
             let piece = Piece::Spool {
                 segment: slice.segment.clone(),
@@ -689,6 +1095,9 @@ impl PieceTree {
     }
 
     pub fn pieces(&self) -> Vec<Piece> {
+        if let Some(compact) = self.compact() {
+            return compact.pieces();
+        }
         if let Some(slice) = &self.compact_spool {
             return vec![Piece::Spool {
                 segment: slice.segment.clone(),
@@ -708,6 +1117,22 @@ impl PieceTree {
     pub fn range_with_visits(&self, start: u64, end: u64) -> Result<(Vec<Piece>, usize)> {
         if start > end || end > self.len() {
             return Err(Error::InvalidInput("file range"));
+        }
+        if let Some(compact) = self.compact() {
+            let mut output = Vec::new();
+            let mut visited = 0;
+            let mut offset = 0;
+            for piece in compact.pieces() {
+                let piece_end = offset + piece.len();
+                if piece_end > start && offset < end {
+                    visited += 1;
+                    let local_start = start.saturating_sub(offset);
+                    let local_end = (end - offset).min(piece.len());
+                    output.push(piece.slice(local_start, local_end - local_start)?);
+                }
+                offset = piece_end;
+            }
+            return Ok((output, visited));
         }
         if let Some(slice) = &self.compact_spool {
             let pieces = if start == end {
@@ -1227,5 +1652,142 @@ mod tests {
     fn logical_allocation_charge_accepts_exact_and_rejects_plus_one() {
         assert!(check_logical_allocation_charge(MAX_PIECE_ALLOCATION).is_ok());
         assert!(check_logical_allocation_charge(MAX_PIECE_ALLOCATION + 1).is_err());
+    }
+
+    fn inline(bytes: &[u8]) -> Piece {
+        Piece::Inline {
+            bytes: Arc::from(bytes),
+            offset: 0,
+            len: bytes.len() as u64,
+        }
+    }
+
+    /// The required default-budget capacity: 32,000 distinct files of the exact
+    /// sequence shape must fit the unchanged 2 MiB pending piece allocation.
+    #[test]
+    fn compact_splice_admits_the_required_default_budget_file_count() {
+        let root = FileContentRoot(ObjectId::for_bytes(b"sequence-base"));
+        let charge = PieceTree::base(root, 49_152)
+            .unwrap()
+            .replace(1_000, 12, [inline(b"C32000000001")])
+            .unwrap()
+            .logical_allocation_charge()
+            .unwrap();
+        assert_eq!(charge, std::mem::size_of::<CompactSplice>() as u64);
+        assert_eq!(MAX_PIECE_ALLOCATION / charge, 32_768);
+        let required = 32_000u64;
+        assert!(
+            required * charge <= MAX_PIECE_ALLOCATION,
+            "32,000 compact pending files must fit the unchanged 2 MiB budget"
+        );
+    }
+
+    /// Mutation, exact logical contents, retained-reader snapshots and the
+    /// materialization path for a second, more complex edit.
+    #[test]
+    fn compact_splice_preserves_contents_ranges_and_conversion() {
+        let root = FileContentRoot(ObjectId::for_bytes(b"compact-base"));
+        let base = PieceTree::base(root, 100).unwrap();
+        let edited = base.replace(10, 4, [inline(b"WXYZ")]).unwrap();
+        assert_eq!(edited.count(), 3);
+        assert_eq!(edited.len(), 100);
+        assert_eq!(edited.inline_len(), 4);
+        assert_eq!(edited.spool_len(), 0);
+        assert_eq!(
+            edited.logical_allocation_charge().unwrap(),
+            std::mem::size_of::<CompactSplice>() as u64
+        );
+        assert_eq!(
+            edited.range(8, 16).unwrap(),
+            vec![
+                Piece::Base {
+                    root,
+                    offset: 8,
+                    len: 2
+                },
+                inline(b"WXYZ"),
+                Piece::Base {
+                    root,
+                    offset: 14,
+                    len: 2
+                },
+            ]
+        );
+        assert_eq!(edited.range(0, 100).unwrap(), edited.pieces());
+        assert_eq!(
+            edited.range(0, 100).unwrap().iter().map(Piece::len).sum::<u64>(),
+            100
+        );
+        // Edge shapes stay one and two logical pieces.
+        assert_eq!(base.replace(0, 4, [inline(b"WXYZ")]).unwrap().count(), 2);
+        assert_eq!(
+            base.replace(96, 4, [inline(b"WXYZ")]).unwrap().count(),
+            2
+        );
+        assert_eq!(base.replace(0, 100, [inline(b"WXYZ")]).unwrap().count(), 1);
+        // The original snapshot is unchanged and still fully readable.
+        assert_eq!(base.count(), 1);
+        assert_eq!(base.pieces().len(), 1);
+        // A second edit materializes the bounded form and keeps exact contents.
+        let twice = edited.replace(50, 2, [inline(b"ab")]).unwrap();
+        assert_eq!(twice.count(), 5);
+        assert_eq!(twice.len(), 100);
+        assert_eq!(
+            twice.range(8, 16).unwrap().iter().map(Piece::len).sum::<u64>(),
+            8
+        );
+        assert_eq!(twice.inline_len(), 6);
+        // Unequal-length replacement is not the bounded shape: it stays a tree.
+        let grown = base.replace(10, 4, [inline(b"longer")]).unwrap();
+        assert_eq!(grown.len(), 102);
+        assert_eq!(grown.count(), 3);
+    }
+
+    /// The bounded form is refused, not mis-encoded, when the shape does not
+    /// match: a growing write, an empty replacement and an out-of-range range.
+    #[test]
+    fn compact_splice_rejects_non_matching_shapes() {
+        let root = FileContentRoot(ObjectId::for_bytes(b"reject-base"));
+        let base = PieceTree::base(root, 32).unwrap();
+        assert!(base.replace(8, 4, [inline(b"123456")]).unwrap().len() == 34);
+        assert!(base.replace(8, 4, [Piece::Zero { len: 4 }]).unwrap().count() == 3);
+        assert!(base.replace(40, 4, [inline(b"1234")]).is_err());
+        let two_piece = base
+            .replace(28, 4, [inline(b"1234"), inline(b"5678")])
+            .unwrap();
+        assert_eq!(two_piece.len(), 36);
+        assert_eq!(two_piece.count(), 3);
+        let empty = PieceTree::base(root, 32).unwrap().replace(0, 0, []);
+        assert_eq!(empty.unwrap().count(), 1);
+    }
+
+    /// Simultaneous ownership: a held snapshot keeps reading the exact bytes of
+    /// the bounded form after the owner installs a materialized successor.
+    #[test]
+    fn compact_splice_retained_snapshot_survives_conversion() {
+        let root = FileContentRoot(ObjectId::for_bytes(b"retained-base"));
+        let base = PieceTree::base(root, 64).unwrap();
+        let held = base.replace(4, 8, [inline(b"01234567")]).unwrap();
+        let successor = held.replace(20, 8, [inline(b"abcdefgh")]).unwrap();
+        assert_eq!(successor.count(), 5);
+        assert_eq!(held.count(), 3);
+        assert_eq!(
+            held.range(0, 16).unwrap(),
+            vec![
+                Piece::Base {
+                    root,
+                    offset: 0,
+                    len: 4
+                },
+                inline(b"01234567"),
+                Piece::Base {
+                    root,
+                    offset: 12,
+                    len: 4
+                },
+            ]
+        );
+        assert_eq!(held.pieces().iter().map(Piece::len).sum::<u64>(), 64);
+        assert_eq!(successor.pieces().iter().map(Piece::len).sum::<u64>(), 64);
     }
 }

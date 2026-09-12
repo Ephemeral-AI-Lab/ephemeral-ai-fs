@@ -2225,6 +2225,16 @@ impl AdmissionCohort {
     }
 }
 
+/// The session's still-open pack for one framing lane. Its row already exists,
+/// so a later admission of the same lane can append groups instead of opening a
+/// new row with its own partially used overflow page.
+struct OpenPack {
+    pack_id: i64,
+    groups: Vec<pack::EncodedGroup>,
+    bytes: usize,
+    records: usize,
+}
+
 /// One admission owns publication until it either retains its output or removes it.
 /// Existing pack IDs never change, so the held writer gate makes this high-water
 /// mark an exact ownership boundary, including every physical dependency.
@@ -2233,6 +2243,7 @@ pub(crate) struct AdmissionSession {
     baseline_pack: i64,
     fresh_ids: Option<Mutex<Box<[u64]>>>,
     small_candidates: Option<Mutex<small_candidates::Candidates>>,
+    open_packs: Mutex<BTreeMap<u32, OpenPack>>,
     coalesce: bool,
     cohort: Mutex<AdmissionCohort>,
     publication_epoch: AtomicU64,
@@ -2286,6 +2297,7 @@ impl AdmissionSession {
             } else {
                 None
             },
+            open_packs: Mutex::new(BTreeMap::new()),
             coalesce,
             cohort: Mutex::new(AdmissionCohort::default()),
             publication_epoch: AtomicU64::new(0),
@@ -2339,6 +2351,96 @@ impl AdmissionSession {
             .map_err(|_| StoreError::Integrity("admission cohort"))?
             .commit(connection, metrics, final_commit)
     }
+
+    /// Append one lane's final group vector to this session's still-open pack of
+    /// the same framing, inside the caller's transaction. A merge keeps the pack
+    /// bound, the version bytes, the record framing and every locator meaning
+    /// unchanged; it only fills the existing 256 KiB `PACK_LIMIT` instead of
+    /// opening another partially used row. `None` closes the open pack and lets
+    /// the caller publish the pack as a new row.
+    fn append_open_pack(
+        &self,
+        transaction: &rusqlite::Connection,
+        version: u32,
+        groups: &[pack::EncodedGroup],
+        statement_number: &mut u64,
+    ) -> Result<Option<(i64, usize)>> {
+        let mut open = self
+            .open_packs
+            .lock()
+            .map_err(|_| StoreError::Integrity("admission open pack"))?;
+        let Some(entry) = open.get_mut(&version) else {
+            return Ok(None);
+        };
+        let offset = entry.groups.len();
+        if groups.is_empty() {
+            // The pack contributes only pooled catalogue groups; its row exists.
+            return Ok(Some((entry.pack_id, offset)));
+        }
+        let records = groups.iter().try_fold(entry.records, |sum, group| {
+            sum.checked_add(group.records)
+                .ok_or(StoreError::Integrity("pack record bound"))
+        })?;
+        if offset + groups.len() > pack::GROUP_COUNT_LIMIT || records > pack::RECORD_COUNT_LIMIT {
+            open.remove(&version);
+            return Ok(None);
+        }
+        // The candidate is assembled before the open pack is modified so a pack
+        // that no longer fits closes cleanly and the caller keeps its groups.
+        let mut candidate = entry.groups.clone();
+        candidate.extend_from_slice(groups);
+        let bytes = match pack::assemble_version(version, &candidate) {
+            Ok(bytes) if bytes.len() <= pack::PACK_LIMIT => bytes,
+            Ok(_) | Err(_) => {
+                open.remove(&version);
+                return Ok(None);
+            }
+        };
+        let pack_id = entry.pack_id;
+        *statement_number += 1;
+        crate::schema::fail_transaction_statement(*statement_number)?;
+        if transaction
+            .prepare_cached("UPDATE object_packs SET data=?2 WHERE pack_id=?1")?
+            .execute(rusqlite::params![pack_id, &bytes])?
+            != 1
+        {
+            return Err(StoreError::Integrity("pack append cardinality"));
+        }
+        entry.groups = candidate;
+        entry.bytes = bytes.len();
+        entry.records = records;
+        Ok(Some((pack_id, offset)))
+    }
+
+    /// Register a freshly inserted pack row as this lane's open pack. The group
+    /// vector is retained only when the pack has room for a later append.
+    fn note_open_pack(
+        &self,
+        version: u32,
+        pack_id: i64,
+        bytes: usize,
+        groups: Vec<pack::EncodedGroup>,
+    ) -> Result<()> {
+        let mut open = self
+            .open_packs
+            .lock()
+            .map_err(|_| StoreError::Integrity("admission open pack"))?;
+        open.remove(&version);
+        if groups.len() < pack::GROUP_COUNT_LIMIT && bytes < pack::PACK_LIMIT {
+            let records = groups.iter().map(|group| group.records).sum();
+            open.insert(
+                version,
+                OpenPack {
+                    pack_id,
+                    groups,
+                    bytes,
+                    records,
+                },
+            );
+        }
+        Ok(())
+    }
+
 
     fn fresh_bit_positions(id: &ObjectId) -> impl Iterator<Item = usize> + '_ {
         // ObjectId is an authenticated 32-byte digest. Bit collisions only add

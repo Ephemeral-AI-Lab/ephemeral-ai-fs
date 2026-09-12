@@ -54,11 +54,116 @@ const _: () = {
     );
 };
 
+/// One prepared pack. A lane's final pack keeps its group vector instead of the
+/// assembled bytes so the same session can append it to a still-open pack row
+/// without holding two copies of the same payload.
+#[derive(Clone)]
+enum PackBody {
+    Assembled(Vec<u8>),
+    Retained(Vec<pack::EncodedGroup>),
+}
+
+#[derive(Clone)]
+struct PreparedPack {
+    version: u32,
+    body: PackBody,
+}
+
+impl PreparedPack {
+    fn assembled(bytes: Vec<u8>) -> Self {
+        let version = u32::from_le_bytes(bytes[8..12].try_into().expect("pack header version"));
+        Self {
+            version,
+            body: PackBody::Assembled(bytes),
+        }
+    }
+
+    /// Keep the group vector of a lane's final pack. It is assembled exactly once
+    /// when the pack is published, or handed to the session's open pack.
+    fn retained(version: u32, groups: Vec<pack::EncodedGroup>) -> Self {
+        Self {
+            version,
+            body: PackBody::Retained(groups),
+        }
+    }
+
+    fn version(&self) -> u32 {
+        self.version
+    }
+
+    fn group_count(&self) -> usize {
+        match &self.body {
+            PackBody::Assembled(bytes) => {
+                u32::from_le_bytes(bytes[12..16].try_into().expect("pack header groups")) as usize
+            }
+            PackBody::Retained(groups) => groups.len(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        match &self.body {
+            PackBody::Assembled(bytes) => bytes.len(),
+            PackBody::Retained(groups) => {
+                pack::assembled_length(self.version, groups).unwrap_or(usize::MAX)
+            }
+        }
+    }
+
+    /// Retained and assembled ownership charged against the frozen physical
+    /// budget. The two forms are mutually exclusive, so a lane tail is charged
+    /// once whether it is held as groups or as assembled bytes.
+    fn charged_capacity(&self) -> usize {
+        match &self.body {
+            PackBody::Assembled(bytes) => bytes.capacity(),
+            PackBody::Retained(groups) => groups
+                .iter()
+                .map(|group| group.bytes.capacity() + std::mem::size_of::<pack::EncodedGroup>())
+                .sum(),
+        }
+    }
+
+    /// Exact prepared pack bytes. A retained lane tail is assembled here through
+    /// the same `assemble_version` dispatch publication uses, so framing
+    /// assertions still observe the bytes that will be stored.
+    #[cfg(test)]
+    fn prepared_bytes(&self) -> Vec<u8> {
+        match &self.body {
+            PackBody::Assembled(bytes) => bytes.clone(),
+            PackBody::Retained(groups) => pack::assemble_version(self.version, groups).unwrap(),
+        }
+    }
+
+    /// Assemble a retained tail into its exact bytes for publication and return
+    /// the group vector so the open-pack path can keep it.
+    fn materialize(&mut self) -> Result<Option<Vec<pack::EncodedGroup>>> {
+        match &mut self.body {
+            PackBody::Assembled(_) => Ok(None),
+            PackBody::Retained(groups) => {
+                let bytes = pack::assemble_version(self.version, groups)?;
+                let groups = std::mem::take(groups);
+                self.body = PackBody::Assembled(bytes);
+                Ok(Some(groups))
+            }
+        }
+    }
+}
+
+impl std::ops::Deref for PreparedPack {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match &self.body {
+            PackBody::Assembled(bytes) => bytes,
+            PackBody::Retained(_) => &[],
+        }
+    }
+}
+
 pub(crate) struct PreparedAdmission {
     session: std::sync::Arc<super::AdmissionSession>,
     final_batch: bool,
     absence_epoch: Option<u64>,
-    packs: Vec<Vec<u8>>,
+    packs: Vec<PreparedPack>,
     objects: Vec<PreparedObject>,
     small_signatures: Vec<[u64; 8]>,
     pool_groups: Vec<PreparedValueGroup>,
@@ -228,14 +333,19 @@ impl PreparedAdmission {
     }
 
     fn physical_backing(&self) -> usize {
-        self.packs.iter().map(Vec::capacity).sum::<usize>() - self.oversized_backing
+        self.packs.iter().map(PreparedPack::charged_capacity).sum::<usize>()
+            - self.oversized_backing
             + std::mem::size_of_val(&self.small_signatures)
             + self.small_signatures.capacity() * std::mem::size_of::<[u64; 8]>()
     }
 
     fn data_reserve(&self, extra: usize) -> Result<()> {
-        let owned =
-            self.canonical_live_capacity + self.packs.iter().map(Vec::capacity).sum::<usize>();
+        let owned = self.canonical_live_capacity
+            + self
+                .packs
+                .iter()
+                .map(PreparedPack::charged_capacity)
+                .sum::<usize>();
         if owned + extra > 6 * 1024 * 1024 {
             return Err(StoreError::Io(std::io::Error::other(
                 "prepared data reservation",
@@ -256,7 +366,7 @@ impl PreparedAdmission {
             + groups.iter().map(|g| g.bytes.capacity()).sum::<usize>();
         let associations = input_associations
             + self.objects.capacity() * std::mem::size_of::<PreparedObject>()
-            + self.packs.capacity() * std::mem::size_of::<Vec<u8>>()
+            + self.packs.capacity() * std::mem::size_of::<PreparedPack>()
             + pending.capacity() * std::mem::size_of::<NativePrepared>()
             + groups.capacity() * std::mem::size_of::<pack::EncodedGroup>();
         if owned + associations + extra > 2 * 1024 * 1024 {
@@ -405,11 +515,11 @@ impl PreparedAdmission {
             if 16 + 16 * (groups.len() + 1) + group_bytes + group.bytes.len() > pack::PACK_LIMIT
                 || groups.len() == pack::GROUP_COUNT_LIMIT
             {
-                self.packs.push(if db.compact_framing() {
+                self.packs.push(PreparedPack::assembled(if db.compact_framing() {
                     pack::assemble_compact_small(&groups)?
                 } else {
                     pack::assemble_small(&groups)?
-                });
+                }));
                 groups.clear();
                 group_bytes = 0;
             }
@@ -449,11 +559,10 @@ impl PreparedAdmission {
         }
         drop(encoder);
         if !groups.is_empty() {
-            self.packs.push(if db.compact_framing() {
-                pack::assemble_compact_small(&groups)?
-            } else {
-                pack::assemble_small(&groups)?
-            });
+            // The lane's final pack keeps its group vector so the same session
+            // can append to its row instead of opening another one.
+            let version = if db.compact_framing() { 4 } else { 3 };
+            self.packs.push(PreparedPack::retained(version, groups));
         }
         Ok(())
     }
@@ -474,7 +583,7 @@ impl PreparedAdmission {
             + objects.len().min(pack::GROUP_COUNT_LIMIT)
                 * std::mem::size_of::<pack::EncodedGroup>()
             + self.objects.capacity() * std::mem::size_of::<PreparedObject>()
-            + self.packs.capacity() * std::mem::size_of::<Vec<u8>>();
+            + self.packs.capacity() * std::mem::size_of::<PreparedPack>();
         if planned_associations > 2 * 1024 * 1024 {
             return Err(StoreError::Io(std::io::Error::other(
                 "native association reservation",
@@ -708,7 +817,7 @@ impl PreparedAdmission {
                 16 + 16 * groups.len() + groups.iter().map(|g| g.bytes.len()).sum::<usize>();
             self.native_scratch(&pending, &groups, input_associations, length)?;
             self.data_reserve(length)?;
-            self.packs.push(pack::assemble_native(&groups)?);
+            self.packs.push(PreparedPack::retained(2, groups));
         }
         Ok(())
     }
@@ -775,7 +884,8 @@ impl PreparedAdmission {
             || next_records > pack::RECORD_COUNT_LIMIT
         {
             self.data_reserve(assembled_length)?;
-            self.packs.push(pack::assemble_native(groups)?);
+            let bytes = pack::assemble_native(groups)?;
+            self.packs.push(PreparedPack::assembled(bytes));
             groups.clear();
         }
         let pack = self.packs.len();
@@ -857,7 +967,7 @@ impl PreparedAdmission {
         let fixed_associations = search.input_associations
             + values.as_ref().map_or(0, |values| values.backing())
             + self.pool_groups.capacity() * std::mem::size_of::<PreparedValueGroup>()
-            + self.packs.capacity() * std::mem::size_of::<Vec<u8>>()
+            + self.packs.capacity() * std::mem::size_of::<PreparedPack>()
             + self.objects.capacity() * std::mem::size_of::<PreparedObject>()
             + objects.capacity() * std::mem::size_of::<AuthenticatedCanonicalObject>()
             + groups.capacity() * std::mem::size_of::<Vec<usize>>()
@@ -907,9 +1017,7 @@ impl PreparedAdmission {
                 {
                     let mut lanes = [0usize; 7];
                     for object in &self.objects {
-                        let version = self.packs.get(object.pack).map_or(0, |pack| {
-                            u32::from_le_bytes(pack[8..12].try_into().unwrap()) as usize
-                        });
+                        let version = self.packs.get(object.pack).map_or(0, |pack| pack.version() as usize);
                         if version < lanes.len() {
                             lanes[version] += 1;
                         }
@@ -1072,11 +1180,10 @@ impl PreparedAdmission {
                 "legacy assembly reservation",
             )));
         }
-        let mut bytes = pack::assemble(&encoded)?;
-        if metadata {
-            bytes[8..12].copy_from_slice(&6u32.to_le_bytes());
-        }
-        self.packs.push(bytes);
+        self.packs.push(PreparedPack::retained(
+            if metadata { 6 } else { 1 },
+            encoded,
+        ));
         Ok(())
     }
 
@@ -1127,7 +1234,7 @@ impl PreparedAdmission {
         // This exception belongs only to the existing constructed version-1
         // RAW singleton; ordinary/native packs never enter this data-only lane.
         self.oversized_backing += bytes.capacity();
-        self.packs.push(bytes);
+        self.packs.push(PreparedPack::assembled(bytes));
         Ok(())
     }
 
@@ -1151,6 +1258,14 @@ impl PreparedAdmission {
             return Err(StoreError::Integrity("admission Store ownership"));
         }
         self.session.ensure_active()?;
+        // Assemble each lane's retained final pack exactly once and detach its
+        // group vector, so the same session can extend its open pack row instead
+        // of publishing another partially used row.
+        let mut open_groups: Vec<Option<Vec<pack::EncodedGroup>>> =
+            Vec::with_capacity(self.packs.len());
+        for pack in self.packs.iter_mut() {
+            open_groups.push(pack.materialize()?);
+        }
         let ids = self
             .objects
             .iter()
@@ -1186,7 +1301,7 @@ impl PreparedAdmission {
         drop(ids);
         let retained = self.physical_backing()
             + self.objects.capacity() * std::mem::size_of::<PreparedObject>()
-            + self.packs.capacity() * std::mem::size_of::<Vec<u8>>();
+            + self.packs.capacity() * std::mem::size_of::<PreparedPack>();
         compare(db, &late, &mut supplied, &mut self.metrics, retained)?;
         let mut winners = vec![Vec::new(); self.packs.len()];
         for object in &self.objects {
@@ -1203,7 +1318,8 @@ impl PreparedAdmission {
             &mut self.metrics.sql,
         )?;
         let started = Instant::now();
-        let mut diagnostic_stats = self.insert(&connection, &winners, statement_number)?;
+        let mut diagnostic_stats =
+            self.insert(&connection, &winners, &mut open_groups, statement_number)?;
         self.metrics.insert_ns += super::elapsed_ns(started);
         self.metrics.objects = winners.iter().map(|objects| objects.len() as u64).sum();
         self.metrics.bytes = winners
@@ -1235,7 +1351,7 @@ impl PreparedAdmission {
         if !self.final_batch {
             if let Some(candidates) = &self.session.small_candidates {
                 for object in winners.iter().flatten().filter(|object| !object.delta) {
-                    if !matches!(&self.packs[object.pack][8..12], [3, 0, 0, 0] | [4, 0, 0, 0]) {
+                    if !matches!(self.packs[object.pack].version(), 3 | 4) {
                         continue;
                     }
                     let canonical = object
@@ -1273,7 +1389,7 @@ impl PreparedAdmission {
                     diagnostic_stats.diag_new_full_count += 1;
                     diagnostic_stats.diag_new_full_bytes += object.length as u64;
                 }
-                if self.packs[object.pack][8..12] == [2, 0, 0, 0] {
+                if self.packs[object.pack].version() == 2 {
                     if object.delta {
                         diagnostic_stats.native_admitted_prefix_count += 1;
                         diagnostic_stats.native_admitted_prefix_bytes += object.length as u64;
@@ -1317,6 +1433,7 @@ impl PreparedAdmission {
         &self,
         transaction: &Connection,
         winners: &[Vec<&PreparedObject>],
+        open_groups: &mut [Option<Vec<pack::EncodedGroup>>],
         statement_number: &mut u64,
     ) -> Result<crate::PhysicalStorageReceipt> {
         let mut diagnostic_stats = crate::PhysicalStorageReceipt::default();
@@ -1329,9 +1446,13 @@ impl PreparedAdmission {
             return Err(StoreError::Integrity("native base publication chronology"));
         }
         let keep_pools = winners.iter().enumerate().any(|(index, objects)| {
-            !objects.is_empty() && self.packs[index][8..12] == 6u32.to_le_bytes()
+            !objects.is_empty() && self.packs[index].version() == 6
         });
         let mut pool_packs = BTreeMap::new();
+        let mut pool_offsets = BTreeMap::new();
+        // A lane's first pack may extend this session's open pack. Later packs of
+        // the same lane always open a new row so a lane's rows stay ordered.
+        let mut fresh_lanes = std::collections::BTreeSet::new();
         let mut packs = Vec::new();
         let mut locators = Vec::new();
         for (index, objects) in winners.iter().enumerate() {
@@ -1340,24 +1461,57 @@ impl PreparedAdmission {
             {
                 continue;
             }
-            next = next
-                .checked_add(1)
-                .filter(|id| *id > 0)
-                .ok_or(StoreError::Integrity("pack identity exhausted"))?;
-            pool_packs.insert(index, next);
-            packs.push((next, self.packs[index].as_slice()));
+            let version = self.packs[index].version();
+            let mut merged = None;
+            if !fresh_lanes.contains(&version) {
+                if let Some(groups) = open_groups[index].take() {
+                    match self.session.append_open_pack(
+                        transaction,
+                        version,
+                        &groups,
+                        statement_number,
+                    )? {
+                        Some(target) => merged = Some(target),
+                        None => open_groups[index] = Some(groups),
+                    }
+                }
+            }
+            let (pack, group_offset) = match merged {
+                Some(target) => target,
+                None => {
+                    next = next
+                        .checked_add(1)
+                        .filter(|id| *id > 0)
+                        .ok_or(StoreError::Integrity("pack identity exhausted"))?;
+                    fresh_lanes.insert(version);
+                    packs.push((next, &self.packs[index][..]));
+                    if let Some(groups) = open_groups[index].take() {
+                        self.session.note_open_pack(
+                            version,
+                            next,
+                            self.packs[index].len(),
+                            groups,
+                        )?;
+                    }
+                    (next, 0)
+                }
+            };
+            // One selected pack per lane contribution: a pack appended to the
+            // session's open row and a newly opened row both publish exactly the
+            // records and groups selected here. The row count is physical.
             diagnostic_stats.diag_selected_pack_count += 1;
-            diagnostic_stats.diag_selected_pack_last_id = next as u64;
+            diagnostic_stats.diag_selected_pack_last_id = pack as u64;
             diagnostic_stats.diag_selected_pack_bytes += self.packs[index].len() as u64;
-            diagnostic_stats.diag_selected_pack_groups +=
-                u32::from_le_bytes(self.packs[index][12..16].try_into().unwrap()) as u64;
+            diagnostic_stats.diag_selected_pack_groups += self.packs[index].group_count() as u64;
             let first = self.objects.partition_point(|object| object.pack < index);
             let last = self.objects.partition_point(|object| object.pack <= index);
             diagnostic_stats.diag_selected_pack_records += (last - first) as u64;
             diagnostic_stats.diag_selected_unlocated_records +=
                 (last - first - objects.len()) as u64;
+            pool_packs.insert(index, pack);
+            pool_offsets.insert(index, group_offset);
             for object in objects {
-                locators.push((next, *object));
+                locators.push((pack, group_offset, *object));
             }
         }
         let pack_rows = sql_rows(transaction, 2, 6)?;
@@ -1419,7 +1573,13 @@ impl PreparedAdmission {
             transaction
                 .prepare_cached("INSERT INTO metadata_value_groups(first_ordinal,count,pack_id,group_number,digest) VALUES (?1,?2,?3,?4,?5)")?
                 .execute(
-                    rusqlite::params![group.first as i64, group.count as i64, pool_packs[&group.pack], group.group as i64, group.digest.as_bytes().as_slice()],
+                    rusqlite::params![
+                        group.first as i64,
+                        group.count as i64,
+                        pool_packs[&group.pack],
+                        (group.group + pool_offsets.get(&group.pack).copied().unwrap_or(0)) as i64,
+                        group.digest.as_bytes().as_slice()
+                    ],
                 )?;
             next_ordinal += group.count as i64;
             diagnostic_stats.metadata_pool_admitted_groups += 1;
@@ -1427,7 +1587,7 @@ impl PreparedAdmission {
         }
         // Preserve pack bytes/order; only the SQL primary-key insertion order changes.
         let sort_started = Instant::now();
-        locators.sort_unstable_by_key(|(_, object)| object.id);
+        locators.sort_unstable_by_key(|(_, _, object)| object.id);
         crate::telemetry::note_workspace_admission_sort(super::elapsed_ns(sort_started));
         let locator_rows = sql_rows(transaction, 5, 12)?;
         for page in locators.chunks(locator_rows) {
@@ -1435,12 +1595,12 @@ impl PreparedAdmission {
                 "INSERT INTO objects(object_id,canonical_length,pack_id,group_number,record_number) VALUES {}",
                 vec!["(?,?,?,?,?)"; page.len()].join(",")
             );
-            let values = page.iter().flat_map(|(pack, object)| {
+            let values = page.iter().flat_map(|(pack, offset, object)| {
                 [
                     Value::Blob(object.id.as_bytes().to_vec()),
                     Value::Integer(object.length as i64),
                     Value::Integer(*pack),
-                    Value::Integer(object.group as i64),
+                    Value::Integer((offset + object.group) as i64),
                     Value::Integer(object.record as i64),
                 ]
             });

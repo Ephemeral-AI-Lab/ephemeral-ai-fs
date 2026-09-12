@@ -139,18 +139,23 @@ selection only, `#[ignore]` by default). Raw output:
 
 | Probe | Workload | Before the repair | After the repair |
 |---|---|---|---|
-| A | one file, repeated 4-byte overwrite at offset 0 through `Workspaces::edit_workspace_file_range` | accepted 4,096, then `Storage(InvalidInput("workspace edit limit"))` | accepted 10,000 of 10,000, no rejection, exact final contents |
+| A | one file, repeated 4-byte overwrite at offset 0 through `Workspaces::edit_workspace_file_range` | accepted 4,096, then `Storage(InvalidInput("workspace edit limit"))` | accepted 10,000 of 10,000, no rejection |
 | B | one empty file, repeated 4 KiB append-shaped inline edits | accepted 2,048 (8,388,608 bytes), then `Storage(InvalidInput("workspace inline limit"))` | unchanged: this is the real 8 MiB pending-workspace inline budget, not an edit counter |
 | C | 2,000 distinct pre-existing files, one 1-byte inline edit each, same pending workspace | per-edit cost was flat (63 s per 100 edits) and the run was stopped at 400 edits as unproductive; no piece/fact rejection observed | not re-run after the repair; no rejection is attributable to the edit counter here |
 | F | per-edit cost against pending-set size, public route | 1 file: 20 edits in 17 ms; 200 files: 20 edits in 1,114 ms (≈55 ms/edit) | unchanged |
+
+**Scope correction.** Probe A asserts acceptance only and then discards the
+workspace: it does **not** assert final bytes or Commit/reopen. The 10,000-edit
+claim is instead carried by an extended focused proof that asserts exact final
+contents, Commit/checkpoint, reopen and byte comparison (see §8), and by the public
+32,000-edit route with independent verification.
 
 Probe A is the #116 primary case. Before the repair the rejection happened while
 the edited file still held **one** pending piece and the workspace spool held
 only the few kilobytes of acknowledged replacement data: no piece-count,
 piece-allocation, inline, spool or frame budget was near its limit. The count
 itself was the only cause. After the repair the same public route accepts
-10,000 counted edits, and the final file contents equal the last replacement
-(asserted, not inferred).
+10,000 counted edits.
 
 Probe B is **not** an edit-counter rejection and is retained as a real budget:
 8 MiB of pending inline data per workspace. Raising it is not part of this
@@ -198,30 +203,32 @@ diagnostics confirm the same number from the product's accounting.
 
 Consequences, stated explicitly:
 
-- The tiered spill threshold in `changes.rs` is
-  `batch_size = (8 MiB / 4096).clamp(1, 128) = 128` pending frontier keys, so a
-  5,000-file pending set already spills in the public route; the K5000/K5461
-  public runs exercise the spill path.
-- Reaching the Stage3 contract's 15,873-key spill-scale crossing in **one
-  pending set** requires ≈15,873 distinct changed files, which needs
-  ≈5.8 MiB of pending piece allocation under the current 3-node-per-splice
-  representation — 2.9× the declared 2 MiB budget.
-- Therefore `k32000` is **BLOCKED on the default budget**, not merely NOT_RUN.
-  It cannot be completed by retrying, by a larger timeout, or by the sequence
-  runner: the pending-workspace piece budget rejects the 5,462nd changed file
-  before the spill-scale crossing is reachable.
-- Raising the 2 MiB budget is explicitly **not** the repair (#116: "repair the
-  route-specific changed-file ceiling rather than raising the 2 MiB piece
-  budget"). The 2 MiB figure is a real memory bound at 128 bytes per node, so
-  the required repair is a **more compact pending-splice representation** for the
-  common "small splice in a base file" shape (for example a bounded ordered
-  splice list over the compact base/spool payload, materialized into the piece
-  tree only past a small threshold). That is a representation change of the
-  pending edit state, not a quota change, and it is **not implemented here**: it
-  touches every pending-edit read/write/capture invariant and needs its own
-  focused correctness campaign. It is recorded as the concrete, falsifiable
-  follow-up with the exact measured per-file charge and the boundary commands
-  above.
+- **Corrected after the owner's review:** the tiered spill threshold is the
+  pending-frontier capacity in `changes.rs`, **B = 15,873 keys**, computed from the
+  default `max_final_delta_memory_bytes` (8 MiB). The tree-work batch size 128 is a
+  different quantity and is not this threshold. A K5000/K5461 pending set is
+  therefore **below** B and does **not** evidence a spill-scale crossing. See
+  [record-corrections.md](record-corrections.md) §4 for the arithmetic and the
+  default-policy proof at exactly 2B.
+- The sequence edits **distinct** files (`plans()` advances `next` per edit), so a
+  K-edit sequence needs K distinct changed files. The exact sequence edit shape — a
+  12-byte inline splice inside a base file — cost **384 bytes per changed file** in
+  `piece_allocation_bytes` under the original representation: three
+  `PieceNode`s of `size_of::<PieceNode>() = 128` bytes (left base, inline splice,
+  right base), measured independently at 376–384 bytes per file for 4 KiB, 48 KiB
+  and 200 MB base files. `2097152 / 384 = 5461.3`, so that budget admitted exactly
+  5,461 such files, and the sequence's own commit diagnostics confirmed the same
+  number from the product's accounting. `k32000` therefore failed at accepted edit
+  5,461 with `workspace piece allocation limit`.
+- The bounded compact pending form described in §8 is **implemented** in this run
+  (`crates/layerfs-workspace-core/src/file_edit.rs` plus the wire form in
+  `crates/layerfs-fuse/src/live_wire.rs`). One equal-length overwrite of a committed
+  base file now charges one 64-byte descriptor (or 72 bytes when the replacement is
+  a spool slice) instead of three 128-byte nodes, and it is encoded as one bounded
+  splice rather than a three-entry piece list. The product's own diagnostics from
+  the public route report `edit_count=32000`, `edit_piece_count=92821`,
+  `edit_piece_logical_charge=2048000` (= 32,000 × 64) against the unchanged
+  2,097,152-byte budget, and the run completes with independent verification.
 
 No hidden PASS is claimed: the previously blocked public spill coverage remains
 unsatisfied, with its exact blocking quantity and the boundary at which it

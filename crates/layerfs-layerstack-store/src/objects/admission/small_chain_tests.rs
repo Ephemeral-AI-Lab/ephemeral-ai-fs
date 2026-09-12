@@ -152,7 +152,10 @@ fn compact_framing_multiple_groups_and_authenticated_locator_failures() {
         .collect();
     let prepared = f.prepare(objects.clone());
     assert_eq!(prepared.packs.len(), 1);
-    assert_eq!(&prepared.packs[0][8..16], &[4, 0, 0, 0, 3, 0, 0, 0]);
+    assert_eq!(
+        &prepared.packs[0].prepared_bytes()[8..16],
+        &[4, 0, 0, 0, 3, 0, 0, 0]
+    );
     f.publish(prepared);
     for object in &objects {
         assert_eq!(f.db.read_object_row(object.id).unwrap(), object.bytes);

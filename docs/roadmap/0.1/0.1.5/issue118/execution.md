@@ -1,5 +1,60 @@
 # Issue118 execution ledger
 
+## Final execution pass (this run)
+
+Ordered exactly as the owner's continuation contract required.
+
+1. **Acceptance-record correction** — `record-corrections.md`. Producer cohort of
+   full157/access re-derived from every receipt (`408f3e2a…`, not `6693224e…`); the
+   false byte-identity statement removed; the default frontier capacity corrected to
+   **B = 15,873** (the 128 tree-work batch is a different quantity, and K5000/K5461
+   do not cross B); probe A's acceptance-only scope stated; the 18 single-sample
+   rows kept distinct from comparative evidence.
+2. **Build-cache integrity repair** — the shared incremental target reused a
+   `layerfs-content` artifact whose recorded source mtime predated its fingerprint,
+   so the next dependent recompile failed hard (`method
+   get_authenticated_canonical_batch is not a member of trait ObjectRead`). Repaired
+   by refreshing that crate's source mtimes; nine workspace crates recompiled; no
+   source changed. Recorded in `record-corrections.md` §3 and retained here.
+3. **#107 pack coalescing** — implemented in `layerfs-layerstack-store`
+   (`admission.rs`, `objects.rs`, `pack.rs`); declaration in
+   `issue107-declaration.md`, result and disposition in `issue107-result.md`.
+   Focused development case `deepseek-five` PASS (25 pack rows). Final history
+   `issue107-storage-full157`: 157/157 construction PASS (complete command
+   763.218 s), same-Store verification PASS (157 states / 904,143 entries /
+   4,936,693,030 B, complete command 735.749 s), census and matching Git157 PASS.
+   **Outcome: mechanism PASS, frozen allocated-byte target FAIL** (pack rows
+   3,457 → 1,058; page slack −920,514 B; apparent −1.13 %; allocated +0.02 % because
+   the live file's allocation residue grew).
+4. **#116 bounded compact pending representation** — implemented in
+   `layerfs-workspace-core::file_edit` (one bounded descriptor for an equal-length
+   overwrite of a committed base, materialized into the existing tree for any other
+   shape) and in `layerfs-fuse::live_wire` (kind-4 wire form and exact bound). This
+   changes the *pending* representation only; committed bytes are unchanged.
+   Evidence: public `namespace-100000 --sequence 6000` PASS (previously FAIL at
+   5,461); public `--sequence 32000` COMPLETE in one Commit with
+   `edit_piece_logical_charge=2048000` and independent verification PASS (32,000
+   changed files before/after reopen); default-budget frontier proof at exactly 2B;
+   two live-cut Docker tests plus the lifecycle test PASS with the compact form and
+   its conversion asserted live and barrier throughput measured.
+5. **Pinned package workflow** — pinned pip 24.0 bootstrap (SHA256 verified), clean
+   hash-pinned install and a representative pinned update, each followed by Commit,
+   session reopen and container-side application/module verification plus host-side
+   committed-snapshot verification. Wheels only, so no lifecycle script runs.
+   PASS in `issue116-compact-live/pinned-package.log`.
+6. **Focused final qualification** — `layerfs-layerstack-store` 146/146 (+7
+   pre-existing ignored), `layerfs-workspace` 75/75 lib and 12/12 integration,
+   `layerfs-workspace-core` 20/20, `layerfs-fuse` 43/43 including three new bounded
+   wire tests; extended probe A (10,000 edits, exact bytes, Commit/reopen) PASS in
+   7.88 s; 11 access performance cases and 11 separate verifications PASS at
+   2.48–2.88 s complete commands.
+
+**Terminal state: #118 remains OPEN.** One required item is unsatisfied and is
+reported as an explicit FAIL, not hidden: #107's prospective allocated-byte target
+(≥1.5 % allocated; achieved 0.039 % allocated / 1.13 % apparent). Every other
+required row is PASS, WARN or owner-WAIVED as tabulated in
+[terminal-outcome.md](terminal-outcome.md).
+
 Started 2026-09-12 on main at `42599d4f7`. Current issue118 supersedes
 historical campaign repetition requirements. This run stays on main; unrelated
 web/cloud source preserved. The owner subsequently requested a separate

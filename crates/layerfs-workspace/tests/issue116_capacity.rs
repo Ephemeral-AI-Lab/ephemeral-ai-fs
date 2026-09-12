@@ -97,7 +97,35 @@ fn finish(root: std::path::PathBuf, workspaces: Workspaces, session: WorkspaceSe
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// Exact bytes of one file through the materialized host placement.
+fn read_mount(root: &std::path::Path, mount: &str, path: &str) -> Vec<u8> {
+    std::fs::read(root.join(mount).join(path)).unwrap()
+}
+
+/// Commit the workspace and require a created history state.
+fn commit_session(
+    workspaces: &Workspaces,
+    session: layerfs_workspace::WorkspaceId,
+) -> layerfs_workspace::WorkspaceCommitResult {
+    workspaces.commit_workspace_session(session).unwrap()
+}
+
+/// Mount the committed history again through a fresh session.
+fn reopen_session(
+    root: &std::path::Path,
+    workspaces: &Workspaces,
+    branch: layerfs_layerstack_store::BranchId,
+    name: &str,
+) -> WorkspaceSession {
+    open_session(root, workspaces, branch, name)
+}
+
 /// A: repeated overwrite of the same four bytes in one 4 KiB file.
+///
+/// Acceptance alone is not the claim: this proof also asserts the exact final
+/// bytes, Commits the workspace, reopens the committed history and compares the
+/// full file, so 10,000 counted pending edits are qualified end to end rather
+/// than discarded.
 #[test]
 #[ignore = "issue116 phase-1 capacity probe"]
 fn probe_a_repeated_overwrite_of_one_file() {
@@ -124,6 +152,29 @@ fn probe_a_repeated_overwrite_of_one_file() {
     }
     println!("PROBE A accepted={accepted} rejection={rejection:?}");
     assert!(rejection.is_none(), "pending edits must not be rejected by a count");
+    assert_eq!(accepted, 10_000, "every counted edit is accepted");
+    // Exact final contents: the last replacement in the first four bytes and the
+    // original payload everywhere else.
+    let mut expected = vec![3u8; 4096];
+    expected[..4].copy_from_slice(&[0xf_u8; 4]);
+    let pending = read_mount(&root, "mount", "f0");
+    assert_eq!(pending, expected, "pending contents equal the last replacement");
+    assert_eq!(pending.len(), 4096, "pending length is unchanged");
+    assert!(matches!(
+        commit_session(&workspaces, session.id),
+        layerfs_workspace::WorkspaceCommitResult::Created { .. }
+    ));
+    workspaces
+        .end_workspace_session(session.id, EndWorkspaceMode::Clean)
+        .unwrap();
+    let reopened = reopen_session(&root, &workspaces, branch, "mount-again");
+    let after = read_mount(&root, "mount-again", "f0");
+    assert_eq!(after, expected, "committed contents survive reopen exactly");
+    assert_eq!(after.len(), 4096, "committed length is unchanged");
+    workspaces
+        .end_workspace_session(reopened.id, EndWorkspaceMode::Clean)
+        .unwrap();
+    drop(reopened);
     finish(root, workspaces, session);
 }
 

@@ -533,6 +533,46 @@ pub(super) fn validate_small_pack(bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Exact assembled length of a validated group vector under its pack version,
+/// without allocating the pack. Used to charge a retained lane tail.
+pub(super) fn assembled_length(version: u32, groups: &[EncodedGroup]) -> Result<usize> {
+    if groups.is_empty() || groups.len() > GROUP_COUNT_LIMIT {
+        return Err(invalid());
+    }
+    groups.iter().try_fold(16usize, |size, group| {
+        let entry = match version {
+            1 | 2 | 3 | 6 => 16usize,
+            4 if group.bytes.len() > 8 => 4,
+            _ => return Err(invalid()),
+        };
+        let payload = if version == 4 {
+            group.bytes.len() - 8
+        } else {
+            group.bytes.len()
+        };
+        size.checked_add(entry)
+            .and_then(|size| size.checked_add(payload))
+            .ok_or_else(invalid)
+    })
+}
+
+/// Re-assemble an already validated group vector under its own pack version.
+/// Used only to append groups to a still-open pack of the same framing; the
+/// version bytes and every per-version check are unchanged.
+pub(super) fn assemble_version(version: u32, groups: &[EncodedGroup]) -> Result<Vec<u8>> {
+    let mut bytes = match version {
+        1 | 6 => assemble(groups)?,
+        2 => assemble_native(groups)?,
+        3 => assemble_small(groups)?,
+        4 => assemble_compact_small(groups)?,
+        _ => return Err(invalid()),
+    };
+    if version == 6 {
+        bytes[8..12].copy_from_slice(&6u32.to_le_bytes());
+    }
+    Ok(bytes)
+}
+
 pub(super) fn assemble_compact_small(groups: &[EncodedGroup]) -> Result<Vec<u8>> {
     let mut size = 16 + 4 * groups.len();
     if groups.is_empty() || groups.len() > GROUP_COUNT_LIMIT {
@@ -752,6 +792,10 @@ pub(super) fn visit_records<'a>(
     Ok(())
 }
 
+/// One encoded group. `Clone` exists for the bounded open-pack append candidate:
+/// a merged pack is assembled from a copy before the open pack is modified, so a
+/// pack that no longer fits closes without losing the caller's group vector.
+#[derive(Clone)]
 pub(super) struct EncodedGroup {
     pub bytes: Vec<u8>,
     pub decoded_length: usize,

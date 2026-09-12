@@ -4,7 +4,7 @@ use layerfs_content::tree::directory::DirectoryStateRoot;
 use layerfs_content::tree::inode::InodeId;
 use layerfs_content::{CanonicalName, CanonicalPath, ObjectId};
 use layerfs_workspace_core::backing::{BackingId, BackingRef};
-use layerfs_workspace_core::file_edit::{Piece, PieceTree};
+use layerfs_workspace_core::file_edit::{CompactPending, Piece, PieceTree};
 use layerfs_workspace_core::{Data, DirectoryData, FileData, Node, NodeId};
 use std::io::{self, Read, Write};
 
@@ -232,11 +232,17 @@ pub fn node_encoded_bound(node: &Node) -> io::Result<usize> {
         .ok_or_else(invalid)?;
     let data = match &node.data {
         Data::File(FileData::Edited { pieces, .. }) => {
-            pieces.count().checked_mul(49).and_then(|n| {
-                usize::try_from(pieces.inline_len())
-                    .ok()
-                    .and_then(|inline| n.checked_add(inline))
-            })
+            // Bounded pending form: one base root plus one equal-length splice,
+            // bounded exactly as encoded instead of as three logical pieces.
+            if let Some(compact) = pieces.compact_encoded_bound() {
+                usize::try_from(compact).ok()
+            } else {
+                pieces.count().checked_mul(49).and_then(|n| {
+                    usize::try_from(pieces.inline_len())
+                        .ok()
+                        .and_then(|inline| n.checked_add(inline))
+                })
+            }
         }
         Data::Directory(directory) => directory
             .changes
@@ -283,6 +289,39 @@ pub fn node_out(id: NodeId, node: &Node) -> io::Result<Vec<u8>> {
             pieces,
             edits,
         }) => {
+            // Kind 4: the bounded pending form. The envelope carries the same
+            // base, spool high-water mark and edit counter; the splice replaces
+            // the piece list with one bounded descriptor.
+            if let Some(compact) = pieces.compact_pending() {
+                out.push(4);
+                out.push(1);
+                let (root, len) = match &compact {
+                    CompactPending::Inline { base, len, .. } => (*base, *len),
+                    CompactPending::Spool { base, len, .. } => (*base, *len),
+                };
+                out.extend_from_slice(root.0.as_bytes());
+                u64_out(&mut out, len);
+                u64_out(&mut out, *spool_high_water);
+                out.extend_from_slice(&edits.to_be_bytes());
+                match &compact {
+                    CompactPending::Inline { offset, bytes, .. } => {
+                        out.push(1);
+                        u64_out(&mut out, *offset);
+                        bytes_out(&mut out, bytes)?;
+                    }
+                    CompactPending::Spool { offset, slice, .. } => {
+                        out.push(2);
+                        u64_out(&mut out, *offset);
+                        u64_out(&mut out, slice.segment.id().0);
+                        u64_out(&mut out, slice.offset);
+                        u64_out(&mut out, slice.len);
+                    }
+                }
+                if out.len() > MAX_NODE_BYTES {
+                    return Err(invalid());
+                }
+                return Ok(out);
+            }
             out.push(1);
             out.push(u8::from(base.is_some()));
             if let Some((root, len)) = base {
@@ -446,6 +485,48 @@ pub fn node_in(
                     .map_err(|_| invalid())?,
             })
         }
+        4 => {
+            // Bounded pending form: one base root, one equal-length splice.
+            if input.byte()? != 1 {
+                return Err(invalid());
+            }
+            let base = FileContentRoot(input.object()?);
+            let len = input.u64()?;
+            let spool_high_water = input.u64()?;
+            let edits = input.u64()?;
+            let pieces = match input.byte()? {
+                1 => {
+                    let offset = input.u64()?;
+                    PieceTree::compact_inline(base, len, offset, input.bytes()?.into())
+                        .map_err(|_| invalid())?
+                }
+                2 => {
+                    let offset = input.u64()?;
+                    let id = BackingId(input.u64()?);
+                    let slice_offset = input.u64()?;
+                    let slice_len = input.u64()?;
+                    slice_offset.checked_add(slice_len).ok_or_else(invalid)?;
+                    PieceTree::compact_spool_splice(
+                        base,
+                        len,
+                        offset,
+                        layerfs_workspace_core::file_edit::SpoolSlice {
+                            segment: backing(id, slice_offset, slice_len)?,
+                            offset: slice_offset,
+                            len: slice_len,
+                        },
+                    )
+                    .map_err(|_| invalid())?
+                }
+                _ => return Err(invalid()),
+            };
+            Data::File(FileData::Edited {
+                base: Some((base, len)),
+                spool_high_water,
+                edits,
+                pieces,
+            })
+        }
         2 => {
             let base = match input.byte()? {
                 0 => None,
@@ -577,5 +658,171 @@ mod edit_diagnostic_tests {
         ] {
             assert!(!valid_edit_diagnostic_nonce(invalid));
         }
+    }
+}
+
+#[cfg(test)]
+mod compact_pending_tests {
+    use super::*;
+    use layerfs_workspace_core::file_edit::{Piece, PieceTree};
+    use std::sync::Arc;
+
+    fn wire_test_backing_ref(id: BackingId) -> BackingRef {
+        BackingRef::new(id, ())
+    }
+
+    fn wire_test_backing() -> BackingRef {
+        wire_test_backing_ref(BackingId(1))
+    }
+
+    fn compact_node(inline: bool) -> Node {
+        let root = FileContentRoot(ObjectId::for_bytes(b"compact-wire-base"));
+        let pieces = if inline {
+            PieceTree::base(root, 64)
+                .unwrap()
+                .replace(
+                    4,
+                    8,
+                    [Piece::Inline {
+                        bytes: Arc::from(&b"01234567"[..]),
+                        offset: 0,
+                        len: 8,
+                    }],
+                )
+                .unwrap()
+        } else {
+            PieceTree::base(root, 64)
+                .unwrap()
+                .replace(
+                    4,
+                    8,
+                    [Piece::Spool {
+                        segment: wire_test_backing(),
+                        offset: 128,
+                        len: 8,
+                    }],
+                )
+                .unwrap()
+        };
+        let mut paths = std::collections::BTreeSet::new();
+        paths.insert("workspace/sequence/d0000/f000000".to_string());
+        Node {
+            revision: 3,
+            canonical: None,
+            paths,
+            mode: 0o600,
+            links: 1,
+            pins: 0,
+            mtime_seconds: 1,
+            mtime_nanoseconds: 2,
+            data: Data::File(FileData::Edited {
+                base: Some((root, 64)),
+                spool_high_water: 0,
+                edits: 1,
+                pieces,
+            }),
+        }
+    }
+
+    fn round_trip(node: &Node) -> Node {
+        let bound = node_encoded_bound(node).unwrap();
+        let out = node_out(NodeId(7), node).unwrap();
+        assert!(
+            out.len() <= bound,
+            "encoded {} exceeds declared bound {}",
+            out.len(),
+            bound
+        );
+        let (id, decoded) = node_in(&out, |id, _, _| Ok(wire_test_backing_ref(id))).unwrap();
+        assert_eq!(id, NodeId(7));
+        decoded
+    }
+
+    /// Comparable rendering of one piece list: physical identity of a spool
+    /// segment is its wire identity (id), not the receiver's local handle.
+    fn render(pieces: &[Piece]) -> Vec<String> {
+        pieces
+            .iter()
+            .map(|piece| match piece {
+                Piece::Base { root, offset, len } => format!("base:{}:{offset}:{len}", root.0),
+                Piece::Spool {
+                    segment,
+                    offset,
+                    len,
+                } => format!("spool:{}:{offset}:{len}", segment.id().0),
+                Piece::Zero { len } => format!("zero:{len}"),
+                Piece::Inline { offset, len, .. } => format!("inline:{offset}:{len}"),
+            })
+            .collect()
+    }
+
+    /// Logical identity across the wire: decoded contents, length, inline and
+    /// spool payloads and the recorded base all match the sender. The treap
+    /// priority serial is not a wire field (unchanged pre-existing behavior).
+    fn assert_same_edited(sent: &Node, received: &Node) {
+        let (pieces, received_pieces) = match (&sent.data, &received.data) {
+            (
+                Data::File(FileData::Edited {
+                    base,
+                    spool_high_water,
+                    pieces,
+                    edits,
+                    ..
+                }),
+                Data::File(FileData::Edited {
+                    base: received_base,
+                    spool_high_water: received_high,
+                    pieces: received_pieces,
+                    edits: received_edits,
+                    ..
+                }),
+            ) => {
+                assert_eq!(base, received_base);
+                assert_eq!(spool_high_water, received_high);
+                assert_eq!(edits, received_edits);
+                (pieces, received_pieces)
+            }
+            _ => panic!("edited file expected"),
+        };
+        assert_eq!(pieces.len(), received_pieces.len());
+        assert_eq!(pieces.count(), received_pieces.count());
+        assert_eq!(pieces.inline_len(), received_pieces.inline_len());
+        assert_eq!(pieces.spool_len(), received_pieces.spool_len());
+        assert_eq!(render(&pieces.pieces()), render(&received_pieces.pieces()));
+        assert_eq!(
+            pieces.logical_allocation_charge().unwrap(),
+            received_pieces.logical_allocation_charge().unwrap()
+        );
+        assert_eq!(
+            render(&pieces.range(0, pieces.len()).unwrap()),
+            render(&received_pieces.range(0, pieces.len()).unwrap())
+        );
+    }
+
+    #[test]
+    fn bounded_pending_inline_round_trips_within_its_declared_bound() {
+        let node = compact_node(true);
+        assert_same_edited(&node, &round_trip(&node));
+    }
+
+    #[test]
+    fn bounded_pending_spool_round_trips_within_its_declared_bound() {
+        let node = compact_node(false);
+        assert_same_edited(&node, &round_trip(&node));
+    }
+
+    /// The default 96 MiB publication budget must admit the required 32,000
+    /// changed files of the exact sequence shape, paths included.
+    #[test]
+    fn bounded_pending_sequence_set_fits_the_publication_budget() {
+        let sample = compact_node(true);
+        let bound = node_encoded_bound(&sample).unwrap() as u64;
+        let inline = 12u64;
+        let charge = (bound - inline) * 8 + 1024;
+        assert!(
+            32_000 * charge <= MAX_FACT_MEMORY as u64,
+            "32,000 compact pending files charge {} bytes",
+            32_000 * charge
+        );
     }
 }

@@ -560,6 +560,335 @@ fn ordinary_writes_queue_during_mapped_commit() {
     run_live_cut(true);
 }
 
+/// Pinned package workflow over the live daemon/FUSE surface: a clean install of
+/// hash-pinned wheels into the workspace, then a representative pinned update,
+/// each followed by Commit, reopen and content/metadata/module verification.
+#[test]
+fn pinned_package_install_and_update_survive_commit_and_reopen() {
+    if std::env::var_os("LAYERFS_LIVE_DOCKER").is_none() {
+        return;
+    }
+    let image = std::env::var("LAYERFS_LIVE_DOCKER_IMAGE").unwrap();
+    let root = temp();
+    let manager = ContainerManager::open(root.join("containers")).unwrap();
+    let name = format!("layerfs-pkg-{}", std::process::id());
+    eprintln!("pinned package container={name}");
+    let result = pinned_package_workflow(&manager, &name, &image, &root);
+    if result.is_err() {
+        if let Ok(logs) = Command::new("docker").args(["logs", name.as_str()]).output() {
+            eprintln!("daemon stdout: {}", String::from_utf8_lossy(&logs.stdout));
+            eprintln!("daemon stderr: {}", String::from_utf8_lossy(&logs.stderr));
+        }
+    }
+    let cleanup = cleanup_container(&manager, &name);
+    match (result, cleanup) {
+        (Ok(()), Ok(())) => std::fs::remove_dir_all(root).unwrap(),
+        (result, cleanup) => panic!("pinned package result={result:?}; cleanup={cleanup:?}"),
+    }
+}
+
+/// Pinned pip bootstrap and the two hash-pinned package sets. Acquisition is a
+/// separate, untimed setup phase: the artifacts are fetched once into the
+/// container, verified by SHA256, and never mixed into product timing.
+const PINNED_PIP: &str = "https://files.pythonhosted.org/packages/8a/6a/19e9fe04fca059ccf770861c7d5721ab4c2aebc539889e97c7977528a53b/pip-24.0-py3-none-any.whl";
+const PINNED_PIP_SHA256: &str = "ba0d021a166865d2265246961bec0152ff124de910c5cc39f1156ce3fa7c69dc";
+const PINNED_PROJECT: &str = r#"import idna
+import packaging.version
+import six
+
+def versions():
+    return (idna.__version__, packaging.__version__, six.__version__)
+
+def normalize(value):
+    return idna.encode(value).decode("ascii")
+
+if __name__ == "__main__":
+    print("application", *versions(), normalize("bücher.example"))
+"#;
+const PINNED_SET_A: &str = "\
+--require-hashes
+idna==3.6 --hash=sha256:c05567e9c24a6b9faaa835c4821bad0590fbb9d5779e7caa6e1cc4978e7eb24f
+packaging==23.2 --hash=sha256:8c491190033a9af7e1d931d0b5dacc2ef47509b34dd0de67ed209b5203fc88c7
+six==1.16.0 --hash=sha256:8abb2f1d86890a2dfb989f9a77cfcfd3e47c2a354b01111771326f8aa26e0254
+";
+const PINNED_SET_B: &str = "\
+--require-hashes
+idna==3.7 --hash=sha256:82fee1fc78add43492d3a1898bfa6d8a904cc97d8427f683ed8e798d07761aa0
+packaging==24.0 --hash=sha256:2ddfb553fdf02fb784c234c7ba6ccc288296ceabec964ad2eae3777778130bc5
+six==1.17.0 --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274
+";
+
+/// Run one shell command in the session and return its captured output; a
+/// non-zero exit fails with the exact command output for diagnosis.
+fn run_package_command(
+    client: &Client,
+    session: WorkspaceId,
+    body: &str,
+    label: &'static str,
+) -> AnyResult<String> {
+    let execution = client.exec_workspace_session(
+        session,
+        NonEmpty::new(vec![
+            OsString::from("/bin/sh"),
+            OsString::from("-c"),
+            OsString::from(body),
+        ])?,
+    )?;
+    let reader = client.workspace_output(execution.id)?;
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let mut after = 0;
+    let mut collected = Vec::new();
+    let receipt = loop {
+        let page = reader.read(after, true)?;
+        for chunk in &page.chunks {
+            collected.extend_from_slice(&chunk.bytes);
+        }
+        if page.exited {
+            break page.receipt;
+        }
+        if Instant::now() >= deadline {
+            return Err("pinned package command timeout".into());
+        }
+        after = page.next_sequence;
+    };
+    let text = String::from_utf8_lossy(&collected).into_owned();
+    require(
+        receipt.is_some_and(|receipt| receipt.exit_code == Some(0)),
+        label,
+    )
+    .map_err(|error| -> Box<dyn std::error::Error> {
+        format!("{error}: {}", text.trim()).into()
+    })?;
+    Ok(text)
+}
+
+/// One shell-safe single-quoted word, so exact fixture bytes reach the mount.
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// Container-side probe: run the application through the installed vendor tree,
+/// then hash the installed module inventory for comparison across reopen.
+fn package_probe(expected: &str) -> String {
+    format!(
+        r#"import hashlib, pathlib, subprocess, sys
+out = subprocess.run([sys.executable, 'app.py'], capture_output=True, text=True, env={{'PYTHONPATH': 'vendor'}})
+print('module-run', out.returncode, out.stdout.strip(), out.stderr.strip())
+assert out.returncode == 0, out.stderr
+assert out.stdout.startswith('application {expected} '), out.stdout
+root = pathlib.Path('vendor')
+files = sorted(str(p.relative_to(root)) for p in root.rglob('*.py'))
+digest = hashlib.sha256()
+for name in files:
+    digest.update(name.encode())
+    digest.update((root / name).read_bytes())
+print('module-files', len(files), digest.hexdigest())
+"#
+    )
+}
+
+fn pinned_package_workflow(
+    manager: &ContainerManager,
+    name: &str,
+    image: &str,
+    root: &Path,
+) -> AnyResult<()> {
+    manager.create(ContainerCreate {
+        name: name.to_owned(),
+        image: image.to_owned(),
+        limits: ContainerLimits {
+            memory_bytes: 2 * 1024 * 1024 * 1024,
+            cpus: 2,
+            pids: 256,
+        },
+    })?;
+    let running = manager.start(name)?;
+    // Untimed setup: pinned pip wheel, verified by SHA256, then a local pip
+    // bootstrap outside the workspace. Wheels only, so no build backend and no
+    // package lifecycle script ever executes.
+    let bootstrap = format!(
+        "set -e; cd /var/tmp; \
+         if [ ! -f pip.whl ]; then curl -fsSL '{PINNED_PIP}' -o pip.whl; fi; \
+         echo '{PINNED_PIP_SHA256}  pip.whl' > pip.sha256; sha256sum -c pip.sha256; \
+         python3 pip.whl/pip --version"
+    );
+    let boot = Command::new("docker")
+        .args(["exec", name, "/bin/sh", "-c", bootstrap.as_str()])
+        .output()?;
+    require(
+        boot.status.success(),
+        "pinned pip bootstrap outside the workspace",
+    )?;
+    eprintln!(
+        "pinned package stage=setup pip={}",
+        String::from_utf8_lossy(&boot.stdout).trim()
+    );
+    let store = Arc::new(LayerStackStore::create(root.join("store.sqlite"))?);
+    let client = Client::connect_with_container(store.clone(), running.binding())?;
+    let initialized = client.initialize_layerstack(
+        EntityName::new("pinned-package")?,
+        LayerStackInitialization::Empty,
+    )?;
+    let branch = client.fork_branch(
+        EntityName::new("main")?,
+        LocalForkSource::Layer {
+            layer_id: initialized.genesis_layer_id,
+        },
+    )?;
+    let placement = format!("/workspace/pinned-{}", std::process::id());
+    let mut session =
+        client.create_workspace_session(container_request(branch, &running.id, &placement))?;
+    // Single-quoted payloads keep every fixture byte exact without heredocs or
+    // command substitution, and write ordinary files through the mount.
+    let write = |path: &str, body: &str| -> String {
+        format!("printf '%s' {} > {}", shell_quote(body), shell_quote(path))
+    };
+    run_package_command(
+        &client,
+        session.id,
+        &format!(
+            "set -e; mkdir -p project; {}; {}",
+            write("project/app.py", PINNED_PROJECT),
+            write("project/requirements.txt", PINNED_SET_A)
+        ),
+        "pinned project fixture",
+    )?;
+    let install = |session: WorkspaceId, requirements: &str, extra: &str| -> AnyResult<()> {
+        let body = format!(
+            "set -e; cd project; {}; \
+             python3 /var/tmp/pip.whl/pip install {extra} --require-hashes --only-binary=:all: \
+             --no-input --disable-pip-version-check --target vendor -r requirements.txt",
+            write("requirements.txt", requirements)
+        );
+        let output = run_package_command(&client, session, &body, "pinned package installation")?;
+        eprintln!("pinned package stage=install output={}", output.trim());
+        Ok(())
+    };
+    let verify = |session: WorkspaceId, label: &str, expected: &str| -> AnyResult<()> {
+        let probe = package_probe(expected);
+        let body = format!(
+            "set -e; cd project; {}; python3 /var/tmp/package-probe.py",
+            write("/var/tmp/package-probe.py", &probe)
+        );
+        let text = run_package_command(
+            &client,
+            session,
+            &body,
+            "pinned module and application verification",
+        )?;
+        eprintln!("pinned package stage=verify label={label} output={}", text.trim());
+        Ok(())
+    };
+    let commit = |session: WorkspaceId| -> AnyResult<()> {
+        require(
+            matches!(
+                client.commit_workspace_session(session)?,
+                WorkspaceCommitResult::Created { .. }
+            ),
+            "pinned package Commit",
+        )?;
+        Ok(())
+    };
+    // Clean installation of the pinned set, then Commit, reopen and verify.
+    install(session.id, PINNED_SET_A, "--no-cache-dir")?;
+    verify(session.id, "installed-in-session", "3.6")?;
+    commit(session.id)?;
+    let installed_root = store.pin_branch(branch)?.root;
+    client.end_workspace_session(session.id, EndWorkspaceMode::Clean)?;
+    session = client.create_workspace_session(container_request(branch, &running.id, &placement))?;
+    verify(session.id, "installed-after-reopen", "3.6")?;
+    verify_package_snapshot(&store, installed_root, "3.6")?;
+    // Representative pinned update, then Commit, reopen and verify again.
+    install(session.id, PINNED_SET_B, "--upgrade --no-cache-dir")?;
+    verify(session.id, "updated-in-session", "3.7")?;
+    commit(session.id)?;
+    let updated_root = store.pin_branch(branch)?.root;
+    require(updated_root != installed_root, "pinned update changed the root")?;
+    client.end_workspace_session(session.id, EndWorkspaceMode::Clean)?;
+    session = client.create_workspace_session(container_request(branch, &running.id, &placement))?;
+    verify(session.id, "updated-after-reopen", "3.7")?;
+    verify_package_snapshot(&store, updated_root, "3.7")?;
+    client.end_workspace_session(session.id, EndWorkspaceMode::Clean)?;
+    Ok(())
+}
+
+/// One bounded page of a committed directory, by name, from the frozen Store.
+fn committed_directory_names(
+    store: &LayerStackStore,
+    root: layerfs_content::ObjectId,
+    path: &layerfs_content::CanonicalPath,
+) -> AnyResult<Vec<String>> {
+    let reader = store.snapshot_reader(root);
+    let (page, _) = layerfs_content::filesystem::list(
+        &layerfs_layerstack_store::CoreReader(&reader),
+        root,
+        path,
+        None,
+        4096,
+        1024 * 1024,
+    )?;
+    Ok(page
+        .entries
+        .iter()
+        .map(|(name, _)| String::from_utf8_lossy(name.as_bytes()).into_owned())
+        .collect())
+}
+
+/// Host-side, container-independent verification of the committed package tree:
+/// exact application module bytes, installed module inventory and metadata.
+fn verify_package_snapshot(
+    store: &LayerStackStore,
+    root: layerfs_content::ObjectId,
+    expected_versions: &str,
+) -> AnyResult<()> {
+    let reader = store.snapshot_reader(root);
+    let path = layerfs_content::CanonicalPath::new("project/app.py")?;
+    let (stat, _) = layerfs_content::filesystem::stat(
+        &layerfs_layerstack_store::CoreReader(&reader),
+        root,
+        &path,
+    )?;
+    let length = layerfs_content::file::content::length(
+        &layerfs_layerstack_store::CoreReader(&reader),
+        layerfs_content::file::content::FileContentRoot(stat.content_root),
+    )?;
+    let mut bytes = Vec::new();
+    layerfs_content::filesystem::read_range(
+        &layerfs_layerstack_store::CoreReader(&reader),
+        root,
+        &path,
+        0..length,
+        &mut bytes,
+    )?;
+    let text = String::from_utf8(bytes)?;
+    require(
+        text == PINNED_PROJECT,
+        "committed application bytes are exact",
+    )?;
+    require(
+        matches!(stat.kind, layerfs_content::tree::inode::InodeKind::RegularFile),
+        "committed module kind",
+    )?;
+    let vendor = layerfs_content::CanonicalPath::new("project/vendor")?;
+    let names = committed_directory_names(&store, root, &vendor)?;
+    for expected in ["idna", "packaging", "six"] {
+        require(
+            names.iter().any(|name| name.starts_with(expected)),
+            "installed distribution present in the committed tree",
+        )
+        .map_err(|error| -> Box<dyn std::error::Error> {
+            format!("{error}: {names:?}").into()
+        })?;
+    }
+    eprintln!(
+        "pinned package stage=committed-snapshot versions={expected_versions} entries={} bytes={} refs={}",
+        names.len(),
+        length,
+        stat.namespace_ref_count
+    );
+    Ok(())
+}
+
 fn run_live_cut(ordinary_writes: bool) {
     if std::env::var_os("LAYERFS_LIVE_DOCKER").is_none() {
         return;
@@ -627,13 +956,20 @@ int main(int argc, char **argv) {
     puts("ready"); fflush(stdout);
     /* Keep this coherence check inside the existing 4096-edit generation budget. */
     struct timespec delay = {0, 1000000};
+    struct timespec phase_start, phase_end;
+    unsigned long spins = 0, barrier_spins = 0;
+    assert(clock_gettime(CLOCK_MONOTONIC, &phase_start) == 0);
     while (access(argv[2], F_OK) != 0) {
         p[128]++;
 #ifdef ORDINARY_WRITES
         assert(pwrite(fd, "Q", 1, 129) == 1);
 #endif
         nanosleep(&delay, 0);
+        spins++;
     }
+    assert(clock_gettime(CLOCK_MONOTONIC, &phase_end) == 0);
+    double pre_seconds = (phase_end.tv_sec - phase_start.tv_sec)
+        + (phase_end.tv_nsec - phase_start.tv_nsec) / 1e9;
     if (p[0] != 'A' || p[4095] != 'B' || p[777] != 'S') {
         unsigned char ordinary[4096] = {0};
         ssize_t count = pread(fd, ordinary, sizeof ordinary, 0);
@@ -647,14 +983,21 @@ int main(int argc, char **argv) {
     p[0] = 'C'; p[4095] = 'D';
     assert(pwrite(fd, "F", 1, 2048) == 1);
     puts("after"); fflush(stdout);
+    assert(clock_gettime(CLOCK_MONOTONIC, &phase_start) == 0);
     while (access(argv[3], F_OK) != 0) {
         p[128]++;
 #ifdef ORDINARY_WRITES
         assert(pwrite(fd, "Q", 1, 129) == 1);
 #endif
         nanosleep(&delay, 0);
+        barrier_spins++;
     }
+    assert(clock_gettime(CLOCK_MONOTONIC, &phase_end) == 0);
+    double barrier_seconds = (phase_end.tv_sec - phase_start.tv_sec)
+        + (phase_end.tv_nsec - phase_start.tv_nsec) / 1e9;
     assert(p[0] == 'C' && p[4095] == 'D' && p[2048] == 'F');
+    printf("live %s pre_spins=%lu pre_seconds=%.6f barrier_spins=%lu barrier_seconds=%.6f\n",
+           argv[1], spins, pre_seconds, barrier_spins, barrier_seconds);
     assert(munmap((void *)p, 4096) == 0); assert(close(fd) == 0);
     puts("done"); return 0;
 }
@@ -769,6 +1112,7 @@ int main(int argc, char **argv) {
     )?;
     let first_root = store.pin_branch(branch)?.root;
     check_mapped_snapshot(&store, first_root, false)?;
+    let mut edit_ns = 0_u128;
     for path in ["held-a", "held-b"] {
         eprintln!("live-cut stage=sdk-edit path={path}");
         let edit = layerfs_sdk::WorkspaceFileRangeEdit {
@@ -778,6 +1122,7 @@ int main(int argc, char **argv) {
             delete_len: 1,
             replacement: layerfs_sdk::WorkspaceFileReplacement::Inline(vec![b'S']),
         };
+        let edit_started = Instant::now();
         if path == "held-a" {
             let rendezvous = std::sync::Barrier::new(2);
             std::thread::scope(|scope| -> AnyResult<()> {
@@ -796,6 +1141,7 @@ int main(int argc, char **argv) {
         } else {
             client.edit_workspace_file_range(edit)?;
         }
+        edit_ns += edit_started.elapsed().as_nanos();
     }
     require(
         docker_status(name, ["touch", go.as_str()])?,
@@ -841,23 +1187,141 @@ int main(int argc, char **argv) {
         docker_status(name, ["touch", done.as_str()])?,
         "release retained handles",
     )?;
-    for id in executions {
+    let mut live_measurements = Vec::new();
+    for id in &executions {
         wait_for(Duration::from_secs(5), || {
             client
-                .workspace_output(id)
+                .workspace_output(*id)
                 .is_ok_and(|reader| reader.read(0, false).is_ok_and(|page| page.exited))
         })?;
-        let page = client.workspace_output(id)?.read(0, false)?;
+        let page = client.workspace_output(*id)?.read(0, false)?;
         require(
             page.receipt
                 .is_some_and(|receipt| receipt.exit_code == Some(0)),
             "mapping/fd/cwd client assertions",
         )?;
+        let sample = page
+            .chunks
+            .iter()
+            .flat_map(|chunk| String::from_utf8_lossy(&chunk.bytes).into_owned().into_bytes())
+            .collect::<Vec<u8>>();
+        let text = String::from_utf8_lossy(&sample).into_owned();
+        if let Some(line) = text.lines().find(|line| line.starts_with("live ")) {
+            live_measurements.push(line.to_owned());
+        }
     }
+    require(
+        live_measurements.len() == 2,
+        "both running commands reported barrier throughput",
+    )?;
+    eprintln!("live-cut edit_ns={edit_ns} measurements={live_measurements:?}");
+    // Compact pending form and its conversion on the live path, with the two
+    // commands still owning their mappings, descriptors and directories.
+    live_compact_and_conversion_proof(&client, session.id)?;
     // The continuously updated counter can be dirty after the second cut.
     client.commit_workspace_session(session.id)?;
     client.end_workspace_session(session.id, EndWorkspaceMode::Clean)?;
     require(!mounted(name, &placement)?, "same mount eventually cleaned")?;
+    Ok(())
+}
+
+/// Bounded live proof of the compact pending form and its promotion path:
+/// one equal-length overwrite of a committed file charges exactly one compact
+/// descriptor, and a second edit of the same file converts it to the rooted
+/// three-node representation with the same exact contents.
+fn live_compact_and_conversion_proof(
+    client: &Client,
+    session: layerfs_sdk::WorkspaceId,
+) -> AnyResult<()> {
+    let _commit_diagnostics = layerfs_sdk::capture_workspace_commit_diagnostics()?;
+    let (_, prepared) = execute(
+        client,
+        session,
+        ["/bin/sh", "-c", "set -e; printf 0123456789abcdef > compact"],
+    )?;
+    require(
+        prepared
+            .receipt
+            .is_some_and(|receipt| receipt.exit_code == Some(0)),
+        "compact proof fixture",
+    )?;
+    require(
+        matches!(
+            client.commit_workspace_session(session)?,
+            WorkspaceCommitResult::Created { .. }
+        ),
+        "compact proof base Commit",
+    )?;
+    layerfs_layerstack_store::take_workspace_commit_diagnostics();
+    // One equal-length overwrite of the committed base: the bounded form.
+    client.edit_workspace_file_range(layerfs_sdk::WorkspaceFileRangeEdit {
+        workspace_id: session,
+        path: "compact".into(),
+        start: 4,
+        delete_len: 2,
+        replacement: layerfs_sdk::WorkspaceFileReplacement::Inline(b"XY".to_vec()),
+    })?;
+    require(
+        matches!(
+            client.commit_workspace_session(session)?,
+            WorkspaceCommitResult::Created { .. }
+        ),
+        "compact proof single-splice Commit",
+    )?;
+    let bounded = layerfs_layerstack_store::take_workspace_commit_diagnostics();
+    let bounded = bounded.last().ok_or("compact Commit diagnostics")?;
+    require(bounded.edit_count == 1, "one compact changed file")?;
+    require(
+        bounded.edit_piece_logical_charge == 64,
+        "one compact descriptor is charged instead of three nodes",
+    )?;
+    require(
+        bounded.edit_piece_count >= 2,
+        "the bounded form still reports its base and splice pieces",
+    )?;
+    require(
+        bounded.edit_piece_count <= 3,
+        "the bounded form stays inside the three-piece logical bound",
+    )?;
+    // A second and third edit of the same pending file keep the tree
+    // representation: the bounded form converts before the second splice.
+    for (start, bytes) in [(10_u64, b"ZW"), (1_u64, b"QR")] {
+        client.edit_workspace_file_range(layerfs_sdk::WorkspaceFileRangeEdit {
+            workspace_id: session,
+            path: "compact".into(),
+            start,
+            delete_len: 2,
+            replacement: layerfs_sdk::WorkspaceFileReplacement::Inline(bytes.to_vec()),
+        })?;
+    }
+    require(
+        matches!(
+            client.commit_workspace_session(session)?,
+            WorkspaceCommitResult::Created { .. }
+        ),
+        "compact proof conversion Commit",
+    )?;
+    let converted = layerfs_layerstack_store::take_workspace_commit_diagnostics();
+    let converted = converted.last().ok_or("conversion Commit diagnostics")?;
+    require(
+        converted.edit_count == 2,
+        "two counted edits of the converted file",
+    )?;
+    require(
+        converted.edit_piece_logical_charge == 5 * 128,
+        "the second pending splice materializes the rooted representation",
+    )?;
+    require(
+        converted.edit_piece_count == 5,
+        "five logical pieces after the second splice",
+    )?;
+    eprintln!(
+        "live-cut compact_proof bounded_charge={} bounded_pieces={} converted_charge={} converted_pieces={}",
+        bounded.edit_piece_logical_charge,
+        bounded.edit_piece_count,
+        converted.edit_piece_logical_charge,
+        converted.edit_piece_count
+    );
     Ok(())
 }
 
