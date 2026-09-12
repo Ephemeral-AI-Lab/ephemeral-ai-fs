@@ -33,6 +33,114 @@ pub const FACTS_NODE_BEGIN: u8 = 14;
 pub const FACTS_NODE_CHUNK: u8 = 15;
 /// Point metadata lookup without speculative sibling or payload export.
 pub const LOOKUP_METADATA: u8 = 16;
+/// Ordered no-result backing requests with one acknowledged completed prefix.
+pub const BATCH: u8 = 17;
+pub const MAX_BATCH_FRAMES: usize = 128;
+
+pub fn validate_batch_frame(bytes: &[u8]) -> io::Result<()> {
+    if bytes.is_empty() || bytes.len() > MAX_FRAME {
+        return Err(invalid());
+    }
+    let mut input = Input(bytes);
+    match input.byte()? {
+        APPEND => {
+            input.u64()?;
+            input.u64()?;
+            let data = input.bytes()?;
+            if data.is_empty() || data.len() > 1024 * 1024 {
+                return Err(invalid());
+            }
+        }
+        CANCEL_RESERVATION | FACTS_END => {
+            input.u64()?;
+            input.u64()?;
+        }
+        CHECK => {
+            if input.byte()? > 1 || input.0.len() % 8 != 0 {
+                return Err(invalid());
+            }
+            input.0 = &[];
+        }
+        RELEASE => {
+            if input.0.len() % 8 != 0 {
+                return Err(invalid());
+            }
+            input.0 = &[];
+        }
+        FACTS_BEGIN => {
+            input.u64()?;
+        }
+        FACTS_NODE => {
+            let mut count = 0;
+            while !input.0.is_empty() {
+                count += 1;
+                if count > FACT_PAGE_NODES || input.byte()? > 1 || input.bytes()?.is_empty() {
+                    return Err(invalid());
+                }
+            }
+        }
+        FACTS_NODE_BEGIN => {
+            if input.byte()? > 1 || !(1..=MAX_NODE_BYTES as u64).contains(&input.u64()?) {
+                return Err(invalid());
+            }
+        }
+        FACTS_NODE_CHUNK => {
+            if input.0.is_empty() {
+                return Err(invalid());
+            }
+            input.0 = &[];
+        }
+        _ => return Err(invalid()),
+    }
+    input.done()
+}
+
+/// Validate every frame before any request in the envelope can mutate state.
+pub fn batch_frames(bytes: &[u8]) -> io::Result<Vec<&[u8]>> {
+    if bytes.len() > MAX_FRAME {
+        return Err(invalid());
+    }
+    let mut input = Input(bytes);
+    if input.byte()? != BATCH {
+        return Err(invalid());
+    }
+    let count = input.u32()? as usize;
+    if !(1..=MAX_BATCH_FRAMES).contains(&count) {
+        return Err(invalid());
+    }
+    let mut frames = Vec::with_capacity(count);
+    for _ in 0..count {
+        let frame = input.bytes()?;
+        validate_batch_frame(frame)?;
+        frames.push(frame);
+    }
+    input.done()?;
+    Ok(frames)
+}
+
+pub fn batch_reply(completed: usize, error: Option<crate::PortError>) -> Vec<u8> {
+    let mut out = (completed as u32).to_be_bytes().to_vec();
+    out.push(u8::from(error.is_some()));
+    if let Some(error) = error {
+        out.push(crate::protocol::error_code(error));
+    }
+    out
+}
+
+pub(crate) fn parse_batch_reply(
+    bytes: &[u8],
+    count: usize,
+) -> io::Result<(usize, Option<crate::PortError>)> {
+    let mut input = Input(bytes);
+    let completed = input.u32()? as usize;
+    let error = match input.byte()? {
+        0 if completed == count => None,
+        1 if completed < count => Some(crate::protocol::port_error(input.byte()?)?),
+        _ => return Err(invalid()),
+    };
+    input.done()?;
+    Ok((completed, error))
+}
 
 pub fn invalid() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "live owner transport")
@@ -424,7 +532,10 @@ pub fn valid_edit_diagnostic_nonce(nonce: &[u8]) -> bool {
         && nonce.iter().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
 }
 
-pub fn read_edit_diagnostic(bytes: &[u8], nonce: &[u8]) -> io::Result<[u64; EDIT_DIAGNOSTIC_FIELDS.len()]> {
+pub fn read_edit_diagnostic(
+    bytes: &[u8],
+    nonce: &[u8],
+) -> io::Result<[u64; EDIT_DIAGNOSTIC_FIELDS.len()]> {
     let mut input = Input(bytes);
     if !valid_edit_diagnostic_nonce(nonce)
         || input.u64()? != EDIT_DIAGNOSTIC_VERSION || input.bytes()? != nonce {
@@ -460,7 +571,11 @@ mod edit_diagnostic_tests {
         bytes.pop();
         bytes[7] = 2;
         assert!(read_edit_diagnostic(&bytes, nonce).is_err());
-        for invalid in [&b"short"[..], &b"0123456789abcde\""[..], &b"0123456789ABCDEF"[..]] {
+        for invalid in [
+            &b"short"[..],
+            &b"0123456789abcde\""[..],
+            &b"0123456789ABCDEF"[..],
+        ] {
             assert!(!valid_edit_diagnostic_nonce(invalid));
         }
     }

@@ -29,7 +29,7 @@ pub(crate) struct BackingOwner {
     pub(crate) dirty: BTreeSet<NodeId>,
     pub(crate) generation: u64,
     directory_lookup: DirectoryLookupCache,
-    request_profile: [u64; 17],
+    request_profile: [u64; 18],
     lookup_profile: [u64; 2],
     // Requested nodes, optional sibling nodes, and their exported content bytes.
     lookup_work: [u64; 4],
@@ -80,7 +80,7 @@ impl BackingOwner {
             dirty: BTreeSet::new(),
             generation: 0,
             directory_lookup: DirectoryLookupCache::default(),
-            request_profile: [0; 17],
+            request_profile: [0; 18],
             lookup_profile: [0; 2],
             lookup_work: [0; 4],
             exported_contents: HashSet::new(),
@@ -212,6 +212,21 @@ impl BackingOwner {
         let mut input = Input(bytes);
         let mut out = Vec::new();
         match input.byte()? {
+            wire::BATCH => {
+                // Validate the complete envelope before any existing operation
+                // runs. A failed operation keeps its existing side-effect/error
+                // semantics; the reply acknowledges only fully completed frames.
+                let frames = wire::batch_frames(bytes)?;
+                for (completed, frame) in frames.iter().enumerate() {
+                    if let Err(error) = self.request(frame) {
+                        return Ok(wire::batch_reply(
+                            completed,
+                            Some(crate::projection::storage_port_error(error)),
+                        ));
+                    }
+                }
+                return Ok(wire::batch_reply(frames.len(), None));
+            }
             wire::SEED => {
                 input.done()?;
                 out.extend_from_slice(self.snapshot.root.as_bytes());
@@ -629,6 +644,397 @@ mod tests {
         EntityName, LayerStackInitialization, LayerStackStore, LocalForkSource,
     };
 
+    fn with_empty_backing(test: impl FnOnce(&mut BackingOwner)) {
+        let directory = std::env::temp_dir().join(format!(
+            "layerfs-backing-batch-{}",
+            crate::WorkspaceId::new()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let store = LayerStackStore::create(directory.join("store.sqlite")).unwrap();
+        let layer = store
+            .initialize_layerstack(
+                EntityName::new("project").unwrap(),
+                LayerStackInitialization::Empty,
+            )
+            .unwrap()
+            .genesis_layer_id;
+        let branch = store
+            .fork_branch(
+                EntityName::new("main").unwrap(),
+                LocalForkSource::Layer { layer_id: layer },
+            )
+            .unwrap();
+        let workspace = crate::Workspace::open(store, branch, directory.join("spool")).unwrap();
+        let mut owner = BackingOwner::new(
+            WorkspaceSnapshot {
+                store: workspace.store.clone(),
+                workspace_id: workspace.workspace_id,
+                branch_id: workspace.branch_id,
+                expected_head: workspace.expected_head,
+                expected_base: workspace.expected_base,
+                root: workspace.base_root,
+                reader: workspace.reader.clone(),
+            },
+            workspace.live.nodes[&crate::ROOT].clone(),
+            workspace.spool.clone(),
+            workspace.live.policy,
+        );
+        test(&mut owner);
+        drop(owner);
+        drop(workspace);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    fn backing_words(opcode: u8, words: &[u64]) -> Vec<u8> {
+        let mut bytes = vec![opcode];
+        for word in words {
+            wire::u64_out(&mut bytes, *word);
+        }
+        bytes
+    }
+
+    fn batch(frames: &[Vec<u8>]) -> Vec<u8> {
+        let mut bytes = vec![wire::BATCH];
+        bytes.extend_from_slice(&(frames.len() as u32).to_be_bytes());
+        for frame in frames {
+            wire::bytes_out(&mut bytes, frame).unwrap();
+        }
+        bytes
+    }
+
+    fn reserve(owner: &mut BackingOwner, len: u64) -> (u64, u64) {
+        let response = owner
+            .request(&backing_words(wire::RESERVE, &[len]))
+            .unwrap();
+        let mut input = Input(&response);
+        let id = input.u64().unwrap();
+        let offset = input.u64().unwrap();
+        assert!(input.u64().unwrap() >= offset + len);
+        input.done().unwrap();
+        (id, offset)
+    }
+
+    fn append_frame(id: u64, offset: u64, bytes: &[u8]) -> Vec<u8> {
+        let mut frame = backing_words(wire::APPEND, &[id, offset]);
+        wire::bytes_out(&mut frame, bytes).unwrap();
+        frame
+    }
+
+    fn file_fact(owner: &BackingOwner, id: u64, offset: u64, len: u64) -> Vec<u8> {
+        use layerfs_workspace_core::file_edit::{Piece, PieceTree};
+        let mut node = owner.root.clone();
+        node.canonical = None;
+        node.revision = 1;
+        node.mode = 0o600;
+        node.links = 1;
+        node.pins = 0;
+        node.paths.clear();
+        node.paths.insert("file".into());
+        node.data = layerfs_workspace_core::Data::File(layerfs_workspace_core::FileData::Edited {
+            base: None,
+            spool_high_water: offset + len,
+            pieces: PieceTree::empty()
+                .replace(
+                    0,
+                    0,
+                    vec![Piece::Spool {
+                        segment: owner.retained[&BackingId(id)].clone(),
+                        offset,
+                        len,
+                    }],
+                )
+                .unwrap(),
+            edits: 1,
+        });
+        let mut frame = vec![wire::FACTS_NODE, 1];
+        wire::bytes_out(&mut frame, &wire::node_out(NodeId(2), &node).unwrap()).unwrap();
+        frame
+    }
+
+    fn sync_frames(owner: &BackingOwner, id: u64, offset: u64) -> Vec<Vec<u8>> {
+        let mut check = vec![wire::CHECK, 1];
+        wire::u64_out(&mut check, id);
+        vec![
+            append_frame(id, offset, b"abc"),
+            backing_words(wire::CANCEL_RESERVATION, &[id, offset + 3]),
+            check,
+            backing_words(wire::FACTS_BEGIN, &[5]),
+            file_fact(owner, id, offset, 3),
+            backing_words(wire::FACTS_END, &[5, 1]),
+            backing_words(wire::RELEASE, &[id]),
+        ]
+    }
+
+    #[test]
+    fn backing_batch_preserves_append_facts_and_last_reference_ownership() {
+        with_empty_backing(|owner| {
+            let (id, offset) = reserve(owner, 6);
+            let frames = sync_frames(owner, id, offset);
+            assert_eq!(
+                owner.request(&batch(&frames)).unwrap(),
+                wire::batch_reply(frames.len(), None)
+            );
+            assert!(owner.append_reservation.is_none());
+            assert_eq!(owner.spool.bytes, 3);
+            assert_eq!(owner.spool.metrics.fence_count, 1);
+            assert_eq!(owner.frozen_generation().unwrap(), 5);
+            assert_eq!(owner.dirty, BTreeSet::from([NodeId(2)]));
+            assert_eq!(owner.facts.len(), 1);
+            assert_eq!(owner.fact_reservations.len(), 1);
+            assert!(owner.retained.is_empty());
+            assert!(
+                owner.spool.segments.contains_key(&id),
+                "acknowledged facts own the segment"
+            );
+            let mut read = backing_words(wire::READ_BACKING, &[id, offset]);
+            read.extend_from_slice(&3u32.to_be_bytes());
+            assert_eq!(owner.request(&read).unwrap(), b"abc");
+            owner.request(&backing_words(wire::RELEASE, &[id])).unwrap();
+            assert_eq!(
+                owner.request(&read).unwrap(),
+                b"abc",
+                "release is idempotent while facts retain bytes"
+            );
+            owner
+                .request(&backing_words(wire::FACTS_BEGIN, &[6]))
+                .unwrap();
+            assert!(owner.frozen_generation().is_err());
+            assert!(owner.fact_reservations.is_empty());
+            owner.request(&backing_words(wire::RELEASE, &[id])).unwrap();
+            assert!(owner.spool.segments.is_empty());
+            assert_eq!(owner.spool.bytes, 0);
+            owner
+                .request(&backing_words(wire::FACTS_END, &[6, 0]))
+                .unwrap();
+            assert_eq!(owner.frozen_generation().unwrap(), 6);
+        });
+    }
+
+    #[test]
+    fn backing_batch_reports_completed_prefix_and_stops_at_each_fallible_sync_step() {
+        for failed in 0..6 {
+            with_empty_backing(|owner| {
+                let (id, offset) = reserve(owner, 6);
+                let mut frames = sync_frames(owner, id, offset);
+                let expected = match failed {
+                    0 => {
+                        frames[0] = append_frame(id, offset + 1, b"abc");
+                        layerfs_fuse::PortError::Io
+                    }
+                    1 => {
+                        frames[1] = backing_words(wire::CANCEL_RESERVATION, &[id, offset + 4]);
+                        layerfs_fuse::PortError::Io
+                    }
+                    2 => {
+                        frames[2] = vec![wire::CHECK, 1];
+                        wire::u64_out(&mut frames[2], id + 1);
+                        layerfs_fuse::PortError::NotFound
+                    }
+                    3 => {
+                        owner
+                            .request(&backing_words(wire::FACTS_BEGIN, &[99]))
+                            .unwrap();
+                        layerfs_fuse::PortError::Io
+                    }
+                    4 => {
+                        // Preserve the valid first node: a semantic error in a
+                        // later node does not make this existing handler atomic.
+                        frames[4].push(1);
+                        wire::bytes_out(&mut frames[4], &[255]).unwrap();
+                        layerfs_fuse::PortError::Io
+                    }
+                    5 => {
+                        frames[5] = backing_words(wire::FACTS_END, &[5, 2]);
+                        layerfs_fuse::PortError::Io
+                    }
+                    _ => unreachable!(),
+                };
+                assert_eq!(
+                    owner.request(&batch(&frames)).unwrap(),
+                    wire::batch_reply(failed, Some(expected))
+                );
+                assert_eq!(owner.spool.bytes, if failed == 0 { 0 } else { 3 });
+                assert_eq!(
+                    owner.generation, 0,
+                    "failed facts never publish a generation"
+                );
+                assert!(
+                    owner.retained.contains_key(&BackingId(id)),
+                    "following RELEASE must not execute"
+                );
+                assert_eq!(owner.append_reservation.is_some(), failed <= 1);
+                assert_eq!(owner.spool.metrics.fence_count, u64::from(failed > 2));
+                if failed >= 3 {
+                    assert!(owner.frozen_generation().is_err());
+                }
+                if failed == 4 {
+                    assert_eq!(owner.incoming.as_ref().unwrap().1.len(), 1);
+                    assert_eq!(owner.incoming_reservations.len(), 1);
+                }
+                if failed > 0 {
+                    let mut read = backing_words(wire::READ_BACKING, &[id, offset]);
+                    read.extend_from_slice(&3u32.to_be_bytes());
+                    assert_eq!(owner.request(&read).unwrap(), b"abc");
+                    assert!(
+                        owner.request(&frames[0]).is_err(),
+                        "acknowledged append cannot replay"
+                    );
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn backing_batch_rejects_malformed_envelopes_before_append_or_fact_mutation() {
+        with_empty_backing(|owner| {
+            let (id, offset) = reserve(owner, 6);
+            let good = append_frame(id, offset, b"abc");
+            let mut cases = vec![
+                batch(&[good.clone(), vec![wire::RELEASE, 0]]),
+                batch(&[good.clone(), batch(&[vec![wire::RELEASE]])]),
+                batch(&[good.clone(), backing_words(wire::RESERVE, &[1])]),
+                batch(&[good.clone(), vec![wire::CHECK, 2]]),
+                batch(&[good.clone(), vec![wire::FACTS_NODE, 2]]),
+                batch(&vec![vec![wire::RELEASE]; wire::MAX_BATCH_FRAMES + 1]),
+            ];
+            let mut truncated = batch(&[good.clone(), backing_words(wire::FACTS_BEGIN, &[1])]);
+            truncated.pop();
+            cases.push(truncated);
+            let mut trailing = batch(&[good]);
+            trailing.push(0);
+            cases.push(trailing);
+            cases.push(vec![wire::BATCH; wire::MAX_FRAME + 1]);
+            for bytes in cases {
+                assert!(owner.request(&bytes).is_err());
+                assert_eq!(owner.append_reservation, Some((BackingId(id), offset, 6)));
+                assert_eq!(owner.spool.bytes, 0);
+                assert_eq!(owner.request_profile[wire::APPEND as usize], 0);
+                assert!(owner.incoming.is_none());
+                assert!(owner.facts.is_empty());
+                assert_eq!(owner.frozen_generation().unwrap(), 0);
+            }
+        });
+    }
+
+    #[test]
+    fn backing_batch_chunked_fact_failures_remain_unpublished_until_complete() {
+        with_empty_backing(|owner| {
+            let (id, offset) = reserve(owner, 3);
+            let frame = file_fact(owner, id, offset, 3);
+            let encoded = Input(&frame[2..]).bytes().unwrap().to_vec();
+            owner.request(&append_frame(id, offset, b"abc")).unwrap();
+            let mut begin = vec![wire::FACTS_NODE_BEGIN, 1];
+            wire::u64_out(&mut begin, encoded.len() as u64);
+            assert_eq!(
+                owner
+                    .request(&batch(&[
+                        begin.clone(),
+                        backing_words(wire::RELEASE, &[id])
+                    ]))
+                    .unwrap(),
+                wire::batch_reply(0, Some(layerfs_fuse::PortError::Invalid))
+            );
+            assert!(owner.retained.contains_key(&BackingId(id)));
+            let prefix = vec![
+                backing_words(wire::FACTS_BEGIN, &[7]),
+                vec![wire::FACTS_NODE_CHUNK, 0],
+            ];
+            assert_eq!(
+                owner.request(&batch(&prefix)).unwrap(),
+                wire::batch_reply(1, Some(layerfs_fuse::PortError::Io))
+            );
+            assert!(owner.frozen_generation().is_err());
+            // Finish the empty group, then exercise the bounded partial buffer.
+            owner
+                .request(&backing_words(wire::FACTS_END, &[7, 0]))
+                .unwrap();
+            owner
+                .request(&backing_words(wire::FACTS_BEGIN, &[8]))
+                .unwrap();
+            let too_large = [vec![wire::FACTS_NODE_CHUNK], vec![0; encoded.len() + 1]].concat();
+            assert_eq!(
+                owner.request(&batch(&[begin.clone(), too_large])).unwrap(),
+                wire::batch_reply(1, Some(layerfs_fuse::PortError::Invalid))
+            );
+            assert_eq!(owner.partial_fact.as_ref().unwrap().encoded.len(), 0);
+            assert!(owner.frozen_generation().is_err());
+            assert_eq!(
+                owner.request(&batch(&[begin])).unwrap(),
+                wire::batch_reply(0, Some(layerfs_fuse::PortError::Invalid))
+            );
+            let middle = encoded.len() / 2;
+            let first = [vec![wire::FACTS_NODE_CHUNK], encoded[..middle].to_vec()].concat();
+            assert_eq!(
+                owner.request(&batch(&[first])).unwrap(),
+                wire::batch_reply(1, None)
+            );
+            assert!(owner.incoming.as_ref().unwrap().1.is_empty());
+            assert_eq!(owner.partial_fact.as_ref().unwrap().encoded.len(), middle);
+            let last = [vec![wire::FACTS_NODE_CHUNK], encoded[middle..].to_vec()].concat();
+            assert_eq!(
+                owner
+                    .request(&batch(&[last, backing_words(wire::FACTS_END, &[8, 1])]))
+                    .unwrap(),
+                wire::batch_reply(2, None)
+            );
+            assert!(owner.partial_fact.is_none());
+            assert_eq!(owner.frozen_generation().unwrap(), 8);
+            assert_eq!(owner.dirty, BTreeSet::from([NodeId(2)]));
+            owner.request(&backing_words(wire::RELEASE, &[id])).unwrap();
+            let mut read = backing_words(wire::READ_BACKING, &[id, offset]);
+            read.extend_from_slice(&3u32.to_be_bytes());
+            assert_eq!(owner.request(&read).unwrap(), b"abc");
+        });
+    }
+
+    #[cfg(feature = "test-instrumentation")]
+    #[test]
+    fn backing_batch_failed_physical_append_preserves_error_and_consumes_tail() {
+        with_empty_backing(|owner| {
+            let (id, offset) = reserve(owner, 3);
+            owner.request(&append_frame(id, offset, b"abc")).unwrap();
+            for (fault, expected) in [
+                (
+                    crate::VerificationFault::ShortAppend,
+                    layerfs_fuse::PortError::Io,
+                ),
+                (
+                    crate::VerificationFault::NoSpace,
+                    layerfs_fuse::PortError::NoSpace,
+                ),
+            ] {
+                let (next_id, next_offset) = reserve(owner, 3);
+                let frames = vec![
+                    vec![wire::CHECK, 0],
+                    append_frame(next_id, next_offset, b"bad"),
+                    backing_words(wire::FACTS_BEGIN, &[7]),
+                ];
+                crate::arm_verification_fault(owner.snapshot.branch_id, fault).unwrap();
+                assert_eq!(
+                    owner.request(&batch(&frames)).unwrap(),
+                    wire::batch_reply(1, Some(expected))
+                );
+                assert_eq!(
+                    crate::take_verification_fault_receipt()
+                        .unwrap()
+                        .unwrap()
+                        .hit_count,
+                    1
+                );
+                assert!(owner.append_reservation.is_none());
+                assert!(owner.incoming.is_none());
+                assert_eq!(owner.spool.bytes, 3);
+                let mut read = backing_words(wire::READ_BACKING, &[id, offset]);
+                read.extend_from_slice(&3u32.to_be_bytes());
+                assert_eq!(owner.request(&read).unwrap(), b"abc");
+                assert!(
+                    owner.request(&frames[1]).is_err(),
+                    "failed physical append tail cannot replay"
+                );
+            }
+        });
+    }
+
     #[test]
     fn metadata_lookup_preserves_requested_node_without_acquiring_siblings() {
         let directory = std::env::temp_dir().join(format!(
@@ -1023,6 +1429,25 @@ mod tests {
         assert_eq!(owner.read(file, 0, 100).unwrap(), b"first");
         owner.fsync(None).unwrap();
         assert_eq!(remote.backing.lock().unwrap().generation, 3);
+        if !local {
+            let first_tail = remote.backing.lock().unwrap().append_reservation.unwrap();
+            assert_eq!(first_tail.1, 5);
+            owner.write(file, 0, b"first").unwrap();
+            owner.fsync(None).unwrap();
+            assert_eq!(owner.read(file, 0, 100).unwrap(), b"first");
+            let backing = remote.backing.lock().unwrap();
+            let second_tail = backing.append_reservation.unwrap();
+            assert_eq!(
+                first_tail.0, second_tail.0,
+                "fsync reuses one physical segment"
+            );
+            assert_eq!(second_tail.1, first_tail.1 + 5);
+            assert_eq!(second_tail.2, first_tail.2 - 5);
+            assert_eq!(backing.request_profile[wire::RESERVE as usize], 1);
+            assert!(backing.request_profile[wire::BATCH as usize] >= 2);
+            assert_eq!(backing.spool.bytes, 10);
+            assert_eq!(backing.generation, 4);
+        }
         for index in 0..130 {
             let id = owner
                 .create_file(directory_id, format!("sibling-{index}").as_bytes(), 0o600)
@@ -1036,7 +1461,8 @@ mod tests {
                 b"retained across a fact page boundary"
             );
         }
-        assert_eq!(remote.observe().unwrap().0, 263);
+        let changed_generation = 263 + u64::from(!local);
+        assert_eq!(remote.observe().unwrap().0, changed_generation);
         let callback = runtime
             .block_on(owner.callback_gate(layerfs_fuse::KernelOperation::Write, false))
             .unwrap();
@@ -1060,7 +1486,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .0,
-            263
+            changed_generation
         );
         observer.join().unwrap();
         drop(callback);
@@ -1069,6 +1495,10 @@ mod tests {
             .unwrap()
             .unwrap();
         freezing.join().unwrap();
+        assert!(
+            remote.backing.lock().unwrap().append_reservation.is_none(),
+            "a full FREEZE cancels unused reservation credit"
+        );
         remote.server.control("resume").unwrap();
         let metrics = remote.server.take_write_metrics().unwrap();
         assert!(metrics.live_backing_calls > 0 && metrics.live_backing_calls < 130);
@@ -1250,6 +1680,8 @@ mod tests {
             remote.backing.lock().unwrap().spool.segments.is_empty(),
             "last-release backing retires at a no-op fence"
         );
+        assert!(remote.backing.lock().unwrap().retained.is_empty());
+        assert!(remote.backing.lock().unwrap().append_reservation.is_none());
         owner
             .write(file, 0, b"retained after host failure")
             .unwrap();

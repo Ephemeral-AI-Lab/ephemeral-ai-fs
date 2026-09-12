@@ -1,8 +1,8 @@
 //! Execution-side live state. Physical storage and canonical construction stay on the host.
 use crate::live_runtime::{LiveRuntime, OperationGate, Scheduler};
 use crate::live_transport::BackingConnection;
-use crate::live_wire::{self as wire, Input};
 use crate::live_wire::EditMetric;
+use crate::live_wire::{self as wire, Input};
 use crate::port::{DirectoryPage, KernelEntry, KernelReferences};
 use crate::{Attr, FilesystemPort, Kind, NodeId, PortError, PortResult, ROOT};
 use layerfs_workspace_core::backing::{BackingId, BackingRef};
@@ -454,6 +454,45 @@ enum PendingBytes {
     Backed,
 }
 struct PendingBacking(Mutex<PendingBytes>);
+
+struct FailOnCancel<'a> {
+    failed: &'a AtomicBool,
+    armed: bool,
+}
+impl Drop for FailOnCancel<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.failed.store(true, Ordering::Release);
+        }
+    }
+}
+
+struct AppendFlush {
+    window: AppendWindow,
+    frame: Option<Arc<BufferedFrame>>,
+    cancel: Option<Vec<u8>>,
+}
+impl AppendFlush {
+    fn frames(&self) -> impl Iterator<Item = &[u8]> {
+        [
+            self.frame
+                .as_ref()
+                .filter(|_| self.window.filled != 0)
+                .map(|frame| frame.bytes.as_slice()),
+            self.cancel.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+    }
+}
+
+struct PreparedFacts {
+    root: layerfs_content::ObjectId,
+    generation: u64,
+    count: usize,
+    frames: Vec<Vec<u8>>,
+    _charge: crate::live_runtime::LiveReservation,
+}
 
 fn core(error: layerfs_workspace_core::Error) -> PortError {
     use layerfs_workspace_core::Error;
@@ -1006,7 +1045,12 @@ impl LiveOwner {
         self.name_with_prefetch(parent, name, true).await
     }
 
-    async fn name_with_prefetch(&self, parent: NodeId, name: &[u8], prefetch: bool) -> PortResult<ResolvedName> {
+    async fn name_with_prefetch(
+        &self,
+        parent: NodeId,
+        name: &[u8],
+        prefetch: bool,
+    ) -> PortResult<ResolvedName> {
         let (lookup, root) = {
             let state = self.state()?;
             (
@@ -1318,7 +1362,61 @@ impl LiveOwner {
             .writes
             .live_edit_ns
             .fetch_add(ns(preparing), Ordering::Relaxed);
-        let prepared = prepared?;
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                if window.filled == 0 {
+                    *window
+                        .backing
+                        .resource::<PendingBacking>()
+                        .ok_or(PortError::Io)?
+                        .0
+                        .lock()
+                        .map_err(|_| PortError::Io)? = PendingBytes::Backed;
+                }
+                return Err(error);
+            }
+        };
+        {
+            let mut pending = window
+                .backing
+                .resource::<PendingBacking>()
+                .ok_or(PortError::Io)?
+                .0
+                .lock()
+                .map_err(|_| PortError::Io)?;
+            if matches!(*pending, PendingBytes::Backed) {
+                // An idle reservation retains no payload buffer or transfer
+                // permit. Allocate its bounded remaining tail only on a write.
+                let size = window.reserved as usize + 21;
+                let mut frame = Vec::new();
+                let mut charge = self
+                    .0
+                    .scheduler
+                    .reserve_transfer(size)
+                    .map_err(|_| PortError::NoSpace)?;
+                frame
+                    .try_reserve_exact(size)
+                    .map_err(|_| PortError::NoSpace)?;
+                if frame.capacity() > size {
+                    charge.merge(
+                        self.0
+                            .scheduler
+                            .reserve_transfer(frame.capacity() - size)
+                            .map_err(|_| PortError::NoSpace)?,
+                    );
+                }
+                frame.push(wire::APPEND);
+                wire::u64_out(&mut frame, window.backing.id().0);
+                wire::u64_out(&mut frame, window.start);
+                frame.extend_from_slice(&0u32.to_be_bytes());
+                *pending = PendingBytes::Filling(BufferedFrame {
+                    bytes: frame,
+                    start: window.start,
+                    _charge: charge,
+                });
+            }
+        }
         let encoding = Instant::now();
         {
             let mut pending = window
@@ -1346,12 +1444,19 @@ impl LiveOwner {
         result.map(|_| acknowledged)
     }
 
-    async fn flush_append(&self, window: &mut Option<AppendWindow>) -> PortResult<()> {
+    fn prepare_append(
+        &self,
+        window: &mut Option<AppendWindow>,
+        cancel_tail: bool,
+    ) -> PortResult<Option<AppendFlush>> {
         if self.0.failed.load(Ordering::Acquire) {
             return Err(PortError::Io);
         }
+        if !cancel_tail && window.as_ref().is_some_and(|window| window.filled == 0) {
+            return Ok(None);
+        }
         let Some(window) = window.take() else {
-            return Ok(());
+            return Ok(None);
         };
         let resource = window
             .backing
@@ -1359,37 +1464,103 @@ impl LiveOwner {
             .ok_or(PortError::Io)?;
         let frame = {
             let mut pending = resource.0.lock().map_err(|_| PortError::Io)?;
-            let PendingBytes::Filling(mut frame) =
-                std::mem::replace(&mut *pending, PendingBytes::Backed)
-            else {
-                return Err(PortError::Io);
-            };
-            frame.bytes[17..21].copy_from_slice(&(window.filled as u32).to_be_bytes());
-            let frame = Arc::new(frame);
-            *pending = PendingBytes::Sending(frame.clone());
-            frame
+            match std::mem::replace(&mut *pending, PendingBytes::Backed) {
+                PendingBytes::Filling(mut frame) => {
+                    frame.bytes[17..21].copy_from_slice(&(window.filled as u32).to_be_bytes());
+                    let frame = Arc::new(frame);
+                    *pending = PendingBytes::Sending(frame.clone());
+                    Some(frame)
+                }
+                PendingBytes::Backed if window.filled == 0 => None,
+                other => {
+                    *pending = other;
+                    return Err(PortError::Io);
+                }
+            }
         };
-        let result = async {
-            if window.filled != 0 {
-                self.0.backing.call(&frame.bytes).await?;
-            }
-            if window.filled < window.reserved {
-                let mut cancel = vec![wire::CANCEL_RESERVATION];
-                wire::u64_out(&mut cancel, window.backing.id().0);
-                wire::u64_out(&mut cancel, window.start + window.filled);
-                self.0.backing.call(&cancel).await?;
-            }
-            Ok(())
+        let cancel = (cancel_tail && window.filled < window.reserved).then(|| {
+            let mut cancel = vec![wire::CANCEL_RESERVATION];
+            wire::u64_out(&mut cancel, window.backing.id().0);
+            wire::u64_out(&mut cancel, window.start + window.filled);
+            cancel
+        });
+        Ok(Some(AppendFlush {
+            window,
+            frame,
+            cancel,
+        }))
+    }
+
+    fn finish_append(
+        &self,
+        flush: AppendFlush,
+        window: &mut Option<AppendWindow>,
+        progress: &crate::live_transport::BatchProgress,
+    ) -> PortResult<()> {
+        let append_count = usize::from(flush.window.filled != 0);
+        if progress.completed >= append_count {
+            *flush
+                .window
+                .backing
+                .resource::<PendingBacking>()
+                .ok_or(PortError::Io)?
+                .0
+                .lock()
+                .map_err(|_| PortError::Io)? = PendingBytes::Backed;
         }
-        .await;
-        if result.is_ok() {
-            *resource.0.lock().map_err(|_| PortError::Io)? = PendingBytes::Backed;
-        } else {
+        if progress.uncertain || progress.completed < flush.frames().count() {
             // Preserve acknowledged local bytes and their charge after ambiguous
             // backing failure. Never replay the append or discard its prefix.
             self.0.failed.store(true, Ordering::Release);
         }
-        result
+        if !progress.uncertain
+            && progress.completed >= append_count
+            && flush.cancel.is_none()
+            && flush.window.filled < flush.window.reserved
+        {
+            *window = Some(AppendWindow {
+                start: flush.window.start + flush.window.filled,
+                reserved: flush.window.reserved - flush.window.filled,
+                filled: 0,
+                backing: flush.window.backing,
+            });
+        }
+        Ok(())
+    }
+
+    async fn flush_append(&self, window: &mut Option<AppendWindow>) -> PortResult<()> {
+        let Some(flush) = self.prepare_append(window, true)? else {
+            return Ok(());
+        };
+        let frames = flush.frames().collect::<Vec<_>>();
+        let mut cancellation = FailOnCancel {
+            failed: &self.0.failed,
+            armed: true,
+        };
+        let progress = self.0.backing.call_batch(&frames, &self.0.scheduler).await;
+        drop(frames);
+        self.finish_append(flush, window, &progress)?;
+        cancellation.armed = false;
+        progress.result()
+    }
+
+    async fn retire_idle_append(&self, window: &mut Option<AppendWindow>) -> PortResult<()> {
+        let idle_unused = if let Some(window) = window.as_ref().filter(|window| window.filled == 0)
+        {
+            let mut ranges = self.0.ranges.lock().map_err(|_| PortError::Io)?;
+            // Exclude the registry's own reference while checking the idle
+            // lease. Restore it before any fallible physical/network work.
+            drop(ranges.remove(&window.backing.id()));
+            let unused = window.backing.is_unique();
+            ranges.insert(window.backing.id(), window.backing.clone());
+            unused
+        } else {
+            false
+        };
+        if idle_unused {
+            self.flush_append(window).await?;
+        }
+        Ok(())
     }
 
     pub async fn read_owned(&self, node: NodeId, offset: u64, size: usize) -> PortResult<Vec<u8>> {
@@ -2163,14 +2334,51 @@ impl FilesystemPort for LiveOwner {
     fn fsync_async<'a>(&'a self, _node: Option<NodeId>) -> crate::PortFuture<'a, ()> {
         Box::pin(async move {
             let mut window = self.0.append.lock().await;
-            self.flush_append(&mut window).await?;
-            let mut check = vec![wire::CHECK, 1];
-            for id in self.0.ranges.lock().map_err(|_| PortError::Io)?.keys() {
-                wire::u64_out(&mut check, id.0);
+            let mut cancellation = FailOnCancel {
+                failed: &self.0.failed,
+                armed: true,
+            };
+            let result = async {
+                let mut check = vec![wire::CHECK, 1];
+                for id in self.0.ranges.lock().map_err(|_| PortError::Io)?.keys() {
+                    wire::u64_out(&mut check, id.0);
+                }
+                if self.0.local_facts.is_some() {
+                    self.flush_append(&mut window).await?;
+                    self.0.backing.call(&check).await?;
+                    self.publish_facts(None).await?;
+                } else {
+                    let mut acknowledged = self.0.facts_sync.lock().await;
+                    let facts = self.prepare_remote_facts(&acknowledged)?;
+                    let flush = self.prepare_append(&mut window, false)?;
+                    let mut frames = flush
+                        .as_ref()
+                        .into_iter()
+                        .flat_map(AppendFlush::frames)
+                        .collect::<Vec<_>>();
+                    frames.push(check.as_slice());
+                    if let Some(facts) = &facts {
+                        frames.extend(facts.frames.iter().map(Vec::as_slice));
+                    }
+                    let progress = self.0.backing.call_batch(&frames, &self.0.scheduler).await;
+                    drop(frames);
+                    if let Some(flush) = flush {
+                        self.finish_append(flush, &mut window, &progress)?;
+                    }
+                    if progress.uncertain {
+                        self.0.failed.store(true, Ordering::Release);
+                    }
+                    progress.result()?;
+                    if let Some(facts) = facts {
+                        *acknowledged = Some((facts.root, facts.generation));
+                    }
+                }
+                self.retire_idle_append(&mut window).await?;
+                self.retire_ranges().await
             }
-            self.0.backing.call(&check).await?;
-            self.publish_facts(None).await?;
-            self.retire_ranges().await
+            .await;
+            cancellation.armed = false;
+            result
         })
     }
     fn readdir(&self, node: NodeId) -> PortResult<Vec<(NodeId, Kind, Vec<u8>)>> {
@@ -2359,7 +2567,10 @@ impl LiveOwner {
         Ok(())
     }
 
-    async fn flush_kernel_cache(&self, mut diagnostic: Option<&mut EditDiagnostic>) -> PortResult<()> {
+    async fn flush_kernel_cache(
+        &self,
+        mut diagnostic: Option<&mut EditDiagnostic>,
+    ) -> PortResult<()> {
         #[cfg(all(target_os = "linux", any(feature = "host", feature = "proxy")))]
         {
             use std::os::fd::AsRawFd;
@@ -2430,7 +2641,11 @@ impl LiveOwner {
         self.freeze_diagnostic(true, &mut None).await
     }
 
-    async fn freeze_diagnostic(&self, publish: bool, diagnostic: &mut Option<EditDiagnostic>) -> PortResult<()> {
+    async fn freeze_diagnostic(
+        &self,
+        publish: bool,
+        diagnostic: &mut Option<EditDiagnostic>,
+    ) -> PortResult<()> {
         if self.0.failed.load(Ordering::Acquire) {
             return Err(PortError::Io);
         }
@@ -2528,10 +2743,32 @@ impl LiveOwner {
             *acknowledged = Some(identity);
             return Ok(());
         }
-        let (root, generation, count, pages, _charge) = {
+        let Some(facts) = self.prepare_remote_facts(&acknowledged)? else {
+            return Ok(());
+        };
+        if let Some(diagnostic) = diagnostic.as_deref_mut() {
+            diagnostic.values[EditMetric::FactNodes as usize] += facts.count as u64;
+            diagnostic.values[EditMetric::FactBytes as usize] += facts
+                .frames
+                .iter()
+                .map(|frame| frame.len() as u64 + 4)
+                .sum::<u64>();
+        }
+        for frame in &facts.frames {
+            self.0.backing.call(frame).await?;
+        }
+        *acknowledged = Some((facts.root, facts.generation));
+        Ok(())
+    }
+
+    fn prepare_remote_facts(
+        &self,
+        acknowledged: &Option<(layerfs_content::ObjectId, u64)>,
+    ) -> PortResult<Option<PreparedFacts>> {
+        let (root, generation, count, mut pages, charge) = {
             let state = self.state()?;
             if *acknowledged == Some((state.base_root, state.mutation_generation)) {
-                return Ok(());
+                return Ok(None);
             }
             let mut ids = state.dirty.clone();
             for id in &state.dirty {
@@ -2605,24 +2842,20 @@ impl LiveOwner {
                 reservation,
             )
         };
-        if let Some(diagnostic) = diagnostic.as_deref_mut() {
-            diagnostic.values[EditMetric::FactNodes as usize] += count as u64;
-            // Request frame headers are included; acknowledgement replies are not.
-            diagnostic.values[EditMetric::FactBytes as usize] +=
-                13 + 21 + pages.iter().map(|page| page.len() as u64 + 4).sum::<u64>();
-        }
         let mut begin = vec![wire::FACTS_BEGIN];
         wire::u64_out(&mut begin, generation);
-        self.0.backing.call(&begin).await?;
-        for page in pages {
-            self.0.backing.call(&page).await?;
-        }
+        pages.insert(0, begin);
         let mut end = vec![wire::FACTS_END];
         wire::u64_out(&mut end, generation);
         wire::u64_out(&mut end, count as u64);
-        self.0.backing.call(&end).await?;
-        *acknowledged = Some((root, generation));
-        Ok(())
+        pages.push(end);
+        Ok(Some(PreparedFacts {
+            root,
+            generation,
+            count,
+            frames: pages,
+            _charge: charge,
+        }))
     }
 
     pub async fn local_control(&self, bytes: &[u8]) -> PortResult<Vec<u8>> {
@@ -3335,6 +3568,245 @@ mod immutable_acquisition_tests {
         out
     }
 
+    #[derive(Default)]
+    struct BarrierBacking {
+        bytes: Vec<u8>,
+        seen: Vec<u8>,
+        batches: usize,
+        fail: Option<u8>,
+    }
+    impl BarrierBacking {
+        fn request(&mut self, bytes: &[u8]) -> PortResult<Vec<u8>> {
+            if bytes[0] == wire::BATCH {
+                let frames = wire::batch_frames(bytes).unwrap();
+                self.batches += 1;
+                for (completed, frame) in frames.iter().enumerate() {
+                    if let Err(error) = self.request(frame) {
+                        return Ok(wire::batch_reply(completed, Some(error)));
+                    }
+                }
+                return Ok(wire::batch_reply(frames.len(), None));
+            }
+            let mut input = Input(bytes);
+            let opcode = input.byte().unwrap();
+            self.seen.push(opcode);
+            if self.fail == Some(opcode) {
+                self.fail = None;
+                return Err(PortError::NoSpace);
+            }
+            let mut out = Vec::new();
+            match opcode {
+                wire::SEED => return Ok(seed()),
+                wire::RESERVE => {
+                    for value in [7, self.bytes.len() as u64, 4 * 1024 * 1024] {
+                        wire::u64_out(&mut out, value);
+                    }
+                }
+                wire::APPEND => {
+                    assert_eq!(input.u64().unwrap(), 7);
+                    assert_eq!(input.u64().unwrap(), self.bytes.len() as u64);
+                    self.bytes.extend_from_slice(input.bytes().unwrap());
+                }
+                wire::READ_BACKING => {
+                    assert_eq!(input.u64().unwrap(), 7);
+                    let start = input.u64().unwrap() as usize;
+                    let len = input.u32().unwrap() as usize;
+                    out.extend_from_slice(&self.bytes[start..start + len]);
+                }
+                wire::CHECK
+                | wire::CANCEL_RESERVATION
+                | wire::RELEASE
+                | wire::FACTS_BEGIN
+                | wire::FACTS_NODE
+                | wire::FACTS_END => (),
+                _ => panic!("unexpected backing opcode {opcode}"),
+            }
+            Ok(out)
+        }
+    }
+
+    fn barrier_owner(runtime: &LiveRuntime, backing: Arc<Mutex<BarrierBacking>>) -> LiveOwner {
+        let handler = Arc::new(move |bytes: &[u8]| backing.lock().unwrap().request(bytes));
+        let owner = runtime
+            .block_on(LiveOwner::from_backing(
+                BackingConnection::local(handler, runtime.scheduler()),
+                runtime.scheduler(),
+                None,
+            ))
+            .unwrap();
+        if let Data::Directory(directory) =
+            &mut owner.state().unwrap().nodes.get_mut(&ROOT).unwrap().data
+        {
+            directory.base = None;
+        }
+        owner
+    }
+
+    #[test]
+    fn backing_batch_fsync_reuses_tail_without_idle_buffer_and_full_cut_cancels() {
+        let runtime = LiveRuntime::new().unwrap();
+        let backing = Arc::new(Mutex::new(BarrierBacking::default()));
+        let owner = barrier_owner(&runtime, backing.clone());
+        let file = owner.create_file(ROOT, b"file", 0o644).unwrap().node;
+        owner.write(file, 0, b"abc").unwrap();
+        owner.fsync(Some(file)).unwrap();
+        assert_eq!(
+            backing.lock().unwrap().batches,
+            1,
+            "fsync must use one acknowledged exchange"
+        );
+        assert!(
+            runtime
+                .scheduler()
+                .reserve_transfer(32 * 1024 * 1024)
+                .is_ok(),
+            "idle tail retains no transfer capacity"
+        );
+        owner.write(file, 3, b"def").unwrap();
+        owner.fsync(Some(file)).unwrap();
+        assert_eq!(
+            runtime.block_on(owner.read_owned(file, 0, 6)).unwrap(),
+            b"abcdef"
+        );
+        assert_eq!(
+            backing
+                .lock()
+                .unwrap()
+                .seen
+                .iter()
+                .filter(|op| **op == wire::RESERVE)
+                .count(),
+            1
+        );
+        assert_eq!(
+            backing
+                .lock()
+                .unwrap()
+                .seen
+                .iter()
+                .filter(|op| **op == wire::CANCEL_RESERVATION)
+                .count(),
+            0
+        );
+        // Rejected writes cannot strand a newly allocated idle buffer.
+        assert!(owner.write(file, u64::MAX, b"bad").is_err());
+        owner.fsync(Some(file)).unwrap();
+        assert!(runtime
+            .scheduler()
+            .reserve_transfer(32 * 1024 * 1024)
+            .is_ok());
+        runtime.block_on(owner.freeze()).unwrap();
+        assert!(runtime.block_on(owner.0.append.lock()).is_none());
+        assert_eq!(
+            backing
+                .lock()
+                .unwrap()
+                .seen
+                .iter()
+                .filter(|op| **op == wire::CANCEL_RESERVATION)
+                .count(),
+            1
+        );
+        assert_eq!(backing.lock().unwrap().bytes, b"abcdef");
+    }
+
+    #[test]
+    fn backing_batch_known_append_prefix_is_not_replayed_after_check_failure() {
+        let runtime = LiveRuntime::new().unwrap();
+        let backing = Arc::new(Mutex::new(BarrierBacking::default()));
+        let owner = barrier_owner(&runtime, backing.clone());
+        let file = owner.create_file(ROOT, b"file", 0o644).unwrap().node;
+        owner.write(file, 0, b"acknowledged").unwrap();
+        backing.lock().unwrap().fail = Some(wire::CHECK);
+        assert_eq!(owner.fsync(Some(file)), Err(PortError::NoSpace));
+        assert!(!owner.0.failed.load(Ordering::Acquire));
+        owner.fsync(Some(file)).unwrap();
+        assert_eq!(
+            backing
+                .lock()
+                .unwrap()
+                .seen
+                .iter()
+                .filter(|op| **op == wire::APPEND)
+                .count(),
+            1
+        );
+        assert_eq!(
+            runtime.block_on(owner.read_owned(file, 0, 20)).unwrap(),
+            b"acknowledged"
+        );
+        // Known local pre-dispatch admission refusal remains retryable too.
+        let held = runtime
+            .scheduler()
+            .reserve_transfer(32 * 1024 * 1024)
+            .unwrap();
+        assert_eq!(owner.fsync(Some(file)), Err(PortError::NoSpace));
+        assert!(!owner.0.failed.load(Ordering::Acquire));
+        drop(held);
+        owner.fsync(Some(file)).unwrap();
+        assert_eq!(backing.lock().unwrap().bytes, b"acknowledged");
+    }
+
+    #[test]
+    fn backing_batch_cancelled_idle_fsync_cannot_refill_without_backing() {
+        for idle in [false, true] {
+            let runtime = LiveRuntime::new().unwrap();
+            let backing = Arc::new(Mutex::new(BarrierBacking::default()));
+            let block = Arc::new(AtomicBool::new(false));
+            let wait = block.clone();
+            let (entered, waiting) = std::sync::mpsc::channel();
+            let (release, released) = std::sync::mpsc::channel();
+            let released = Mutex::new(released);
+            let handler = Arc::new(move |bytes: &[u8]| {
+                let result = backing.lock().unwrap().request(bytes);
+                if wait.load(Ordering::Acquire) {
+                    entered.send(()).unwrap();
+                    released
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(Duration::from_secs(5))
+                        .unwrap();
+                }
+                result
+            });
+            let owner = runtime
+                .block_on(LiveOwner::from_backing(
+                    BackingConnection::local(handler, runtime.scheduler()),
+                    runtime.scheduler(),
+                    None,
+                ))
+                .unwrap();
+            if let Data::Directory(directory) =
+                &mut owner.state().unwrap().nodes.get_mut(&ROOT).unwrap().data
+            {
+                directory.base = None;
+            }
+            let file = owner.create_file(ROOT, b"file", 0o644).unwrap().node;
+            owner.write(file, 0, b"held").unwrap();
+            if idle {
+                owner.fsync(Some(file)).unwrap();
+            }
+            block.store(true, Ordering::Release);
+            let syncing = owner.clone();
+            let task = runtime
+                .scheduler()
+                .handle
+                .spawn(async move { syncing.fsync_async(Some(file)).await });
+            waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+            task.abort();
+            assert!(runtime.block_on(task).unwrap_err().is_cancelled());
+            assert!(owner.0.failed.load(Ordering::Acquire));
+            assert_eq!(owner.write(file, 4, b"rejected"), Err(PortError::Io));
+            if !idle {
+                assert_eq!(
+                    runtime.block_on(owner.read_owned(file, 0, 4)).unwrap(),
+                    b"held"
+                );
+            }
+            release.send(()).unwrap();
+        }
+    }
+
     fn fact(content: &[u8], declared_len: u64) -> Vec<u8> {
         let file = node(
             Data::File(FileData::Base {
@@ -3809,7 +4281,13 @@ mod immutable_acquisition_tests {
             }
             _ => Err(PortError::Io),
         });
-        let owner = runtime.block_on(LiveOwner::local(handler, Arc::new(|_| Ok(())), runtime.scheduler())).unwrap();
+        let owner = runtime
+            .block_on(LiveOwner::local(
+                handler,
+                Arc::new(|_| Ok(())),
+                runtime.scheduler(),
+            ))
+            .unwrap();
         runtime.block_on(async {
             let mut begin = vec![wire::EDIT_BEGIN];
             wire::bytes_out(&mut begin, b"file").unwrap();

@@ -16,6 +16,16 @@ type ControlSlot = (Arc<Mutex<Option<TcpStream>>>, Arc<tokio::sync::Notify>);
 
 pub type BackingHandler = dyn Fn(&[u8]) -> PortResult<Vec<u8>> + Send + Sync;
 
+fn carries_append(bytes: &[u8]) -> bool {
+    bytes.first() == Some(&crate::live_wire::APPEND)
+        || (bytes.first() == Some(&crate::live_wire::BATCH)
+            && crate::live_wire::batch_frames(bytes).is_ok_and(|frames| {
+                frames
+                    .iter()
+                    .any(|frame| frame[0] == crate::live_wire::APPEND)
+            }))
+}
+
 pub struct BackingServer {
     port: u16,
     capability: [u8; 32],
@@ -294,7 +304,7 @@ async fn serve(
         let read = Instant::now();
         stream.read_exact(&mut bytes).await?;
         metrics.note_host_frame(
-            if bytes[0] == crate::live_wire::APPEND {
+            if carries_append(&bytes) {
                 (length + 4) as u64
             } else {
                 0
@@ -340,6 +350,21 @@ pub struct BackingConnection {
     local: Option<(Arc<BackingHandler>, Scheduler)>,
     available: AtomicBool,
 }
+
+pub(crate) struct BatchProgress {
+    pub completed: usize,
+    pub error: Option<PortError>,
+    pub uncertain: bool,
+}
+struct ExchangeFailure {
+    error: PortError,
+    uncertain: bool,
+}
+impl BatchProgress {
+    pub fn result(&self) -> PortResult<()> {
+        self.error.map_or(Ok(()), Err)
+    }
+}
 impl BackingConnection {
     pub async fn connect(
         endpoint: String,
@@ -376,8 +401,125 @@ impl BackingConnection {
         }
     }
     pub async fn call(&self, bytes: &[u8]) -> PortResult<Vec<u8>> {
+        self.call_exchange(bytes)
+            .await
+            .map_err(|failure| failure.error)?
+    }
+
+    /// Preserve acknowledged prefixes even when a later operation fails. Large
+    /// transactions keep the original frame-at-a-time route and its bounds.
+    pub(crate) async fn call_batch(
+        &self,
+        frames: &[&[u8]],
+        scheduler: &Scheduler,
+    ) -> BatchProgress {
+        let failure = |completed, error, uncertain| BatchProgress {
+            completed,
+            error: Some(error),
+            uncertain,
+        };
+        let mut size = 5usize;
+        for frame in frames {
+            if crate::live_wire::validate_batch_frame(frame).is_err() {
+                return failure(0, PortError::Invalid, false);
+            }
+            let Some(next) = size.checked_add(4).and_then(|n| n.checked_add(frame.len())) else {
+                return failure(0, PortError::Invalid, false);
+            };
+            size = next;
+        }
+        if frames.len() <= 1
+            || frames.len() > crate::live_wire::MAX_BATCH_FRAMES
+            || size > MAX_FRAME
+        {
+            return self.call_serial(frames).await;
+        }
+        // The copied envelope coexists with its already-owned source frames.
+        // Coalescing is optional: lack of extra room must not make a previously
+        // valid streaming barrier fail or hold permits while awaiting fallback.
+        let envelope = (|| -> io::Result<_> {
+            let mut charge = scheduler.reserve_transfer(size)?;
+            let mut bytes = Vec::new();
+            bytes.try_reserve_exact(size).map_err(io::Error::other)?;
+            charge.merge(scheduler.reserve_transfer(bytes.capacity().saturating_sub(size))?);
+            Ok((bytes, charge))
+        })();
+        let (mut bytes, _charge) = match envelope {
+            Ok(envelope) => envelope,
+            Err(_) => return self.call_serial(frames).await,
+        };
+        bytes.push(crate::live_wire::BATCH);
+        bytes.extend_from_slice(&(frames.len() as u32).to_be_bytes());
+        for frame in frames {
+            bytes.extend_from_slice(&(frame.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(frame);
+        }
+        let copied = frames
+            .iter()
+            .filter(|frame| frame[0] == crate::live_wire::APPEND)
+            .map(|frame| frame.len().saturating_sub(21) as u64)
+            .sum();
+        self.metrics.note_client_frame(0, copied, 0, 0);
+        match self.call_exchange(&bytes).await {
+            Ok(Ok(response)) => {
+                match crate::live_wire::parse_batch_reply(&response, frames.len()) {
+                    Ok((completed, error)) => BatchProgress {
+                        completed,
+                        error,
+                        uncertain: false,
+                    },
+                    Err(_) => {
+                        self.poison().await;
+                        failure(0, PortError::Io, true)
+                    }
+                }
+            }
+            Ok(Err(error)) => failure(0, error, false),
+            Err(error) if !error.uncertain && error.error == PortError::NoSpace => {
+                drop(bytes);
+                drop(_charge);
+                self.call_serial(frames).await
+            }
+            Err(error) => failure(0, error.error, error.uncertain),
+        }
+    }
+
+    async fn call_serial(&self, frames: &[&[u8]]) -> BatchProgress {
+        for (completed, frame) in frames.iter().enumerate() {
+            let (error, uncertain) = match self.call_exchange(frame).await {
+                Ok(Ok(response)) if response.is_empty() => continue,
+                Ok(Err(error)) => (error, false),
+                Err(error) => (error.error, error.uncertain),
+                _ => {
+                    self.poison().await;
+                    (PortError::Io, true)
+                }
+            };
+            return BatchProgress {
+                completed,
+                error: Some(error),
+                uncertain,
+            };
+        }
+        BatchProgress {
+            completed: frames.len(),
+            error: None,
+            uncertain: false,
+        }
+    }
+
+    async fn poison(&self) {
+        self.available.store(false, Ordering::Release);
+        self.stream.lock().await.take();
+    }
+
+    async fn call_exchange(&self, bytes: &[u8]) -> Result<PortResult<Vec<u8>>, ExchangeFailure> {
+        let uncertain = || ExchangeFailure {
+            error: PortError::Io,
+            uncertain: true,
+        };
         if bytes.is_empty() || bytes.len() > MAX_FRAME {
-            return Err(PortError::Invalid);
+            return Ok(Err(PortError::Invalid));
         }
         let started = Instant::now();
         self.metrics
@@ -389,14 +531,21 @@ impl BackingConnection {
         let mut held = self.stream.lock().await;
         if let Some((handler, scheduler)) = &self.local {
             if !self.available.load(Ordering::Acquire) {
-                return Err(PortError::Io);
+                return Err(uncertain());
             }
-            let charge = scheduler
-                .reserve_transfer(bytes.len() + 2 * MAX_FRAME)
-                .map_err(|_| PortError::NoSpace)?;
+            let charge = match scheduler.reserve_transfer(bytes.len() + 2 * MAX_FRAME) {
+                Ok(charge) => charge,
+                // No request has entered the physical worker or reached a peer.
+                Err(_) => {
+                    return Err(ExchangeFailure {
+                        error: PortError::NoSpace,
+                        uncertain: false,
+                    })
+                }
+            };
             self.metrics.note_client_frame(
                 0,
-                if bytes[0] == crate::live_wire::APPEND {
+                if carries_append(bytes) {
                     bytes.len() as u64
                 } else {
                     0
@@ -420,14 +569,14 @@ impl BackingConnection {
                     Ok(response)
                 })
                 .await
-                .map_err(|_| PortError::Io)?;
+                .map_err(|_| uncertain())?;
             self.available.store(true, Ordering::Release);
             self.metrics
                 .live_backing_wait_ns
                 .fetch_add(ns(started), Ordering::Relaxed);
-            return result;
+            return Ok(result);
         }
-        let mut stream = held.take().ok_or(PortError::Io)?;
+        let mut stream = held.take().ok_or_else(uncertain)?;
         let result = exchange(&mut stream, bytes, Some(&self.metrics)).await;
         self.metrics
             .live_backing_wait_ns
@@ -435,9 +584,9 @@ impl BackingConnection {
         match result {
             Ok(result) => {
                 *held = Some(stream);
-                result
+                Ok(result)
             }
-            Err(_) => Err(PortError::Io),
+            Err(_) => Err(uncertain()),
         }
     }
 }
@@ -454,7 +603,7 @@ async fn exchange(
     write_frame(stream, None, bytes).await?;
     if let Some(metrics) = metrics {
         metrics.note_client_frame(
-            if bytes[0] == crate::live_wire::APPEND {
+            if carries_append(bytes) {
                 (bytes.len() + 4) as u64
             } else {
                 0
@@ -519,6 +668,121 @@ pub(crate) async fn write_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backing_batch_preserves_prefix_and_poisoned_reply_cannot_replay() {
+        let runtime = LiveRuntime::new().unwrap();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = calls.clone();
+        let connection = BackingConnection::local(
+            Arc::new(move |bytes| {
+                let frames = crate::live_wire::batch_frames(bytes).unwrap();
+                let count = seen.fetch_add(1, Ordering::Relaxed);
+                Ok(if count == 0 {
+                    crate::live_wire::batch_reply(1, Some(PortError::NoSpace))
+                } else {
+                    // Success with an incomplete prefix is an invalid receipt.
+                    crate::live_wire::batch_reply(frames.len() - 1, None)
+                })
+            }),
+            runtime.scheduler(),
+        );
+        runtime.block_on(async {
+            let frames = [&[crate::live_wire::CHECK, 1][..]; 2];
+            let result = connection.call_batch(&frames, &runtime.scheduler()).await;
+            assert_eq!(result.completed, 1);
+            assert_eq!(result.error, Some(PortError::NoSpace));
+            assert!(!result.uncertain);
+            let result = connection.call_batch(&frames, &runtime.scheduler()).await;
+            assert!(result.uncertain);
+            assert_eq!(result.error, Some(PortError::Io));
+            assert_eq!(connection.call(frames[0]).await, Err(PortError::Io));
+            assert_eq!(calls.load(Ordering::Relaxed), 2);
+        });
+    }
+
+    #[test]
+    fn backing_batch_pressure_and_oversize_preserve_streaming() {
+        let runtime = LiveRuntime::new().unwrap();
+        let budget = LiveRuntime::new().unwrap();
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = calls.clone();
+        let connection = BackingConnection::local(
+            Arc::new(move |bytes| {
+                seen.lock().unwrap().push(bytes[0]);
+                assert_ne!(bytes[0], crate::live_wire::BATCH);
+                Ok(Vec::new())
+            }),
+            runtime.scheduler(),
+        );
+        runtime.block_on(async {
+            let scheduler = budget.scheduler();
+            let held = scheduler.reserve_transfer(32 * 1024 * 1024).unwrap();
+            let small = [&[crate::live_wire::CHECK, 1][..]; 2];
+            let result = connection.call_batch(&small, &scheduler).await;
+            assert_eq!(result.completed, 2);
+            assert_eq!(result.result(), Ok(()));
+            drop(held);
+            let mut large = vec![crate::live_wire::FACTS_NODE_CHUNK; MAX_FRAME];
+            large[0] = crate::live_wire::FACTS_NODE_CHUNK;
+            let result = connection
+                .call_batch(&[large.as_slice(), small[0]], &scheduler)
+                .await;
+            assert_eq!(result.completed, 2);
+            assert_eq!(result.result(), Ok(()));
+            assert_eq!(calls.lock().unwrap().len(), 4);
+            // Neither path retains optional envelope transfer capacity.
+            assert!(scheduler.reserve_transfer(32 * 1024 * 1024).is_ok());
+            // The envelope itself can fit while leaving too little for local
+            // dispatch; drop that optional copy and admit the original frames.
+            let mut append = vec![crate::live_wire::APPEND];
+            crate::live_wire::u64_out(&mut append, 7);
+            crate::live_wire::u64_out(&mut append, 0);
+            crate::live_wire::bytes_out(&mut append, &vec![42; 640 * 1024]).unwrap();
+            let scheduler = runtime.scheduler();
+            let available = append.len() + 2 * MAX_FRAME + 64;
+            let _held = scheduler
+                .reserve_transfer(32 * 1024 * 1024 - available)
+                .unwrap();
+            let result = connection
+                .call_batch(&[&append, small[0]], &scheduler)
+                .await;
+            assert_eq!(result.result(), Ok(()));
+            assert_eq!(result.completed, 2);
+        });
+    }
+
+    #[test]
+    fn backing_batch_lost_socket_reply_is_uncertain_and_not_replayed() {
+        let runtime = LiveRuntime::new().unwrap();
+        runtime.block_on(async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let endpoint = listener.local_addr().unwrap().to_string();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut capability = [0; 32];
+                stream.read_exact(&mut capability).await.unwrap();
+                assert_eq!(capability, [7; 32]);
+                assert_eq!(stream.read_u8().await.unwrap(), b'd');
+                stream.write_u8(1).await.unwrap();
+                let len = stream.read_u32().await.unwrap() as usize;
+                let mut bytes = vec![0; len];
+                stream.read_exact(&mut bytes).await.unwrap();
+                assert_eq!(crate::live_wire::batch_frames(&bytes).unwrap().len(), 2);
+                // The peer consumed the request but closes before acknowledging.
+            });
+            let connection = BackingConnection::connect(endpoint, [7; 32], &runtime.scheduler())
+                .await
+                .unwrap();
+            let frames = [&[crate::live_wire::CHECK, 1][..]; 2];
+            let result = connection.call_batch(&frames, &runtime.scheduler()).await;
+            assert_eq!(result.completed, 0);
+            assert_eq!(result.error, Some(PortError::Io));
+            assert!(result.uncertain);
+            assert_eq!(connection.call(frames[0]).await, Err(PortError::Io));
+            server.await.unwrap();
+        });
+    }
 
     #[test]
     fn vectored_frames_preserve_prefixes_across_short_writes() {
