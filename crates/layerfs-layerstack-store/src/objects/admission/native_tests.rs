@@ -233,6 +233,81 @@ fn native_admission_peak_reservations_reject_unowned_buffers() {
     // An already assembled ordinary pack remains charged in the next lane.
     prepared.packs.push(vec![0; 2 * 1024 * 1024]);
     assert!(prepared.native_scratch(&Vec::new(), &groups, 0, 1).is_err());
+    let signature_capacity = prepared.small_signatures.capacity();
+    let small = AuthenticatedCanonicalObject::new(
+        layerfs_content::file::content::encode_small(b"bounded").unwrap(),
+        None,
+    )
+    .unwrap();
+    assert!(prepared
+        .prepare_small(&f.db, vec![small], &mut Default::default())
+        .is_err());
+    assert_eq!(
+        prepared.small_signatures.capacity(),
+        signature_capacity,
+        "reject before allocating signature storage"
+    );
+}
+
+#[test]
+fn ordinary_full_batch_preserves_physical_budget_without_small_signature_slots() {
+    let f = Fixture::new();
+    let mut state = 0x174ab28du32;
+    let objects = (0..512)
+        .map(|_| {
+            let raw = (0..992)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 17;
+                    state ^= state << 5;
+                    state as u8
+                })
+                .collect::<Vec<_>>();
+            AuthenticatedCanonicalObject::new(
+                layerfs_content::encode_bytes_object(&raw).unwrap(),
+                None,
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let bytes = objects
+        .iter()
+        .map(|object| object.bytes.len())
+        .sum::<usize>();
+    println!(
+        "ordinary batch count={} capacity={} bytes={bytes} prepared_slot={} canonical_slot={}",
+        objects.len(),
+        objects.capacity(),
+        std::mem::size_of::<PreparedObject>(),
+        std::mem::size_of::<AuthenticatedCanonicalObject>()
+    );
+    assert!(bytes <= 2 * super::super::INITIALIZATION_SLAB_BYTES);
+    let expected = objects
+        .iter()
+        .map(|object| (object.id, object.bytes.clone()))
+        .collect::<Vec<_>>();
+    let prepared = f.prepare(objects);
+    assert_eq!(prepared.objects.len(), expected.len());
+    assert_eq!(prepared.small_signatures.capacity(), 0);
+    f.publish(prepared);
+    for (id, bytes) in expected {
+        assert_eq!(f.db.read_object_row(id).unwrap(), bytes);
+    }
+}
+
+#[test]
+#[ignore = "explicit prepared metadata-cardinality input diagnostic"]
+fn metadata_cardinality_prepared_input_reservation_diagnostic() {
+    let f = Fixture::new();
+    let input = std::env::var_os("LAYERFS_CARDINALITY_DIAGNOSTIC_INPUT")
+        .expect("explicit immutable metadata-cardinality fixture path");
+    let store = crate::LayerStackStore { db: f.db.clone() };
+    store
+        .initialize_layerstack(
+            crate::EntityName::new("cardinality").unwrap(),
+            crate::LayerStackInitialization::Directory(input.into()),
+        )
+        .unwrap();
 }
 
 #[test]

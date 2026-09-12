@@ -22,8 +22,8 @@ struct PreparedObject {
     canonical: Range<usize>,
     // Compressed records retain the original authenticated comparison operand.
     retained: Option<Vec<u8>>,
-    // Preparation-time SmallContent search signature for FULL publication reuse.
-    small_signature: Option<[u64; 8]>,
+    // Index into this admission's bounded signature vector; other roles own none.
+    small_signature: Option<std::num::NonZeroU16>,
     delta: bool,
     diagnostic_terminal: u8,
 }
@@ -37,7 +37,7 @@ struct UndiagnosedPreparedObject {
     record: usize,
     canonical: Range<usize>,
     retained: Option<Vec<u8>>,
-    small_signature: Option<[u64; 8]>,
+    small_signature: Option<std::num::NonZeroU16>,
     delta: bool,
 }
 const _: () = {
@@ -55,6 +55,7 @@ pub(crate) struct PreparedAdmission {
     absence_epoch: Option<u64>,
     packs: Vec<Vec<u8>>,
     objects: Vec<PreparedObject>,
+    small_signatures: Vec<[u64; 8]>,
     pool_groups: Vec<PreparedValueGroup>,
     pending_values: BTreeMap<[u8; 73], u32>,
     metrics: ObjectInsertMetrics,
@@ -113,6 +114,7 @@ impl PreparedAdmission {
             // No pack-pointer growth during either lane: at most one pack/object.
             packs: Vec::with_capacity(count),
             objects: Vec::with_capacity(count),
+            small_signatures: Vec::new(),
             pool_groups: Vec::new(),
             pending_values: BTreeMap::new(),
             metrics,
@@ -199,6 +201,8 @@ impl PreparedAdmission {
 
     fn physical_backing(&self) -> usize {
         self.packs.iter().map(Vec::capacity).sum::<usize>() - self.oversized_backing
+            + std::mem::size_of_val(&self.small_signatures)
+            + self.small_signatures.capacity() * std::mem::size_of::<[u64; 8]>()
     }
 
     fn data_reserve(&self, extra: usize) -> Result<()> {
@@ -249,6 +253,24 @@ impl PreparedAdmission {
                 "SmallContent write requires schema 8",
             ));
         }
+        // Reserve the complete prospective allocation before reserve_exact;
+        // existing backing also covers an old allocation during reallocation.
+        // Metadata/native slots own no signature, and producers' values survive.
+        let signatures = self
+            .small_signatures
+            .len()
+            .checked_add(objects.len())
+            .and_then(|count| count.checked_mul(std::mem::size_of::<[u64; 8]>()))
+            .ok_or(StoreError::Integrity("small signature reservation"))?;
+        if self.physical_backing()
+            + signatures
+            + self.objects.capacity() * std::mem::size_of::<PreparedObject>()
+            + 1024 * 1024
+            > 2 * 1024 * 1024
+        {
+            return Err(StoreError::Integrity("SmallContent physical output budget"));
+        }
+        self.small_signatures.reserve_exact(objects.len());
         let predecessors = objects
             .iter()
             .filter_map(|o| o.1.prior_ids[0])
@@ -262,8 +284,7 @@ impl PreparedAdmission {
         let mut encoder = None;
         for object in objects {
             // Static codec workspace is charged to data; operands and handoff to physical output.
-            // Prepared slots now also carry the retained SmallContent signature;
-            // charge the actual prepared-vector capacity, like every other lane.
+            // Signature-vector capacity is included by physical_backing.
             self.data_reserve(3 * 1024 * 1024)?;
             if self.physical_backing()
                 + group_bytes * 2
@@ -369,6 +390,16 @@ impl PreparedAdmission {
             stats.delta_selected += u64::from(delta);
             stats.selected_encoded_bytes +=
                 (group.bytes.len() - if db.compact_framing() { 8 } else { 0 }) as u64;
+            let small_signature = if let Some(signature) = small_signature {
+                let index = u16::try_from(self.small_signatures.len() + 1)
+                    .ok()
+                    .and_then(std::num::NonZeroU16::new)
+                    .ok_or(StoreError::Integrity("small signature index bound"))?;
+                self.small_signatures.push(signature);
+                Some(index)
+            } else {
+                None
+            };
             self.objects.push(PreparedObject {
                 id: object.id,
                 length: object.bytes.len(),
@@ -820,7 +851,52 @@ impl PreparedAdmission {
             // Canonical comparison operands belong to the other <=6 MiB; count
             // their vector associations here as a conservative duplicate charge.
             let required = backing + associations + 1024 * 1024 + 2 * (pack::GROUP_LIMIT + 1024);
+            #[cfg(test)]
+            if std::env::var_os("LAYERFS_CARDINALITY_DIAGNOSTIC_INPUT").is_some() {
+                static PRINTED: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                #[allow(dead_code)]
+                struct InlineSignatureSlot {
+                    id: ObjectId,
+                    length: usize,
+                    pack: usize,
+                    group: usize,
+                    record: usize,
+                    canonical: Range<usize>,
+                    retained: Option<Vec<u8>>,
+                    small_signature: Option<[u64; 8]>,
+                    delta: bool,
+                    diagnostic_terminal: u8,
+                }
+                let old_required = required
+                    + self.objects.capacity()
+                        * (std::mem::size_of::<InlineSignatureSlot>()
+                            - std::mem::size_of::<PreparedObject>())
+                    - std::mem::size_of_val(&self.small_signatures)
+                    - self.small_signatures.capacity() * std::mem::size_of::<[u64; 8]>();
+                if old_required > 2 * 1024 * 1024
+                    && !PRINTED.swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    let mut lanes = [0usize; 7];
+                    for object in &self.objects {
+                        let version = self.packs.get(object.pack).map_or(0, |pack| {
+                            u32::from_le_bytes(pack[8..12].try_into().unwrap()) as usize
+                        });
+                        if version < lanes.len() {
+                            lanes[version] += 1;
+                        }
+                    }
+                    eprintln!("cardinality same-shape old_required={old_required} new_required={required} slots={} occupied={} signature_capacity={} signature_bytes={} prior_lanes_by_pack_version={lanes:?}", self.objects.capacity(), self.objects.len(), self.small_signatures.capacity(), self.small_signatures.capacity() * std::mem::size_of::<[u64;8]>());
+                }
+            }
             if required > 2 * 1024 * 1024 {
+                #[cfg(test)]
+                eprintln!(
+                    "physical reservation required={required} backing={backing} associations={associations} slots={} slot_bytes={} input_associations={} lane_capacity={} lane_slot_bytes={} metadata={metadata}",
+                    self.objects.capacity(), std::mem::size_of::<PreparedObject>(),
+                    search.input_associations, objects.capacity(),
+                    std::mem::size_of::<AuthenticatedCanonicalObject>(),
+                );
                 return Err(StoreError::Io(std::io::Error::other(
                     "physical encoding reservation",
                 )));
@@ -1145,6 +1221,7 @@ impl PreparedAdmission {
                     // compute the signature lazily here, before the winner is visible.
                     let signature = object
                         .small_signature
+                        .map(|index| self.small_signatures[usize::from(index.get()) - 1])
                         .unwrap_or_else(|| super::small_candidates::signature(raw));
                     candidates
                         .lock()

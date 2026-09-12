@@ -220,6 +220,23 @@ fn finalized_writer_precomputes_small_candidate_signatures() {
     );
     assert_eq!(hints.prior_ids[0], None);
     assert_eq!(hints.small_signature, Some(expected));
+    let f = Fixture::new();
+    let mut object = small(&raw);
+    object.1 = hints;
+    let prepared = f.prepare(vec![object]);
+    assert_eq!(prepared.small_signatures, vec![expected]);
+    assert_eq!(prepared.objects[0].small_signature.unwrap().get(), 1);
+    assert_eq!(
+        prepared.physical_backing(),
+        prepared.packs.iter().map(Vec::capacity).sum::<usize>() - prepared.oversized_backing
+            + std::mem::size_of_val(&prepared.small_signatures)
+            + prepared.small_signatures.capacity() * std::mem::size_of::<[u64; 8]>(),
+    );
+    println!(
+        "prepared signature slot={} actual_signature_capacity_bytes={}",
+        std::mem::size_of::<PreparedObject>(),
+        prepared.small_signatures.capacity() * std::mem::size_of::<[u64; 8]>()
+    );
     // Explicit predecessors keep the lazy consumer fallback.
     let prior = ObjectId::for_bytes(b"prior");
     let (_, hints) = build(true, Some(prior));
