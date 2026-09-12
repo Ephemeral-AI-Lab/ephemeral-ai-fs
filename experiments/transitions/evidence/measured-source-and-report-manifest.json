@@ -1,0 +1,10 @@
+{
+  "benchmark/fs-bench-pro/src/main.rs": "9cd751d9d73d15a01251a5149fd91b5cf817576d77fffaec495eea1c7d0fdab8",
+  "benchmark/fs-bench-pro/src/transition_experiment.rs": "d8207854972285abc3de658f7b6de713f08cbfb9fe66907d320cea9cbf3e7a45",
+  "benchmark/fs-bench-pro/shared/transition_experiment.py": "0c1dfbc13e20a563f561898dce8125086e72d2a464024c68ea937a343dff7356",
+  "experiments/transitions/README.md": "7db97f85b0d3fdd7e08453eabde59311d2d526dd1f8e3430b5fd81f15d06de7d",
+  "experiments/transitions/analyze.py": "4732590c15b9eb6fcade4ac09d61b66b7de58164d62e2dcca48b4e011fd74b42",
+  "experiments/transitions/report/summary.json": "07d8f8dbe64b31a551269540416d088adb8480b3326c3473645061a62f7d305e",
+  "experiments/transitions/report/results.md": "da728dca4059b314b33218f3c4df45ed1b5dd0d359744988bc715ef5097e836e",
+  "experiments/transitions/report/findings.md": "e5e494ac046cc238bc0aecfe810ebbf25242ddf67f1f3ad1025f203dcf5b7a10"
+}

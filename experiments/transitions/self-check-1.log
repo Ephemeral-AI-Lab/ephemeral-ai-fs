@@ -1,0 +1,9 @@
+   Compiling fs-benchmark-pro v0.1.4 (/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark/fs-bench-pro)
+    Finished `release` profile [optimized] target(s) in 7.59s
+     Running unittests src/main.rs (benchmark-results/host-store/builds/incremental-1.85.1-release/release/deps/fs_benchmark_pro-19b003d571fdb8f5)
+
+running 1 test
+test transition_experiment::tests::plans_cross_exact_boundaries_and_restore_the_original ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.00s
+

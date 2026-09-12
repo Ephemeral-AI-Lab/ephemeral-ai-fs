@@ -1,0 +1,8 @@
+[
+  {
+    "flag": "--build-host",
+    "log": "build-host-2.log",
+    "wall_ns": 100952917,
+    "exit_code": 1
+  }
+]

@@ -1,0 +1,26 @@
+{
+  "schema": "hybrid-transition-report-evidence-v1",
+  "measured_product_commit": "f8bb6dcb676f73a14746357d98489b0691398c26",
+  "copies": {
+    "evidence/performance/summary.json": {
+      "sha256": "aed6c2dbae5cc9d67745ee46c314083c40fc7faf13072cccaca02cfd011c63a0",
+      "byte_identical_to_original": true,
+      "original_relative_path": "benchmark-results/host-store/transition-experiments/performance-1/summary.json"
+    },
+    "evidence/performance/identity.json": {
+      "sha256": "5007d5607faa1aea60565399ff512198b4857d43a056240ce54519097652da79",
+      "byte_identical_to_original": true,
+      "original_relative_path": "benchmark-results/host-store/transition-experiments/performance-1/identity.json"
+    },
+    "evidence/verification/summary.json": {
+      "sha256": "ce427cd8fd0d89e0afd9688a27aa061102fe81689ca632b7acb52296c1922527",
+      "byte_identical_to_original": true,
+      "original_relative_path": "benchmark-results/host-store/transition-experiments/verification-1/summary.json"
+    },
+    "evidence/verification/identity.json": {
+      "sha256": "9026c7c8cabbc1e6a89dd4e7c62eecc74d13d58b5358c1d9417048086bbc07f9",
+      "byte_identical_to_original": true,
+      "original_relative_path": "benchmark-results/host-store/transition-experiments/verification-1/identity.json"
+    }
+  }
+}

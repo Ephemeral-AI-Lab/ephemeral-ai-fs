@@ -1,0 +1,78 @@
+{
+  "admission_eligible": false,
+  "cache": "fresh Store/process/container; OS cache uncontrolled; no target pre-read in performance; post-Commit representation inspection can warm later steps",
+  "cases": [
+    "edit-64k",
+    "edit-127k",
+    "edit-128k",
+    "edit-129k",
+    "edit-16m",
+    "oscillate",
+    "batched-crossings",
+    "shrink-1m",
+    "shrink-16m",
+    "chain-64k"
+  ],
+  "host": {
+    "LAYERFS_COMPILATION_SEAL": "820df6ccbfe88a70263ea7691770e2a9ce6d1fe1317846cca6087be70ecc175d",
+    "LAYERFS_DEPENDENCY_SEAL": "00d1ddc9b645690b23a7a9cf9e0afa609b8da917cae3e62c7daea68a183e35ca",
+    "LAYERFS_HOST_BUILD_JOBS": "8",
+    "LAYERFS_PRODUCT_SEAL": "f8db9e4ea64708ff211332096d4bb31b5d2a20b3582728ecd35fd39eecaabe25",
+    "LAYERFS_SOURCE_COMMIT": "f8bb6dcb676f73a14746357d98489b0691398c26",
+    "LAYERFS_SOURCE_DIRTY": "true",
+    "LAYERFS_SOURCE_SEAL": "0d0cec0b34cd648c0ed38e53bd7bf25bb1445a7c33b90a5612b5c772f08b27e6",
+    "LAYERFS_SOURCE_TREE": "a6d009e1c99893203124182139d1f29a0081f437",
+    "WORKLOAD_SOURCE_SHA256": "c6f1e4b15fce502ee1c08bd875e758beb099d3398394831faeca507c4b4e579b",
+    "binary_sha256": "d5a6578eea59064cce3eec1f962d77529ebc5b49ec170096eb04a306a976eaaf",
+    "build_mode": "incremental",
+    "build_target": "/Users/yifanxu/Ephemeral-AI-Lab/layerfs-transition-experiments/benchmark-results/host-store/builds/incremental-1.85.1-release",
+    "dependency_reuse": null,
+    "integrated_format_probe": {
+      "kind": "storage-format-probe",
+      "metadata_groups": 1,
+      "records": [
+        {
+          "kind": "storage-format-probe",
+          "metadata_groups": 1,
+          "schema_version": 10,
+          "sqlite_version": "3.51.0",
+          "status": "PASS",
+          "storage_policy": "ordinary"
+        }
+      ],
+      "schema_version": 10,
+      "sqlite_version": "3.51.0",
+      "status": "PASS",
+      "stdout_sha256": "3768920b15959b9aa00f1418f2661619955988b59f0d243f92721f985204e16d",
+      "storage_policy": "ordinary"
+    },
+    "native_build_wall_ns": 12143693209,
+    "observed_schema_version": 10,
+    "platform": "macOS-26.4.1-arm64-arm-64bit-Mach-O",
+    "recompiled_packages": [
+      "fs-benchmark-pro"
+    ],
+    "rust_toolchain": "1.85.1",
+    "schema_sha256": "1efbb2247d23efd645531e502512245b60ea7e8745e6c937000ca67ccdea7f5a"
+  },
+  "image_id": "sha256:828ae52a7b73625e1b3849cc323e32fff81ec553dc05d1380d1d292e6fce23a0",
+  "mode": "performance",
+  "mutation": "Client::edit_workspace_file_range",
+  "platform": "macOS-26.4.1-arm64-arm-64bit-Mach-O",
+  "projection": "real Docker FUSE",
+  "repetitions": 3,
+  "retention": "all raw results retained; successful temporary inputs/Stores removed after checks; failures retained",
+  "schema": "hybrid-transition-exploration-v1",
+  "source": {
+    "LAYERFS_COMPILATION_SEAL": "820df6ccbfe88a70263ea7691770e2a9ce6d1fe1317846cca6087be70ecc175d",
+    "LAYERFS_DEPENDENCY_SEAL": "00d1ddc9b645690b23a7a9cf9e0afa609b8da917cae3e62c7daea68a183e35ca",
+    "LAYERFS_HOST_BUILD_JOBS": "8",
+    "LAYERFS_PRODUCT_SEAL": "f8db9e4ea64708ff211332096d4bb31b5d2a20b3582728ecd35fd39eecaabe25",
+    "LAYERFS_SOURCE_COMMIT": "f8bb6dcb676f73a14746357d98489b0691398c26",
+    "LAYERFS_SOURCE_DIRTY": "true",
+    "LAYERFS_SOURCE_SEAL": "0d0cec0b34cd648c0ed38e53bd7bf25bb1445a7c33b90a5612b5c772f08b27e6",
+    "LAYERFS_SOURCE_TREE": "a6d009e1c99893203124182139d1f29a0081f437",
+    "WORKLOAD_SOURCE_SHA256": "c6f1e4b15fce502ee1c08bd875e758beb099d3398394831faeca507c4b4e579b"
+  },
+  "timers": "edit/Commit public calls only; lifecycle includes mount check and end; setup/proof/inspection excluded from call timers"
+}
