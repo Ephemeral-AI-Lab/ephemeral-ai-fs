@@ -480,7 +480,7 @@ fixture damage blocked (§5.3).
 Per-arm identity: `arm-identity-<arm>.json`, `identity-<arm>.json`,
 `binary-sha256-<arm>.txt`, `image-<arm>.txt`, `image-id-<arm>.txt`.
 `evidence-manifest.json` (sha256 `736d3321e5752ac08b20129c7a804498e0f1b500f9ee8c4e8f52648f00dbbc8c`)
-hashes every retained evidence file in the declared scope: 814 files, 50 826 911
+hashes every retained evidence file in the declared scope: 814 files, 50 827 822
 bytes, excluding only the two independently owned arm build trees and the
 reconstructed per-cell Store copies and runtime scratch declared in §8.
 
