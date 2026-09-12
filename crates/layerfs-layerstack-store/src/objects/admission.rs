@@ -13,6 +13,11 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::ops::Range;
 use std::time::Instant;
 
+#[cfg(test)]
+thread_local! {
+    static INPUT_ASSOCIATION_TRACE: std::cell::RefCell<Option<Vec<(usize, bool, usize, usize)>>> = const { std::cell::RefCell::new(None) };
+}
+
 struct PreparedObject {
     id: ObjectId,
     length: usize,
@@ -160,7 +165,20 @@ impl PreparedAdmission {
         let (metadata, ordinary_objects): (Vec<_>, Vec<_>) = objects
             .into_iter()
             .partition(|object| db.compact_namespace() && read::metadata_leaf(&object.bytes));
-        for objects in [metadata, ordinary_objects] {
+        let ordinary_capacity = ordinary_objects.capacity();
+        for (lane, objects) in [metadata, ordinary_objects].into_iter().enumerate() {
+            // The source IntoIter keeps its allocation during intermediate
+            // flushes; the other lane remains owned by this outer iterator.
+            let sibling_capacity = if lane == 0 { ordinary_capacity } else { 0 };
+            let live_capacity = objects.capacity() + sibling_capacity;
+            search.input_associations =
+                live_capacity * std::mem::size_of::<AuthenticatedCanonicalObject>();
+            #[cfg(test)]
+            INPUT_ASSOCIATION_TRACE.with(|trace| {
+                if let Some(rows) = trace.borrow_mut().as_mut() {
+                    rows.push((lane, false, live_capacity, search.input_associations));
+                }
+            });
             let metadata_lane = objects
                 .first()
                 .is_some_and(|object| read::metadata_leaf(&object.bytes));
@@ -194,6 +212,16 @@ impl PreparedAdmission {
                 count += 1;
                 ordinary.push(object);
             }
+            // The exhausted source IntoIter has dropped before this final flush.
+            // Only an unconsumed sibling lane still owns upstream vector slots.
+            search.input_associations =
+                sibling_capacity * std::mem::size_of::<AuthenticatedCanonicalObject>();
+            #[cfg(test)]
+            INPUT_ASSOCIATION_TRACE.with(|trace| {
+                if let Some(rows) = trace.borrow_mut().as_mut() {
+                    rows.push((lane, true, sibling_capacity, search.input_associations));
+                }
+            });
             self.prepare_ordinary(db, ordinary, &mut search, stats)?;
         }
         Ok(())

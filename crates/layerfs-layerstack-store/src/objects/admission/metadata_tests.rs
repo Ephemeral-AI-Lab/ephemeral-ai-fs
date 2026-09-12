@@ -179,6 +179,56 @@ fn metadata_values_share_across_prepared_packs_and_reopen() {
 }
 
 #[test]
+fn metadata_and_ordinary_flushes_charge_only_live_upstream_capacities() {
+    let f = Fixture::new();
+    dependencies(&f);
+    let mut objects = (0..20)
+        .map(|step| leaf(100, step, None))
+        .collect::<Vec<_>>();
+    let mut state = 0x174ab28du32;
+    objects.extend((0..400).map(|_| {
+        let bytes = (0..800)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state as u8
+            })
+            .collect::<Vec<_>>();
+        AuthenticatedCanonicalObject::new(
+            layerfs_content::encode_bytes_object(&bytes).unwrap(),
+            None,
+        )
+        .unwrap()
+    }));
+    // Both lanes cross their pack boundary, then make their final flush after
+    // their source iterator has dropped; total input still fits one admission.
+    assert!(
+        objects
+            .iter()
+            .map(|object| object.bytes.len())
+            .sum::<usize>()
+            <= 512 * 1024
+    );
+    INPUT_ASSOCIATION_TRACE.with(|trace| *trace.borrow_mut() = Some(Vec::new()));
+    let prepared = f.prepare(objects);
+    let rows = INPUT_ASSOCIATION_TRACE.with(|trace| trace.borrow_mut().take().unwrap());
+    assert_eq!(rows.len(), 4);
+    for &(lane, final_flush, live_capacity, charged) in &rows {
+        assert_eq!(
+            charged,
+            live_capacity * std::mem::size_of::<AuthenticatedCanonicalObject>()
+        );
+        println!("association lane={lane} final={final_flush} live_capacity={live_capacity} charged={charged}");
+    }
+    assert!(rows[0].2 > rows[1].2 && rows[1].2 > 0);
+    assert_eq!(rows[1].2, rows[2].2, "ordinary sibling becomes the source");
+    assert_eq!(rows[3].2, 0, "final ordinary flush owns no upstream Vec");
+    assert_eq!(rows[3].3, 0, "no stale upstream charge after iterator drop");
+    f.publish(prepared);
+}
+
+#[test]
 fn metadata_batched_value_lookup_pages_and_sharing() {
     fn unique_rows(tag: u64, count: usize, key_offset: u64) -> Vec<(InodeSerial, InodeRecordV1)> {
         let dep = |value: u64| dependency(tag * 1_000 + value);
@@ -290,18 +340,23 @@ fn metadata_pool_catalogue_corruption_and_publication_rollback() {
     // and catalogue validation must still reject corruption bypassing CHECKs.
     {
         let connection = f.db.reader().unwrap();
-        connection.execute_batch(
-            "PRAGMA ignore_check_constraints=ON;
+        connection
+            .execute_batch(
+                "PRAGMA ignore_check_constraints=ON;
              UPDATE metadata_value_groups SET count=166 WHERE first_ordinal=1;
              PRAGMA ignore_check_constraints=OFF;",
-        ).unwrap();
+            )
+            .unwrap();
     }
     assert!(f.db.validate_metadata_groups().is_err());
     assert!(f.db.read_object_row(target.id).is_err());
-    f.db.reader().unwrap().execute(
-        "UPDATE metadata_value_groups SET count=?1 WHERE first_ordinal=1",
-        [group.count as i64],
-    ).unwrap();
+    f.db.reader()
+        .unwrap()
+        .execute(
+            "UPDATE metadata_value_groups SET count=?1 WHERE first_ordinal=1",
+            [group.count as i64],
+        )
+        .unwrap();
     f.db.reader()
         .unwrap()
         .execute(
