@@ -31,6 +31,8 @@ pub const CANCEL_RESERVATION: u8 = 12;
 pub const DIRECTORY_PAGE: u8 = 13;
 pub const FACTS_NODE_BEGIN: u8 = 14;
 pub const FACTS_NODE_CHUNK: u8 = 15;
+/// Point metadata lookup without speculative sibling or payload export.
+pub const LOOKUP_METADATA: u8 = 16;
 
 pub fn invalid() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "live owner transport")

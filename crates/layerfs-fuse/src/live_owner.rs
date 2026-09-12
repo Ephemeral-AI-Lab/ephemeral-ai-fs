@@ -1003,6 +1003,10 @@ impl LiveOwner {
     }
 
     async fn name(&self, parent: NodeId, name: &[u8]) -> PortResult<ResolvedName> {
+        self.name_with_prefetch(parent, name, true).await
+    }
+
+    async fn name_with_prefetch(&self, parent: NodeId, name: &[u8], prefetch: bool) -> PortResult<ResolvedName> {
         let (lookup, root) = {
             let state = self.state()?;
             (
@@ -1048,7 +1052,7 @@ impl LiveOwner {
                     }
                 }
                 let directory = input.directory;
-                let mut request = vec![wire::LOOKUP];
+                let mut request = vec![if prefetch { wire::LOOKUP } else { wire::LOOKUP_METADATA }];
                 request.extend_from_slice(root.as_bytes());
                 request.extend_from_slice(directory.0.as_bytes());
                 wire::bytes_out(&mut request, input.name.as_bytes()).map_err(io)?;
@@ -2706,7 +2710,9 @@ impl LiveOwner {
                 let mut node = ROOT;
                 let started = diagnostic.as_ref().map(|_| Instant::now());
                 for name in path.split('/').filter(|name| !name.is_empty()) {
-                    node = self.lookup_async(node, name.as_bytes()).await?.node;
+                    let _namespace = self.0.namespace.lock().await;
+                    let name = self.name_with_prefetch(node, name.as_bytes(), false).await?;
+                    node = self.state()?.attr(name.existing().ok_or(PortError::NotFound)?).map_err(core)?.node;
                 }
                 note_edit(&mut diagnostic, EditMetric::Lookup, started);
                 *self.0.edit.lock().map_err(|_| PortError::Io)? = Some(PendingSplices {
@@ -3780,6 +3786,50 @@ mod immutable_acquisition_tests {
             directory.base = None;
         }
         owner
+    }
+
+    #[test]
+    fn sdk_edit_metadata_lookup_keeps_regular_grouped_prefetch() {
+        let runtime = LiveRuntime::new().unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let observed = requests.clone();
+        let handler = Arc::new(move |request: &[u8]| match request.first() {
+            Some(&wire::SEED) => Ok(seed()),
+            Some(&wire::LOOKUP_METADATA) => {
+                observed.lock().unwrap().push(wire::LOOKUP_METADATA);
+                let mut reply = vec![1];
+                reply.extend(fact(&[], 3));
+                reply.extend_from_slice(&0u32.to_be_bytes());
+                reply.push(0);
+                Ok(reply)
+            }
+            Some(&wire::LOOKUP) => {
+                observed.lock().unwrap().push(wire::LOOKUP);
+                Ok(lookup_reply(b"old", 3))
+            }
+            _ => Err(PortError::Io),
+        });
+        let owner = runtime.block_on(LiveOwner::local(handler, Arc::new(|_| Ok(())), runtime.scheduler())).unwrap();
+        runtime.block_on(async {
+            let mut begin = vec![wire::EDIT_BEGIN];
+            wire::bytes_out(&mut begin, b"file").unwrap();
+            wire::u64_out(&mut begin, 1);
+            owner.local_control(&begin).await.unwrap();
+            let mut part = vec![wire::EDIT_PART];
+            wire::u64_out(&mut part, 0);
+            wire::u64_out(&mut part, 3);
+            part.push(0);
+            wire::bytes_out(&mut part, b"new").unwrap();
+            owner.local_control(&part).await.unwrap();
+            owner.local_control(&[wire::EDIT_END]).await.unwrap();
+            assert_eq!(*requests.lock().unwrap(), [wire::LOOKUP_METADATA]);
+            let edited = owner.lookup_async(ROOT, b"file").await.unwrap();
+            assert_eq!(owner.read_owned(edited.node, 0, 3).await.unwrap(), b"new");
+            owner.lookup_async(ROOT, b"other").await.unwrap();
+            owner.lookup_async(ROOT, b"sibling").await.unwrap();
+            assert_eq!(*requests.lock().unwrap(), [wire::LOOKUP_METADATA, wire::LOOKUP]);
+            assert_eq!(owner.read_owned(edited.node, 0, 3).await.unwrap(), b"new");
+        });
     }
 
     #[test]

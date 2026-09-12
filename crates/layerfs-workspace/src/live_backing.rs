@@ -29,8 +29,10 @@ pub(crate) struct BackingOwner {
     pub(crate) dirty: BTreeSet<NodeId>,
     pub(crate) generation: u64,
     directory_lookup: DirectoryLookupCache,
-    request_profile: [u64; 16],
+    request_profile: [u64; 17],
     lookup_profile: [u64; 2],
+    // Requested nodes, optional sibling nodes, and their exported content bytes.
+    lookup_work: [u64; 4],
     exported_contents: HashSet<ObjectId>,
     facts_complete: bool,
     fact_reservations: Vec<layerfs_fuse::live_runtime::LiveReservation>,
@@ -44,8 +46,9 @@ impl Drop for BackingOwner {
     fn drop(&mut self) {
         if std::env::var_os("LAYERFS_BACKING_PROFILE").is_some() {
             println!(
-                "{{\"kind\":\"backing-profile\",\"counts_by_opcode\":{:?},\"lookup_negative\":{},\"lookup_positive\":{}}}",
-                self.request_profile, self.lookup_profile[0], self.lookup_profile[1]
+                "{{\"kind\":\"backing-profile\",\"counts_by_opcode\":{:?},\"lookup_negative\":{},\"lookup_positive\":{},\"lookup_requested_nodes\":{},\"lookup_sibling_nodes\":{},\"lookup_requested_content_bytes\":{},\"lookup_sibling_content_bytes\":{}}}",
+                self.request_profile, self.lookup_profile[0], self.lookup_profile[1],
+                self.lookup_work[0], self.lookup_work[1], self.lookup_work[2], self.lookup_work[3]
             );
         }
     }
@@ -77,8 +80,9 @@ impl BackingOwner {
             dirty: BTreeSet::new(),
             generation: 0,
             directory_lookup: DirectoryLookupCache::default(),
-            request_profile: [0; 16],
+            request_profile: [0; 17],
             lookup_profile: [0; 2],
+            lookup_work: [0; 4],
             exported_contents: HashSet::new(),
             facts_complete: true,
             incoming: None,
@@ -223,7 +227,8 @@ impl BackingOwner {
                 wire::u64_out(&mut out, self.policy.max_final_delta_memory_bytes);
                 out.extend(wire::node_out(layerfs_workspace_core::ROOT, &self.root)?);
             }
-            wire::LOOKUP => {
+            opcode @ (wire::LOOKUP | wire::LOOKUP_METADATA) => {
+                let grouped = opcode == wire::LOOKUP;
                 let namespace = input.object()?;
                 let directory = DirectoryStateRoot(input.object()?);
                 let name = CanonicalName::from_bytes(input.bytes()?)?;
@@ -239,38 +244,51 @@ impl BackingOwner {
                     &name,
                     &mut NamespaceCounters::default(),
                 )?;
-                let mut content_budget = wire::IMMUTABLE_PREFETCH_PAGE_BYTES;
+                let mut content_budget = if grouped {
+                    wire::IMMUTABLE_PREFETCH_PAGE_BYTES
+                } else {
+                    0
+                };
                 self.lookup_profile[usize::from(inode.is_some())] += 1;
                 out.push(u8::from(inode.is_some()));
                 if let Some(inode) = inode {
+                    self.lookup_work[0] += 1;
                     let acquired = acquire_inode(
                         &self.snapshot.reader,
                         InodeTableRoot(namespace.inode_table_root),
                         inode,
                     )?;
+                    let before = content_budget;
                     out.extend(self.acquired_out(acquired, &mut content_budget)?);
+                    self.lookup_work[2] += (before - content_budget) as u64;
                 }
                 let mut siblings = Vec::new();
                 // Reuse the entire already validated leaf, including earlier names.
                 // Only a fully exported root leaf establishes directory completeness.
-                let entries = self
-                    .directory_lookup
-                    .leaf_entries(directory)
-                    .iter()
-                    .filter(|(candidate, _)| candidate != &name)
-                    .take(127)
-                    .cloned()
-                    .collect::<Vec<_>>();
+                let entries = if grouped {
+                    self.directory_lookup
+                        .leaf_entries(directory)
+                        .iter()
+                        .filter(|(candidate, _)| candidate != &name)
+                        .take(127)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
                 let ids = entries.iter().map(|(_, inode)| *inode).collect::<Vec<_>>();
+                self.lookup_work[1] += ids.len() as u64;
                 if let Ok(acquired) = acquire_inodes(
                     &self.snapshot.reader,
                     InodeTableRoot(namespace.inode_table_root),
                     &ids,
                 ) {
                     for ((name, _), acquired) in entries.into_iter().zip(acquired) {
+                        let before = content_budget;
                         if let Ok(node) = self.acquired_out(acquired, &mut content_budget) {
                             siblings.push((name, node));
                         }
+                        self.lookup_work[3] += (before - content_budget) as u64;
                     }
                 }
                 let complete = self.directory_lookup.leaf_complete(directory)
@@ -612,6 +630,208 @@ mod tests {
     };
 
     #[test]
+    fn metadata_lookup_preserves_requested_node_without_acquiring_siblings() {
+        let directory = std::env::temp_dir().join(format!(
+            "layerfs-point-lookup-{}",
+            crate::WorkspaceId::new()
+        ));
+        let fixture = directory.join("fixture");
+        std::fs::create_dir_all(&fixture).unwrap();
+        for index in 0..100 {
+            std::fs::write(
+                fixture.join(format!("f{index:03}")),
+                vec![index as u8; 4096],
+            )
+            .unwrap();
+        }
+        let store = LayerStackStore::create(directory.join("store.sqlite")).unwrap();
+        let layer = store
+            .initialize_layerstack(
+                EntityName::new("project").unwrap(),
+                LayerStackInitialization::Directory(fixture),
+            )
+            .unwrap()
+            .genesis_layer_id;
+        let branch = store
+            .fork_branch(
+                EntityName::new("main").unwrap(),
+                LocalForkSource::Layer { layer_id: layer },
+            )
+            .unwrap();
+        let mut results = Vec::new();
+        for opcode in [wire::LOOKUP, wire::LOOKUP_METADATA] {
+            let workspace = crate::Workspace::open(
+                store.clone(),
+                branch,
+                directory.join(format!("spool-{opcode}")),
+            )
+            .unwrap();
+            let mut owner = BackingOwner::new(
+                WorkspaceSnapshot {
+                    store: workspace.store.clone(),
+                    workspace_id: workspace.workspace_id,
+                    branch_id: workspace.branch_id,
+                    expected_head: workspace.expected_head,
+                    expected_base: workspace.expected_base,
+                    root: workspace.base_root,
+                    reader: workspace.reader.clone(),
+                },
+                workspace.live.nodes[&crate::ROOT].clone(),
+                workspace.spool.clone(),
+                workspace.live.policy,
+            );
+            let layerfs_workspace_core::Data::Directory(root) = &owner.root.data else {
+                panic!("root directory")
+            };
+            let mut request = vec![opcode];
+            request.extend_from_slice(owner.snapshot.root.as_bytes());
+            request.extend_from_slice(root.base.unwrap().0.as_bytes());
+            wire::bytes_out(&mut request, b"f000").unwrap();
+            let before = owner.snapshot.reader.read_metrics_snapshot().unwrap();
+            let response = owner.request(&request).unwrap();
+            let after = owner.snapshot.reader.read_metrics_snapshot().unwrap();
+            let mut input = Input(&response);
+            assert_eq!(input.byte().unwrap(), 1);
+            let requested = input.bytes().unwrap().to_vec();
+            let content = input.bytes().unwrap().len();
+            let siblings = input.u32().unwrap();
+            for _ in 0..siblings {
+                input.bytes().unwrap();
+                input.bytes().unwrap();
+                input.bytes().unwrap();
+            }
+            let complete = input.byte().unwrap();
+            input.done().unwrap();
+            let database_bytes = after.snapshot_database_bytes - before.snapshot_database_bytes;
+            println!(
+                "lookup opcode={opcode} work={:?} database_bytes={database_bytes}",
+                owner.lookup_work
+            );
+            results.push((
+                requested,
+                content,
+                siblings,
+                complete,
+                owner.lookup_work,
+                database_bytes,
+            ));
+        }
+        assert_eq!(
+            results[0].0, results[1].0,
+            "identical authenticated requested inode"
+        );
+        assert_eq!((results[0].1, results[0].2, results[0].3), (4096, 99, 1));
+        assert_eq!((results[1].1, results[1].2, results[1].3), (0, 0, 0));
+        assert_eq!(results[0].4, [1, 99, 4096, 99 * 4096]);
+        assert_eq!(results[1].4, [1, 0, 0, 0]);
+        assert!(results[1].5 < results[0].5);
+        drop(store);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn sdk_k100_point_lookup_captures_only_changes_and_preserves_untouched_siblings() {
+        let directory = std::env::temp_dir().join(format!(
+            "layerfs-k100-point-lookup-{}",
+            crate::WorkspaceId::new()
+        ));
+        let fixture = directory.join("fixture");
+        for index in 0..100 {
+            let path = fixture.join(format!("d{index:03}"));
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("changed"), vec![index as u8; 512]).unwrap();
+            std::fs::write(path.join("untouched"), vec![index as u8 ^ 0xff; 512]).unwrap();
+        }
+        let store_path = directory.join("store.sqlite");
+        let store = LayerStackStore::create(&store_path).unwrap();
+        let layer = store
+            .initialize_layerstack(
+                EntityName::new("project").unwrap(),
+                LayerStackInitialization::Directory(fixture),
+            )
+            .unwrap()
+            .genesis_layer_id;
+        let branch = store
+            .fork_branch(
+                EntityName::new("main").unwrap(),
+                LocalForkSource::Layer { layer_id: layer },
+            )
+            .unwrap();
+        let mut workspace =
+            crate::Workspace::open(store.clone(), branch, directory.join("spool")).unwrap();
+        let remote = RemoteWorkspace::start_local(&workspace).unwrap();
+        workspace.remote = Some(remote.clone());
+        let workspace = std::sync::Mutex::new(workspace);
+        for index in 0..100 {
+            let path = format!("d{index:03}/changed");
+            remote
+                .edit(
+                    &path,
+                    vec![crate::WorkspaceFileRangeEdit {
+                        workspace_id: crate::WorkspaceId::new(),
+                        path: path.clone(),
+                        start: 0,
+                        delete_len: 1,
+                        replacement: crate::WorkspaceFileReplacement::Inline(vec![0xa5]),
+                    }],
+                )
+                .unwrap();
+        }
+        {
+            let backing = remote.backing.lock().unwrap();
+            assert_eq!(backing.lookup_work, [200, 0, 0, 0]);
+            assert_eq!(backing.request_profile[wire::LOOKUP as usize], 0);
+            assert_eq!(backing.request_profile[wire::LOOKUP_METADATA as usize], 200);
+        }
+        remote.server.control("pause").unwrap();
+        {
+            let backing = remote.backing.lock().unwrap();
+            assert_eq!(backing.dirty.len(), 100);
+            assert_eq!(
+                backing.facts.len(),
+                100,
+                "capture contains changed facts, not all loaded nodes"
+            );
+            assert!(backing.facts.keys().all(|id| backing.dirty.contains(id)));
+            assert!(backing
+                .facts
+                .values()
+                .flat_map(|node| &node.paths)
+                .all(|path| !path.ends_with("/untouched")));
+        }
+        workspace.lock().unwrap().commit().unwrap();
+        install_checkpoint(&workspace).unwrap();
+        remote.server.control("resume").unwrap();
+        remote.server.control("shutdown").unwrap();
+        drop((remote, workspace, store));
+        let reopened = LayerStackStore::connect(&store_path).unwrap();
+        let pinned = reopened.pin_branch(branch).unwrap();
+        for index in 0..100 {
+            for (name, byte) in [("changed", index as u8), ("untouched", index as u8 ^ 0xff)] {
+                let path =
+                    layerfs_content::CanonicalPath::new(&format!("d{index:03}/{name}")).unwrap();
+                let mut bytes = Vec::new();
+                layerfs_content::filesystem::read_range(
+                    &CoreReader(&pinned.reader),
+                    pinned.root,
+                    &path,
+                    0..512,
+                    &mut bytes,
+                )
+                .unwrap();
+                let mut expected = vec![byte; 512];
+                if name == "changed" {
+                    expected[0] = 0xa5;
+                }
+                assert_eq!(bytes, expected, "{path:?}");
+            }
+        }
+        println!("K100 point lookup:200 requestednodes,0 siblings,0 exportedbytes;100 capturedchanges;200 full-file reopen checks");
+        drop((pinned, reopened));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn cold_grouped_reads_preserve_alias_mutations_and_peer_isolation() {
         use layerfs_fuse::FilesystemPort;
         let directory = std::env::temp_dir().join(format!(
@@ -919,17 +1139,28 @@ mod tests {
             .unwrap();
         assert_eq!(owner.read(file, 0, 20).unwrap(), b"fXYst");
         let sdk_metrics = remote.server.take_write_metrics().unwrap();
-        assert_eq!(sdk_metrics.live_backing_request_bytes, 0,
-            "cached SDK edits do not republish the growing dirty prefix");
+        assert_eq!(
+            sdk_metrics.live_backing_request_bytes, 0,
+            "cached SDK edits do not republish the growing dirty prefix"
+        );
         assert_eq!(sdk_metrics.client_frame_bytes, 0);
         assert_eq!(sdk_metrics.host_frame_bytes, 0);
         assert_eq!(sdk_metrics.frame_payload_copy_bytes, 0);
         remote.server.control("pause").unwrap();
-        assert!(matches!(remote.backing.lock().unwrap().facts[&file].data,
-            layerfs_workspace_core::Data::File(layerfs_workspace_core::FileData::Edited { .. })));
+        assert!(matches!(
+            remote.backing.lock().unwrap().facts[&file].data,
+            layerfs_workspace_core::Data::File(layerfs_workspace_core::FileData::Edited { .. })
+        ));
         if !local {
-            assert!(remote.server.take_write_metrics().unwrap().live_backing_request_bytes > 0,
-                "explicit snapshot consumers still publish complete facts");
+            assert!(
+                remote
+                    .server
+                    .take_write_metrics()
+                    .unwrap()
+                    .live_backing_request_bytes
+                    > 0,
+                "explicit snapshot consumers still publish complete facts"
+            );
         }
         remote.server.control("resume").unwrap();
         let streamed = owner
@@ -1297,7 +1528,10 @@ impl RemoteWorkspace {
             Err(std::env::VarError::NotPresent) => None,
             Err(_) => return Err(crate::WorkspaceError::InvalidExecution),
         };
-        if nonce.as_ref().is_some_and(|nonce| !wire::valid_edit_diagnostic_nonce(nonce.as_bytes())) {
+        if nonce
+            .as_ref()
+            .is_some_and(|nonce| !wire::valid_edit_diagnostic_nonce(nonce.as_bytes()))
+        {
             return Err(crate::WorkspaceError::InvalidExecution);
         }
         if edits.is_empty()
@@ -1334,9 +1568,22 @@ impl RemoteWorkspace {
             }
             frame
         });
-        let before = nonce.as_ref().map(|_| self.server.backing_diagnostic_snapshot());
+        let before = nonce
+            .as_ref()
+            .map(|_| self.server.backing_diagnostic_snapshot());
+        let lookup_before = if nonce.is_some() {
+            Some(
+                self.backing
+                    .lock()
+                    .map_err(|_| crate::WorkspaceError::WorkspaceBusy)?
+                    .lookup_work,
+            )
+        } else {
+            None
+        };
         let started = nonce.as_ref().map(|_| std::time::Instant::now());
-        let response = self.server
+        let response = self
+            .server
             .request_group(
                 std::iter::once(begin)
                     .chain(parts)
@@ -1347,12 +1594,31 @@ impl RemoteWorkspace {
             let group_wall_ns = started.elapsed().as_nanos();
             let after = self.server.backing_diagnostic_snapshot();
             let values = wire::read_edit_diagnostic(&response, nonce.as_bytes())?;
-            let host_dispatch_ns = after.0.checked_sub(before.0).ok_or(crate::WorkspaceError::InvalidExecution)?;
-            let host_queue_ns = after.1.checked_sub(before.1).ok_or(crate::WorkspaceError::InvalidExecution)?;
-            let fields = wire::EDIT_DIAGNOSTIC_FIELDS.iter().zip(values)
+            let host_dispatch_ns = after
+                .0
+                .checked_sub(before.0)
+                .ok_or(crate::WorkspaceError::InvalidExecution)?;
+            let host_queue_ns = after
+                .1
+                .checked_sub(before.1)
+                .ok_or(crate::WorkspaceError::InvalidExecution)?;
+            let lookup_after = self
+                .backing
+                .lock()
+                .map_err(|_| crate::WorkspaceError::WorkspaceBusy)?
+                .lookup_work;
+            let mut lookup = [0u64; 4];
+            for (index, value) in lookup.iter_mut().enumerate() {
+                *value = lookup_after[index]
+                    .checked_sub(lookup_before.unwrap()[index])
+                    .ok_or(crate::WorkspaceError::InvalidExecution)?;
+            }
+            let fields = wire::EDIT_DIAGNOSTIC_FIELDS
+                .iter()
+                .zip(values)
                 .map(|(name, value)| format!(",\"{name}\":{value}"))
                 .collect::<String>();
-            eprintln!("{{\"kind\":\"edit-diagnostic\",\"version\":1,\"nonce\":\"{nonce}\",\"members\":{members},\"group_wall_ns\":{group_wall_ns},\"host_backing_dispatch_ns\":{host_dispatch_ns},\"host_backing_queue_ns\":{host_queue_ns}{fields}}}");
+            eprintln!("{{\"kind\":\"edit-diagnostic\",\"version\":1,\"nonce\":\"{nonce}\",\"members\":{members},\"group_wall_ns\":{group_wall_ns},\"host_backing_dispatch_ns\":{host_dispatch_ns},\"host_backing_queue_ns\":{host_queue_ns},\"host_lookup_requested_nodes\":{},\"host_lookup_sibling_nodes\":{},\"host_lookup_requested_content_bytes\":{},\"host_lookup_sibling_content_bytes\":{}{fields}}}", lookup[0], lookup[1], lookup[2], lookup[3]);
         } else if !response.is_empty() {
             return Err(crate::WorkspaceError::InvalidExecution);
         }
