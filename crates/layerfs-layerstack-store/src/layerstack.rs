@@ -476,6 +476,10 @@ struct CompactImportedTree {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct SourceImportMetrics {
     file_open_calls: u64,
+    file_fstat_calls: u64,
+    parent_directory_open_calls: u64,
+    parent_directory_cache_peak_bytes: u64,
+    file_openat_calls: u64,
     file_read_calls: u64,
     file_read_bytes: u64,
     symlink_metadata_calls: u64,
@@ -493,6 +497,16 @@ struct SourceImportMetrics {
 impl SourceImportMetrics {
     fn merge(&mut self, other: Self) {
         self.file_open_calls = self.file_open_calls.saturating_add(other.file_open_calls);
+        self.file_fstat_calls = self.file_fstat_calls.saturating_add(other.file_fstat_calls);
+        self.parent_directory_open_calls = self
+            .parent_directory_open_calls
+            .saturating_add(other.parent_directory_open_calls);
+        self.file_openat_calls = self
+            .file_openat_calls
+            .saturating_add(other.file_openat_calls);
+        self.parent_directory_cache_peak_bytes = self
+            .parent_directory_cache_peak_bytes
+            .max(other.parent_directory_cache_peak_bytes);
         self.file_read_calls = self.file_read_calls.saturating_add(other.file_read_calls);
         self.file_read_bytes = self.file_read_bytes.saturating_add(other.file_read_bytes);
         self.symlink_metadata_calls = self
@@ -709,6 +723,11 @@ impl InitializationDiagnostic {
             pipeline_peak.max(completed_peak).max(final_peak)
         };
         let explicit_buffer_peak_bytes = explicit_buffer_peak_bytes
+            .saturating_add(
+                fast.source
+                    .parent_directory_cache_peak_bytes
+                    .saturating_mul(fast.worker_count),
+            )
             .saturating_add(fast.compact_tree_scratch_peak_bytes)
             .saturating_add(if fast.compact_tree_scratch_peak_bytes != 0 {
                 fast.worker_count.saturating_mul(std::mem::size_of::<
@@ -718,12 +737,16 @@ impl InitializationDiagnostic {
                 0
             });
         eprintln!(
-            "layerfs-initialization-diagnostic-v3 nonce={} fast_path={} worker_count={} prepare_import_wall_ns={} source_file_open_calls={} source_file_read_calls={} source_file_read_bytes={} source_symlink_metadata_calls={} source_read_dir_calls={} small_content_files={} small_content_scratch_bound_bytes={} single_chunk_files={} streaming_files={} cdc_scratch_peak_bytes={} metadata_cache_hits={} metadata_cache_misses={} metadata_cache_peak_entries={} explicit_buffer_peak_bytes={} explicit_slab_payload_limit_bytes={} explicit_slab_object_limit={} explicit_canonical_object_header_bytes={} explicit_pair_pending_limit_bytes={} canonical_frame_count={} canonical_payload_bytes={} canonical_payload_capacity_bytes={} canonical_payload_capacity_slack_bytes={} canonical_encode_calls={} canonical_hash_calls={} canonical_framing_bytes={} object_segment_write_calls={} object_segment_write_bytes={} object_segment_raw_read_calls={} object_segment_raw_read_bytes={} object_segment_passes={} slab_handoffs={} slab_sent_objects={} slab_sent_bytes={} slab_send_blocked_ns={} slab_partial_peak_objects={} slab_partial_peak_payload_bytes={} slab_queue_peak={} slab_queue_peak_bytes={} slab_consumer_idle_ns={} last_slab_receive_offset_ns={} direct_pipeline_wall_ns={} import_pipeline_thread_peak={} active_producers_after={} task_state_bytes={} completed_result_peak_bytes={} parent_final_state_peak_bytes={} candidate_copy_bytes={} structural_peak_bytes={} parent_payload_copy_bytes={} pair_segment_write_calls={} pair_segment_write_bytes={} pair_segment_raw_read_calls={} pair_segment_raw_read_bytes={} pair_segment_passes={} parent_merge_bytes={} pending_duplicate_objects={} pending_duplicate_bytes={} cross_batch_skipped_objects={} cross_batch_skipped_bytes={} collision_checks={} admission_batch_peak_objects={} admission_batch_peak_payload_bytes={} admission_batch_peak_vec_capacity={} pending_index_peak_entries={} pending_index_peak_bytes={} final_batch_peak_payload_bytes={} final_batch_peak_vec_capacity={} final_pending_index_peak_bytes={} final_simultaneous_owned_peak_bytes={} sql_batch_count={} sql_row_count_shape_count={} sql_submitted_rows={} sql_returned_ids={} sql_skipped_ids={} sql_string_build_ns={} sql_prepare_ns={} sql_bind_step_returning_ns={} conflict_read_calls={} conflict_read_rows={} conflict_read_bytes={} conflict_read_ns={} sql_begin_ns={} sql_commit_ns={} final_root_inode_table_wall_ns={} insert_node_peak_len={} insert_node_peak_capacity={} compact_tree_scratch_peak_bytes={}",
+            "layerfs-initialization-diagnostic-v3 nonce={} fast_path={} worker_count={} prepare_import_wall_ns={} source_file_open_calls={} source_file_fstat_calls={} source_parent_directory_open_calls={} source_parent_directory_cache_peak_bytes={} source_file_openat_calls={} source_file_read_calls={} source_file_read_bytes={} source_symlink_metadata_calls={} source_read_dir_calls={} small_content_files={} small_content_scratch_bound_bytes={} single_chunk_files={} streaming_files={} cdc_scratch_peak_bytes={} metadata_cache_hits={} metadata_cache_misses={} metadata_cache_peak_entries={} explicit_buffer_peak_bytes={} explicit_slab_payload_limit_bytes={} explicit_slab_object_limit={} explicit_canonical_object_header_bytes={} explicit_pair_pending_limit_bytes={} canonical_frame_count={} canonical_payload_bytes={} canonical_payload_capacity_bytes={} canonical_payload_capacity_slack_bytes={} canonical_encode_calls={} canonical_hash_calls={} canonical_framing_bytes={} object_segment_write_calls={} object_segment_write_bytes={} object_segment_raw_read_calls={} object_segment_raw_read_bytes={} object_segment_passes={} slab_handoffs={} slab_sent_objects={} slab_sent_bytes={} slab_send_blocked_ns={} slab_partial_peak_objects={} slab_partial_peak_payload_bytes={} slab_queue_peak={} slab_queue_peak_bytes={} slab_consumer_idle_ns={} last_slab_receive_offset_ns={} direct_pipeline_wall_ns={} import_pipeline_thread_peak={} active_producers_after={} task_state_bytes={} completed_result_peak_bytes={} parent_final_state_peak_bytes={} candidate_copy_bytes={} structural_peak_bytes={} parent_payload_copy_bytes={} pair_segment_write_calls={} pair_segment_write_bytes={} pair_segment_raw_read_calls={} pair_segment_raw_read_bytes={} pair_segment_passes={} parent_merge_bytes={} pending_duplicate_objects={} pending_duplicate_bytes={} cross_batch_skipped_objects={} cross_batch_skipped_bytes={} collision_checks={} admission_batch_peak_objects={} admission_batch_peak_payload_bytes={} admission_batch_peak_vec_capacity={} pending_index_peak_entries={} pending_index_peak_bytes={} final_batch_peak_payload_bytes={} final_batch_peak_vec_capacity={} final_pending_index_peak_bytes={} final_simultaneous_owned_peak_bytes={} sql_batch_count={} sql_row_count_shape_count={} sql_submitted_rows={} sql_returned_ids={} sql_skipped_ids={} sql_string_build_ns={} sql_prepare_ns={} sql_bind_step_returning_ns={} conflict_read_calls={} conflict_read_rows={} conflict_read_bytes={} conflict_read_ns={} sql_begin_ns={} sql_commit_ns={} final_root_inode_table_wall_ns={} insert_node_peak_len={} insert_node_peak_capacity={} compact_tree_scratch_peak_bytes={}",
             self.nonce,
             fast_path,
             fast.worker_count,
             self.prepare_import_wall_ns,
             fast.source.file_open_calls,
+            fast.source.file_fstat_calls,
+            fast.source.parent_directory_open_calls,
+            fast.source.parent_directory_cache_peak_bytes,
+            fast.source.file_openat_calls,
             fast.source.file_read_calls,
             fast.source.file_read_bytes,
             fast.source.symlink_metadata_calls,
@@ -2048,8 +2071,54 @@ fn finish_parallel_root(
     })
 }
 
+#[cfg(all(test, target_os = "macos"))]
+thread_local! {
+    static INTERRUPT_IMPORT_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+fn open_import_child(
+    parent: &std::fs::File,
+    name: &std::ffi::OsStr,
+    metrics: &mut SourceImportMetrics,
+) -> std::io::Result<std::fs::File> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::raw::{c_char, c_int};
+    use std::os::unix::ffi::OsStrExt;
+    unsafe extern "C" {
+        fn openat(fd: c_int, path: *const c_char, flags: c_int, ...) -> c_int;
+    }
+    let name = std::ffi::CString::new(name.as_bytes())?;
+    loop {
+        metrics.file_openat_calls += 1;
+        let result = (|| {
+            #[cfg(test)]
+            if INTERRUPT_IMPORT_OPEN.with(|interrupt| interrupt.replace(false)) {
+                return Err(std::io::ErrorKind::Interrupted.into());
+            }
+            // Darwin: O_RDONLY=0, O_NOFOLLOW=0x100, O_CLOEXEC=0x01000000.
+            // O_NONBLOCK=4 prevents a substituted FIFO blocking before fstat.
+            // SAFETY: parent owns its fd, name is terminated and alive, and
+            // without O_CREAT the variadic mode argument is not consumed.
+            let fd = unsafe { openat(parent.as_raw_fd(), name.as_ptr(), 0x100 | 0x01000000 | 4) };
+            if fd < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // SAFETY: openat returned one new descriptor; File owns it exactly once.
+            Ok(unsafe { std::fs::File::from_raw_fd(fd) })
+        })();
+        match result {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            result => return result,
+        }
+    }
+}
+
 struct NativeImport<'objects, S: ObjectStore> {
     seed: [u8; 32],
+    #[cfg(target_os = "macos")]
+    parent_directory: Option<(std::path::PathBuf, std::fs::File)>,
     objects: &'objects mut S,
     hard_links:
         std::collections::HashMap<(u64, u64), (layerfs_content::tree::inode::InodeId, usize)>,
@@ -2064,6 +2133,8 @@ impl<'objects, S: ObjectStore> NativeImport<'objects, S> {
     fn new(seed: [u8; 32], objects: &'objects mut S) -> Self {
         Self {
             seed,
+            #[cfg(target_os = "macos")]
+            parent_directory: None,
             objects,
             hard_links: std::collections::HashMap::new(),
             records: Vec::new(),
@@ -2210,19 +2281,77 @@ impl<'objects, S: ObjectStore> NativeImport<'objects, S> {
         ))
     }
 
-    fn regular_file(
+    #[cfg(target_os = "macos")]
+    fn open_regular_source(
         &mut self,
         native: &std::path::Path,
-        logical: &layerfs_content::CanonicalPath,
-    ) -> Result<layerfs_content::tree::inode::InodeId> {
-        self.source.symlink_metadata_calls += 1;
-        let metadata = std::fs::symlink_metadata(native)?;
+    ) -> Result<(std::fs::File, std::fs::Metadata)> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let parent = native
+            .parent()
+            .ok_or(StoreError::InvalidInput("Layer initialization parent"))?;
+        let name = native
+            .file_name()
+            .ok_or(StoreError::InvalidInput("Layer initialization file name"))?;
+        if self
+            .parent_directory
+            .as_ref()
+            .is_none_or(|(path, _)| path != parent)
+        {
+            // Drop first, including across recursive directory calls: never two
+            // cached descriptors per importer, or a descriptor per ancestor.
+            self.parent_directory = None;
+            self.source.parent_directory_open_calls += 1;
+            let directory = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(0x00100000) // Darwin O_DIRECTORY; preserve existing parent-path symlink following
+                .open(parent)?;
+            let parent = parent.to_owned();
+            self.source.parent_directory_cache_peak_bytes =
+                self.source.parent_directory_cache_peak_bytes.max(
+                    (parent.capacity()
+                        + std::mem::size_of::<Option<(std::path::PathBuf, std::fs::File)>>())
+                        as u64,
+                );
+            self.parent_directory = Some((parent, directory));
+        }
+        self.source.file_open_calls += 1;
+        let file = open_import_child(
+            &self.parent_directory.as_ref().unwrap().1,
+            name,
+            &mut self.source,
+        )?;
+        self.source.file_fstat_calls += 1;
+        let metadata = file.metadata()?;
         if !metadata.file_type().is_file() {
             return Err(StoreError::InvalidInput(
                 "Layer initialization regular file",
             ));
         }
-        self.regular_file_with_metadata(native, logical, &metadata)
+        Ok((file, metadata))
+    }
+
+    fn regular_file(
+        &mut self,
+        native: &std::path::Path,
+        logical: &layerfs_content::CanonicalPath,
+    ) -> Result<layerfs_content::tree::inode::InodeId> {
+        #[cfg(target_os = "macos")]
+        {
+            let (file, metadata) = self.open_regular_source(native)?;
+            self.regular_file_with_metadata(native, logical, &metadata, Some(file))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.source.symlink_metadata_calls += 1;
+            let metadata = std::fs::symlink_metadata(native)?;
+            if !metadata.file_type().is_file() {
+                return Err(StoreError::InvalidInput(
+                    "Layer initialization regular file",
+                ));
+            }
+            self.regular_file_with_metadata(native, logical, &metadata, None)
+        }
     }
 
     fn regular_file_with_metadata(
@@ -2230,6 +2359,7 @@ impl<'objects, S: ObjectStore> NativeImport<'objects, S> {
         native: &std::path::Path,
         logical: &layerfs_content::CanonicalPath,
         metadata: &std::fs::Metadata,
+        opened: Option<std::fs::File>,
     ) -> Result<layerfs_content::tree::inode::InodeId> {
         use layerfs_content::tree::inode::{InodeKind, InodeRecordV1};
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -2255,9 +2385,15 @@ impl<'objects, S: ObjectStore> NativeImport<'objects, S> {
 
         let inode = self.inode(logical, false)?;
         let record_index = self.reserve();
-        self.source.file_open_calls += 1;
+        let file = match opened {
+            Some(file) => file,
+            None => {
+                self.source.file_open_calls += 1;
+                std::fs::File::open(native)?
+            }
+        };
         let mut source = CountedSourceReader {
-            file: std::fs::File::open(native)?,
+            file,
             calls: 0,
             bytes: 0,
         };
@@ -2346,11 +2482,24 @@ impl<'objects, S: ObjectStore> NativeImport<'objects, S> {
         for entry in entries {
             let name = layerfs_content::CanonicalName::from_bytes(entry.file_name().as_bytes())?;
             let logical_path = child(logical, &name)?;
+            #[cfg(target_os = "macos")]
+            if entry.file_type()?.is_file() {
+                let inode = self.regular_file(&entry.path(), &logical_path)?;
+                children.push((name, inode));
+                continue;
+            }
             self.source.symlink_metadata_calls += 1;
             let entry_metadata = std::fs::symlink_metadata(entry.path())?;
             if entry_metadata.file_type().is_file() {
-                let inode =
-                    self.regular_file_with_metadata(&entry.path(), &logical_path, &entry_metadata)?;
+                #[cfg(target_os = "macos")]
+                let inode = self.regular_file(&entry.path(), &logical_path)?;
+                #[cfg(not(target_os = "macos"))]
+                let inode = self.regular_file_with_metadata(
+                    &entry.path(),
+                    &logical_path,
+                    &entry_metadata,
+                    None,
+                )?;
                 children.push((name, inode));
                 continue;
             }
@@ -2697,6 +2846,117 @@ mod tests {
                 .unwrap(),
             source,
         )
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_openat_root_symlink_keeps_importer_parity() {
+        let root = temporary("source-root-link");
+        let link = root.with_extension("link");
+        std::fs::write(root.join("file"), b"root symlink payload").unwrap();
+        symlink(&root, &link).unwrap();
+        let seed = [0x66; 32];
+        let (actual, metrics) = cached_directory_root(&link, seed);
+        let (legacy, _, _) = legacy_directory_root(&link, seed).unwrap();
+        assert_eq!(actual.root_id, legacy.root_id);
+        assert_eq!(actual.objects.len(), legacy.objects.len());
+        assert_eq!(metrics.file_openat_calls, 1);
+        assert_eq!(metrics.file_fstat_calls, 1);
+        assert_eq!(metrics.parent_directory_open_calls, 1);
+        let directory = std::fs::File::open(&root).unwrap();
+        let mut retried = SourceImportMetrics::default();
+        INTERRUPT_IMPORT_OPEN.with(|interrupt| interrupt.set(true));
+        let opened =
+            open_import_child(&directory, std::ffi::OsStr::new("file"), &mut retried).unwrap();
+        assert!(opened.metadata().unwrap().is_file());
+        assert_eq!(
+            retried.file_openat_calls, 2,
+            "interrupted open must retry once"
+        );
+        drop(opened);
+        drop(directory);
+        drop(actual);
+        drop(legacy);
+        std::fs::remove_file(link).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_openat_preserves_nested_links_metadata_and_source_validation() {
+        let root = temporary("source-openat");
+        std::fs::create_dir_all(root.join("a/deep")).unwrap();
+        for (name, byte) in [("a/first", 0x51), ("a/deep/next", 0x52)] {
+            let path = root.join(name);
+            std::fs::write(&path, vec![byte; 5000]).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        }
+        std::fs::hard_link(root.join("a/first"), root.join("a/alias")).unwrap();
+        symlink("a/first", root.join("source-link")).unwrap();
+        let seed = [0x65; 32];
+        let (actual, metrics) = cached_directory_root(&root, seed);
+        let (legacy, _, _) = legacy_directory_root(&root, seed).unwrap();
+        assert_eq!(actual.root_id, legacy.root_id);
+        assert_eq!(actual.objects.len(), legacy.objects.len());
+        assert_eq!(metrics.file_open_calls, 3); // aliases are opened to fstat actual identity
+        assert_eq!(metrics.file_fstat_calls, 3);
+        assert_eq!(metrics.file_openat_calls, 3);
+        assert_eq!(metrics.file_read_bytes, 10_000); // hardlink payload is still read once
+        assert_eq!(metrics.parent_directory_open_calls, 3); // a -> a/deep -> a
+        assert_eq!(metrics.symlink_metadata_calls, 6); // directories/symlink only
+        println!("openat canonical_root_equal=true files_opened={} fstats={} parent_opens={} path_lstats={} source_bytes={} parent_cache_peak_bytes={}",
+            metrics.file_open_calls, metrics.file_fstat_calls, metrics.parent_directory_open_calls,
+            metrics.symlink_metadata_calls, metrics.file_read_bytes, metrics.parent_directory_cache_peak_bytes);
+        drop(actual);
+        drop(legacy);
+
+        let path = root.join("swap");
+        std::fs::write(&path, b"regular").unwrap();
+        assert!(std::fs::symlink_metadata(&path).unwrap().is_file());
+        std::fs::remove_file(&path).unwrap();
+        symlink("a/first", &path).unwrap();
+        {
+            let mut objects = ObjectBuffer::empty_all_reachable().unwrap();
+            let mut import = NativeImport::new(seed, &mut objects);
+            let error = import
+                .regular_file(&path, &layerfs_content::CanonicalPath::new("swap").unwrap())
+                .unwrap_err();
+            assert!(
+                matches!(error, StoreError::Io(_)),
+                "symlink swap must fail at openat: {error:?}"
+            );
+            assert_eq!(import.source.file_openat_calls, 1);
+            assert_eq!(import.source.file_fstat_calls, 0);
+            assert_eq!(import.source.file_read_bytes, 0);
+        }
+        std::fs::remove_file(&path).unwrap();
+        for length in [4999, 5001] {
+            std::fs::write(&path, vec![0x53; 5000]).unwrap();
+            let mut objects = ObjectBuffer::empty_all_reachable().unwrap();
+            let mut import = NativeImport::new(seed, &mut objects);
+            let (file, metadata) = import.open_regular_source(&path).unwrap();
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_len(length)
+                .unwrap();
+            assert!(
+                import
+                    .regular_file_with_metadata(
+                        &path,
+                        &layerfs_content::CanonicalPath::new("swap").unwrap(),
+                        &metadata,
+                        Some(file)
+                    )
+                    .is_err(),
+                "changed source length accepted: {length}"
+            );
+            assert_eq!(import.source.file_openat_calls, 1);
+            assert_eq!(import.source.file_fstat_calls, 1);
+            assert_eq!(import.scanned_files, 0);
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
