@@ -22,11 +22,11 @@ is enforced by the shared runner. Initial host free space: 345 GiB.
 | 2 | Highest-tier carry, merge failure atomicity, actual RAM/FD/disk accounting; focused and production-budget proofs | Component/default-budget/reduced-Workspace proofs PASS; see below |
 | 2 | Complete namespace fixture validation; reduced-budget Workspace/public non-spilling qualification | PASS: fixtures, reduced Workspace and ordinary K100/K1000 public proofs; K32000 deferred to stage6 |
 | 3 | Fresh disjoint edit attribution >=90%, dominant fix, edit + matching Commit + chain qualification | PASS on qualified-v1/v2: attribution, fixes, n3 both-cache pairs, independent and mounted proofs |
-| 4 | Reopen/history fix and deduplicated #108/#112/#114/#100/#107/#102/#110 scope | Reopen 33000-edit proof PASS; 2 history vehicles PASS on prior treatment; fsync optimization now qualified, full unrelated500 screen PASS13.791s; 18 other selections/full157/access pending |
+| 4 | Reopen/history fix and deduplicated #108/#112/#114/#100/#107/#102/#110 scope | PASS: reopen 33000-edit proof; 2 history vehicles; fsync optimization qualified and full unrelated500 screen PASS13.791s; all 18 remaining selections + 18 proofs PASS; ordinary full157 performance/verification/census/Git157 PASS; 11 access cases + 11 proofs PASS. See terminal-outcome.md |
 | 5 | Authentic cold Init and four namespace tiers under updated owner disposition | Qualified with owner2.7s WAIVER and explicit wall WARN; CPU−2.86%; 5 independent proofs PASS |
-| 6 | After optimization: #116 capability audit published before capacity changes | PENDING |
-| 6 | Bounded capacity fixes, boundaries/package workflow, default-budget public spill and affected rechecks | PENDING |
-| Final | Exact identities/commits, independent proofs, command costs and issue outcome table | PENDING |
+| 6 | After optimization: #116 capability audit published before capacity changes | PASS `ead812e78`: source-linked inventory, capability matrix, bounded public-API reproductions; see issue116-audit.md |
+| 6 | Bounded capacity fixes, boundaries/package workflow, default-budget public spill and affected rechecks | Repair PASS (pending-edit counter ceiling removed); boundary measured exactly (5,461 changed files); K32000 spill-scale **BLOCKED** by the 2 MiB pending piece budget; package-install workload **NOT_RUN** (no package manager in the benchmark image) |
+| Final | Exact identities/commits, independent proofs, command costs and issue outcome table | PASS: [terminal-outcome.md](terminal-outcome.md) |
 
 Performance disposition frozen before new collection: ordinary regression
 screens use three fresh alternating pairs, median paired wall slowdown greater
