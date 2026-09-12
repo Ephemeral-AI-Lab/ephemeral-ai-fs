@@ -379,3 +379,163 @@ fn metadata_fingerprint_reopen_tail_preserves_catalogue_checks_and_retained_auth
     f.db.reader().unwrap().execute_batch("ROLLBACK").unwrap();
     f.db.validate_metadata_groups().unwrap();
 }
+
+#[test]
+fn pooled_metadata_delta_reconstructs_after_byte_and_group_cache_eviction() {
+    use layerfs_content::tree::compact::{InodeNode, InodeSerial};
+
+    fn leaf(ordinals: &[u32], values_per_group: usize) -> (Vec<u8>, Vec<u8>) {
+        let rows = ordinals
+            .iter()
+            .enumerate()
+            .map(|(index, ordinal)| {
+                let group = (*ordinal as usize - 1) / values_per_group;
+                let offset = (*ordinal as usize - 1) % values_per_group;
+                (
+                    InodeSerial::new(index as u64 + 1).unwrap(),
+                    compact::decode_inode_value(&value((group * values_per_group + offset) as u64))
+                        .unwrap(),
+                )
+            })
+            .collect();
+        let canonical = compact::encode_inode(&InodeNode::Leaf(rows)).unwrap();
+        let mut physical = canonical[..44].to_vec();
+        for (row, ordinal) in canonical[44..].chunks_exact(81).zip(ordinals) {
+            physical.extend_from_slice(&row[..8]);
+            physical.extend_from_slice(&ordinal.to_be_bytes());
+        }
+        (canonical, physical)
+    }
+
+    fn publish(
+        db: &StoreDb,
+        canonical: &[u8],
+        physical: &[u8],
+        delta: Option<Vec<u8>>,
+    ) -> ObjectId {
+        let group = if let Some(delta) = delta {
+            // A supported one-record RAW DELTA group. This isolates reader
+            // reconstruction; it does not claim an encoder selection result.
+            let mut body = Vec::new();
+            body.extend_from_slice(&1u32.to_le_bytes());
+            body.extend_from_slice(&(delta.len() as u32).to_le_bytes());
+            body.extend_from_slice(&delta);
+            pack::EncodedGroup {
+                decoded_length: body.len(),
+                bytes: body,
+                codec: pack::Codec::Raw,
+                records: 1,
+            }
+        } else {
+            pack::encode_group(&[physical], &[None], &mut Default::default())
+                .unwrap()
+                .0
+        };
+        let mut bytes = pack::assemble(&[group]).unwrap();
+        bytes[8..12].copy_from_slice(&6u32.to_le_bytes());
+        let id = ObjectId::for_bytes(canonical);
+        let mut connection = db.reader().unwrap();
+        let transaction = connection.transaction().unwrap();
+        let pack: i64 = transaction
+            .query_row(
+                "SELECT COALESCE(MAX(pack_id),0)+1 FROM object_packs",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        transaction
+            .execute(
+                "INSERT INTO object_packs(pack_id,data) VALUES(?1,?2)",
+                rusqlite::params![pack, bytes],
+            )
+            .unwrap();
+        transaction.execute(
+            "INSERT INTO objects(object_id,canonical_length,pack_id,group_number,record_number) VALUES(?1,?2,?3,0,0)",
+            rusqlite::params![id.as_bytes().as_slice(), canonical.len() as i64, pack],
+        ).unwrap();
+        transaction.commit().unwrap();
+        id
+    }
+
+    for (group_count, values_per_group, row_count) in [(45, 165, 45), (129, 1, 100)] {
+        let f = Fixture::new();
+        for group in 0..group_count {
+            let values = (0..values_per_group)
+                .map(|offset| value((group * values_per_group + offset) as u64))
+                .collect::<Vec<_>>();
+            f.append(&values, 1);
+        }
+        let original = (0..row_count)
+            .map(|row| (row * values_per_group + 1) as u32)
+            .collect::<Vec<_>>();
+        let mut changed = original.clone();
+        if values_per_group == 165 {
+            changed[0] += 1;
+        } else {
+            for (index, ordinal) in changed.iter_mut().take(29).enumerate() {
+                *ordinal = 101 + index as u32;
+            }
+        }
+        let (base, base_physical) = leaf(&original, values_per_group);
+        let (target, target_physical) = leaf(&changed, values_per_group);
+
+        let mut pool = PoolRead::default();
+        pool.begin_chain();
+        assert_eq!(
+            pool.expand(&f.db, &base_physical, base.len(), None)
+                .unwrap()
+                .unwrap(),
+            base
+        );
+        assert!(pool.retained <= 512 * 1024 && pool.groups.len() <= 128);
+        if values_per_group == 165 {
+            assert!(pool.groups.len() < row_count, "actual 512-KiB eviction");
+        }
+        assert_eq!(
+            pool.expand(&f.db, &target_physical, target.len(), None)
+                .unwrap()
+                .unwrap(),
+            target
+        );
+        assert!(pool.retained <= 512 * 1024 && pool.groups.len() <= 128);
+        assert!(pool.groups.len() < row_count, "actual byte/count eviction");
+        let owned_values = pool
+            .groups
+            .values()
+            .map(|values| values.capacity() * std::mem::size_of::<[u8; 73]>())
+            .sum::<usize>();
+        assert_eq!(pool.retained, owned_values + 256 * pool.groups.len());
+        println!(
+            "pooled retained groups={} actual_value_capacity_bytes={owned_values} charged_bytes={}",
+            pool.groups.len(),
+            pool.retained
+        );
+        drop(pool);
+
+        let base_id = publish(&f.db, &base, &base_physical, None);
+        let delta = pack::delta_record(
+            base_id,
+            &base_physical,
+            &target_physical,
+            &mut (8 * 1024 * 1024),
+            &mut Default::default(),
+        )
+        .unwrap()
+        .unwrap();
+        let target_id = publish(&f.db, &target, &target_physical, Some(delta));
+        let before = f.db.physical_storage_receipt();
+        assert_eq!(f.db.read_object_row(target_id).unwrap(), target);
+        let counters = f.db.physical_storage_receipt().since(before);
+        assert_eq!(counters.base_fetches, 1);
+        assert_eq!(counters.metadata_pool_group_fetches, (2 * row_count) as u64);
+        assert!(
+            counters.metadata_pool_group_fetches > group_count as u64,
+            "evicted values were fetched again during the actual DELTA chain"
+        );
+        println!(
+            "pooled eviction groups={group_count} values={} rows={row_count} chain_pool_fetches={}",
+            group_count * values_per_group,
+            counters.metadata_pool_group_fetches
+        );
+    }
+}

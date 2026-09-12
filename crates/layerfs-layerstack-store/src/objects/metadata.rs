@@ -138,8 +138,8 @@ mod tests {
 
     /// One `metadata_chain` can name at most `METADATA_EDGES + 1` pooled nodes,
     /// each at most 100 rows (`physical_length`), so the per-chain lookup ceiling
-    /// is exactly the 1 700 the decoded-work comment claims -- two orders of
-    /// magnitude below the 2 048-unit ceiling a single chain may spend. That is
+    /// is exactly the 1 700 the decoded-work comment claims -- 348 lookups below
+    /// the 2 048-unit ceiling a single chain may spend. That is
     /// why the allowance can be owned per chain without weakening any bound.
     #[test]
     fn one_chain_cannot_exceed_the_decoded_work_ceiling() {
