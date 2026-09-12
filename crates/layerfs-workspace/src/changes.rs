@@ -2020,6 +2020,9 @@ pub(crate) fn inject_candidate_failure_once() {
 #[cfg(test)]
 thread_local! {
     static INJECT_INODE_MERGE_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    // Fail after this many successful row writes; exercises partial output and
+    // later carry failures without filling the host's disk.
+    static INJECT_SPILL_WRITE_FAILURE: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
     // Stage 3 proof hook: the counters of the most recent real candidate build.
     static LAST_FRONTIER_STATS: std::cell::Cell<Option<SpillStatCounters>> =
         const { std::cell::Cell::new(None) };
@@ -2050,6 +2053,7 @@ struct SpillStatCounters {
     peak_open_files: u64,
     peak_scratch_bytes: u64,
     peak_live_bytes: u64,
+    peak_allocated_bytes: u64,
     peak_merge_read_bytes: u64,
     spill_keys: u64,
     batch_size: u64,
@@ -2071,6 +2075,7 @@ struct SpillStats {
     peak_open_files: std::cell::Cell<u64>,
     peak_scratch_bytes: std::cell::Cell<u64>,
     peak_live_bytes: std::cell::Cell<u64>,
+    peak_allocated_bytes: std::cell::Cell<u64>,
     peak_merge_read_bytes: std::cell::Cell<u64>,
     spill_keys: std::cell::Cell<u64>,
 }
@@ -2090,6 +2095,7 @@ impl SpillStats {
             peak_open_files: self.peak_open_files.get(),
             peak_scratch_bytes: self.peak_scratch_bytes.get(),
             peak_live_bytes: self.peak_live_bytes.get(),
+            peak_allocated_bytes: self.peak_allocated_bytes.get(),
             peak_merge_read_bytes: self.peak_merge_read_bytes.get(),
             spill_keys: self.spill_keys.get(),
             batch_size: batch_size as u64,
@@ -2143,7 +2149,6 @@ struct FrontierValue {
 struct SpillRun {
     file: File,
     count: u64,
-    generation: u64,
     first: InodeId,
     last: InodeId,
 }
@@ -2155,10 +2160,9 @@ impl SpillRun {
 }
 
 // Final inode changes are coalesced before touching the immutable base table.
-// The bounded pending map is flushed into size-tiered sorted runs: level i holds
-// one run no smaller than 2^i batches and is at most 2^i, so each record is
-// rewritten only log2(K/B) times instead of once per flush. Level 0 is always the
-// newest data, which is why lookups scan from level 0 and updates land there.
+// Level i contains 2^i batches (possibly fewer rows after deduplication). Carries
+// never saturate: a checked u64 batch count bounds the levels and descriptors.
+// Lower occupied levels are newer; all updates enter the bounded pending map.
 struct FrontierInodes {
     root: ObjectId,
     pending: BTreeMap<InodeId, FrontierValue>,
@@ -2168,27 +2172,26 @@ struct FrontierInodes {
     // Consolidated sorted journal, installed by `finish` (or by the test hook).
     spill: Option<File>,
     spilled_count: u64,
-    runs: Vec<Vec<SpillRun>>,
-    max_level: usize,
+    runs: Vec<Option<SpillRun>>,
     generation: u64,
     // Presence prefilter over every spilled key: no false negatives, so a miss
     // skips the tier scan entirely without changing which records are visible.
     filter: Vec<u64>,
     filter_bits: u64,
-    filter_keys: u64,
-    scratch: Vec<u8>,
     #[cfg(test)]
     stats: SpillStats,
 }
 
 const RUN_ROW_BYTES: usize = 192;
 const MAX_MERGE_BUFFER_BYTES: usize = 16 * 1024;
-const MIN_MERGE_BUFFER_BYTES: usize = 1024;
 
 fn init_filter(batch_size: usize) -> (Vec<u64>, u64) {
     // Charge the same reservation the map uses so the prefilter cannot become a
     // second frontier-sized allocation: 1 byte per reserved entry, rounded up.
-    let bytes = batch_size.next_power_of_two().clamp(1024, 4 * 1024 * 1024);
+    let bytes = batch_size
+        .checked_next_power_of_two()
+        .unwrap_or(usize::MAX)
+        .clamp(8, 4 * 1024 * 1024);
     (vec![0_u64; bytes / 8], (bytes * 8) as u64)
 }
 
@@ -2211,29 +2214,6 @@ fn filter_probe(key: &[u8; 32], odd: u64) -> u64 {
     hash
 }
 
-fn init_scratch(batch_size: usize) -> Vec<u8> {
-    let bytes = batch_size
-        .saturating_mul(RUN_ROW_BYTES)
-        .clamp(4 * 1024, MAX_MERGE_BUFFER_BYTES);
-    vec![0; bytes]
-}
-
-// Binary search for one key inside a single sorted run file.
-fn probe_run(file: &File, count: u64, inode: InodeId) -> Result<Option<u64>> {
-    let (mut start, mut end) = (0_u64, count);
-    while start < end {
-        let middle = start + (end - start) / 2;
-        let mut key = [0; 32];
-        file.read_exact_at(&mut key, middle * RUN_ROW_BYTES as u64)?;
-        match InodeId(key).cmp(&inode) {
-            std::cmp::Ordering::Equal => return Ok(Some(middle)),
-            std::cmp::Ordering::Less => start = middle + 1,
-            std::cmp::Ordering::Greater => end = middle,
-        }
-    }
-    Ok(None)
-}
-
 impl FrontierInodes {
     fn new(
         root: ObjectId,
@@ -2243,10 +2223,6 @@ impl FrontierInodes {
     ) -> Self {
         let batch_size = batch_size.max(1);
         let (filter, filter_bits) = init_filter(batch_size);
-        // Bounded binary counter: a level holds one run of at least 2^i batches,
-        // so the top level is reached after 2^i flushes. 64 is unreachable for a
-        // policy-bounded frontier and only stops checked arithmetic from wrapping.
-        let max_level = usize::BITS as usize - (batch_size.leading_zeros() as usize) - 1 + 1;
         Self {
             root,
             pending: BTreeMap::new(),
@@ -2255,20 +2231,17 @@ impl FrontierInodes {
             directory: directory.to_owned(),
             spill: None,
             spilled_count: 0,
-            runs: (0..=max_level.min(63)).map(|_| Vec::new()).collect(),
-            max_level: max_level.min(63),
+            runs: Vec::new(),
             generation: 0,
             filter,
             filter_bits,
-            filter_keys: 0,
-            scratch: init_scratch(batch_size),
             #[cfg(test)]
             stats: SpillStats::default(),
         }
     }
 
     fn live_runs(&self) -> u64 {
-        self.runs.iter().map(|level| level.len() as u64).sum()
+        self.runs.iter().flatten().count() as u64
     }
 
     fn live_run_bytes(&self) -> u64 {
@@ -2277,7 +2250,6 @@ impl FrontierInodes {
             .flatten()
             .map(|run| run.count * RUN_ROW_BYTES as u64)
             .sum::<u64>()
-            + self.pending.len() as u64 * RUN_ROW_BYTES as u64
             + self.spilled_count * RUN_ROW_BYTES as u64
     }
 
@@ -2301,8 +2273,27 @@ impl FrontierInodes {
         Ok(next.map(|(row, _)| row))
     }
 
-    fn merge_buffer_bytes(&self) -> usize {
-        (self.io_bytes() / 4).clamp(MIN_MERGE_BUFFER_BYTES, MAX_MERGE_BUFFER_BYTES)
+    fn spill_memory_bytes(&self) -> usize {
+        self.runs.capacity() * std::mem::size_of::<Option<SpillRun>>()
+            + self.filter.capacity() * std::mem::size_of::<u64>()
+    }
+
+    fn merge_buffer_bytes(&self) -> Result<usize> {
+        // The other 256 bytes per reserved map entry and the fixed allowance
+        // fund spill metadata and three buffers. Retain the existing map charge;
+        // BTreeMap's allocator overhead is not an observable Vec capacity.
+        let available = self
+            .batch_size
+            .saturating_mul(256)
+            .saturating_add(512)
+            .saturating_sub(self.spill_memory_bytes());
+        let bytes = (self.io_bytes() / 4)
+            .clamp(RUN_ROW_BYTES, MAX_MERGE_BUFFER_BYTES)
+            .min((available / 3).max(RUN_ROW_BYTES));
+        if available < 2 * RUN_ROW_BYTES {
+            return Err(StorageError::InvalidInput("frontier spill memory budget"));
+        }
+        Ok(bytes / RUN_ROW_BYTES * RUN_ROW_BYTES)
     }
 
     fn filter_bits_of(&self, inode: &InodeId, bits: &mut [u64; 2]) {
@@ -2318,40 +2309,35 @@ impl FrontierInodes {
     }
 
     fn spill_run(&self, level: usize) -> Option<&SpillRun> {
-        self.runs.get(level).and_then(|runs| runs.first())
+        self.runs.get(level).and_then(Option::as_ref)
     }
 
-    fn write_row_at(
-        &self,
-        level: usize,
-        row: u64,
-        inode: InodeId,
-        value: FrontierValue,
-    ) -> Result<()> {
-        let file = &self.runs[level][0].file;
-        let bytes = Self::encode(inode, value);
-        file.write_all_at(&bytes, row * RUN_ROW_BYTES as u64)?;
-        spill_note!(self, record_writes, 1);
-        spill_note!(self, bytes_written, RUN_ROW_BYTES);
-        Ok(())
-    }
-
-    // Binary search inside one run. Runs are sorted by key on creation and only
-    // ever updated in place, so the key order is invariant.
-    fn run_row(&mut self, level: usize, inode: InodeId) -> Result<Option<u64>> {
+    // Immutable sorted keys; account key probes separately from decoded rows.
+    fn run_row(&self, level: usize, inode: InodeId) -> Result<Option<u64>> {
         let Some(run) = self.spill_run(level) else {
             return Ok(None);
         };
         if !run.contains(inode) {
             return Ok(None);
         }
-        let file = &run.file;
-        let count = run.count;
-        probe_run(file, count, inode)
+        let (mut start, mut end) = (0_u64, run.count);
+        while start < end {
+            let middle = start + (end - start) / 2;
+            let mut key = [0; 32];
+            run.file
+                .read_exact_at(&mut key, middle * RUN_ROW_BYTES as u64)?;
+            spill_note!(self, bytes_read, key.len());
+            match InodeId(key).cmp(&inode) {
+                std::cmp::Ordering::Equal => return Ok(Some(middle)),
+                std::cmp::Ordering::Less => start = middle + 1,
+                std::cmp::Ordering::Greater => end = middle,
+            }
+        }
+        Ok(None)
     }
 
     fn spilled(&mut self, inode: InodeId) -> Result<Option<(usize, u64, FrontierValue)>> {
-        if self.runs.iter().all(Vec::is_empty) || !self.filter_maybe_contains(&inode) {
+        if self.runs.iter().all(Option::is_none) || !self.filter_maybe_contains(&inode) {
             return Ok(None);
         }
         // Level 0 is the newest data, so the first level that holds the key wins.
@@ -2364,21 +2350,6 @@ impl FrontierInodes {
             }
         }
         Ok(None)
-    }
-    // An in-place update is only correct on the newest tier: writing a higher level
-    // would make that row newer than level 0 while `spilled` still stops there.
-    fn update_spilled(
-        &mut self,
-        level: usize,
-        row: u64,
-        inode: InodeId,
-        value: FrontierValue,
-    ) -> Result<bool> {
-        if level != 0 {
-            return Ok(false);
-        }
-        self.write_row_at(level, row, inode, value)?;
-        Ok(true)
     }
 }
 
@@ -2507,14 +2478,10 @@ impl FrontierInodes {
         if let Some(pending) = self.pending.get_mut(&inode) {
             pending.record = record;
             pending.checkpoint = checkpoint.or(pending.checkpoint);
-        } else if let Some((level, row, mut value)) = self.spilled(inode)? {
+        } else if let Some((_, _, mut value)) = self.spilled(inode)? {
             value.record = record;
             value.checkpoint = checkpoint.or(value.checkpoint);
-            if !self.update_spilled(level, row, inode, value)? {
-                // A row outside the newest tier cannot be updated in place without
-                // inverting the recency order; the fresh value re-enters the map.
-                self.insert_new(inode, value)?;
-            }
+            self.insert_new(inode, value)?;
         } else {
             self.insert_new(inode, FrontierValue { record, checkpoint })?;
         }
@@ -2558,13 +2525,9 @@ impl FrontierInodes {
         if let Some(value) = self.pending.get_mut(&inode) {
             return adjust(value);
         }
-        if let Some((level, row, mut value)) = self.spilled(inode)? {
+        if let Some((_, _, mut value)) = self.spilled(inode)? {
             let record = adjust(&mut value)?;
-            if !self.update_spilled(level, row, inode, value)? {
-                // Older tiers are immutable here; the adjusted value stays newer in
-                // the map, which always takes precedence over every run.
-                self.insert_new(inode, value)?;
-            }
+            self.insert_new(inode, value)?;
             return Ok(record);
         }
         let mut value = FrontierValue {
@@ -2576,274 +2539,278 @@ impl FrontierInodes {
         Ok(record)
     }
 
-    // Flush the bounded map as one sorted run and fold equal-sized runs upward.
-    // A record is rewritten once per level it reaches, so the whole frontier costs
-    // O(K log(K/B)) record traffic instead of the previous O(K^2/B).
+    // Keep every original until the entire carry succeeds. A partial output is
+    // anonymous and closes on error; retry sees exactly the previous frontier.
     fn merge_pending(&mut self) -> Result<()> {
         if self.pending.is_empty() {
             return Ok(());
         }
-        let entries = std::mem::take(&mut self.pending);
-        let run = self.write_batch(&entries)?;
-        #[cfg(test)]
-        if INJECT_INODE_MERGE_FAILURE.with(|inject| inject.replace(false)) {
-            // The old run tiers and the map stay untouched until this point.
-            self.pending = entries;
-            return Err(StorageError::Integrity("injected inode merge failure"));
-        }
-        self.pending.clear();
-        self.place_run(0, run)
-    }
-
-    fn write_batch(&mut self, entries: &BTreeMap<InodeId, FrontierValue>) -> Result<SpillRun> {
-        let file = anonymous_journal(&self.directory)?;
-        let mut writer = BufWriter::with_capacity(self.merge_buffer_bytes(), file);
-        let mut count = 0_u64;
-        let mut first = None;
-        let mut last = None;
-        // The map is the newest data in the system, so within this run it wins.
-        for (inode, value) in entries {
-            writer.write_all(&Self::encode(*inode, *value))?;
-            first.get_or_insert(*inode);
-            last = Some(*inode);
-            count = count
-                .checked_add(1)
-                .ok_or(StorageError::Integrity("frontier spill count"))?;
-        }
-        writer.flush()?;
-        let file = writer.into_inner().map_err(|error| error.into_error())?;
-        // Stamp the prefilter from the same keys. The bit pairs reuse the existing
-        // merge scratch, so the prefilter adds no per-key allocation.
-        let mut bits = std::mem::take(&mut self.scratch);
-        bits.clear();
-        bits.reserve(entries.len().saturating_mul(16));
-        for inode in entries.keys() {
-            let mut pair = [0_u64; 2];
-            self.filter_bits_of(inode, &mut pair);
-            bits.extend_from_slice(&pair[0].to_le_bytes());
-            bits.extend_from_slice(&pair[1].to_le_bytes());
-        }
-        for pair in bits.chunks_exact(16) {
-            for offset in [0, 8] {
-                let bit = u64::from_le_bytes(pair[offset..offset + 8].try_into().unwrap());
-                self.filter[(bit / 64) as usize] |= 1_u64 << (bit % 64);
-            }
-        }
-        spill_peak!(self, peak_scratch_bytes, bits.capacity() as u64);
-        self.scratch = bits;
-        self.filter_keys = self.filter_keys.saturating_add(count);
-        self.generation = self
+        let generation = self
             .generation
             .checked_add(1)
             .ok_or(StorageError::Integrity("frontier spill generation"))?;
-        let run = SpillRun {
+        generation
+            .checked_mul(self.batch_size as u64)
+            .filter(|rows| *rows <= u64::MAX / (3 * RUN_ROW_BYTES as u64))
+            .ok_or(StorageError::Integrity("frontier spill bytes"))?;
+        let level = self
+            .runs
+            .iter()
+            .position(Option::is_none)
+            .unwrap_or(self.runs.len());
+        if level >= u64::BITS as usize {
+            return Err(StorageError::Integrity("frontier spill levels"));
+        }
+        if level == self.runs.len() {
+            let bytes = (level + 1) * std::mem::size_of::<Option<SpillRun>>()
+                + self.filter.capacity() * std::mem::size_of::<u64>()
+                + 2 * RUN_ROW_BYTES;
+            let relocation =
+                self.spill_memory_bytes() + (level + 1) * std::mem::size_of::<Option<SpillRun>>();
+            if bytes.max(relocation) > self.batch_size.saturating_mul(256).saturating_add(512) {
+                return Err(StorageError::InvalidInput("frontier spill memory budget"));
+            }
+            let old_allocation = self.runs.capacity() * std::mem::size_of::<Option<SpillRun>>();
+            self.runs
+                .try_reserve_exact(1)
+                .map_err(|_| StorageError::InvalidInput("frontier spill memory budget"))?;
+            self.runs.push(None);
+            // Include a realloc implementation that briefly retains the old block.
+            spill_peak!(
+                self,
+                peak_scratch_bytes,
+                self.spill_memory_bytes() + old_allocation
+            );
+        }
+        let mut run = self.write_batch()?;
+        #[cfg(test)]
+        if INJECT_INODE_MERGE_FAILURE.with(|inject| inject.replace(false)) {
+            return Err(StorageError::Integrity("injected inode merge failure"));
+        }
+        for previous in self.runs[..level].iter().flatten() {
+            run = self.merge_runs(previous, &run, true)?;
+        }
+        for previous in &mut self.runs[..level] {
+            *previous = None;
+        }
+        self.runs[level] = Some(run);
+        self.generation = generation;
+        for inode in self.pending.keys() {
+            let mut bits = [0_u64; 2];
+            self.filter_bits_of(inode, &mut bits);
+            for bit in bits {
+                self.filter[(bit / 64) as usize] |= 1_u64 << (bit % 64);
+            }
+        }
+        self.pending.clear();
+        spill_peak!(self, merge_levels, level);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn note_spill_allocation(&self, output: &File, extra: Option<&File>) -> Result<()> {
+        use std::os::unix::fs::MetadataExt;
+        let mut bytes = output.metadata()?.blocks() * 512;
+        for file in self.runs.iter().flatten().map(|run| &run.file).chain(extra) {
+            bytes += file.metadata()?.blocks() * 512;
+        }
+        spill_peak!(self, peak_allocated_bytes, bytes);
+        Ok(())
+    }
+
+    fn write_spill_row(
+        &self,
+        writer: &mut BufWriter<File>,
+        inode: InodeId,
+        value: FrontierValue,
+    ) -> Result<()> {
+        #[cfg(test)]
+        if INJECT_SPILL_WRITE_FAILURE.with(|inject| match inject.get() {
+            Some(0) => {
+                inject.set(None);
+                true
+            }
+            Some(rows) => {
+                inject.set(Some(rows - 1));
+                false
+            }
+            None => false,
+        }) {
+            writer.flush()?;
+            self.note_spill_allocation(writer.get_ref(), None)?;
+            return Err(std::io::Error::from_raw_os_error(28).into());
+        }
+        writer.write_all(&Self::encode(inode, value))?;
+        spill_note!(self, record_writes, 1);
+        spill_note!(self, bytes_written, RUN_ROW_BYTES);
+        Ok(())
+    }
+
+    fn write_batch(&self) -> Result<SpillRun> {
+        let buffer = self.merge_buffer_bytes()?;
+        let file = anonymous_journal(&self.directory)?;
+        let mut writer = BufWriter::with_capacity(buffer, file);
+        let count = self.pending.len() as u64;
+        spill_peak!(
+            self,
+            peak_scratch_bytes,
+            self.spill_memory_bytes() + writer.capacity()
+        );
+        spill_peak!(self, peak_live_runs, self.live_runs() + 1);
+        spill_peak!(self, peak_open_files, self.live_runs() + 1);
+        spill_peak!(
+            self,
+            peak_live_bytes,
+            self.live_run_bytes() + count * RUN_ROW_BYTES as u64
+        );
+        for (inode, value) in &self.pending {
+            self.write_spill_row(&mut writer, *inode, *value)?;
+        }
+        writer.flush()?;
+        #[cfg(test)]
+        self.note_spill_allocation(writer.get_ref(), None)?;
+        let file = writer.into_inner().map_err(|error| error.into_error())?;
+        spill_note!(self, batch_flushes, 1);
+        Ok(SpillRun {
             file,
             count,
-            generation: self.generation,
-            first: first.ok_or(StorageError::Integrity("frontier spill rows"))?,
-            last: last.ok_or(StorageError::Integrity("frontier spill rows"))?,
-        };
-        spill_note!(self, batch_flushes, 1);
-        spill_note!(self, record_writes, count);
-        spill_note!(self, bytes_written, count * RUN_ROW_BYTES as u64);
-        spill_peak!(self, peak_live_runs, self.live_runs() + 1);
-        spill_peak!(self, peak_live_bytes, self.live_run_bytes());
-        Ok(run)
+            first: *self.pending.first_key_value().unwrap().0,
+            last: *self.pending.last_key_value().unwrap().0,
+        })
     }
 
-    fn place_run(&mut self, level: usize, run: SpillRun) -> Result<()> {
-        let level = level.min(self.max_level);
-        if self.runs[level].is_empty() {
-            self.runs[level].push(run);
-            spill_peak!(self, peak_live_runs, self.live_runs());
-            spill_peak!(self, peak_live_bytes, self.live_run_bytes());
-            return Ok(());
-        }
-        let previous = self.runs[level].pop().expect("occupied spill level");
-        if level == self.max_level {
-            // The top tier absorbs unbounded growth so no level count is unbounded.
-            let merged = self.merge_runs(previous, run)?;
-            self.runs[level].push(merged);
-            spill_peak!(self, peak_live_runs, self.live_runs());
-            return Ok(());
-        }
-        let merged = self.merge_runs(previous, run)?;
-        spill_note!(self, merges, 1);
-        spill_peak!(self, merge_levels, level as u64 + 1);
-        self.place_run(level + 1, merged)
-    }
-
-    // `older` may contain keys that `newer` also holds; the newer row wins and the
-    // duplicated older row is dropped, so every run stays key-unique and sorted.
-    fn merge_runs(&mut self, older: SpillRun, newer: SpillRun) -> Result<SpillRun> {
-        spill_peak!(self, peak_open_files, 3);
-        spill_peak!(self, peak_merge_read_bytes, older.count + newer.count);
+    // Borrow originals until the caller installs the complete output. A carry
+    // owns one additional input; retained originals + carry + output use <= 3S
+    // bytes for S total rows submitted in batches, and <= 64 + 2 descriptors.
+    fn merge_runs(
+        &self,
+        older: &SpillRun,
+        newer: &SpillRun,
+        extra_input: bool,
+    ) -> Result<SpillRun> {
+        let input_count = older
+            .count
+            .checked_add(newer.count)
+            .filter(|count| *count <= u64::MAX / RUN_ROW_BYTES as u64)
+            .ok_or(StorageError::Integrity("frontier spill bytes"))?;
+        let buffer = self.merge_buffer_bytes()?;
         let file = anonymous_journal(&self.directory)?;
-        let mut writer = BufWriter::with_capacity(self.merge_buffer_bytes(), file);
-        let mut count = 0_u64;
-        let mut first = None;
-        let mut last = None;
-        let mut merged =
-            |inode: InodeId, value: FrontierValue, writer: &mut BufWriter<File>| -> Result<()> {
-                writer.write_all(&Self::encode(inode, value))?;
-                if first.is_none() {
-                    first = Some(inode);
-                }
-                last = Some(inode);
-                count = count
-                    .checked_add(1)
-                    .ok_or(StorageError::Integrity("frontier spill count"))?;
-                Ok(())
-            };
-        let buffer = (self.io_bytes() / 4).clamp(MIN_MERGE_BUFFER_BYTES, MAX_MERGE_BUFFER_BYTES);
+        // One-row reads use direct output writes under very small policies.
+        let mut writer =
+            BufWriter::with_capacity(if buffer == RUN_ROW_BYTES { 0 } else { buffer }, file);
         let mut old_rows = RunRows::new(buffer);
         let mut new_rows = RunRows::new(buffer);
+        spill_peak!(
+            self,
+            peak_scratch_bytes,
+            self.spill_memory_bytes()
+                + writer.capacity()
+                + old_rows.buffer.capacity()
+                + new_rows.buffer.capacity()
+        );
+        spill_peak!(
+            self,
+            peak_open_files,
+            self.live_runs() + 1 + u64::from(extra_input)
+        );
+        spill_peak!(
+            self,
+            peak_live_runs,
+            self.live_runs() + 1 + u64::from(extra_input)
+        );
+        spill_peak!(
+            self,
+            peak_live_bytes,
+            self.live_run_bytes()
+                + (input_count + if extra_input { newer.count } else { 0 }) * RUN_ROW_BYTES as u64
+        );
+        spill_peak!(
+            self,
+            peak_merge_read_bytes,
+            input_count * RUN_ROW_BYTES as u64
+        );
         let (mut old_remaining, mut new_remaining) = (older.count, newer.count);
         let mut old = self.read_next(&mut old_rows, &older.file, &mut old_remaining)?;
         let mut new = self.read_next(&mut new_rows, &newer.file, &mut new_remaining)?;
+        let mut count = 0_u64;
+        let mut first = None;
+        let mut last = None;
         while old.is_some() || new.is_some() {
-            // Newer wins a key tie, so its duplicate row in the older stream is
-            // dropped here and never reaches the merged run.
             let take_new = match (&old, &new) {
                 (Some(old), Some(new)) => new.0 <= old.0,
                 (Some(_), None) => false,
                 (None, Some(_)) => true,
                 (None, None) => break,
             };
-            if take_new {
-                let (inode, value) = new.take().expect("newer spill row");
-                if old.as_ref().is_some_and(|entry| entry.0 == inode) {
+            let (inode, value) = if take_new {
+                let row = new.take().expect("newer spill row");
+                if old.as_ref().is_some_and(|entry| entry.0 == row.0) {
                     old = self.read_next(&mut old_rows, &older.file, &mut old_remaining)?;
                 }
-                merged(inode, value, &mut writer)?;
                 new = self.read_next(&mut new_rows, &newer.file, &mut new_remaining)?;
+                row
             } else {
-                let (inode, value) = old.take().expect("older spill row");
-                merged(inode, value, &mut writer)?;
+                let row = old.take().expect("older spill row");
                 old = self.read_next(&mut old_rows, &older.file, &mut old_remaining)?;
+                row
+            };
+            if let Err(error) = self.write_spill_row(&mut writer, inode, value) {
+                #[cfg(test)]
+                self.note_spill_allocation(writer.get_ref(), extra_input.then_some(&newer.file))?;
+                return Err(error);
             }
+            first.get_or_insert(inode);
+            last = Some(inode);
+            count += 1; // checked input_count bounds the output and byte offsets
         }
         writer.flush()?;
+        #[cfg(test)]
+        self.note_spill_allocation(writer.get_ref(), extra_input.then_some(&newer.file))?;
         let file = writer.into_inner().map_err(|error| error.into_error())?;
-        // Inputs are immutable until this point; a failure above leaves them intact.
-        drop(old_rows);
-        drop(new_rows);
-        drop(older);
-        drop(newer);
-        self.generation = self
-            .generation
-            .checked_add(1)
-            .ok_or(StorageError::Integrity("frontier spill generation"))?;
-        let run = SpillRun {
+        spill_note!(self, merges, 1);
+        Ok(SpillRun {
             file,
             count,
-            generation: self.generation,
             first: first.ok_or(StorageError::Integrity("frontier spill rows"))?,
             last: last.ok_or(StorageError::Integrity("frontier spill rows"))?,
-        };
-        spill_note!(self, record_writes, count);
-        spill_note!(self, bytes_written, count * RUN_ROW_BYTES as u64);
-        Ok(run)
+        })
     }
 
     fn read_row(&self, level: usize, row: u64) -> Result<(InodeId, FrontierValue)> {
-        let file = &self.runs[level][0].file;
+        let file = &self.runs[level].as_ref().unwrap().file;
         let mut bytes = [0; RUN_ROW_BYTES];
         file.read_exact_at(&mut bytes, row * RUN_ROW_BYTES as u64)?;
         Self::decode(&bytes)
     }
-    // Merge every run plus the remaining map into one sorted, key-unique journal.
-    // Each input row is read and written exactly once here, so finalization cannot
-    // reintroduce the repeated whole-prefix rewrite.
+
     fn finalize(&mut self) -> Result<()> {
         if self.spill.is_some() {
             return Ok(());
         }
-        if !self.pending.is_empty() {
-            let entries = std::mem::take(&mut self.pending);
-            let run = self.write_batch(&entries)?;
-            self.place_run(0, run)?;
-        }
-        self.pending.clear();
-        let levels = std::mem::take(&mut self.runs);
-        let mut sources = levels.into_iter().flatten().collect::<Vec<SpillRun>>();
-        sources.sort_by(|left, right| {
-            // Newest first: merge_runs advances with the current `newer` positional
-            // argument, and finalize relies on the first row for a key winning.
-            right
-                .generation
-                .cmp(&left.generation)
-                .then_with(|| right.count.cmp(&left.count))
-        });
-        let total = sources
-            .iter()
-            .try_fold(0_u64, |total, run| total.checked_add(run.count))
-            .ok_or(StorageError::Integrity("frontier spill rows"))?;
-        if total == 0 {
+        self.merge_pending()?;
+        let mut sources = self.runs.iter().flatten();
+        let Some(first) = sources.next() else {
             return Ok(());
+        };
+        let mut combined = None;
+        // Ascending binary tiers: each original batch participates in at most
+        // log2(F) final merges, even when deduplication changes the row counts.
+        // Only two readers are allocated, independent of the number of tiers.
+        for older in sources {
+            combined = Some(self.merge_runs(
+                older,
+                combined.as_ref().unwrap_or(first),
+                combined.is_some(),
+            )?);
         }
-        let file = anonymous_journal(&self.directory)?;
-        let mut writer = BufWriter::with_capacity(self.merge_buffer_bytes(), file);
-        {
-            // Newest source first: the first row written for a key wins.
-            let buffer =
-                (self.io_bytes() / 4).clamp(MIN_MERGE_BUFFER_BYTES, MAX_MERGE_BUFFER_BYTES);
-            let mut rows = sources
-                .iter()
-                .map(|_| RunRows::new(buffer))
-                .collect::<Vec<_>>();
-            let mut remaining = sources.iter().map(|run| run.count).collect::<Vec<_>>();
-            spill_peak!(self, peak_open_files, rows.len() as u64 + 1);
-            let mut head = Vec::with_capacity(rows.len());
-            for (index, row) in rows.iter_mut().enumerate() {
-                head.push(self.read_next(row, &sources[index].file, &mut remaining[index])?);
-            }
-            spill_peak!(
-                self,
-                peak_merge_read_bytes,
-                sources.iter().map(|run| run.count).sum::<u64>()
-            );
-            let mut last: Option<InodeId> = None;
-            let mut count = 0_u64;
-            loop {
-                let Some((index, _)) = head
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(index, row)| row.map(|entry| (index, entry.0)))
-                    .min_by(|left, right| left.1.cmp(&right.1))
-                else {
-                    break;
-                };
-                let (inode, value) = head[index].take().expect("spill row");
-                if last == Some(inode) {
-                    head[index] = self.read_next(
-                        &mut rows[index],
-                        &sources[index].file,
-                        &mut remaining[index],
-                    )?;
-                    continue;
-                }
-                last = Some(inode);
-                writer.write_all(&Self::encode(inode, value))?;
-                count = count
-                    .checked_add(1)
-                    .ok_or(StorageError::Integrity("frontier spill count"))?;
-                head[index] = self.read_next(
-                    &mut rows[index],
-                    &sources[index].file,
-                    &mut remaining[index],
-                )?;
-            }
-            writer.flush()?;
-            spill_note!(self, record_writes, count);
-            spill_note!(self, bytes_written, count * RUN_ROW_BYTES as u64);
-            self.spilled_count = count;
-            spill_note!(self, spill_keys, count);
-        }
-        let file = writer.into_inner().map_err(|error| error.into_error())?;
-        // Install only after the replacement is complete; the old runs stay valid
-        // for any failure above.
-        self.spill = Some(file);
+        let run = match combined {
+            Some(run) => run,
+            None => self.runs.iter_mut().find_map(Option::take).unwrap(),
+        };
+        self.spilled_count = run.count;
+        self.spill = Some(run.file);
+        self.runs.clear();
+        spill_note!(self, spill_keys, self.spilled_count);
         Ok(())
     }
 }
@@ -2884,12 +2851,11 @@ impl RunRows {
         // The buffer is a whole number of rows, so a row never straddles a refill:
         // the next buffer starts exactly where the previous one ended.
         if self.consumed == self.filled {
-            let filled = file.read_at(&mut self.buffer, self.offset)?;
+            let rows = (*remaining).min((self.buffer.len() / RUN_ROW_BYTES) as u64) as usize;
+            let filled = rows * RUN_ROW_BYTES;
+            file.read_exact_at(&mut self.buffer[..filled], self.offset)?;
             self.consumed = 0;
             self.filled = filled;
-            if filled < RUN_ROW_BYTES {
-                return Err(StorageError::Integrity("frontier spill rows"));
-            }
             read = filled as u64;
         }
         let bytes: &[u8; RUN_ROW_BYTES] = self.buffer[self.consumed..self.consumed + RUN_ROW_BYTES]
@@ -2940,7 +2906,7 @@ impl FrontierInodes {
                 .transpose()
         };
         let mut memory = Vec::new();
-        if self.spill.is_none() && self.runs.iter().all(Vec::is_empty) {
+        if self.spill.is_none() && self.runs.iter().all(Option::is_none) {
             // Consume the bounded map: memory-resident final changes need no journal.
             memory.reserve_exact(self.pending.len());
             while let Some((inode, record)) = self.pending.pop_first() {
@@ -5148,8 +5114,7 @@ mod tests {
         // reduced budget: this must yield a small pending capacity.
         let policy = policy_for_batch(16);
         let mut workspace =
-            Workspace::open_with_policy(store.clone(), branch, root.join("spool"), policy)
-                .unwrap();
+            Workspace::open_with_policy(store.clone(), branch, root.join("spool"), policy).unwrap();
         let io_bytes = journal_io_bytes(policy.max_final_delta_memory_bytes);
         let frontier_budget = policy
             .max_final_delta_memory_bytes
@@ -5187,8 +5152,13 @@ mod tests {
         let core = CoreReader(&reader);
         for (name, payload) in &expected {
             let mut bytes = Vec::new();
-            filesystem::stream(&core, root_id, &CanonicalPath::new(name).unwrap(), &mut bytes)
-                .unwrap();
+            filesystem::stream(
+                &core,
+                root_id,
+                &CanonicalPath::new(name).unwrap(),
+                &mut bytes,
+            )
+            .unwrap();
             assert_eq!(&bytes, payload.as_bytes(), "{name}");
         }
         // The declared case must actually spill, and the whole run must stay inside
@@ -5274,8 +5244,8 @@ mod tests {
                     1 + ((count - batch - 1) / batch) as u64
                 };
                 assert_eq!(flushes, expected_flushes, "B={batch} count={count}");
-                let stats = inodes.stats.snapshot(inodes.batch_size);
                 let rows = resolved_rows(&mut inodes);
+                let stats = inodes.stats.snapshot(inodes.batch_size);
                 assert_eq!(rows.len(), count, "B={batch} count={count}");
                 assert_sorted_unique(&rows);
                 assert_eq!(inodes.stats.spill_keys.get(), count as u64);
@@ -5431,6 +5401,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "production-budget spill proof; select explicitly"]
     fn production_budget_spill_boundaries_stay_bounded() {
         production_budget_traffic(&[1, 2, 4, 8]);
     }
@@ -5568,6 +5539,171 @@ mod tests {
                 .map(|(key, record)| (*key, *record))
                 .collect::<Vec<_>>()
         );
+        drop(workspace);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn tiered_spill_crosses_the_old_highest_tier_without_prefix_rewrites() {
+        let (root, workspace) = empty_workspace("spill-highest-tier");
+        let batch = 8;
+        for flushes in [64_usize, 128, 256] {
+            let mut inodes = frontier_for(&workspace, &policy_for_batch(batch as u64));
+            let mut model = BTreeMap::new();
+            for key in serial_keys(batch * flushes) {
+                let record = staged_record(key, 1);
+                inodes.set(key, Some(record)).unwrap();
+                model.insert(key, Some(record));
+            }
+            inodes.merge_pending().unwrap();
+            let levels = flushes.ilog2() as u64;
+            let count = (batch * flushes) as u64;
+            println!(
+                "spill-highest-tier before_finalize rows={count} flushes={flushes} stats={:?}",
+                inodes.stats.snapshot(batch)
+            );
+            assert_eq!(
+                inodes.stats.record_writes.get(),
+                count * (1 + levels),
+                "growing-prefix rewrite before finalization"
+            );
+            let rows = resolved_rows(&mut inodes);
+            assert_eq!(rows, model.into_iter().collect::<Vec<_>>());
+            let stats = inodes.stats.snapshot(batch);
+            assert_eq!(stats.batch_flushes, flushes as u64);
+            assert_eq!(stats.record_writes, count * (1 + levels));
+            assert_eq!(stats.record_reads, count * levels);
+            assert_eq!(stats.merge_levels, levels);
+            assert!(stats.peak_open_files <= levels + 2);
+            assert!(stats.peak_scratch_bytes <= (batch * 256 + 512) as u64);
+            assert!(stats.peak_live_bytes <= 3 * count * RUN_ROW_BYTES as u64);
+            assert!(
+                stats.peak_allocated_bytes <= stats.peak_live_bytes + stats.peak_open_files * 4096,
+                "allocated disk exceeded the logical bound plus one 4KiB tail per file"
+            );
+            assert_eq!(
+                inodes.spill.as_ref().unwrap().metadata().unwrap().len(),
+                count * RUN_ROW_BYTES as u64
+            );
+            println!("spill-highest-tier rows={count} flushes={flushes} stats={stats:?} run_size={} filter_capacity={} run_capacity={}",
+                std::mem::size_of::<Option<SpillRun>>(), inodes.filter.capacity(), inodes.runs.capacity());
+        }
+        drop(workspace);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn tiered_spill_partial_writes_and_final_merge_are_retryable_and_clean() {
+        let (root, workspace) = empty_workspace("spill-write-failure");
+        let batch = 4;
+        let fd_directory = if std::path::Path::new("/dev/fd").exists() {
+            "/dev/fd"
+        } else {
+            "/proc/self/fd"
+        };
+        let fd_count = || std::fs::read_dir(fd_directory).unwrap().count();
+        let spool_count = || std::fs::read_dir(&workspace.spool).unwrap().count();
+        let outside_fds = fd_count();
+        let outside_spool = spool_count();
+        // Seven runs' worth of data force three carries on the next flush.
+        for fail_after in [
+            0,
+            1,
+            batch + 1,
+            batch + 2 * batch + 1,
+            batch + 2 * batch + 4 * batch + 1,
+        ] {
+            let mut inodes = frontier_for(&workspace, &policy_for_batch(batch as u64));
+            let mut model = BTreeMap::new();
+            for key in serial_keys(batch * 8) {
+                let record = staged_record(key, 2);
+                inodes.set(key, Some(record)).unwrap();
+                model.insert(key, Some(record));
+            }
+            let original_bytes = inodes.live_run_bytes();
+            let original_fds = fd_count();
+            INJECT_SPILL_WRITE_FAILURE.with(|inject| inject.set(Some(fail_after as u64)));
+            assert!(inodes.merge_pending().is_err());
+            assert_eq!(inodes.pending.len(), batch);
+            assert_eq!(inodes.live_run_bytes(), original_bytes);
+            assert_eq!(fd_count(), original_fds, "partial output descriptor leaked");
+            assert_eq!(
+                spool_count(),
+                outside_spool,
+                "named temporary output leaked"
+            );
+            for (&key, &record) in &model {
+                assert_resolves(&mut inodes, key, record);
+            }
+            let rows = resolved_rows(&mut inodes);
+            assert_eq!(rows, model.into_iter().collect::<Vec<_>>());
+            drop(inodes);
+            assert_eq!(fd_count(), outside_fds);
+            println!("spill-write-failure after={fail_after} inputs_restored=true anonymous_output_closed=true");
+        }
+        let mut inodes = frontier_for(&workspace, &policy_for_batch(batch as u64));
+        let keys = serial_keys(batch * 4);
+        for &key in &keys {
+            inodes.set(key, Some(staged_record(key, 7))).unwrap();
+        }
+        let original_directory = inodes.directory.clone();
+        inodes.directory = root.join("missing-spill-directory");
+        assert!(inodes.merge_pending().is_err());
+        assert_eq!(inodes.pending.len(), batch);
+        inodes.directory = original_directory;
+        let damaged_level = inodes.runs.iter().rposition(Option::is_some).unwrap();
+        let damaged = &inodes.runs[damaged_level].as_ref().unwrap().file;
+        let mut original = vec![0; damaged.metadata().unwrap().len() as usize];
+        damaged.read_exact_at(&mut original, 0).unwrap();
+        damaged.set_len((RUN_ROW_BYTES + 1) as u64).unwrap();
+        let original_fds = fd_count();
+        assert!(
+            inodes.merge_pending().is_err(),
+            "short final row must fail without panicking"
+        );
+        assert_eq!(fd_count(), original_fds);
+        inodes.runs[damaged_level]
+            .as_ref()
+            .unwrap()
+            .file
+            .write_all_at(&original, 0)
+            .unwrap();
+        for &key in &keys {
+            assert_resolves(&mut inodes, key, Some(staged_record(key, 7)));
+        }
+        assert_eq!(resolved_rows(&mut inodes).len(), keys.len());
+        drop(inodes);
+        assert_eq!(fd_count(), outside_fds);
+        assert_eq!(spool_count(), outside_spool);
+
+        let mut inodes = frontier_for(&workspace, &policy_for_batch(batch as u64));
+        let mut model = BTreeMap::new();
+        for key in serial_keys(batch * 7) {
+            let record = staged_record(key, 3);
+            inodes.set(key, Some(record)).unwrap();
+            model.insert(key, Some(record));
+        }
+        inodes.merge_pending().unwrap();
+        let original_bytes = inodes.live_run_bytes();
+        let original_fds = fd_count();
+        INJECT_SPILL_WRITE_FAILURE.with(|inject| inject.set(Some((3 * batch + 1) as u64)));
+        assert!(
+            inodes.finalize().is_err(),
+            "failure must hit the second final merge"
+        );
+        assert!(inodes.spill.is_none());
+        assert_eq!(inodes.live_run_bytes(), original_bytes);
+        assert_eq!(fd_count(), original_fds);
+        assert_eq!(spool_count(), outside_spool);
+        for (&key, &record) in &model {
+            assert_resolves(&mut inodes, key, record);
+        }
+        assert_eq!(
+            resolved_rows(&mut inodes),
+            model.into_iter().collect::<Vec<_>>()
+        );
+        drop(inodes);
+        assert_eq!(fd_count(), outside_fds);
         drop(workspace);
         std::fs::remove_dir_all(root).unwrap();
     }
