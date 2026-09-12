@@ -1,8 +1,10 @@
 # Commit Stage 3 results: bounded frontier spill runs (#111)
 
-> **Status:** The algorithmic repair is complete and proved; the **public
-> default-budget spill-scale cell is blocked**, and the public campaign carries a
-> **fixture-custody failure** that is reported rather than papered over.
+> **Status:** The algorithmic repair is complete and proved, the public
+> **non-spilling** screen re-ran clean on the restored fixture, and the public
+> **default-budget spill-scale cell remains blocked** by the live edit route's
+> reachable-set boundary. The fixture custody failure found during the campaign was
+> repaired and is reported in full (§5.3).
 >
 > - **Proved and complete:** the quadratic whole-prefix spill merge is eliminated;
 >   the replacement satisfies the derived `O(K log(K/B))` traffic bound at the
@@ -14,12 +16,14 @@
 > - **Public default-budget spill performance: blocked.** The live workspace edit
 >   route refuses the 5 462nd sequential range edit in a fresh session, and `B` is
 >   15 873, so no reachable public changed set can fill the pending map (§5.1). The
->   public cells collected before that limitation was characterised are a
->   **non-spilling** regression/compatibility screen and are not a spill benchmark.
+>   public cells are therefore a **non-spilling** regression/compatibility screen and
+>   are not a spill benchmark.
 > - **Public re-run on the restored fixture: complete.** 24/24 cells `PASS`,
 >   K100 184.07 → 188.76 ms with every sample ≤ 200 ms, and no material regression at
 >   any cell. Two campaigns (pre-damage and post-repair) measured byte-identical
->   fixture content and agree on the non-spilling screen (§5.2, §6.2).
+>   fixture content and agree on the non-spilling screen; the one `k5000` flag is
+>   investigated and left reported as an unexplained sub-tolerance difference
+>   (§5.2, §6).
 > - **Fixture custody failure: found, characterised and repaired.** During the
 >   campaign the immutable `namespace-100000` fixture lost two 100 MB payload files
 >   at 2026-09-12T02:13:32Z. The content is deterministic, so it was regenerated,
