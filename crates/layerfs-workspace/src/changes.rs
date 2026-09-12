@@ -2032,7 +2032,7 @@ thread_local! {
 impl Workspace {
     /// Deterministic spill counters of the most recent candidate build on this
     /// thread. Test-only; the release product carries no spill telemetry.
-    pub(crate) fn frontier_stats(&self) -> SpillStatCounters {
+    fn frontier_stats(&self) -> SpillStatCounters {
         LAST_FRONTIER_STATS
             .with(|stats| stats.get())
             .expect("no candidate build recorded spill counters on this thread")
