@@ -230,18 +230,16 @@ the payload root. Frozen cells:
 | `nochange` | 0 | ordinary regression screen |
 | `k10` | 10 | ordinary regression screen (waived absolute gate, not re-gated) |
 | `k100` | 100 | accepted Stage 2 cell; regression screen and ≤ 200 ms goal |
-| `k20000` | 20 000 | declared spill-scale case: `≈ 1.26·B`, crosses one flush boundary at the shipped `B` |
+| `k32000` | 32 000 | declared spill-scale case: `≈ 2.02·B`, crossing two capacity boundaries and producing a third partial run at final flush with the shipped `B` |
 
-`k20000` is only `1.26·B`. A *multiple-flush* public case would need
-`K > 2B = 31 746` files edited in one Commit, i.e. ~32 000–50 000 public
-`edit_workspace_file_range` calls at ~4.5 ms each (≈ 2.5–4 minutes per cell before
-Init). If the measured ordinary cells show the budget permits it, the declared
-spill case is raised to `k40000` (≈ `2.5·B`, three flushes) and collected as the
-spill-scale cell; if not, `k20000` is collected, the multi-flush requirement is
-covered by the production-budget matrix (§5) which crosses 8 flushes and beyond,
-and the limitation is reported. Either way `8B = 126 984 > 100 000` files cannot
-be realised publicly and is not attempted; no synthetic fixture is introduced,
-and no reduced-budget timing is reported as production performance.
+`k32000` is the smallest public size that crosses **more than one** flush boundary
+(`2B = 31 746`), which the declared spill-scale case requires; it costs ≈ 32 000
+public `edit_workspace_file_range` calls at ~4.5 ms each (≈ 2.5 minutes of edit
+preparation per cell, reported separately from Commit). `8B = 126 984 > 100 000`
+files still cannot be realised publicly and is not attempted; it is covered by
+the production-budget matrix (§5), which crosses 8 flushes and, in the explicitly
+selected structural sweep, 64 flushes. No synthetic fixture is introduced and no
+reduced-budget timing is reported as production performance.
 
 Sequence shape: fresh public `Init` + `fork_branch` outside all Commit timers,
 one fresh Store and one fresh container per entry, `K` single public
