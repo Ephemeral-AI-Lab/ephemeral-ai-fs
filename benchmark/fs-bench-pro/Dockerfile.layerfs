@@ -19,7 +19,6 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY tools ./tools
 COPY benchmark/fs-bench-pro/Cargo.toml ./benchmark/fs-bench-pro/Cargo.toml
-COPY benchmark/fs-bench-pro/src ./benchmark/fs-bench-pro/src
 
 # Docker COPY preserves source mtimes, which can predate a shared Cargo target.
 # Refresh owned inputs whenever this RUN executes; registry dependencies stay cached.

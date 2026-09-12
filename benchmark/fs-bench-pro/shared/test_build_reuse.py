@@ -12,6 +12,33 @@ import runner
 
 
 class BuildReuseTests(unittest.TestCase):
+    def test_unbuilt_workspace_binary_sources_need_not_enter_linux_build(self):
+        dockerfile = (runner.BENCH / 'Dockerfile.layerfs').read_text()
+        self.assertNotIn('COPY benchmark/fs-bench-pro/src ', dockerfile)
+        manifest = (runner.BENCH / 'Cargo.toml').read_text()
+        binary = '[[bin]]' + manifest.split('[[bin]]', 1)[1]
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            selected = root / 'crates/selected'
+            (selected / 'src').mkdir(parents=True)
+            (selected / 'Cargo.toml').write_text(
+                '[package]\nname="selected"\nversion="0.0.0"\nedition="2021"\n')
+            (selected / 'src/main.rs').write_text('fn main() { println!("selected"); }\n')
+            benchmark = root / 'benchmark/fs-bench-pro'
+            benchmark.mkdir(parents=True)
+            (benchmark / 'Cargo.toml').write_text(
+                '[package]\nname="fs-benchmark-pro"\nversion="0.0.0"\nedition="2021"\n' + binary)
+            (root / 'Cargo.toml').write_text(
+                '[workspace]\nmembers=["crates/selected","benchmark/fs-bench-pro"]\nresolver="2"\n')
+            for args in (['generate-lockfile', '--offline'],
+                         ['build', '--locked', '--offline', '-p', 'selected']):
+                runner.runtime.run(['cargo', '+1.85.1', *args], cwd=root,
+                    deadline=runner.runtime.Deadline.after(30))
+            result = runner.runtime.run([str(root / 'target/debug/selected')],
+                deadline=runner.runtime.Deadline.after(5))
+            self.assertEqual(result.stdout.strip(), b'selected')
+            self.assertFalse((benchmark / 'src').exists())
+
     def test_docker_owned_source_refresh_rebuilds_backdated_content(self):
         dockerfile = (runner.BENCH / 'Dockerfile.layerfs').read_text()
         refresh = next(line.strip()[3:].removesuffix(' \\') for line in dockerfile.splitlines()
