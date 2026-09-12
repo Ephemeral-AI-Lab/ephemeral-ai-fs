@@ -497,7 +497,10 @@ struct PreparedFacts {
 fn core(error: layerfs_workspace_core::Error) -> PortError {
     use layerfs_workspace_core::Error;
     if std::env::var_os("LAYERFS_EDIT_FAILURE_DIAGNOSTIC").is_some() {
-        eprintln!("{{\"kind\":\"edit-core-failure\",\"error\":{:?}}}", format!("{error:?}"));
+        eprintln!(
+            "{{\"kind\":\"edit-core-failure\",\"error\":{:?}}}",
+            format!("{error:?}")
+        );
     }
     match error {
         Error::NotFound(_) => PortError::NotFound,
@@ -1099,7 +1102,11 @@ impl LiveOwner {
                     }
                 }
                 let directory = input.directory;
-                let mut request = vec![if prefetch { wire::LOOKUP } else { wire::LOOKUP_METADATA }];
+                let mut request = vec![if prefetch {
+                    wire::LOOKUP
+                } else {
+                    wire::LOOKUP_METADATA
+                }];
                 request.extend_from_slice(root.as_bytes());
                 request.extend_from_slice(directory.0.as_bytes());
                 wire::bytes_out(&mut request, input.name.as_bytes()).map_err(io)?;
@@ -2578,7 +2585,7 @@ impl LiveOwner {
         {
             use std::os::fd::AsRawFd;
             let cached = self.0.cached.lock().map_err(|_| PortError::Io)?.clone();
-            if let Some(diagnostic) = diagnostic.as_deref_mut() {
+            if let Some(diagnostic) = diagnostic.as_mut() {
                 diagnostic.values[EditMetric::CachedNodes as usize] += cached.len() as u64;
             }
             let nodes: Vec<_> = {
@@ -2591,7 +2598,7 @@ impl LiveOwner {
             if nodes.is_empty() {
                 return Ok(());
             }
-            if let Some(diagnostic) = diagnostic.as_deref_mut() {
+            if let Some(diagnostic) = diagnostic.as_mut() {
                 diagnostic.values[EditMetric::KernelFlushes as usize] += 1;
             }
             let notifier = self.0.notifier.get().ok_or(PortError::Io)?.clone();
@@ -2734,7 +2741,7 @@ impl LiveOwner {
                 }
             };
             let identity = (facts.root, facts.generation);
-            if let Some(diagnostic) = diagnostic.as_deref_mut() {
+            if let Some(diagnostic) = diagnostic.as_mut() {
                 diagnostic.values[EditMetric::FactNodes as usize] += facts.nodes.len() as u64;
             }
             let sink = sink.clone();
@@ -2749,7 +2756,7 @@ impl LiveOwner {
         let Some(facts) = self.prepare_remote_facts(&acknowledged)? else {
             return Ok(());
         };
-        if let Some(diagnostic) = diagnostic.as_deref_mut() {
+        if let Some(diagnostic) = diagnostic.as_mut() {
             diagnostic.values[EditMetric::FactNodes as usize] += facts.count as u64;
             diagnostic.values[EditMetric::FactBytes as usize] += facts
                 .frames
@@ -2889,8 +2896,14 @@ impl LiveOwner {
                 preview.u64().map_err(io)?;
                 (!preview.0.is_empty()).then(Instant::now)
             }
-            wire::EDIT_PART | wire::EDIT_END => self.0.edit.lock().map_err(|_| PortError::Io)?
-                .as_ref().and_then(|pending| pending.diagnostic.as_ref()).map(|_| Instant::now()),
+            wire::EDIT_PART | wire::EDIT_END => self
+                .0
+                .edit
+                .lock()
+                .map_err(|_| PortError::Io)?
+                .as_ref()
+                .and_then(|pending| pending.diagnostic.as_ref())
+                .map(|_| Instant::now()),
             _ => None,
         };
         let mut completed_diagnostic = None;
@@ -2912,8 +2925,16 @@ impl LiveOwner {
                         nonce: nonce.to_vec(),
                         values: [0; wire::EDIT_DIAGNOSTIC_FIELDS.len()],
                         backing_start: (
-                            self.0.backing.metrics.live_backing_wait_ns.load(Ordering::Relaxed),
-                            self.0.backing.metrics.live_backing_calls.load(Ordering::Relaxed),
+                            self.0
+                                .backing
+                                .metrics
+                                .live_backing_wait_ns
+                                .load(Ordering::Relaxed),
+                            self.0
+                                .backing
+                                .metrics
+                                .live_backing_calls
+                                .load(Ordering::Relaxed),
                         ),
                     })
                 };
@@ -2945,8 +2966,14 @@ impl LiveOwner {
                 let started = diagnostic.as_ref().map(|_| Instant::now());
                 for name in path.split('/').filter(|name| !name.is_empty()) {
                     let _namespace = self.0.namespace.lock().await;
-                    let name = self.name_with_prefetch(node, name.as_bytes(), false).await?;
-                    node = self.state()?.attr(name.existing().ok_or(PortError::NotFound)?).map_err(core)?.node;
+                    let name = self
+                        .name_with_prefetch(node, name.as_bytes(), false)
+                        .await?;
+                    node = self
+                        .state()?
+                        .attr(name.existing().ok_or(PortError::NotFound)?)
+                        .map_err(core)?
+                        .node;
                 }
                 note_edit(&mut diagnostic, EditMetric::Lookup, started);
                 *self.0.edit.lock().map_err(|_| PortError::Io)? = Some(PendingSplices {
@@ -3078,7 +3105,8 @@ impl LiveOwner {
                 if let Some(notifier) = self.0.notifier.get().cloned() {
                     if let Some(diagnostic) = pending.diagnostic.as_mut() {
                         diagnostic.values[EditMetric::ReconcileNotifier as usize] += 1;
-                        diagnostic.values[EditMetric::ReconcileCached as usize] += u64::from(cache_data);
+                        diagnostic.values[EditMetric::ReconcileCached as usize] +=
+                            u64::from(cache_data);
                     }
                     let updated = async {
                         let mut ranges = if cache_data {
@@ -3129,11 +3157,21 @@ impl LiveOwner {
                 kernel_edit.finish(flush).await;
                 note_edit(&mut pending.diagnostic, EditMetric::Reconcile, reconciling);
                 if let Some(diagnostic) = pending.diagnostic.as_mut() {
-                    diagnostic.values[EditMetric::BackingWait as usize] = self.0.backing.metrics
-                        .live_backing_wait_ns.load(Ordering::Relaxed).checked_sub(diagnostic.backing_start.0)
+                    diagnostic.values[EditMetric::BackingWait as usize] = self
+                        .0
+                        .backing
+                        .metrics
+                        .live_backing_wait_ns
+                        .load(Ordering::Relaxed)
+                        .checked_sub(diagnostic.backing_start.0)
                         .ok_or(PortError::Io)?;
-                    diagnostic.values[EditMetric::BackingCalls as usize] = self.0.backing.metrics
-                        .live_backing_calls.load(Ordering::Relaxed).checked_sub(diagnostic.backing_start.1)
+                    diagnostic.values[EditMetric::BackingCalls as usize] = self
+                        .0
+                        .backing
+                        .metrics
+                        .live_backing_calls
+                        .load(Ordering::Relaxed)
+                        .checked_sub(diagnostic.backing_start.1)
                         .ok_or(PortError::Io)?;
                 }
                 completed_diagnostic = pending.diagnostic;
@@ -4306,7 +4344,10 @@ mod immutable_acquisition_tests {
             assert_eq!(owner.read_owned(edited.node, 0, 3).await.unwrap(), b"new");
             owner.lookup_async(ROOT, b"other").await.unwrap();
             owner.lookup_async(ROOT, b"sibling").await.unwrap();
-            assert_eq!(*requests.lock().unwrap(), [wire::LOOKUP_METADATA, wire::LOOKUP]);
+            assert_eq!(
+                *requests.lock().unwrap(),
+                [wire::LOOKUP_METADATA, wire::LOOKUP]
+            );
             assert_eq!(owner.read_owned(edited.node, 0, 3).await.unwrap(), b"new");
         });
     }
@@ -4321,7 +4362,9 @@ mod immutable_acquisition_tests {
             let mut bytes = vec![wire::EDIT_BEGIN];
             wire::bytes_out(&mut bytes, b"edited").unwrap();
             wire::u64_out(&mut bytes, 1);
-            if diagnostic { wire::bytes_out(&mut bytes, nonce).unwrap(); }
+            if diagnostic {
+                wire::bytes_out(&mut bytes, nonce).unwrap();
+            }
             bytes
         };
         let part = |start, delete, replacement: &[u8]| {
@@ -4345,7 +4388,10 @@ mod immutable_acquisition_tests {
             assert!(owner.0.facts_sync.lock().await.is_none());
             owner.local_control(&[wire::FREEZE]).await.unwrap();
             let snapshot = *owner.0.facts_sync.lock().await;
-            let generation = { let state = owner.state().unwrap(); (state.base_root, state.mutation_generation) };
+            let generation = {
+                let state = owner.state().unwrap();
+                (state.base_root, state.mutation_generation)
+            };
             assert_eq!(snapshot, Some(generation));
             owner.local_control(&[wire::RESUME]).await.unwrap();
             owner.local_control(&begin(true)).await.unwrap();
@@ -4353,8 +4399,16 @@ mod immutable_acquisition_tests {
             assert!(owner.0.edit.lock().unwrap().is_none());
             assert_eq!(owner.read_owned(node, 0, 10).await.unwrap(), b"abc");
             assert!(owner.local_control(&begin(false)).await.unwrap().is_empty());
-            assert!(owner.local_control(&part(0, 3, b"xyz")).await.unwrap().is_empty());
-            assert!(owner.local_control(&[wire::EDIT_END]).await.unwrap().is_empty());
+            assert!(owner
+                .local_control(&part(0, 3, b"xyz"))
+                .await
+                .unwrap()
+                .is_empty());
+            assert!(owner
+                .local_control(&[wire::EDIT_END])
+                .await
+                .unwrap()
+                .is_empty());
             assert_eq!(owner.read_owned(node, 0, 10).await.unwrap(), b"xyz");
             assert_eq!(*owner.0.facts_sync.lock().await, snapshot);
             owner.local_control(&[wire::FREEZE]).await.unwrap();

@@ -19,6 +19,10 @@ const MAX_TREE_PAGE_BYTES: usize = 8192;
 /// tree ledger, large enough that consecutive siblings share their physical
 /// groups and their pooled metadata values.
 const TREE_BATCH_CHILDREN: usize = 32;
+/// One bounded batch of children: how many of the requested entries were read,
+/// their canonical pages, and the allocation lease retained while the caller
+/// descends into them. No lease asks the caller for the ordinary point route.
+type BatchChildren = (usize, Vec<(ObjectId, Vec<u8>)>, Option<Lease>);
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TreeBatchCounters {
@@ -237,7 +241,7 @@ impl<S: ObjectStore, F: Format> Engine<'_, S, F> {
         &mut self,
         entries: &[(F::Key, ObjectId, F::Value)],
         width: usize,
-    ) -> CoreResult<(usize, Vec<(ObjectId, Vec<u8>)>, Option<Lease>)> {
+    ) -> CoreResult<BatchChildren> {
         debug_assert!(width > 0 && width <= entries.len());
         let associations =
             std::mem::size_of::<ObjectId>() + std::mem::size_of::<(ObjectId, Vec<u8>)>();

@@ -545,7 +545,11 @@ pub struct CompactSpoolSplice {
 impl CompactSplice {
     fn fits(&self) -> bool {
         let replace = self.bytes.len() as u64;
-        replace != 0 && self.offset.checked_add(replace).is_some_and(|end| end <= self.len)
+        replace != 0
+            && self
+                .offset
+                .checked_add(replace)
+                .is_some_and(|end| end <= self.len)
     }
 
     fn pieces(&self) -> Vec<Piece> {
@@ -862,12 +866,10 @@ impl PieceTree {
     }
 
     pub fn count(&self) -> usize {
-        let compact = self
-            .compact()
-            .map_or(0, |compact| {
-                let consumed = compact.offset() + compact.replacement_len();
-                1 + usize::from(compact.offset() != 0) + usize::from(consumed < compact.len())
-            });
+        let compact = self.compact().map_or(0, |compact| {
+            let consumed = compact.offset() + compact.replacement_len();
+            1 + usize::from(compact.offset() != 0) + usize::from(consumed < compact.len())
+        });
         compact + usize::from(self.compact_len() != 0) + link_count(&self.root)
     }
 
@@ -987,18 +989,16 @@ impl PieceTree {
                             segment,
                             offset,
                             len,
-                        }) if *len == delete_len => {
-                            Some(BoundedEdit::Spool(CompactSpoolSplice {
-                                base,
-                                len: base_len,
-                                offset: start,
-                                slice: SpoolSlice {
-                                    segment: segment.clone(),
-                                    offset: *offset,
-                                    len: *len,
-                                },
-                            }))
-                        }
+                        }) if *len == delete_len => Some(BoundedEdit::Spool(CompactSpoolSplice {
+                            base,
+                            len: base_len,
+                            offset: start,
+                            slice: SpoolSlice {
+                                segment: segment.clone(),
+                                offset: *offset,
+                                len: *len,
+                            },
+                        })),
                         _ => None,
                     };
                     if let Some(bounded) = bounded {
@@ -1015,7 +1015,11 @@ impl PieceTree {
         // A compact tree is materialized before any other edit, so the tree path
         // below stays the single rooted implementation.
         let materialized = self.materialized()?;
-        if self.compact().is_none() && self.root.is_none() && start == self.compact_len() && delete_len == 0 {
+        if self.compact().is_none()
+            && self.root.is_none()
+            && start == self.compact_len()
+            && delete_len == 0
+        {
             if let Some(Piece::Spool {
                 segment,
                 offset,
@@ -1715,15 +1719,17 @@ mod tests {
         );
         assert_eq!(edited.range(0, 100).unwrap(), edited.pieces());
         assert_eq!(
-            edited.range(0, 100).unwrap().iter().map(Piece::len).sum::<u64>(),
+            edited
+                .range(0, 100)
+                .unwrap()
+                .iter()
+                .map(Piece::len)
+                .sum::<u64>(),
             100
         );
         // Edge shapes stay one and two logical pieces.
         assert_eq!(base.replace(0, 4, [inline(b"WXYZ")]).unwrap().count(), 2);
-        assert_eq!(
-            base.replace(96, 4, [inline(b"WXYZ")]).unwrap().count(),
-            2
-        );
+        assert_eq!(base.replace(96, 4, [inline(b"WXYZ")]).unwrap().count(), 2);
         assert_eq!(base.replace(0, 100, [inline(b"WXYZ")]).unwrap().count(), 1);
         // The original snapshot is unchanged and still fully readable.
         assert_eq!(base.count(), 1);
@@ -1733,7 +1739,12 @@ mod tests {
         assert_eq!(twice.count(), 5);
         assert_eq!(twice.len(), 100);
         assert_eq!(
-            twice.range(8, 16).unwrap().iter().map(Piece::len).sum::<u64>(),
+            twice
+                .range(8, 16)
+                .unwrap()
+                .iter()
+                .map(Piece::len)
+                .sum::<u64>(),
             8
         );
         assert_eq!(twice.inline_len(), 6);
@@ -1750,7 +1761,12 @@ mod tests {
         let root = FileContentRoot(ObjectId::for_bytes(b"reject-base"));
         let base = PieceTree::base(root, 32).unwrap();
         assert!(base.replace(8, 4, [inline(b"123456")]).unwrap().len() == 34);
-        assert!(base.replace(8, 4, [Piece::Zero { len: 4 }]).unwrap().count() == 3);
+        assert!(
+            base.replace(8, 4, [Piece::Zero { len: 4 }])
+                .unwrap()
+                .count()
+                == 3
+        );
         assert!(base.replace(40, 4, [inline(b"1234")]).is_err());
         let two_piece = base
             .replace(28, 4, [inline(b"1234"), inline(b"5678")])

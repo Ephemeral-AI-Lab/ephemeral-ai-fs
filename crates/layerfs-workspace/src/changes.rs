@@ -2763,11 +2763,12 @@ impl FrontierInodes {
                 old = self.read_next(&mut old_rows, &older.file, &mut old_remaining)?;
                 row
             };
-            if let Err(error) = self.write_spill_row(&mut writer, inode, value) {
-                #[cfg(test)]
+            let written = self.write_spill_row(&mut writer, inode, value);
+            #[cfg(test)]
+            if written.is_err() {
                 self.note_spill_allocation(writer.get_ref(), extra_input.then_some(&newer.file))?;
-                return Err(error);
             }
+            written?;
             first.get_or_insert(inode);
             last = Some(inode);
             count += 1; // checked input_count bounds the output and byte offsets

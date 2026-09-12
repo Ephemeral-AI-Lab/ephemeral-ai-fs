@@ -1,7 +1,7 @@
 use crate::cow_tree::{Data, FileData, Node, NodeId, Workspace};
-use crate::file_edit::{Piece, PieceTree, SpoolSlice};
 #[cfg(test)]
 use crate::file_edit::MAX_INLINE_PER_WORKSPACE;
+use crate::file_edit::{Piece, PieceTree, SpoolSlice};
 use layerfs_content::file::content::read_range;
 use layerfs_layerstack_store::{CoreReader, Result, SnapshotReader, StoreError};
 use layerfs_workspace_core::backing::{BackingId, BackingRef};
@@ -305,7 +305,7 @@ impl Workspace {
                 ..
             }) = &node.data
             {
-                edits = edits.saturating_add(u64::from(*file_edits));
+                edits = edits.saturating_add(*file_edits);
                 pieces = pieces.saturating_add(tree.count() as u64);
                 height = height.max(tree.height() as u64);
                 charge = charge.saturating_add(
@@ -1118,7 +1118,10 @@ mod tests {
         let mut accepted = 0u32;
         for index in 0..20_000u32 {
             let name = format!("f{index}");
-            let node = workspace.create_file(ROOT, name.as_bytes(), 0o600).unwrap().node;
+            let node = workspace
+                .create_file(ROOT, name.as_bytes(), 0o600)
+                .unwrap()
+                .node;
             match workspace.write(node, 0, &payload) {
                 Ok(_) => {
                     accepted += 1;
@@ -1158,7 +1161,10 @@ mod tests {
         let mut accepted = 0u32;
         for index in 0..20_000u32 {
             let name = format!("f{index}");
-            let node = workspace.create_file(ROOT, name.as_bytes(), 0o600).unwrap().node;
+            let node = workspace
+                .create_file(ROOT, name.as_bytes(), 0o600)
+                .unwrap()
+                .node;
             workspace.write(node, 0, &base).unwrap();
             match workspace.write(node, 1000, b"C6000000001") {
                 Ok(_) => {
@@ -1440,7 +1446,10 @@ mod tests {
                 }
             };
             let name = format!("f{index:06}");
-            let node = workspace.create_file(directory, name.as_bytes(), 0o600).unwrap().node;
+            let node = workspace
+                .create_file(directory, name.as_bytes(), 0o600)
+                .unwrap()
+                .node;
             workspace.write(node, 0, &base).unwrap();
             if let Err(error) = workspace.write(node, 1000, b"C6000000001") {
                 println!("RCA RSS rejected_at={index} error={error:?}");
@@ -1494,8 +1503,7 @@ mod tests {
                 Ok(_) => {
                     accepted += 1;
                     if accepted % 50_000 == 0 {
-                        let (charge, _, spool, dirty, nodes) =
-                            workspace.pending_charge_snapshot();
+                        let (charge, _, spool, dirty, nodes) = workspace.pending_charge_snapshot();
                         println!(
                             "RCA COMPACT accepted={accepted} piece_charge={charge} spool={spool} dirty={dirty} nodes={nodes}"
                         );
@@ -1525,9 +1533,10 @@ mod tests {
         fn fact_charge(node: &layerfs_workspace_core::Node) -> u64 {
             let paths = node.paths.iter().map(|p| 4 + p.len()).sum::<usize>();
             let (pieces, inline) = match &node.data {
-                Data::File(FileData::Edited { pieces, .. }) => {
-                    (pieces.count(), usize::try_from(pieces.inline_len()).unwrap())
-                }
+                Data::File(FileData::Edited { pieces, .. }) => (
+                    pieces.count(),
+                    usize::try_from(pieces.inline_len()).unwrap(),
+                ),
                 _ => (0, 0),
             };
             let bound = 128 + paths + pieces * 49 + inline;

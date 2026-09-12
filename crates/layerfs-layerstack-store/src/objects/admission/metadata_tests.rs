@@ -57,7 +57,10 @@ fn metadata_chain_limits_reopen_and_exact_cas() {
         for step in 0..=last_delta + 1 {
             let object = leaf(count, step as u64, previous);
             let prepared = f.prepare(vec![object.clone()]);
-            assert_eq!(&prepared.packs[0].prepared_bytes()[8..12], &6u32.to_le_bytes());
+            assert_eq!(
+                &prepared.packs[0].prepared_bytes()[8..12],
+                &6u32.to_le_bytes()
+            );
             assert_eq!(
                 prepared.objects[0].delta,
                 step != 0 && step <= last_delta,

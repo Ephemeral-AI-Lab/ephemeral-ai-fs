@@ -2441,7 +2441,6 @@ impl AdmissionSession {
         Ok(())
     }
 
-
     fn fresh_bit_positions(id: &ObjectId) -> impl Iterator<Item = usize> + '_ {
         // ObjectId is an authenticated 32-byte digest. Bit collisions only add
         // SQL work; they never establish presence or authorize a dependency.
@@ -3647,7 +3646,11 @@ impl ObjectStore for ObjectBuffer<'_> {
     /// owns never reaches the source and must not bypass the reader's page bound.
     /// Callbacks run in the declared demand order, as `ObjectRead` promises, so an
     /// owned object never overtakes an earlier unowned demand.
-    fn get_authenticated_canonical_batch<F>(&self, ids: &[ObjectId], mut callback: F) -> CoreResult<()>
+    fn get_authenticated_canonical_batch<F>(
+        &self,
+        ids: &[ObjectId],
+        mut callback: F,
+    ) -> CoreResult<()>
     where
         F: FnMut(ObjectId, &[u8]) -> CoreResult<()>,
     {

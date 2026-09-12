@@ -333,7 +333,10 @@ impl PreparedAdmission {
     }
 
     fn physical_backing(&self) -> usize {
-        self.packs.iter().map(PreparedPack::charged_capacity).sum::<usize>()
+        self.packs
+            .iter()
+            .map(PreparedPack::charged_capacity)
+            .sum::<usize>()
             - self.oversized_backing
             + std::mem::size_of_val(&self.small_signatures)
             + self.small_signatures.capacity() * std::mem::size_of::<[u64; 8]>()
@@ -515,11 +518,12 @@ impl PreparedAdmission {
             if 16 + 16 * (groups.len() + 1) + group_bytes + group.bytes.len() > pack::PACK_LIMIT
                 || groups.len() == pack::GROUP_COUNT_LIMIT
             {
-                self.packs.push(PreparedPack::assembled(if db.compact_framing() {
-                    pack::assemble_compact_small(&groups)?
-                } else {
-                    pack::assemble_small(&groups)?
-                }));
+                self.packs
+                    .push(PreparedPack::assembled(if db.compact_framing() {
+                        pack::assemble_compact_small(&groups)?
+                    } else {
+                        pack::assemble_small(&groups)?
+                    }));
                 groups.clear();
                 group_bytes = 0;
             }
@@ -1017,7 +1021,10 @@ impl PreparedAdmission {
                 {
                     let mut lanes = [0usize; 7];
                     for object in &self.objects {
-                        let version = self.packs.get(object.pack).map_or(0, |pack| pack.version() as usize);
+                        let version = self
+                            .packs
+                            .get(object.pack)
+                            .map_or(0, |pack| pack.version() as usize);
                         if version < lanes.len() {
                             lanes[version] += 1;
                         }
@@ -1445,9 +1452,10 @@ impl PreparedAdmission {
         if self.native_base_max_pack > next {
             return Err(StoreError::Integrity("native base publication chronology"));
         }
-        let keep_pools = winners.iter().enumerate().any(|(index, objects)| {
-            !objects.is_empty() && self.packs[index].version() == 6
-        });
+        let keep_pools = winners
+            .iter()
+            .enumerate()
+            .any(|(index, objects)| !objects.is_empty() && self.packs[index].version() == 6);
         let mut pool_packs = BTreeMap::new();
         let mut pool_offsets = BTreeMap::new();
         // A lane's first pack may extend this session's open pack. Later packs of

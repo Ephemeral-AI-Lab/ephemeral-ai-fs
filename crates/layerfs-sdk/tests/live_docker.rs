@@ -575,7 +575,10 @@ fn pinned_package_install_and_update_survive_commit_and_reopen() {
     eprintln!("pinned package container={name}");
     let result = pinned_package_workflow(&manager, &name, &image, &root);
     if result.is_err() {
-        if let Ok(logs) = Command::new("docker").args(["logs", name.as_str()]).output() {
+        if let Ok(logs) = Command::new("docker")
+            .args(["logs", name.as_str()])
+            .output()
+        {
             eprintln!("daemon stdout: {}", String::from_utf8_lossy(&logs.stdout));
             eprintln!("daemon stderr: {}", String::from_utf8_lossy(&logs.stderr));
         }
@@ -776,7 +779,10 @@ fn pinned_package_workflow(
             &body,
             "pinned module and application verification",
         )?;
-        eprintln!("pinned package stage=verify label={label} output={}", text.trim());
+        eprintln!(
+            "pinned package stage=verify label={label} output={}",
+            text.trim()
+        );
         Ok(())
     };
     let commit = |session: WorkspaceId| -> AnyResult<()> {
@@ -795,7 +801,8 @@ fn pinned_package_workflow(
     commit(session.id)?;
     let installed_root = store.pin_branch(branch)?.root;
     client.end_workspace_session(session.id, EndWorkspaceMode::Clean)?;
-    session = client.create_workspace_session(container_request(branch, &running.id, &placement))?;
+    session =
+        client.create_workspace_session(container_request(branch, &running.id, &placement))?;
     verify(session.id, "installed-after-reopen", "3.6")?;
     verify_package_snapshot(&store, installed_root, "3.6")?;
     // Representative pinned update, then Commit, reopen and verify again.
@@ -803,9 +810,13 @@ fn pinned_package_workflow(
     verify(session.id, "updated-in-session", "3.7")?;
     commit(session.id)?;
     let updated_root = store.pin_branch(branch)?.root;
-    require(updated_root != installed_root, "pinned update changed the root")?;
+    require(
+        updated_root != installed_root,
+        "pinned update changed the root",
+    )?;
     client.end_workspace_session(session.id, EndWorkspaceMode::Clean)?;
-    session = client.create_workspace_session(container_request(branch, &running.id, &placement))?;
+    session =
+        client.create_workspace_session(container_request(branch, &running.id, &placement))?;
     verify(session.id, "updated-after-reopen", "3.7")?;
     verify_package_snapshot(&store, updated_root, "3.7")?;
     client.end_workspace_session(session.id, EndWorkspaceMode::Clean)?;
@@ -866,7 +877,10 @@ fn verify_package_snapshot(
         "committed application bytes are exact",
     )?;
     require(
-        matches!(stat.kind, layerfs_content::tree::inode::InodeKind::RegularFile),
+        matches!(
+            stat.kind,
+            layerfs_content::tree::inode::InodeKind::RegularFile
+        ),
         "committed module kind",
     )?;
     let vendor = layerfs_content::CanonicalPath::new("project/vendor")?;
@@ -876,9 +890,7 @@ fn verify_package_snapshot(
             names.iter().any(|name| name.starts_with(expected)),
             "installed distribution present in the committed tree",
         )
-        .map_err(|error| -> Box<dyn std::error::Error> {
-            format!("{error}: {names:?}").into()
-        })?;
+        .map_err(|error| -> Box<dyn std::error::Error> { format!("{error}: {names:?}").into() })?;
     }
     eprintln!(
         "pinned package stage=committed-snapshot versions={expected_versions} entries={} bytes={} refs={}",
@@ -1203,7 +1215,11 @@ int main(int argc, char **argv) {
         let sample = page
             .chunks
             .iter()
-            .flat_map(|chunk| String::from_utf8_lossy(&chunk.bytes).into_owned().into_bytes())
+            .flat_map(|chunk| {
+                String::from_utf8_lossy(&chunk.bytes)
+                    .into_owned()
+                    .into_bytes()
+            })
             .collect::<Vec<u8>>();
         let text = String::from_utf8_lossy(&sample).into_owned();
         if let Some(line) = text.lines().find(|line| line.starts_with("live ")) {

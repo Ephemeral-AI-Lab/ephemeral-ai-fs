@@ -20,7 +20,11 @@ use layerfs_workspace::{
 fn fixture(
     label: &str,
     build: impl FnOnce(&std::path::Path),
-) -> (std::path::PathBuf, Workspaces, layerfs_layerstack_store::BranchId) {
+) -> (
+    std::path::PathBuf,
+    Workspaces,
+    layerfs_layerstack_store::BranchId,
+) {
     let root = std::env::temp_dir().join(format!(
         "layerfs-issue116-{label}-{}-{}",
         std::process::id(),
@@ -151,14 +155,20 @@ fn probe_a_repeated_overwrite_of_one_file() {
         }
     }
     println!("PROBE A accepted={accepted} rejection={rejection:?}");
-    assert!(rejection.is_none(), "pending edits must not be rejected by a count");
+    assert!(
+        rejection.is_none(),
+        "pending edits must not be rejected by a count"
+    );
     assert_eq!(accepted, 10_000, "every counted edit is accepted");
     // Exact final contents: the last replacement in the first four bytes and the
     // original payload everywhere else.
     let mut expected = vec![3u8; 4096];
     expected[..4].copy_from_slice(&[0xf_u8; 4]);
     let pending = read_mount(&root, "mount", "f0");
-    assert_eq!(pending, expected, "pending contents equal the last replacement");
+    assert_eq!(
+        pending, expected,
+        "pending contents equal the last replacement"
+    );
     assert_eq!(pending.len(), 4096, "pending length is unchanged");
     assert!(matches!(
         commit_session(&workspaces, session.id),
@@ -315,7 +325,8 @@ fn probe_d_wide_single_directory() {
 fn probe_e_pending_set_charges() {
     for files in [250usize, 500, 1_000] {
         let started = std::time::Instant::now();
-        let (root, workspaces, branch) = fixture("probe-e", |source| source_files(source, files, 4096));
+        let (root, workspaces, branch) =
+            fixture("probe-e", |source| source_files(source, files, 4096));
         let fixture_ns = started.elapsed().as_nanos();
         let session = open_session(&root, &workspaces, branch, "mount");
         let mut accepted = 0u32;
@@ -350,13 +361,21 @@ fn probe_e_pending_set_charges() {
 #[ignore = "issue116 phase-1 capacity probe"]
 fn probe_f_edit_cost() {
     for files in [1usize, 200] {
-        let (root, workspaces, branch) = fixture("probe-f", |source| source_files(source, files, 4096));
+        let (root, workspaces, branch) =
+            fixture("probe-f", |source| source_files(source, files, 4096));
         let session = open_session(&root, &workspaces, branch, "mount");
         let mut accepted = 0u32;
         let started = std::time::Instant::now();
         for index in 0..20u32 {
             let path = format!("f{}", index as usize % files);
-            match edit(&workspaces, &session, &path, 0, 1, WorkspaceFileReplacement::Inline(vec![1])) {
+            match edit(
+                &workspaces,
+                &session,
+                &path,
+                0,
+                1,
+                WorkspaceFileReplacement::Inline(vec![1]),
+            ) {
                 Ok(()) => accepted += 1,
                 Err(error) => {
                     println!("PROBE F files={files} rejected_at={index} error={error:?}");

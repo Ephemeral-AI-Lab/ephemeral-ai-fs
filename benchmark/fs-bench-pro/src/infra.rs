@@ -82,7 +82,8 @@ fn list(family_filter: Option<&str>, case_filter: Option<&str>) -> AnyResult<()>
             && case_filter.is_none_or(|value| value == id)
     };
     for case in workload_source::NAMESPACE_SCENARIOS.into_iter().chain(
-        workload_source::NAMESPACE_TEXT_SCENARIOS.into_iter()
+        workload_source::NAMESPACE_TEXT_SCENARIOS
+            .into_iter()
             .filter(|case| case_filter == Some(case.id)),
     ) {
         if !selected("init_namespace", case.id) {

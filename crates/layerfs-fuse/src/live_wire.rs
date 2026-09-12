@@ -593,23 +593,54 @@ pub const EDIT_END: u8 = 44;
 // are unchanged. Durations are nested unless the named phase says otherwise.
 pub const EDIT_DIAGNOSTIC_VERSION: u64 = 1;
 pub const EDIT_DIAGNOSTIC_FIELDS: [&str; 18] = [
-    "daemon_control_ns", "freeze_gate_ns", "kernel_flush_ns", "append_ns",
-    "facts_ns", "retire_ns", "lookup_ns", "prepare_ns", "apply_ns", "reconcile_ns",
-    "backing_wait_ns", "backing_calls", "facts_nodes", "facts_wire_bytes",
-    "cached_nodes_scanned", "kernel_flushes", "reconcile_notifier", "reconcile_cached",
+    "daemon_control_ns",
+    "freeze_gate_ns",
+    "kernel_flush_ns",
+    "append_ns",
+    "facts_ns",
+    "retire_ns",
+    "lookup_ns",
+    "prepare_ns",
+    "apply_ns",
+    "reconcile_ns",
+    "backing_wait_ns",
+    "backing_calls",
+    "facts_nodes",
+    "facts_wire_bytes",
+    "cached_nodes_scanned",
+    "kernel_flushes",
+    "reconcile_notifier",
+    "reconcile_cached",
 ];
 
 #[derive(Clone, Copy)]
 #[allow(dead_code)] // Linux-only fields keep identical wire positions on every host.
 pub(crate) enum EditMetric {
-    Control, Gate, Kernel, Append, Facts, Retire, Lookup, Prepare, Apply, Reconcile,
-    BackingWait, BackingCalls, FactNodes, FactBytes, CachedNodes, KernelFlushes,
-    ReconcileNotifier, ReconcileCached,
+    Control,
+    Gate,
+    Kernel,
+    Append,
+    Facts,
+    Retire,
+    Lookup,
+    Prepare,
+    Apply,
+    Reconcile,
+    BackingWait,
+    BackingCalls,
+    FactNodes,
+    FactBytes,
+    CachedNodes,
+    KernelFlushes,
+    ReconcileNotifier,
+    ReconcileCached,
 }
 
 pub fn valid_edit_diagnostic_nonce(nonce: &[u8]) -> bool {
     (16..=64).contains(&nonce.len())
-        && nonce.iter().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+        && nonce
+            .iter()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
 }
 
 pub fn read_edit_diagnostic(
@@ -618,7 +649,9 @@ pub fn read_edit_diagnostic(
 ) -> io::Result<[u64; EDIT_DIAGNOSTIC_FIELDS.len()]> {
     let mut input = Input(bytes);
     if !valid_edit_diagnostic_nonce(nonce)
-        || input.u64()? != EDIT_DIAGNOSTIC_VERSION || input.bytes()? != nonce {
+        || input.u64()? != EDIT_DIAGNOSTIC_VERSION
+        || input.bytes()? != nonce
+    {
         return Err(invalid());
     }
     let mut values = [0; EDIT_DIAGNOSTIC_FIELDS.len()];
