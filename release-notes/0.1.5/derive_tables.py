@@ -214,11 +214,11 @@ def main():
 
     OUT.mkdir(parents=True, exist_ok=True)
     with (OUT / "benchmark-performance.csv").open("w", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=list(performance[0]))
+        writer = csv.DictWriter(stream, fieldnames=list(performance[0]), lineterminator="\n")
         writer.writeheader()
         writer.writerows(performance)
     with (OUT / "benchmark-verification.csv").open("w", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=list(verification[0]))
+        writer = csv.DictWriter(stream, fieldnames=list(verification[0]), lineterminator="\n")
         writer.writeheader()
         writer.writerows(verification)
 
