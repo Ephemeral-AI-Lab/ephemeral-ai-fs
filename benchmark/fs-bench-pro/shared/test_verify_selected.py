@@ -78,6 +78,8 @@ class VerifySelectedTests(unittest.TestCase):
             self.assertEqual(VERIFY.reuse_pass(path, selected())["status"], "PASS")
             with self.assertRaisesRegex(ValueError, "does not exactly match"):
                 VERIFY.reuse_pass(path, selected(input_identity="different"))
+            with self.assertRaisesRegex(ValueError, "does not exactly match"):
+                VERIFY.reuse_pass(path, selected(sequence={"edit_count": 100}))
 
     def test_delayed_publication_cannot_leave_pass(self):
         with tempfile.TemporaryDirectory() as directory:

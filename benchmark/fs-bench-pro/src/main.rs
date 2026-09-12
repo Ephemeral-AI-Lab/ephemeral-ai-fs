@@ -20,6 +20,7 @@ mod sdk_file_edit;
 mod storage_smoke;
 mod workspace_bench;
 mod workspace_reliability;
+mod workspace_sequence;
 mod workspace_verify;
 
 type AnyResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -672,6 +673,9 @@ fn run() -> AnyResult<()> {
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
     if args.first().is_some_and(|arg| arg == "repository-init") {
         return repository_init::run(&args);
+    }
+    if args.first().is_some_and(|arg| arg == "workspace-sequence") {
+        return workspace_sequence::run(&args);
     }
     if args
         .first()

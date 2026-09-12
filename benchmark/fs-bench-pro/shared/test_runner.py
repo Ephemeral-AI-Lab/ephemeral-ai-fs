@@ -14,6 +14,20 @@ import runner
 
 
 class RunnerTests(unittest.TestCase):
+    def test_sequence_is_explicit_bounded_and_not_an_init_gate(self):
+        for options in (["--sequence", "-1"], ["--sequence", "100001"],
+                        ["--sequence", "1", "--sequence-commits", "0"],
+                        ["--sequence-reopen"]):
+            args = runner.build_parser().parse_args(
+                ["--family", "init_namespace", "--case", "namespace-100000", *options])
+            with self.assertRaises(ValueError):
+                runner.resolve_selection(args, time.monotonic() + 1)
+        row = {"family": "init_namespace", "case": "namespace-100000"}
+        self.assertTrue(runner.cold.applies(row))
+        self.assertFalse(runner.cold.applies({**row, "sequence": {"edit_count": 100}}))
+        self.assertEqual(runner._timer({"identities": {"timer": "edit_commit_ns"},
+            "records": [{"layerstack_init_ns": 1, "edit_commit_ns": 7}]}), ("edit_commit_ns", 7))
+
     def test_linked_schema_rejects_false_source_label(self):
         with patch.object(runner.runtime, "run", return_value=SimpleNamespace(stdout=b"7\n")):
             self.assertEqual(runner.verify_linked_schema("binary", 7), 7)
@@ -53,13 +67,14 @@ class RunnerTests(unittest.TestCase):
                     (root / "manifest.json").write_text('{}')
                     preparations.append(root)
                 return SimpleNamespace(stdout=json.dumps(fixture))
-            with patch.object(runner, "_command", side_effect=command):
+            with patch.object(runner, "_command", side_effect=command), patch.object(runner.runtime, "evict_host_cache") as evict:
                 first = runner._host_acquire(args, selection, time.monotonic() + 5)
                 changed_executor = {**selection, "case": "second", "image": "image-b", "host_executor": {"source": "b", "schema_sha256": "schema-a"}}
                 second = runner._host_acquire(args, changed_executor, time.monotonic() + 5)
                 self.assertFalse(first["cache_hit"])
                 self.assertTrue(second["cache_hit"])
                 self.assertEqual(len(preparations), 1)
+                evict.assert_not_called()
                 self.assertEqual(second["producer"], selection["host_executor"])
                 one = runner._host_sample(first, selection, "one", time.monotonic() + 5)
                 two = runner._host_sample(second, changed_executor, "two", time.monotonic() + 5)

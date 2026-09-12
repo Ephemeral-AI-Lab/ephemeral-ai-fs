@@ -81,6 +81,12 @@ def build_parser(include_modes=True):
     p.add_argument("--source-arm", choices=("baseline", "candidate"), default="candidate")
     p.add_argument("--performance-rows", default="-")
     p.add_argument("--case")
+    p.add_argument("--sequence", type=int, metavar="COUNT",
+                   help="Explicit Workspace SDK edit + Commit sequence over the selected namespace fixture; separate from Init qualification")
+    p.add_argument("--sequence-commits", type=int, default=1)
+    p.add_argument("--sequence-reopen", action="store_true")
+    p.add_argument("--sequence-active-cache", action="store_true",
+                   help="Explicit sequence variant: read targets through FUSE before SDK edits")
     p.add_argument("--pseudorandom", action=argparse.BooleanOptionalAction, default=None,
                    help="Namespace content: default/on keeps existing random bytes; --no-pseudorandom selects a distinct structured-text case with identical file sizes (explicit --case required)")
     p.add_argument("--seed", type=int)
@@ -261,6 +267,13 @@ def normalize_namespace_content(args):
 
 def resolve_selection(args, deadline):
     normalize_namespace_content(args)
+    sequence = getattr(args, "sequence", None)
+    if sequence is not None and (args.family != "init_namespace" or not args.case
+            or not 0 <= sequence <= 100_000 or not 1 <= args.sequence_commits <= 1000):
+        raise ValueError("sequence requires explicit namespace fixture, count 0..100000 and commits 1..1000")
+    if sequence is None and (getattr(args, "sequence_commits", 1) != 1 or getattr(args, "sequence_reopen", False)
+                            or getattr(args, "sequence_active_cache", False)):
+        raise ValueError("sequence options require --sequence")
     if args.topology != "host-store":
         raise ValueError("Docker-owned SQLite is prohibited; use host-store")
     if getattr(args, "_selection", None):
@@ -355,6 +368,12 @@ def resolve_selection(args, deadline):
         selection["namespace_content_profile"] = (
             "pseudorandom-v1" if selection["pseudorandom"] else "structured-text-v1")
     selection["timer"] = TIMERS.get(row.get("route"))
+    if sequence is not None:
+        selection["sequence"] = {"schema": "workspace-sequence-v1", "edit_count": sequence,
+            "commits": args.sequence_commits, "reopen": args.sequence_reopen,
+            "active_cache": args.sequence_active_cache,
+            "surface": "Client::edit_workspace_file_range + commit_workspace_session_with_status"}
+        selection["timer"] = "edit_commit_ns"
     selection["product_execution_allowance_seconds"] = args.product_timeout
     selection["topology"] = args.topology
     selection.update(host_executor=host_identity, image_source_identity=identity.get("dev.layerfs.source-seal"),
@@ -441,7 +460,10 @@ def _host_acquire(args, selection, deadline):
     # detects selected content faults. Recreate this disposable cache if it is modified.
     if not native and runtime.host_tree_identity(root, _deadline(deadline)) != manifest["files"]:
         raise ValueError("host prepared Store content mismatch")
-    removed = [] if fresh else runtime.evict_host_cache(HOST_ROOT, root)
+    # Immutable fixtures/prepared inputs are protected, not sample/build scratch.
+    # Input retirement is an explicit owner action; acquiring a new case must
+    # not delete another case's qualified master (#118).
+    removed = []
     if native:
         fixture = json.loads((root / "fixture.json").read_text())
     return {"image": selection["image"], "host_root": str(root), "cache_key": key, "cache_hit": hit,
@@ -586,6 +608,11 @@ def execute_selected(args, *, deadline, verification=False):
             TMPDIR=str(host_sample_path))
         operation = ["infra-run", selection["family"], selection["case"], str(selection["seed"]),
                      "verify" if verification else "performance", str(host_sample_path), sample.id]
+        if sequence := selection.get("sequence"):
+            operation = ["workspace-sequence", str(host_sample_path), prepared_input, sample.id,
+                selection["case"], str(sequence["edit_count"]), str(sequence["commits"]),
+                str(sequence["reopen"]).lower(), str(sequence["active_cache"]).lower(),
+                "verify" if verification else "performance"]
         if not verification and cold.applies(selection):
             result["cold_diagnostic_environment"] = any(os.environ.get(key) for key in (
                 "LAYERFS_INITIALIZATION_DIAGNOSTIC_NONCE", "LAYERFS_BENCH_INITIALIZATION_SEED_HEX"))
@@ -600,6 +627,10 @@ def execute_selected(args, *, deadline, verification=False):
         result["command_wall_ns"] = time.monotonic_ns() - run_started
         result["records"] = records(command.stdout)
         result["records"].extend(initialization_diagnostics(command.stderr))
+        diagnostics = [r for r in records(command.stderr) if r.get("kind") == "edit-diagnostic"]
+        if diagnostics:
+            result["edit_diagnostics"] = diagnostics
+            result["diagnostic_only"] = True
         for record in result["records"]:
             if record.get("kind") == "sampled-canonical-verification":
                 result["sampled_paths_or_ranges"].extend(record["sampled_paths_or_ranges"])
@@ -690,6 +721,9 @@ def execute_selected(args, *, deadline, verification=False):
             result["cleanup"] = {"status": "FAIL", "error": str(error)[-2048:]}
             result["status"] = "INCOMPLETE"
         result["wall_ns"] = time.monotonic_ns() - started
+    if result.get("diagnostic_only") and result["status"] == "PASS":
+        result["status"] = "DIAGNOSTIC"
+        result["performance_distribution"] = False
     return cold.enforce(result) if not verification and not args.prepare_only else result
 
 

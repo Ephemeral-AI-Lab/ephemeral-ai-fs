@@ -92,6 +92,34 @@ Use `--output` with a fresh path; raw receipts must not be overwritten.
 
 ## Namespace content: pseudorandom on/off
 
+### Explicit Workspace sequences over namespace inputs
+
+The shared runner can use an existing complete namespace input to initialize a
+fresh Store, perform K public SDK edits and one Commit per tool workspace, and
+record edit, Commit, their sum, and the full workspace chain separately:
+
+```bash
+python3 benchmark/fs-bench-pro/shared/runner.py --family init_namespace \
+  --case namespace-100000 --sequence 100 --sequence-commits 1 --seed 1 \
+  --image "$LAYERFS_BENCH_IMAGE" --perf-fast --collection-mode --output NEW_OUTPUT
+```
+
+This is the separately identified `workspace-sequence-v1` operation; bootstrap
+Init is setup and supplies no cold-Init acceptance result. `--sequence-reopen`
+reopens before each workspace; `--sequence-active-cache` explicitly reads up to
+100 targets through FUSE first. Plain Init without `--sequence` keeps its fixed
+cold gate. Sequence verification uses `verify-selected.py` with the same flags
+and exact source/input/image identities. It checks all changed bytes/lengths,
+a declared unchanged-file sample, and initial/selected historical roots after
+reopen; it does not claim exhaustive unchanged-namespace verification.
+
+For attribution only, a valid `LAYERFS_EDIT_DIAGNOSTIC_NONCE` produces bounded
+per-edit diagnostic records and excludes the run from performance distributions.
+Clear it for plain qualification and large-count cases. Default-budget spill
+coverage remains pending until the deferred capacity repair makes it reachable.
+Immutable input acquisition never automatically evicts other qualified inputs;
+retire fixtures/prepared masters only through an explicit owner action.
+
 Namespace Init defaults to the original pseudorandom content. Use an explicit
 case with `--pseudorandom` or `--no-pseudorandom`:
 

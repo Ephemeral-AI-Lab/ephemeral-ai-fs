@@ -123,7 +123,7 @@ def _same_identity(old, selected):
     for key in (
         "seed", "repetition", "source_identity", "input_identity", "setup_identity",
         "product_identity", "harness_identity", "image_identity", "topology", "host_executor",
-        "source_arm",
+        "source_arm", "sequence",
     ):
         if key in ("seed", "repetition") and selected.get("route") == "sdk":
             continue
@@ -333,6 +333,7 @@ def run(runner, argv=None, clock=time.monotonic, publisher=publish_receipt):
         "image_identity": selected.get("image_identity", selected.get("image")),
         "environment_identity": selected.get("environment_identity") or (_json_digest(environment) if environment else None),
         "recipe_route": selected.get("recipe_route", selected.get("route", selected.get("operation"))),
+        "sequence": selected.get("sequence"),
         "checks": result.get("records", result.get("checks", [])),
         "sampled_paths_or_ranges": result.get("sampled_paths_or_ranges", []),
         "reused_proof_identities": result.get("reused_proof_identities", []),

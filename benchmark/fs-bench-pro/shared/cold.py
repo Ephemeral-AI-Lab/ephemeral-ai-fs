@@ -20,7 +20,8 @@ METADATA_POLICY = {"contract": "namespace-fixture-metadata-v1", "file_mode": 0o6
 
 
 def applies(selection):
-    return (selection.get("family", selection.get("family_id")) == "init_namespace"
+    return (not selection.get("sequence")
+            and selection.get("family", selection.get("family_id")) == "init_namespace"
             and selection.get("case", selection.get("scenario_id")) == "namespace-100000")
 
 
