@@ -357,3 +357,64 @@ mixed-v2` family timer 16.107 s against the registered `unrelated-history500
 Posted as comments on #102, #108, #112, #114 with this campaign's measured
 results; none is closed on this campaign's evidence alone — each keeps its
 precise remaining gate (see the comments and §5).
+
+## 8. Comparison against the earlier v0.1.5 baselines
+
+The earlier v0.1.5-line baselines are the #104 campaign (2026-09-10,
+promoted-uncompacted schema10), the #110 requalification (same day, source
+`cc8025fcd` = the #109 Init-reduction candidate) and the #118 treatments
+(fsync-qualified `f8fa59fab`, `6693224e…` = +#116, final treatment
+`b5f089eb…` = +#107). The #120 candidate is that lineage **plus fsync batching,
+#116 bounded pending, #107 pack coalescing and the behavior-neutral `3e308a8f2`**.
+All comparisons are single unpaired samples, matched on exact family + case +
+identical timer; reused values are marked and are not candidate measurements.
+
+**Candidate vs #104 (198/198 cells matched; fresh-only n=182):** median ratio
+**0.993**; ≥15 % slower **29 fresh** (31 including reused); ≥15 % faster **38
+fresh** (40 including reused). For context, the #110 requalification recorded
+median 1.013 vs #104 (30 slower / 11 faster) — the candidate is a slight net
+improvement over the #110-era position relative to #104. Against the common
+v0.1.3 reference the candidate is also modestly better than #110: median 1.34×
+vs 1.379×, 139/198 vs 154/198 cells ≥15 % slower.
+
+**Where the candidate improved vs #104** (fsync batching + #116 paying off):
+`workspace-distributed-sdk-edit-500` 4.131 → **0.666 s (0.16×)** and `-100`
+0.45× (the #116 bounded-pending win); the unrelated-history cells 0.43×–0.68×
+(`unrelated-500` 16.107 vs 23.781 s); `agent-episodes-10` 0.50×;
+`overwrite-middle-4k-on-500mib` 0.68×. Ten of sixteen family medians are ≤ 1.0
+(best: `dedup_branch_history` 0.862, `mixed_load_bearing` 0.896,
+`namespace_mutation` 0.920).
+
+**Where the candidate regressed vs #104** (the measured fixed per-iteration
+costs): the worst are ms-scale cells — `payload-random-read-1` 1.41× (+6 ms),
+`chunk-count-decrease-on-100mib` 1.37×, `tiny-stat-10` 1.34× (+7 ms),
+`namespace-100` 1.32× (+7 ms), `delete-middle-4k-on-500mib` 1.33× — consistent
+with the #116/#107 fixed costs (+2.49 ms/exec, +1.46 ms/commit, ≈+0.4 ms/phase)
+measured in the unrelated-500 RCA. Six family medians sit between 1.01× and
+1.05×. (`git-tool-500` at 1.25× is the reused fsync-qualified value, not a
+candidate measurement.)
+
+**Tracked cells across the v0.1.5 chain:**
+
+| Cell | #104 | #110 | fsync-qualified | #120 candidate |
+|---|---:|---:|---:|---:|
+| namespace-100000 Init (cold) | 4.841 s | 3.759 s | — | 4.398 s (0.91× #104; +0.64 s of the #109 win given back; 2.7 s target owner-waived) |
+| unrelated-500 | 23.781 s | 23.042 s | 13.791 s | 16.107 s (0.68× #104; +2.32 s vs the fsync peak → the §4 FAIL) |
+| distributed-500 | 5.249 s | 4.191 s | — | 4.304 s |
+| hotset-500 | 5.758 s | 4.905 s | — | 4.914 s |
+| store-footprint-unique-100000 (timer / allocated) | 5.042 s | 3.787 s | 3.962 s / 530,358,272 B | 5.397 s / 520,142,848 B (timer +36 % vs fsync-qualified = #107 pack-row UPDATE cost on one giant commit; **footprint −1.9 %**) |
+| distributed-sdk-edit-500 | 4.131 s | 3.239 s | — | 0.666 s |
+| dedup-cdc-scattered-100 | 306.3 ms | 380.3 ms | — | 308.3 ms (back at the #104 level) |
+
+**One-line summary:** against the last full v0.1.5 baseline the candidate is
+neutral-to-slightly-better in aggregate (median 0.993×, more cells faster than
+slower), with the #116/#107 mechanisms trading large wins on SDK-edit-heavy and
+capacity-bound cells and a −1.9 % store-footprint reduction against small fixed
+per-iteration costs on ms-scale cells — plus the one material regression:
+`unrelated-500` giving back 2.32 s of the fsync-qualified repair (the §4 S2,
+owner decision pending).
+
+Caveats: single unpaired samples across treatments that differ by three real
+mechanisms; reused values marked; #110's per-case data was removed in the
+#117-era cleanup, so only its recorded summary and the worst-case values quoted
+in #112 survive for the middle column.
