@@ -216,3 +216,166 @@ fn metadata_fingerprint_matches_never_bypass_corrupt_or_missing_groups() {
         );
     }
 }
+
+fn fingerprint_rows(index: &ValueIndex) -> Vec<(i64, u32)> {
+    index
+        .connection
+        .prepare("SELECT fingerprint,ordinal FROM values_by_fingerprint ORDER BY ordinal")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+#[test]
+#[ignore = "explicit production metadata-retention history proof"]
+fn metadata_fingerprint_reopen_tail_matches_original_replay_and_bounds_payload_work() {
+    let mut f = Fixture::new();
+    let values = (0..165).map(value).collect::<Vec<_>>();
+    let mut groups = 0;
+    for scale in [1, 2, 4] {
+        // Unequal whole groups put eviction at boundaries which an ordinal
+        // subtraction cannot recover. Grow the actual catalogue past 1x/2x/4x
+        // retention, with at least one full reset each time.
+        f.append(&[value(999)], 1);
+        groups += 1;
+        f.append(&values, if scale == 4 { 1590 } else { 795 });
+        groups += if scale == 4 { 1590 } else { 795 };
+        f.append(&values[..17], 3);
+        groups += 3;
+        f.append(&values[..1], 2);
+        groups += 2;
+        let path = f.db.path().to_owned();
+        let replacement =
+            StoreDb::create(f.folder.join(format!("replacement-{scale}.sqlite"))).unwrap();
+        drop(std::mem::replace(&mut f.db, replacement));
+        f.db = StoreDb::connect(path).unwrap();
+        let end = f.db.next_metadata_ordinal().unwrap();
+        assert!(end > scale * INDEX_VALUES as u64);
+
+        let mut original = ValueIndex::new().unwrap();
+        let before = f.db.physical_storage_receipt();
+        // The unmodified replay loop, starting at ordinal 1, is the comparator.
+        original.sync_to(&f.db, end).unwrap();
+        let full = f.db.physical_storage_receipt().since(before);
+        assert_eq!(full.metadata_pool_group_fetches, groups);
+
+        let mut recovered = ValueIndex::new().unwrap();
+        let before = f.db.physical_storage_receipt();
+        recovered.sync(&f.db).unwrap();
+        let tail = f.db.physical_storage_receipt().since(before);
+        assert_eq!(fingerprint_rows(&recovered), fingerprint_rows(&original));
+        assert_eq!(recovered.entries, original.entries);
+        assert_eq!(recovered.next, original.next);
+        assert!(recovered.entries <= INDEX_VALUES);
+        let retained_groups: u32 =
+            f.db.reader()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM metadata_value_groups WHERE first_ordinal>=?1",
+                    [(end - recovered.entries as u64) as i64],
+                    |row| row.get(0),
+                )
+                .unwrap();
+        assert_eq!(tail.metadata_pool_group_fetches, u64::from(retained_groups));
+        assert!(tail.metadata_pool_group_fetches < full.metadata_pool_group_fetches);
+        assert!(tail.metadata_pool_decoded_bytes <= INDEX_VALUES as u64 * 128);
+        let queries = values
+            .iter()
+            .copied()
+            .chain([value(999), value(9000), values[0]])
+            .collect::<Vec<_>>();
+        assert_eq!(
+            recovered.find_batch(&f.db, &queries).unwrap(),
+            original.find_batch(&f.db, &queries).unwrap(),
+        );
+        println!(
+            "tail scale={scale} values={} full_groups={} tail_groups={} retained={} decoded={}",
+            end - 1,
+            full.metadata_pool_group_fetches,
+            tail.metadata_pool_group_fetches,
+            recovered.entries,
+            tail.metadata_pool_decoded_bytes
+        );
+
+        let before = f.db.physical_storage_receipt();
+        recovered.sync(&f.db).unwrap();
+        assert_eq!(
+            f.db.physical_storage_receipt()
+                .since(before)
+                .metadata_pool_group_fetches,
+            0
+        );
+        f.append(&[value(9001)], 1);
+        groups += 1;
+        let before = f.db.physical_storage_receipt();
+        recovered.sync(&f.db).unwrap();
+        assert_eq!(
+            f.db.physical_storage_receipt()
+                .since(before)
+                .metadata_pool_group_fetches,
+            1
+        );
+        original
+            .sync_to(&f.db, f.db.next_metadata_ordinal().unwrap())
+            .unwrap();
+        assert_eq!(fingerprint_rows(&recovered), fingerprint_rows(&original));
+    }
+}
+
+#[test]
+#[ignore = "explicit production metadata-retention corruption proof"]
+fn metadata_fingerprint_reopen_tail_preserves_catalogue_checks_and_retained_authentication() {
+    let f = Fixture::new();
+    let values = (0..165).map(value).collect::<Vec<_>>();
+    f.append(&values, 795);
+    let end = f.db.next_metadata_ordinal().unwrap();
+    let first = ValueIndex::retained_start(&f.db, end).unwrap();
+    assert!(first > 1);
+    for sql in [
+        "DELETE FROM metadata_value_groups WHERE first_ordinal=1",
+        "UPDATE metadata_value_groups SET count=count-1 WHERE first_ordinal=1",
+        "PRAGMA ignore_check_constraints=ON; UPDATE metadata_value_groups SET count=166 WHERE first_ordinal=1; PRAGMA ignore_check_constraints=OFF",
+    ] {
+        f.db.reader().unwrap().execute_batch("BEGIN").unwrap();
+        f.db.reader().unwrap().execute_batch(sql).unwrap();
+        assert!(ValueIndex::new().unwrap().sync(&f.db).is_err(), "{sql}");
+        f.db.reader().unwrap().execute_batch("ROLLBACK").unwrap();
+    }
+    f.db.reader().unwrap().execute_batch("BEGIN").unwrap();
+    f.db.reader()
+        .unwrap()
+        .execute(
+            "UPDATE metadata_value_groups SET digest=zeroblob(32) WHERE first_ordinal=?1",
+            [first as i64],
+        )
+        .unwrap();
+    assert!(ValueIndex::new().unwrap().sync(&f.db).is_err());
+    f.db.reader().unwrap().execute_batch("ROLLBACK").unwrap();
+    let mut index = ValueIndex::new().unwrap();
+    index.sync(&f.db).unwrap();
+    assert_eq!(
+        index.find_batch(&f.db, &[values[0]]).unwrap()[&values[0]],
+        first as u32
+    );
+
+    // An evicted group's body is not consumed by recovery. The explicit full
+    // catalogue validator still rejects it, as does any later read of that group.
+    f.db.reader().unwrap().execute_batch("BEGIN").unwrap();
+    f.db.reader()
+        .unwrap()
+        .execute(
+            "UPDATE metadata_value_groups SET digest=zeroblob(32) WHERE first_ordinal=1",
+            [],
+        )
+        .unwrap();
+    ValueIndex::new().unwrap().sync(&f.db).unwrap();
+    assert!(f.db.validate_metadata_groups().is_err());
+    assert!(f
+        .db
+        .read_metadata_values(f.db.metadata_group(1).unwrap())
+        .is_err());
+    f.db.reader().unwrap().execute_batch("ROLLBACK").unwrap();
+    f.db.validate_metadata_groups().unwrap();
+}

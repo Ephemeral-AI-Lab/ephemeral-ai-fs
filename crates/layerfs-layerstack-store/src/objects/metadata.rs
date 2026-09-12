@@ -110,7 +110,8 @@ mod tests {
     fn pool_work_allowance_is_per_chain_not_per_wave() {
         let mut pool = PoolRead::default();
         pool.groups.insert(1, cached(1, VALUES_PER_GROUP));
-        pool.groups.insert(1 + VALUES_PER_GROUP as u64, cached(2, 3));
+        pool.groups
+            .insert(1 + VALUES_PER_GROUP as u64, cached(2, 3));
         let retained = pool.retained;
         pool.retained += 73 * 8 + 256;
         pool.decoded_work = 31 * 1024 * 1024;
@@ -232,6 +233,54 @@ impl ValueIndex {
         if end < self.next {
             return Err(StoreError::Integrity("metadata index chronology"));
         }
+        if self.next == 1 && end > 1 + INDEX_VALUES as u64 {
+            self.next = Self::retained_start(db, end)?;
+        }
+        self.sync_to(db, end)?;
+        db.note_physical(crate::PhysicalStorageReceipt {
+            metadata_index_sync_ns: super::elapsed_ns(started),
+            ..Default::default()
+        });
+        Ok(())
+    }
+
+    // Reproduce the exact whole-group eviction recurrence before reading payloads
+    // that would immediately be discarded. ponytail: the header audit is O(groups);
+    // payload authentication/insertion after reopen is bounded to INDEX_VALUES.
+    // Complete catalogue authentication remains in validate_metadata_groups, and
+    // every value actually reused still passes find_batch's authenticated check.
+    fn retained_start(db: &StoreDb, end: u64) -> Result<u64> {
+        let connection = db.reader()?;
+        let mut statement = connection.prepare_cached(
+            "SELECT first_ordinal,count FROM metadata_value_groups ORDER BY first_ordinal",
+        )?;
+        let mut rows = statement.query([])?;
+        let mut next = 1u64;
+        let mut first = 1u64;
+        let mut entries = 0usize;
+        while let Some(row) = rows.next()? {
+            let ordinal = u64::from(row.get::<_, u32>(0)?);
+            let count = row.get::<_, u32>(1)? as usize;
+            if ordinal != next || !(1..=VALUES_PER_GROUP).contains(&count) {
+                return Err(StoreError::Integrity("metadata catalogue gap/range"));
+            }
+            next = next
+                .checked_add(count as u64)
+                .filter(|next| *next <= 1 + u64::from(u32::MAX))
+                .ok_or(StoreError::Integrity("metadata ordinal maximum"))?;
+            if entries + count > INDEX_VALUES {
+                first = ordinal;
+                entries = 0;
+            }
+            entries += count;
+        }
+        if next != end {
+            return Err(StoreError::Integrity("metadata catalogue endpoint"));
+        }
+        Ok(first)
+    }
+
+    fn sync_to(&mut self, db: &StoreDb, end: u64) -> Result<()> {
         if self.next < end {
             // One scratch transaction per synchronization: every group in this
             // call commits together or nothing does. Cursor and entry counts
@@ -270,10 +319,6 @@ impl ValueIndex {
             }
             transaction.commit()?;
         }
-        db.note_physical(crate::PhysicalStorageReceipt {
-            metadata_index_sync_ns: super::elapsed_ns(started),
-            ..Default::default()
-        });
         Ok(())
     }
 
