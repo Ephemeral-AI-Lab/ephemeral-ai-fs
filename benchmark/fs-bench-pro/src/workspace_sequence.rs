@@ -173,6 +173,28 @@ pub(super) fn run(args: &[OsString]) -> AnyResult<()> {
     };
     let mut history = Vec::with_capacity(commits);
     for step in 0..commits {
+        if reopen {
+            // Observation only: prove that a fresh index actually crosses its
+            // retention window. Keep this indexed read outside the chain timer.
+            let observed = Instant::now();
+            let connection = rusqlite::Connection::open_with_flags(
+                &database,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )?;
+            let values: i64 = connection.query_row(
+                "SELECT COALESCE((SELECT first_ordinal + count - 1 FROM metadata_value_groups ORDER BY first_ordinal DESC LIMIT 1), 0)",
+                [], |row| row.get(0),
+            )?;
+            drop(connection);
+            emit(
+                "sequence-metadata-catalogue",
+                &[
+                    ("step", step.to_string()),
+                    ("values_before_reopen", values.to_string()),
+                    ("observation_ns", elapsed_ns(observed).to_string()),
+                ],
+            );
+        }
         let edits = plans(fixture, scenario.regular_files, count, step)?;
         // Request construction is setup, outside the edit and full chain clocks.
         let requests = edits
@@ -389,10 +411,22 @@ pub(super) fn run(args: &[OsString]) -> AnyResult<()> {
             }
             verify(&store, branch, None, fixture, &unchanged)?;
             client = benchmark_client(store.clone(), Some(&binding))?;
-            emit("sequence-verification", &[("status", quote("PASS")), ("changed_files_checked", count.to_string()),
-                ("fresh_reopen", "true".into()), ("wall_ns", elapsed_ns(started).to_string()),
-                ("unchanged_files_checked", unchanged.len().to_string()),
-                ("coverage", quote("all changed-file bytes/lengths before and after reopen, plus declared unchanged-file sample; no exhaustive unchanged namespace claim"))]);
+            emit(
+                "sequence-verification",
+                &[
+                    ("status", quote("PASS")),
+                    ("changed_files_checked", count.to_string()),
+                    ("fresh_reopen", "true".into()),
+                    ("wall_ns", elapsed_ns(started).to_string()),
+                    ("unchanged_files_checked", unchanged.len().to_string()),
+                    (
+                        "coverage",
+                        quote(
+                            "all changed-file bytes/lengths before and after reopen, plus declared unchanged-file sample; no exhaustive unchanged namespace claim",
+                        ),
+                    ),
+                ],
+            );
         }
     }
     if proof {

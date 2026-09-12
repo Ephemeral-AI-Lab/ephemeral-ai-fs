@@ -146,3 +146,15 @@ selected family's current help. Historical-access uses its specialized
 retained Store; repository history uses explicit `--profile stride-N` and the
 same measured run for `--storage-verify-run`. An absent retired history is a
 missing prerequisite to resolve, never a retained exact-candidate proof.
+
+## Updated owner cold-target disposition
+
+The owner explicitly superseded the2.7s absolute gate during this run:
+"we need to get better but does not mean2.7 is a must because in v0.1.5 we
+introduced authentication, pack, delta encoding which might increases time".
+The absolute target is now **owner-WAIVED**; prior hard-gate descriptions above
+record the earlier contract. Require measured current-code improvement and
+no unexplained material regression, preserving full verified-cold acquisition,
+authentication, packing, DELTA encoding and resource protections. Existing
+runner TARGET_MISS remains visible and receives this explicit owner disposition.
+See `owner-cold-target-waiver.json` in the fresh evidence root.

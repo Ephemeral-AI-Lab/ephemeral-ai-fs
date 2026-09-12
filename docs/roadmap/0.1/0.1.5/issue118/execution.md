@@ -1,8 +1,11 @@
 # Issue118 execution ledger
 
 Started 2026-09-12 on main at `42599d4f7`. Current issue118 supersedes
-historical campaign repetition requirements. One persistent worktree; unrelated
-web/cloud source preserved. Historical raw evidence was owner-retired under
+historical campaign repetition requirements. This run stays on main; unrelated
+web/cloud source preserved. The owner subsequently requested a separate
+`layerfs-transition-experiments` worktree in another task; it is preserved as an
+explicit owner exception to the original sole-worktree criterion. Its resource
+work shares the measurement lock and is not our source or qualification. Historical raw evidence was owner-retired under
 issue117 and supplies no current qualification.
 
 Fresh raw records: `benchmark-results/host-store/issue118/20260912/`.
@@ -17,8 +20,8 @@ is enforced by the shared runner. Initial host free space: 345 GiB.
 | 1 | Review/consolidate intended dirty compaction removal; preserve unrelated source | Product/harness committed; unrelated web/cloud preserved |
 | 1 | Shared build cache, immutable executable custody, bounded retention, focused infra checks, smoke and small pair | 47 infra checks + public smoke + n3 A/A + independent proof PASS; retention follow-up in progress |
 | 2 | Highest-tier carry, merge failure atomicity, actual RAM/FD/disk accounting; focused and production-budget proofs | Component/default-budget/reduced-Workspace proofs PASS; see below |
-| 2 | Complete namespace fixture validation; reduced-budget Workspace/public non-spilling qualification | PENDING |
-| 3 | Fresh disjoint edit attribution >=90%, dominant fix, edit + matching Commit + chain qualification | PENDING |
+| 2 | Complete namespace fixture validation; reduced-budget Workspace/public non-spilling qualification | Fixture + reduced Workspace PASS; public sequence qualification next |
+| 3 | Fresh disjoint edit attribution >=90%, dominant fix, edit + matching Commit + chain qualification | Attribution 99.9% PASS; facts + demand-only lookup implemented/focused PASS; public pairing next |
 | 4 | Reopen/history fix and deduplicated #108/#112/#114/#100/#107/#102/#110 scope | IN_PROGRESS |
 | 5 | Authentic namespace-100000 cold Init <=2.7s and affected final checks | Current control FAIL 4.162195375s; optimization pending |
 | 6 | After optimization: #116 capability audit published before capacity changes | PENDING |
@@ -99,3 +102,48 @@ Every raw path above is relative to the fresh evidence root at the top. Existing
 ignored production proofs were explicitly executed where reported PASS. Other
 required public/terminal checks remain pending, not silently inherited from
 retired historical evidence.
+
+## Reservation and edit follow-through
+
+- `a36c60891`/`440584938` fix excess inline prepared-slot storage and stale
+  input-association accounting without enlarging the2MiB physical budget.
+  The original100000-file metadata-cardinality public case now PASSes in4.708s;
+  complete performance/proof commands8.36s/7.52s. Independent verification is
+  the registered bounded storage/reopen/edit proof, not exhaustive100000-file
+  readback. Full root cause, numbers and identities: `physical-reservation-root-cause.md`.
+- Fresh inactive K100 attribution found560.670ms unnecessary lookup work and
+  97.993ms prior-fact publication in765.465ms edits. Named daemon coverage99.9167%;
+  active preparation moved812.543ms into setup, so it is no optimization claim.
+  See `edit-attribution.md` for disjoint intervals and all residuals.
+- `158d8fad2` skips full prior-fact publication only for EDIT_BEGIN; snapshot
+  consumers retain publication. `14ef14262` acquires only demanded SDK path
+  metadata. Ordinary FUSE grouped prefetch and authenticated caches remain.
+  Focused100-edit proof:200 requested nodes, zero optional sibling/content
+  exports, real Commit/reopen and full bytes of100changed+100unchanged files PASS.
+  Old one-lookup optional work99siblings/409600exportB falls to0; canonical
+  Store bytes454334→6144 with identical requested metadata. Public timing pending.
+- No external-library patches: all implementation is LayerFS-owned, with
+  Cargo manifests/lockfile and dependency sources unchanged.
+
+## Updated owner cold-target disposition
+
+The owner explicitly superseded the2.7s absolute gate during this run:
+"we need to get better but does not mean2.7 is a must because in v0.1.5 we
+introduced authentication, pack, delta encoding which might increases time".
+The absolute target is now **owner-WAIVED**; prior hard-gate descriptions above
+record the earlier contract. Require measured current-code improvement and
+no unexplained material regression, preserving full verified-cold acquisition,
+authentication, packing, DELTA encoding and resource protections. Existing
+runner TARGET_MISS remains visible and receives this explicit owner disposition.
+See `owner-cold-target-waiver.json` in the fresh evidence root.
+
+## Build freshness failure, retained explicitly
+
+The post-lookup Linux image declared new source but contained byte-identical
+old daemon/FUSE binaries. Cargo reused the shared target after COPY changed
+source. The diagnostic caught unchanged4950facts/1340395wireB for100edits.
+The new image and its two runs are rejected as exact candidate qualification;
+all artifacts remain. The host cold screen4.150→3.900s is exploratory only.
+Repair is in LayerFS-owned build invalidation, preserving cached external
+dependencies. See `image-freshness-failure.json`; no performance retries were
+launched against this falsely fresh image.
