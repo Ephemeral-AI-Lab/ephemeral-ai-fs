@@ -553,7 +553,7 @@ product code. The re-run is the identity-current cohort and is presented first i
 
 Per-arm identity: `arm-identity-<arm>.json`, `identity-<arm>.json`,
 `binary-sha256-<arm>.txt`, `image-<arm>.txt`, `image-id-<arm>.txt`.
-`evidence-manifest.json` (sha256 `c738189d2edde9fb68a93757b688c2d291737e628d4eaf0aacab0e36994d642c`)
+`evidence-manifest.json` (sha256 `c738189d2edde9fb68a93757b688c2d291737e628d4eaf0aacab0e36994d642c`); this results document at the verdict commit is sha256 `225b23eceb644d31ba00bd89c0aa41e3ece4ffaa54dc8ac6a7fa1ba47347b58c` and changes with any later wording edit, so the manifest hashes it per commit rather than the report quoting itself
 hashes every retained evidence file in the declared scope: 1111 files, 87 949 147
 bytes, excluding only the two independently owned arm build trees and the
 reconstructed per-cell Store copies and runtime scratch declared in §8.
