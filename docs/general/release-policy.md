@@ -30,7 +30,19 @@ A release candidate is eligible only when:
   components must be version-matched. The [0.1.3 release contract](../../release-notes/0.1.3/release-contract.md)
   defines the upgrade boundary; do not infer downgrade or mixed-version support.
 - The owner-approved 0.1.4 Developer Preview is also an explicit Store-format exception: new Stores use schema 7, supported development schema 6 remains legacy, and released schema 5 is rejected without migration. Canonical identity is preserved. The [0.1.4 release contract](../../release-notes/0.1.4/release-contract.md) defines this boundary.
-- The owner-authorized v0.1.5 implementation is a scoped canonical/Store-format exception: new Stores use schema 8 and whole-file SmallContent below 128 KiB; supported schema 6/7 opens do not promote. Offline schema-7 promotion is explicit and preserves old payloads/page layouts. Schema 5 and schema-6 upgrade requests are unsupported. The [v0.1.5 specification](../roadmap/0.1/0.1.5/spec.md) defines the boundary. Smoke-only implementation evidence does not satisfy the release requirements above.
+- The owner-authorized v0.1.5 Developer Preview is the current scoped
+  canonical/Store-format exception: new Stores use **ordinary schema 10**
+  storage (4 KiB pages, exact CAS, compression, bounded whole-file small
+  content below 128 KiB, bounded delta chains, large-file CDC/extents, compact
+  scoped namespaces and pooled metadata), while supported schema-6/7/8/9 Stores
+  open without promotion. **Explicit compaction is removed by the 2026-09-11
+  owner decision** — there is no compaction API or binary in this release, and
+  previously compacted Stores remain readable through the retained
+  authenticated LFCNT1 read path. Canonical identity is preserved. The
+  [v0.1.5 specification](../roadmap/0.1/0.1.5/spec.md) and the
+  [v0.1.5 release contract](../../release-notes/0.1.5/release-contract.md)
+  define this boundary. Benchmark evidence below is single-sample campaign
+  evidence, not a universal speed or storage guarantee.
 - A pre-1.0 minor release such as `0.2.0` may define a revised public or
   storage contract and must document its compatibility boundary explicitly.
 - A 1.0-or-later major release follows ordinary stable semantic-versioning
@@ -50,6 +62,15 @@ All benchmark specifications, execution, evidence, and reporting must satisfy
 the [LayerFS benchmark rules](benchmark_rules.md). An authenticity, timing,
 family-completeness, memory-attribution, custody, or claim-mapping failure
 blocks publication independently of numerical performance.
+
+The v0.1.5 release reuses the complete #120 campaign rather than re-running it.
+Targets the owner waived for v0.1.5 (unrelated-history 500 < 15 s, cold Init
+2.7 s, Stage2 K10, and the K32000 historical-family reporting target) are
+recorded as waivers with their exact measured values, scope, reason and residual
+risk in [release-notes/0.1.5/waivers.md](../../release-notes/0.1.5/waivers.md).
+A waiver retires that target for this release only; it does not convert the
+measured result into a pass, and it does not lower the target for any other case
+or for a future release.
 
 The [0.1.2 benchmark report](../../release-notes/0.1.2/benchmark-results.md)
 records complete SDK edit evidence and the release-source namespace/Store
