@@ -31,6 +31,8 @@ Contract: [commit-stage3-contract.md](commit-stage3-contract.md).
 Evidence:
 [commit-stage3-evidence-pointer.md](commit-stage3-evidence-pointer.md),
 root `/Users/yifanxu/Ephemeral-AI-Lab/layerfs-commit-stage3-evidence/20260912T000000Z`.
+Issue update:
+https://github.com/Ephemeral-AI-Lab/layerfs/issues/111#issuecomment-5642848788
 
 ## 1. What was wrong
 

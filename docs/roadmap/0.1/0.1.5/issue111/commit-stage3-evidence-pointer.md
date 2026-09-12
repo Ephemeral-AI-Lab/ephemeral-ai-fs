@@ -59,4 +59,20 @@ copied byte-identically into both arms from the Stage 2 terminal arm-C snapshot
 | `cells/<sequence>/stage3-<arm>/…` | raw cells, one fresh Store and container per entry |
 | `collect.py`, `analyze.py` | adapted collector and analyzer |
 | `custody/` | pre-work head, status, diff and untracked hashes |
-| `evidence-manifest.json` | hashes of every retained evidence file |
+| `evidence-manifest.json` | hashes of every retained evidence file in the declared scope |
+| `custody/fixture-damage.json` | the two missing 100 MB fixture payload files and both validator receipts |
+| `custody/per-cell-store-bytes.json` | byte totals of the per-cell Store copies pruned from evidence scope |
+
+**Declared evidence scope.** Per-cell `store/` copies and `layerfs-runtime/` scratch
+are reconstructed artifacts, not evidence: every derived number comes from
+`result.json`, the merged `output.log`, `command.json`, `exit.json` and
+`cleanup.json`, all of which are retained. Their byte totals are recorded in
+`custody/per-cell-store-bytes.json` before pruning (84 920 MiB across 279
+directories), which was required at 99 % root-volume capacity. The two arm build
+trees remain excluded and are identified by `arm-identity-<arm>.json`.
+
+**Fixture custody failure.** The immutable `namespace-100000` fixture lost two
+100 MB payload files during this campaign; `fixture-validation.json` (before)
+passes and `fixture-validation-final.json` (after) fails. Details and the rejected
+identity-matched run are in `custody/fixture-damage.json` and
+`commit-stage3-results.md` §5.3.
