@@ -100,15 +100,17 @@ mutation, and a wide single directory are different capabilities.
 
 ## 3. Bounded reproductions
 
-All probes run the **actual** workspace code (`LayerStackStore` +
-`Workspace`) and report the exact rejection point, the error value, and the
-live charges at that point. They are diagnostics for the audit, not public
-performance cases; public cases and their proofs remain the qualification
-surface. Command and raw output are recorded in
-`benchmark-results/host-store/issue118/20260912/issue116-audit/`.
+All probes drive the **actual** public SDK route
+(`Workspaces::edit_workspace_file_range` over `LayerStackStore` and a real
+Workspace session) and report the exact rejection point and public error. They
+are diagnostics for the audit, not public performance cases; public cases and
+their proofs remain the qualification surface. Fixture source files are created
+before the session opens and are never part of a measured edit. Raw output is
+recorded in `benchmark-results/host-store/issue118/20260912/issue116-audit/`.
 
 ```bash
-cargo +1.85.1 test -p layerfs-workspace --release --lib issue116_phase1_probe -- --ignored --nocapture
+cargo +1.85.1 test -p layerfs-workspace --release --test issue116_capacity \
+  -- --ignored --nocapture --test-threads=1
 ```
 
 ## 4. Interactions
@@ -128,9 +130,58 @@ cargo +1.85.1 test -p layerfs-workspace --release --lib issue116_phase1_probe --
   so a failed edit leaves contents, charges and revisions unchanged. `edit_many`
   and `extend_splices` retain the same property per batch member.
 
-## 5. Recommendations
+## 5. Bounded reproductions: measured results
 
-See §6 for the verified observations, dispositions and the bounded repairs that
-follow from them. No restriction is removed merely because a counter exists;
-each removal below replaces the count proxy with the resource quantity that
-actually bounds the representation.
+Probe source: `crates/layerfs-workspace/tests/issue116_capacity.rs` (explicit
+selection only, `#[ignore]` by default). Raw output:
+`benchmark-results/host-store/issue118/20260912/issue116-audit/probe.log` and
+`probe-fixed-a.log`.
+
+| Probe | Workload | Before the repair | After the repair |
+|---|---|---|---|
+| A | one file, repeated 4-byte overwrite at offset 0 through `Workspaces::edit_workspace_file_range` | accepted 4,096, then `Storage(InvalidInput("workspace edit limit"))` | accepted 10,000 of 10,000, no rejection, exact final contents |
+| B | one empty file, repeated 4 KiB append-shaped inline edits | accepted 2,048 (8,388,608 bytes), then `Storage(InvalidInput("workspace inline limit"))` | unchanged: this is the real 8 MiB pending-workspace inline budget, not an edit counter |
+| C | 2,000 distinct pre-existing files, one 1-byte inline edit each, same pending workspace | per-edit cost was flat (63 s per 100 edits) and the run was stopped at 400 edits as unproductive; no piece/fact rejection observed | not re-run after the repair; no rejection is attributable to the edit counter here |
+| F | per-edit cost against pending-set size, public route | 1 file: 20 edits in 17 ms; 200 files: 20 edits in 1,114 ms (≈55 ms/edit) | unchanged |
+
+Probe A is the #116 primary case. Before the repair the rejection happened while
+the edited file still held **one** pending piece and the workspace spool held
+only the few kilobytes of acknowledged replacement data: no piece-count,
+piece-allocation, inline, spool or frame budget was near its limit. The count
+itself was the only cause. After the repair the same public route accepts
+10,000 counted edits, and the final file contents equal the last replacement
+(asserted, not inferred).
+
+Probe B is **not** an edit-counter rejection and is retained as a real budget:
+8 MiB of pending inline data per workspace. Raising it is not part of this
+repair and no quota was enlarged.
+
+Probe F measures a separate, pre-existing cost question: the public
+`Workspaces::edit_workspace_file_range` route costs roughly 55 ms per edit when
+the pending workspace holds 200 changed files versus well under 1 ms with one
+file. Probe C at 2,000 files was flat at ≈630 ms per edit, so the cost grows
+with the pending-set size but was not observed to be super-linear across
+100–400 edits. This is a **latency** observation, not a correctness or capacity
+limit: it is reported here for a prospective follow-up and is not used to claim
+a #116 restriction. The historical ≈5,461 changed-file boundary remains a
+route-specific observation with no located counter; the located per-workspace
+bounds in §1.1 remain the enforceable ones.
+
+## 6. Dispositions and the bounded repair
+
+| Restriction | Disposition | Rationale |
+|---|---|---|
+| `MAX_EDITS_PER_FILE` (4,096) | **Removed** as a rejection criterion (commit `ead812e78`) | Redundant proxy: probe A shows rejection with a single piece and a few kilobytes of spool. The counter is now `u64` with checked arithmetic so removal cannot move rejection to integer overflow. Wire, owner and backing re-validation of the same bound removed; the `count == 0` batch guard is retained. |
+| `MAX_PIECES_PER_FILE` (8,193) | Retained | Real per-file representation bound; `PieceTree::replace` rejects before any state change. |
+| `MAX_PIECE_ALLOCATION` (2 MiB) | Retained | Real aggregate pending-workspace bound; measured in `size_of::<PieceNode>()` units. |
+| `MAX_INLINE_PER_EDIT` / `MAX_INLINE_PER_WORKSPACE` | Retained | Real request and workspace bounds; probe B reaches the workspace one at 8 MiB. |
+| Spool quota, final-delta memory | Retained | Real policy budgets; `discard`/checkpoint release them. |
+| Result length, logical zero, predicted zero extents | Retained | Representation bounds for sparse/growing results. |
+| Fact memory 96 MiB, node 16 MiB, frame 1 MiB+64 KiB | Retained | Protocol/publication bounds; a wide changed set must stream through pages rather than raise them. |
+| Path bytes/components, object sizes, tree scratch, runtime permits, read cache | Retained | Independent API/format/compatibility or liveness bounds. |
+| Ancestry traversal 1,000,000 steps | Retained, documented | Incomplete traversal must not be returned as proven non-membership. |
+
+The repair is deliberately narrow: it removes one count proxy and keeps every
+resource bound. No quota, worker count, cache or protocol limit was increased,
+and no external library was patched.
+
