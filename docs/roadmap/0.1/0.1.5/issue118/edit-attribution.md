@@ -54,3 +54,52 @@ Proceed with the small EDIT_BEGIN-only snapshot omission because redundant growi
 Required follow-up: exact-source nonce-free alternating pairs for edits, matching Commit and complete chain; fresh fullFREEZE/preview/fsync visibility; local/socket failure/retry and spool-retention proofs; active mmap/FUSE ordering checks. No external library is modified.
 
 Facts-only implementation qualification: two diagnostic/failure-retry checks PASS (6.201s command), two local/socket backing proofs PASS (4.447s), private-preview/root-parity PASS (0.134s), and stale-folio SDK-range/truncation proof PASS (0.128s). The first socket proof FAIL (7.339s) asserted positive backing traffic for the removed pre-edit snapshot; its replacement asserts zero cached-edit traffic and positive fullFREEZE publication, with latest edited facts present. Raw commands/exits/walls, including the failure, are in `edit-facts-*.json` beside the attribution JSON. The Workspace compile reports an unrelated Stage3 `private_interfaces` warning; its owner was notified. Actual mounted mmap/FUSE and nonce-free combined performance qualification remain pending with the root runner.
+
+## Qualified combined edit result
+
+Fresh plain n3 alternating pairs per variant used immutable pre-edit-control
+`fc9192f13c12…` and repaired qualified-v1 `3e006acbc99b…`, actual image
+`sha256:8bf04540e9ea5b7d22569bbdf5bbbc1b88f107b6340529c94c522373cc83b6ca`.
+The current candidate first demonstrated zero prior-fact nodes/wire bytes and
+200 demanded backing calls in a separate nonce diagnostic. The earlier
+post-lookup image had stale Linux executables; its diagnostic remains FAIL and
+was excluded. No plain timing sample used that rejected image.
+
+| Variant / median metric | Control ms | Candidate ms | Median paired delta ms |
+|---|---:|---:|---:|
+| inactive / edit_ns | 796.012 | 218.505 | -561.061 |
+| inactive / commit_ns | 192.048 | 168.256 | -20.386 |
+| inactive / edit_commit_ns | 992.546 | 386.761 | -590.029 |
+| inactive / complete_chain_ns | 1014.443 | 405.454 | -593.823 |
+| inactive / cpu_ns | 617.248 | 225.645 | -396.380 |
+| inactive / command_wall_ns | 5475.022 | 4866.570 | -676.373 |
+| active / edit_ns | 183.368 | 104.565 | -78.738 |
+| active / commit_ns | 187.072 | 186.124 | +0.311 |
+| active / edit_commit_ns | 379.521 | 291.630 | -87.573 |
+| active / complete_chain_ns | 1098.096 | 1013.266 | -95.508 |
+| active / cpu_ns | 618.012 | 594.632 | -23.949 |
+| active / command_wall_ns | 4938.985 | 4820.002 | -142.671 |
+
+All12 samples completed with cleanup PASS and no material wall/CPU regression.
+Active Commit has a minor paired median increase of0.311ms (two pairs slower);
+this is an explicit permitted timing WARN within the frozen material rule, not
+a hidden regression. Candidate inactive Commit median168.256ms meets the
+near200ms engineering goal. Stage2 K10 absolute50/31ms remains owner-WAIVED.
+
+Active mode still includes real read preparation in the complete chain; its
+1013.266ms chain is slower than the inactive405.454ms chain. It is a qualified
+cache variant, not a proposed prewarming optimization. CPU covers the complete
+workspace chain, and command wall additionally includes full bootstrap Init.
+Complete12-call invocation cost is recorded in `edit-pair-commands.json`; no
+subsecond product timer is presented as a subsecond entire workflow.
+
+Separate exact-identity candidate proofs passed for inactive and active in
+5.614s/5.636s inside the verifier (complete commands5.719s/5.780s). Coverage is
+all100 changed files before/after fresh Store reopen,100 unchanged-file samples,
+initial and selected retained roots, with explicit complete byte/length checks.
+This does not claim exhaustive verification of the unchanged100000-file tree.
+Mounted mmap/fsync/failure/retry qualification proceeds separately.
+
+Raw files: `edit-pair-summary.json`, all `edit-pair-*` outputs,
+`edit-proof-{inactive,active}/verification.json` and
+`edit-diagnostic-qualified/` in the current issue118 evidence root.

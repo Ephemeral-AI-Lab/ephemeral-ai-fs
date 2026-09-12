@@ -21,7 +21,7 @@ is enforced by the shared runner. Initial host free space: 345 GiB.
 | 1 | Shared build cache, immutable executable custody, bounded retention, focused infra checks, smoke and small pair | 47 infra checks + public smoke + n3 A/A + independent proof PASS; retention follow-up in progress |
 | 2 | Highest-tier carry, merge failure atomicity, actual RAM/FD/disk accounting; focused and production-budget proofs | Component/default-budget/reduced-Workspace proofs PASS; see below |
 | 2 | Complete namespace fixture validation; reduced-budget Workspace/public non-spilling qualification | Fixture + reduced Workspace PASS; public sequence qualification next |
-| 3 | Fresh disjoint edit attribution >=90%, dominant fix, edit + matching Commit + chain qualification | Attribution 99.9% PASS; facts + demand-only lookup implemented/focused PASS; public pairing next |
+| 3 | Fresh disjoint edit attribution >=90%, dominant fix, edit + matching Commit + chain qualification | Attribution + facts/lookup fixes + n3 both-cache pairs + independent proofs PASS; mounted checks in progress |
 | 4 | Reopen/history fix and deduplicated #108/#112/#114/#100/#107/#102/#110 scope | IN_PROGRESS |
 | 5 | Authentic namespace-100000 cold Init <=2.7s and affected final checks | Current control FAIL 4.162195375s; optimization pending |
 | 6 | After optimization: #116 capability audit published before capacity changes | PENDING |
@@ -147,3 +147,17 @@ all artifacts remain. The host cold screen4.150→3.900s is exploratory only.
 Repair is in LayerFS-owned build invalidation, preserving cached external
 dependencies. See `image-freshness-failure.json`; no performance retries were
 launched against this falsely fresh image.
+
+## Combined public edit qualification
+
+Qualified-v1 plain n3 per inactive/active variant and both independent proofs
+PASS. Inactive median edits+Commit992.546→386.761ms; full chain1014.443→405.454ms;
+CPU617.248→225.645ms. Active chain1098.096→1013.266ms, with permitted minor
+paired Commit WARN+0.311ms. All12 attempts retained, no material regressions.
+See `edit-attribution.md` and `edit-pair-summary.json`.
+
+The first K1000 reopen sizing screen failed before edits with `database is locked`: the
+new harness-only ordinal observer queried before releasing the exclusive Store
+owner. Cleanup PASS. Move that observation after owner release and count its
+cost inside reopen/full-chain time; this is not a product capacity failure.
+Its failed raw receipt stays in `reopen-k1000-screen/`.
