@@ -1,35 +1,36 @@
 # Commit Stage 3 results: bounded frontier spill runs (#111)
 
-> **Status:** The algorithmic repair is complete and proved, the public
-> **non-spilling** screen re-ran clean on the restored fixture, and the public
-> **default-budget spill-scale cell remains blocked** by the live edit route's
-> reachable-set boundary. The fixture custody failure found during the campaign was
-> repaired and is reported in full (§5.3).
+> **Status: the quadratic mechanism is gone; no reachable workload got faster.**
+> This stage is an algorithmic scaling repair, not a latency win. Stated plainly:
 >
-> - **Proved and complete:** the quadratic whole-prefix spill merge is eliminated;
->   the replacement satisfies the derived `O(K log(K/B))` traffic bound at the
->   shipped pending capacity `B = 15 873`, with exact results, deterministic
->   counters, bounded resources and a failure/retry proof (§1–§4).
-> - **Reduced-budget integration proof:** the real Workspace Commit path at a
->   declared 16-entry pending capacity, 38 flushes, exact content re-resolution
->   (§4).
-> - **Public default-budget spill performance: blocked.** The live workspace edit
->   route refuses the 5 462nd sequential range edit in a fresh session, and `B` is
->   15 873, so no reachable public changed set can fill the pending map (§5.1). The
->   public cells are therefore a **non-spilling** regression/compatibility screen and
->   are not a spill benchmark.
-> - **Public re-run on the restored fixture: complete.** 24/24 cells `PASS`,
->   K100 184.07 → 188.76 ms with every sample ≤ 200 ms, and no material regression at
->   any cell. Two campaigns (pre-damage and post-repair) measured byte-identical
->   fixture content and agree on the non-spilling screen; the one `k5000` flag is
->   investigated and left reported as an unexplained sub-tolerance difference
->   (§5.2, §6).
-> - **Fixture custody failure: found, characterised and repaired.** During the
->   campaign the immutable `namespace-100000` fixture lost two 100 MB payload files
->   at 2026-09-12T02:13:32Z. The content is deterministic, so it was regenerated,
->   proved reproducible, and validated back to the registered digest; the damaged
->   tree is retained in quarantine and the rejecting run is retained as failed
->   evidence (§5.3, §8).
+> - **No measured improvement on any workload the public API can execute.** Every
+>   public cell's changed set is far below the shipped pending capacity
+>   (`B = 15 873`), so every public cell runs the **same non-spilling path in both
+>   arms**. K100 is 184.07 → 188.76 ms (re-run) and K10 is 51.41 → 53.67 ms, both
+>   inside the frozen tolerance and both directionally *slower* on the candidate.
+>   No speedup is claimed anywhere in this report.
+> - **What is claimed is structural only:** the whole-prefix spill rewrite is
+>   replaced by bounded tiered runs, so cumulative spill traffic is
+>   `O(K log(K/B))` instead of `Θ(K²/B)`. That is proved with deterministic counters
+>   at the shipped capacity, not with a timer, and **the regime where it pays is
+>   unreachable from the public API today** (§3.2, §5.1).
+> - **The fix is also slower than the old code near the crossover.** At `1B` the
+>   candidate moves 1.50× the control's records and at `8B` 1.11×, because it pays one
+>   consolidation pass the old always-coalesced spill never needed. It only falls
+>   below the control from `16B` (0.68×) and reaches 0.23× at `64B`. That is reported,
+>   not hidden.
+> - **`k5000` is 2.1–7.0 % slower on the candidate** across the three independent
+>   cohorts where it was measured (campaign 1 +2.1 %, re-run +7.0 %, balanced
+>   diagnostic +2.3 %), consistently in `content_ns`/`object_admission_ns` rather than
+>   the `namespace_ns` phase that holds the accumulator. It is sub-tolerance, it is on
+>   a non-spilling cell, and I could **not** attribute it to a mechanism. It is
+>   reported as an unexplained observation, not waived (§6).
+> - **Public default-budget spill performance remains blocked and unclaimed.** The
+>   live edit route refuses the 5 462nd sequential range edit in a fresh session,
+>   below `B`, so no public Commit can fill the pending map (§5.1).
+> - **Public screen re-ran clean:** 24/24 cells `PASS` on the restored fixture, with
+>   K100 inside the ≤ 200 ms goal in every sample. A fixture custody failure was
+>   found, characterised and repaired during the campaign (§5.3, §8).
 >
 > No release, tag or deployment.
 
@@ -158,12 +159,20 @@ selected `tests::production_budget_spill_quadratic_crossover`
 Growth per doubling of the candidate is 3.33×, 2.80×, 2.57×, 2.44×, 2.36×, 2.31×
 while the control's model grows by `factor + 1` (4×, 9×, 17×, 33×, 65×) over the
 same steps. Cumulative candidate traffic ends at **23.4 %** of the control's at
-`64B` (15 238 080 vs 65 031 681 records), and the candidate is strictly below the
-control from `16B` onward. Below the crossover the candidate is legitimately
-larger, because it performs one consolidation pass the control's always-coalesced
-spill does not need; that is reported, not hidden. The sweep is a
-**structural-complexity** proof at the shipped budget and is not a latency,
-throughput or RSS claim for any logical size.
+`64B` (15 238 080 vs 65 031 681 records).
+
+**Where this does and does not pay.** The candidate is *worse* than the control
+below `16B`: 1.50× the records at `1B`, 1.19× at `2B`, 1.00× at `4B`, 1.11× at `8B`
+— the extra pass is the single consolidation merge, which the old always-coalesced
+spill never needed. It is only from `16B` (0.68×) that size-tiering wins. And the
+whole regime is unreachable from the public API: `1B` alone needs 15 873 sequential
+edits in one session while the live route refuses the 5 462nd (§5.1), so **no
+currently reachable workload benefits from this change, and the ones that were
+measured are marginally slower.** What the sweep establishes is the *shape* of the
+curve — that the quadratic term is gone and the growth is log-linear — not a
+performance improvement for users. The sweep is a **structural-complexity** proof at
+the shipped budget and is not a latency, throughput or RSS claim for any logical
+size.
 
 ### 3.3 Exactness
 
@@ -250,15 +259,18 @@ Because the container limit was not removed, not raised and not split across
 Commits, the public spill case is reported as blocked and no public
 default-budget spill timing is claimed.
 
-### 5.2 Public cells (non-spilling screen)
+### 5.2 Public cells (non-spilling screen): no improvement, and none possible here
 
 Two campaigns, same cases, same order, same arms, **byte-identical fixture
 content** (§5.3): `sequence-public` (before the fixture damage) and
 `sequence-rerun` (on the regenerated fixture). Both are 24 cells,
 `C1,T1; T2,C2; C3,T3`, one fresh Store and one fresh container per entry, all
-`PASS`. **Neither spills** — the largest, `k5000`, is `0.31·B` — so these are a
-regression, compatibility and resource screen. They are not the production spill
-benchmark and no spill claim is made from them.
+`PASS`. **Neither spills** — the largest, `k5000`, is `0.31·B` — so both arms run
+the identical memory-resident path and **these cells cannot show any effect of the
+treatment**. They are a regression, compatibility and resource screen only; they are
+not the production spill benchmark and no spill or speedup claim is made from them.
+Both cohorts point the same way: the candidate is flat-to-slightly-slower, never
+faster.
 
 Restored-fixture campaign `sequence-rerun` (`cells/sequence-rerun`,
 `analysis-rerun.json`, `collect-rerun.out`):
@@ -283,8 +295,10 @@ Pre-damage campaign `sequence-public` (`cells/sequence-public`,
 The decisive K100 row is stable across both campaigns: medians 180.2–188.8 ms with
 the candidate's slowest sample at 193.73 ms in campaign 1 and 189.38 ms in the
 re-run, so **K100 remains inside the ≤ 200 ms engineering goal in every sample of
-both cohorts**, with a namespace phase of 107.6–116.0 ms. Full per-sample tables,
-ranges, edit stages and `edit+matching Commit` sums are in the two analysis files.
+both cohorts**, with a namespace phase of 107.6–116.0 ms. That is a *kept* goal, not
+a gain from this stage: it reproduces the accepted Stage 2 result (186.05 ms median,
+111.54 ms namespace) within sampling spread. Full per-sample tables, ranges, edit
+stages and `edit+matching Commit` sums are in the two analysis files.
 
 ### 5.3 Fixture custody failure — found, characterised and **repaired**
 
@@ -559,29 +573,60 @@ not required. The affected Init correctness check still ran:
 `init_namespace/namespace-1000-compact-v3` `PASS, slow=False`, and the public cells'
 bootstrap Init phases are unchanged (2.4–4.3 s on 100 000 files).
 
-## 11. Remaining limitations
+## 11. Verdict, stated without cushioning
 
-1. **Public performance is claimed only for the non-spilling screen.** The
-   restored-fixture re-run (§5.2) is identity-current and passes every gate, but its
-   largest cell is `0.31·B` and therefore says nothing about spill behaviour; the
-   spill evidence is §3 and §4. The pre-damage cohort is retained beside it because
-   it measured the same bytes with the same product code but an earlier test-only
-   build.
+**Did Stage 3 make anything faster? No.** No measured cell improved, and none could
+have: every public changed set the live route accepts is at most 5 461 edits, while
+the pending map only spills above 15 873, so both arms execute the same
+memory-resident path. The honest scorecard is:
+
+| Claim | Status |
+|---|---|
+| Quadratic spill mechanism eliminated (`Θ(K²/B)` → `O(K log(K/B))`) | **Yes — proved with counters at the shipped budget** |
+| Results, references, checkpoints byte-exact before/after | **Yes — model-compared and public-gate-verified** |
+| Resources bounded (RAM, descriptors, temp disk) | **Yes — measured and within the declared bounds** |
+| Reachable workload faster | **No — and none was expected; K100 never spilled** |
+| Reachable workload not regressed | **Yes for `nochange`/`k10`/`k100` (inside tolerance); `k5000` is 2.1–7.0 % slower, unexplained, sub-tolerance** |
+| Default-policy spill measured end to end in public | **No — blocked by the 5 461-edit route boundary** |
+| Near the crossover the new code is not worse | **No — it is 1.50× at `1B` and 1.11× at `8B`, better only from `16B`** |
+
+So: this closed a latent scaling cliff that today's reachable product never reaches,
+added a bounded amount of code and a small, unexplained, sub-tolerance cost on a
+non-spilling cell, and produced no user-visible speedup. If the value sought was
+wall-clock, this stage did not deliver it and does not claim to. Whether the
+quadratic repair is worth keeping is a product decision, and the evidence for it is
+§3.2 and §3.3 (shape of the curve plus exactness), not any timing table here. I am
+not going to describe it as a performance improvement.
+
+## 12. Remaining limitations
+
+1. **No reachable workload benefits from this change, and the measured effect is
+   neutral-to-negative.** The public screen is a non-spilling screen, so it can only
+   show cost; the benefit needs `K > 15 873` in one Commit, which the live edit route
+   cannot reach. The spill evidence is §3 and §4 — structural, not user-visible. The
+   pre-damage cohort is retained beside the re-run because it measured the same bytes
+   with the same product code but an earlier test-only build.
 2. **Default-budget public spill performance is blocked.** The live edit route
    refuses the 5 462nd sequential range edit in a fresh session, below the shipped
    15 873-entry pending capacity, so no public Commit with the default policy can
    spill. The boundary's *path* is traced to the live-owner round trip; the exact
    internal resource that refuses the request is **not** proved and is not claimed.
-3. **`k5000` shows a consistent but sub-tolerance slowdown.** The qualifying re-run
-   measures +114.55 ms median paired wall (3/3 pairs) and the restored-fixture
-   balanced diagnostic +36.94 ms median paired (4/6 pairs), both inside the frozen
-   `max(15 %, 3 ms)` tolerance; the pre-damage cohorts measured a material flag and
-   −11.48 ms respectively. The phase receipts put the spread in
-   `content_ns`/`object_admission_ns`, the whole-cohort `namespace_ns` spread is
-   178–208 ms, and **`k5000` never spills**, so the treatment has no algorithmic work
-   to change there. It is reported as an unexplained sub-tolerance observation, not
-   attributed to spill behaviour, not waived, and with no sample replaced; §6.2
-   carries the investigation.
+   The cheapest way to make spilling reachable in a public cell would be a smaller
+   `max_final_delta_memory_bytes`, but that parameter is not exposed through the
+   public workspace-creation API, and lowering the product's memory limit to make a
+   benchmark pass was explicitly out of scope.
+3. **`k5000` is consistently slower on the candidate and I could not explain it.**
+   Three independent cohorts measure +2.1 % (campaign 1), +7.0 % (re-run) and +2.3 %
+   (six-pair balanced diagnostic) median paired wall, all inside the frozen
+   `max(15 %, 3 ms)` tolerance; the pre-damage cohort's qualifying three pairs flagged
+   material at +246.78 ms while its own balanced diagnostic measured −11.48 ms, so the
+   flag is not reproducible. The receipts put the difference in
+   `content_ns`/`object_admission_ns`, and `k5000` never spills — so an algorithmic
+   spill cause is excluded, but I have **no positive attribution**: code layout,
+   allocator behaviour and sampling spread are all unexamined candidates. It stays
+   reported, not waived, with no sample replaced; §6.2 carries the investigation.
+   Anyone reusing this stage should treat the candidate's effect on large
+   non-spilling commits as unmeasured rather than as neutral.
 4. **`8B` and above are proved structurally, not on a public workload.** They do not
    fit the 100 000-file namespace even without the edit-route boundary.
 5. **Reduced-budget integration proof is a distinct case.** It exercises the real
@@ -598,7 +643,10 @@ bootstrap Init phases are unchanged (2.4–4.3 s on 100 000 files).
    45 GiB to 3.9 GiB by declaring per-cell Store copies out of evidence scope; the
    root volume was at 99 % before pruning and is at 93 % after. Any further campaign
    needs headroom.
-9. K10's ≤ 50 ms / ≤ 31 ms gates remain owner-waived (measured here 49.49 ms public
-   Commit); cold Init ≤ 2.7 s stays open and untouched. No release, tag or
+9. **The `k5000` slowdown makes the treatment's cost at large non-spilling commits
+   an open measurement**, not a settled zero. Anyone building on this should re-measure
+   a large non-spilling cell before assuming neutrality.
+10. K10's ≤ 50 ms / ≤ 31 ms gates remain owner-waived (measured here 51.41 → 53.67 ms
+   public Commit); cold Init ≤ 2.7 s stays open and untouched. No release, tag or
    deployment. Edit-barrier optimization, reopened-history work and new caches stay
    out of this stage; the next queued task is fresh edit-stage attribution.
